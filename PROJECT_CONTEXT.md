@@ -32,12 +32,15 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - `docs/DECISIONS.md`
 - `docs/REPOSITORY_STANDARD.md`
 - `docs/TASK_CONTRACT.md`
+- `docs/MEMORY_DESIGN.md`
+- `docs/MEMORY_SCHEMA.md`
 - `TASKS/task-template.md`
 - `TASKS/backlog.md`
 
 ## Completed Tasks
 
 - TASK-0002: Define the AEOS task contract format.
+- TASK-0003: Define AEOS memory entry schema.
 
 ## Do Not Load By Default
 
@@ -48,4 +51,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0003 Define memory entry schema.
+TASK-0004 Create initial memory templates.
