@@ -39,3 +39,11 @@ Status: Accepted
 Decision: Do not write long-term memory until the relevant work has been verified.
 
 Rationale: Memory should preserve confirmed engineering knowledge, not unverified intermediate conversation.
+
+## ADR-0006: Use TypeScript on Node.js LTS with pnpm workspaces
+
+Status: Accepted
+
+Decision: Implement AEOS v0 in TypeScript on Node.js LTS, targeting Node 24 LTS, with pnpm as the package manager and pnpm workspaces as the monorepo mechanism.
+
+Rationale: TypeScript supports explicit AEOS-owned contracts, Node.js LTS supports local CLI and tooling workflows, and pnpm workspaces fit the planned `apps/` and `packages/` package architecture.
