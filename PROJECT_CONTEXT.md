@@ -41,6 +41,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 - TASK-0002: Define the AEOS task contract format.
 - TASK-0003: Define AEOS memory entry schema.
+- TASK-0004: Create initial AEOS memory templates.
 
 ## Do Not Load By Default
 
@@ -51,4 +52,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0004 Create initial memory templates.
+TASK-0005 Define AEOS CLI command map.
