@@ -41,6 +41,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - `docs/AUDIT_LOG_FORMAT.md`
 - `docs/VERIFICATION_STRATEGY.md`
 - `docs/PROJECT_TEMPLATE_SPEC.md`
+- `docs/IMPLEMENTATION_PLAN.md`
 - `TASKS/task-template.md`
 - `TASKS/backlog.md`
 
@@ -56,6 +57,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0009: Define AEOS audit log format.
 - TASK-0010: Define AEOS verification strategy.
 - TASK-0011: Define AEOS project template specification.
+- TASK-0012: Define AEOS initial implementation plan.
 
 ## Do Not Load By Default
 
@@ -66,4 +68,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0012 Define AEOS initial implementation plan.
+TASK-0013 Decide AEOS runtime and package manager.

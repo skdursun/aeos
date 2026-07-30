@@ -1,22 +1,24 @@
 # Backlog
 
-## Future Micro-Tasks
+## Initial Implementation Backlog
 
-1. Define the AEOS task contract format.
-2. Add an ADR template under `templates/`.
-3. Create a memory entry template for `brain/`.
-4. Draft CLI command names and expected outputs.
-5. Define the model adapter interface in documentation.
-6. Define the tool adapter interface in documentation.
-7. Define the memory adapter interface in documentation.
-8. Create a verification checklist for docs-only tasks.
-9. Create a verification checklist for code-edit tasks.
-10. Draft the MCP server registry format.
-11. Draft the audit log format.
-12. Define risk levels for shell commands.
-13. Create a project template manifest proposal.
-14. Define how AEOS should prepare context for Codex.
-15. Define how AEOS should prepare context for Claude Code.
-16. Draft a memory write approval workflow.
-17. Create a roadmap review task for Phase 1.
-18. Define the first no-code CLI MVP acceptance criteria.
+1. TASK-0013: Decide AEOS runtime and package manager. Docs only. Effort: High. Verification: `format_check`.
+2. TASK-0014: Create runtime scaffold plan. Docs only. Effort: Medium. Verification: `static_check`.
+3. TASK-0015: Create minimal repository scaffold. Code. Effort: Medium. Verification: `existence_check`.
+4. TASK-0016: Add base static verification command. Code. Effort: Medium. Verification: `static_check`.
+5. TASK-0017: Define shared adapter result types. Code. Effort: Medium. Verification: `unit_test`.
+6. TASK-0018: Define policy decision types. Code. Effort: Medium. Verification: `unit_test`.
+7. TASK-0019: Define verification report types. Code. Effort: Medium. Verification: `unit_test`.
+8. TASK-0020: Define task contract parser. Code. Effort: High. Verification: `unit_test`.
+9. TASK-0021: Implement project context reader. Code. Effort: Medium. Verification: `unit_test`.
+10. TASK-0022: Implement scoped context bundle builder. Code. Effort: High. Verification: `unit_test`.
+11. TASK-0023: Implement file scope validator. Code. Effort: Medium. Verification: `unit_test`.
+12. TASK-0024: Implement basic policy classifier. Code. Effort: High. Verification: `security_check`.
+13. TASK-0025: Implement local audit event writer. Code. Effort: Medium. Verification: `unit_test`.
+14. TASK-0026: Implement verification existence checks. Code. Effort: Medium. Verification: `unit_test`.
+15. TASK-0027: Implement documentation format checks. Code. Effort: Medium. Verification: `unit_test`.
+16. TASK-0028: Implement memory entry validation. Code. Effort: High. Verification: `security_check`.
+17. TASK-0029: Implement local memory read and write adapter. Code. Effort: High. Verification: `unit_test`.
+18. TASK-0030: Implement CLI status command. Code. Effort: Medium. Verification: `smoke_test`.
+19. TASK-0031: Implement CLI context command. Code. Effort: High. Verification: `smoke_test`.
+20. TASK-0032: Implement CLI verify command. Code. Effort: High. Verification: `smoke_test`.
