@@ -39,6 +39,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - `docs/ADAPTER_CONTRACTS.md`
 - `docs/POLICY_PERMISSION_MODEL.md`
 - `docs/AUDIT_LOG_FORMAT.md`
+- `docs/VERIFICATION_STRATEGY.md`
 - `TASKS/task-template.md`
 - `TASKS/backlog.md`
 
@@ -52,6 +53,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0007: Define AEOS adapter interface contracts.
 - TASK-0008: Define AEOS policy and permission model.
 - TASK-0009: Define AEOS audit log format.
+- TASK-0010: Define AEOS verification strategy.
 
 ## Do Not Load By Default
 
@@ -62,4 +64,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0010 Define AEOS verification strategy.
+TASK-0011 Define AEOS project template specification.
