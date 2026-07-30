@@ -1,0 +1,14 @@
+{
+  "name": "pro-performans",
+  "private": true,
+  "description": "AEOS TypeScript monorepo scaffold.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "check": "tsc -b --pretty false",
+    "build": "tsc -b --pretty false",
+    "clean": "find . -name dist -type d -prune -exec rm -rf {} +"
+  }
+}
