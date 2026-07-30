@@ -31,6 +31,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - `docs/ROADMAP.md`
 - `docs/DECISIONS.md`
 - `docs/REPOSITORY_STANDARD.md`
+- `docs/PACKAGE_ARCHITECTURE.md`
 - `docs/TASK_CONTRACT.md`
 - `docs/MEMORY_DESIGN.md`
 - `docs/MEMORY_SCHEMA.md`
@@ -44,6 +45,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0003: Define AEOS memory entry schema.
 - TASK-0004: Create initial AEOS memory templates.
 - TASK-0005: Define AEOS CLI command map.
+- TASK-0006: Define AEOS package architecture.
 
 ## Do Not Load By Default
 
@@ -54,4 +56,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0006 Define AEOS package architecture.
+TASK-0007 Define AEOS adapter interface contracts.
