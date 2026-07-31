@@ -1,0 +1,23 @@
+{
+  "id": "",
+  "title": "",
+  "purpose": "",
+  "context": {
+    "load": [],
+    "doNotLoad": []
+  },
+  "fileBoundary": {
+    "filesToModify": [
+      "PROJECT_CONTEXT.md"
+    ],
+    "filesNotToTouch": [
+      "PROJECT_CONTEXT.md"
+    ],
+    "allowGeneratedFiles": false,
+    "requireStopOnBoundaryConflict": true
+  },
+  "stopCondition": {
+    "description": "",
+    "stopAfterCompletion": true
+  }
+}

@@ -71,66 +71,17 @@ if (!outputOf(context).includes("AEOS") && !outputOf(context).includes("Pro Perf
 const unknown = runCli(["unknown-command"]);
 expectNonzero("unknown command exited zero", unknown);
 
+const validTaskPath = fileURLToPath(
+  new URL("../fixtures/tasks/valid-task.json", import.meta.url),
+);
+const invalidTaskPath = fileURLToPath(
+  new URL("../fixtures/tasks/invalid-task.json", import.meta.url),
+);
 const smokeDir = mkdtempSync(join(tmpdir(), "aeos-cli-smoke-"));
 
 try {
-  const validTaskPath = join(smokeDir, "valid-task.json");
-  const invalidTaskPath = join(smokeDir, "invalid-task.json");
   const invalidJsonPath = join(smokeDir, "invalid-json.json");
   const missingTaskPath = join(smokeDir, "missing-task.json");
-
-  writeFileSync(
-    validTaskPath,
-    JSON.stringify(
-      {
-        id: "TASK-SMOKE-VALID",
-        title: "Smoke valid task",
-        purpose: "Verify CLI task validation pass output.",
-        context: {
-          load: [
-            {
-              path: "PROJECT_CONTEXT.md",
-              required: true,
-            },
-          ],
-          doNotLoad: [],
-        },
-        stopCondition: {
-          description: "Stop after smoke validation completes.",
-          stopAfterCompletion: true,
-        },
-        fileBoundary: {
-          filesToModify: [],
-          filesNotToTouch: [],
-          allowGeneratedFiles: false,
-          requireStopOnBoundaryConflict: true,
-        },
-      },
-      null,
-      2,
-    ),
-  );
-
-  writeFileSync(
-    invalidTaskPath,
-    JSON.stringify(
-      {
-        id: "",
-        title: "",
-        purpose: "",
-        context: {
-          load: [],
-          doNotLoad: [],
-        },
-        stopCondition: {
-          description: "",
-          stopAfterCompletion: true,
-        },
-      },
-      null,
-      2,
-    ),
-  );
 
   writeFileSync(invalidJsonPath, "{ invalid json");
 

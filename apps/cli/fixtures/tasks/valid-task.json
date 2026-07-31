@@ -1,0 +1,28 @@
+{
+  "id": "TASK-FIXTURE-VALID",
+  "title": "Valid task fixture",
+  "purpose": "Verify that aeos task validation accepts a minimal valid task.",
+  "context": {
+    "load": [
+      {
+        "path": "PROJECT_CONTEXT.md",
+        "required": true
+      }
+    ],
+    "doNotLoad": []
+  },
+  "fileBoundary": {
+    "filesToModify": [
+      "apps/cli/fixtures/tasks/valid-task.json"
+    ],
+    "filesNotToTouch": [
+      "packages/core/src/task-validation.ts"
+    ],
+    "allowGeneratedFiles": false,
+    "requireStopOnBoundaryConflict": true
+  },
+  "stopCondition": {
+    "description": "Stop after fixture validation completes.",
+    "stopAfterCompletion": true
+  }
+}
