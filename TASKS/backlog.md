@@ -22,3 +22,18 @@
 18. TASK-0030: Implement CLI status command. Code. Effort: Medium. Verification: `smoke_test`.
 19. TASK-0031: Implement CLI context command. Code. Effort: High. Verification: `smoke_test`.
 20. TASK-0032: Implement CLI verify command. Code. Effort: High. Verification: `smoke_test`.
+
+## CLI MVP Backlog
+
+1. TASK-0038: Implement minimal CLI entrypoint and version command. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+2. TASK-0039: Add CLI help output. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+3. TASK-0040: Add CLI command dispatcher. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+4. TASK-0041: Add CLI error and exit-code handling. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+5. TASK-0042: Add CLI smoke check script notes. Docs. Effort: Low. Verification: `test -f docs/CLI_MVP_IMPLEMENTATION_PLAN.md`.
+6. TASK-0043: Implement status command skeleton. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+7. TASK-0044: Wire status command to project context file. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+8. TASK-0045: Implement context command skeleton. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+9. TASK-0046: Add context task flag parsing. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+10. TASK-0047: Implement task validate command shell. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+11. TASK-0048: Bind task validate to core helpers. Code. Effort: High. Verification: `pnpm --filter @aeos/cli check`.
+12. TASK-0049: Review CLI MVP command consistency. Docs. Effort: Medium. Verification: `git status --short`.

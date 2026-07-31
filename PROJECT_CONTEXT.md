@@ -43,6 +43,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - `docs/PROJECT_TEMPLATE_SPEC.md`
 - `docs/IMPLEMENTATION_PLAN.md`
 - `docs/RUNTIME_DECISION.md`
+- `docs/CLI_MVP_IMPLEMENTATION_PLAN.md`
 - `TASKS/task-template.md`
 - `TASKS/backlog.md`
 
@@ -83,6 +84,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0034: Define minimal verification report helpers.
 - TASK-0035: Add verification report typecheck examples.
 - TASK-0036: Perform Core Foundation Review.
+- TASK-0037: Define CLI MVP implementation plan.
 
 ## Do Not Load By Default
 
@@ -93,4 +95,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0037 Define CLI MVP implementation plan.
+TASK-0038 Implement minimal CLI entrypoint and version command.
