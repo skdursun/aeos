@@ -68,6 +68,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0019: Define AEOS core memory TypeScript contracts.
 - TASK-0020: Define AEOS core policy TypeScript contracts.
 - TASK-0021: Define AEOS core audit TypeScript contracts.
+- TASK-0022: Define AEOS core verification TypeScript contracts.
 
 ## Do Not Load By Default
 
@@ -78,4 +79,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0022 Define core verification TypeScript contracts.
+TASK-0023 Review and normalize core type exports.
