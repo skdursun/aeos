@@ -89,6 +89,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0039: Add CLI smoke script.
 - TASK-0040: Implement aeos status command.
 - TASK-0041: Implement aeos context command.
+- TASK-0042: Implement aeos task validate command.
 
 ## Do Not Load By Default
 
@@ -99,4 +100,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0042 Implement aeos task validate command.
+TASK-0043 Implement aeos task validate error polish.

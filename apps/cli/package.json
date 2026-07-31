@@ -16,5 +16,8 @@
     "build": "tsc -p tsconfig.json --pretty false",
     "check": "tsc -p tsconfig.json --pretty false",
     "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "@aeos/core": "workspace:*"
   }
 }

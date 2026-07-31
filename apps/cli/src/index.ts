@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+import { validateAeosTask } from "@aeos/core";
+import type { AeosTask, TaskValidationIssue } from "@aeos/core";
+
 declare const process: {
   argv: string[];
   cwd(): string;
@@ -24,6 +27,7 @@ Usage:
 Commands:
   context
   status
+  task validate <path>
   version
   help`;
 
@@ -91,6 +95,69 @@ function printContext(): void {
   process.stdout.write(fs.readFileSync(projectContextPath, "utf8"));
 }
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function formatIssue(issue: TaskValidationIssue): string {
+  const location = issue.field ?? issue.path;
+  return location === undefined
+    ? `- ${issue.message}`
+    : `- ${location}: ${issue.message}`;
+}
+
+function validateTaskFile(filePath: string | undefined): void {
+  if (filePath === undefined || filePath.trim().length === 0) {
+    console.error("Error: missing task file path.");
+    console.error("Usage: aeos task validate <path>");
+    process.exitCode = 1;
+    return;
+  }
+
+  const fs = process.getBuiltinModule("fs");
+
+  if (!fs.existsSync(filePath)) {
+    console.error(`Error: task file not found: ${filePath}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  let parsedTask: unknown;
+
+  try {
+    parsedTask = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    console.error(`Error: failed to parse JSON task file: ${filePath}`);
+    if (error instanceof Error) {
+      console.error(error.message);
+    }
+    process.exitCode = 1;
+    return;
+  }
+
+  if (!isJsonObject(parsedTask)) {
+    console.log("Task validation: fail");
+    console.log("- Task file must contain a JSON object.");
+    process.exitCode = 1;
+    return;
+  }
+
+  const result = validateAeosTask(parsedTask as unknown as AeosTask);
+
+  if (result.valid) {
+    console.log("Task validation: pass");
+    return;
+  }
+
+  console.log("Task validation: fail");
+
+  for (const issue of result.issues) {
+    console.log(formatIssue(issue));
+  }
+
+  process.exitCode = 1;
+}
+
 switch (command) {
   case "context":
     try {
@@ -114,6 +181,17 @@ switch (command) {
       }
       process.exitCode = 1;
     }
+    break;
+
+  case "task":
+    if (process.argv[3] !== "validate") {
+      console.error("Error: unknown task command.");
+      console.error("Usage: aeos task validate <path>");
+      process.exitCode = 1;
+      break;
+    }
+
+    validateTaskFile(process.argv[4]);
     break;
 
   case "--version":

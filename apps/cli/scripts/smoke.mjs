@@ -1,4 +1,7 @@
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const cliPath = fileURLToPath(new URL("../dist/index.js", import.meta.url));
@@ -64,6 +67,84 @@ if (!context.stdout.includes("AEOS") && !context.stdout.includes("Pro Performans
 const unknown = runCli(["unknown-command"]);
 if (unknown.status === 0) {
   fail("unknown command exited zero", unknown);
+}
+
+const smokeDir = mkdtempSync(join(tmpdir(), "aeos-cli-smoke-"));
+
+try {
+  const validTaskPath = join(smokeDir, "valid-task.json");
+  const invalidTaskPath = join(smokeDir, "invalid-task.json");
+
+  writeFileSync(
+    validTaskPath,
+    JSON.stringify(
+      {
+        id: "TASK-SMOKE-VALID",
+        title: "Smoke valid task",
+        purpose: "Verify CLI task validation pass output.",
+        context: {
+          load: [
+            {
+              path: "PROJECT_CONTEXT.md",
+              required: true,
+            },
+          ],
+          doNotLoad: [],
+        },
+        stopCondition: {
+          description: "Stop after smoke validation completes.",
+          stopAfterCompletion: true,
+        },
+        fileBoundary: {
+          filesToModify: [],
+          filesNotToTouch: [],
+          allowGeneratedFiles: false,
+          requireStopOnBoundaryConflict: true,
+        },
+      },
+      null,
+      2,
+    ),
+  );
+
+  writeFileSync(
+    invalidTaskPath,
+    JSON.stringify(
+      {
+        id: "",
+        title: "",
+        purpose: "",
+        context: {
+          load: [],
+          doNotLoad: [],
+        },
+        stopCondition: {
+          description: "",
+          stopAfterCompletion: true,
+        },
+      },
+      null,
+      2,
+    ),
+  );
+
+  const validTask = runCli(["task", "validate", validTaskPath]);
+  if (validTask.status !== 0) {
+    fail("valid task validation exited nonzero", validTask);
+  }
+  if (!validTask.stdout.includes("Task validation: pass")) {
+    fail('valid task output did not include "Task validation: pass"', validTask);
+  }
+
+  const invalidTask = runCli(["task", "validate", invalidTaskPath]);
+  if (invalidTask.status === 0) {
+    fail("invalid task validation exited zero", invalidTask);
+  }
+  if (!invalidTask.stdout.includes("Task validation: fail")) {
+    fail('invalid task output did not include "Task validation: fail"', invalidTask);
+  }
+} finally {
+  rmSync(smokeDir, { recursive: true, force: true });
 }
 
 console.log("AEOS CLI smoke passed.");
