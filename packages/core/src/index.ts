@@ -1,1 +1,1 @@
-export const packageName = "@aeos/core";
+export type * from "./types.js";
