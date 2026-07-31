@@ -34,3 +34,16 @@ export type {
   MemoryWriteSuccess,
   MemoryWriteTarget,
 } from "./writer.js";
+
+export {
+  createMemoryStorageTarget,
+  resolveMemoryFilePath,
+  writeMemoryFile,
+} from "./filesystem-writer.js";
+export type {
+  MemoryFilePathResult,
+  MemoryFileWriteRequest,
+  MemoryFileWriteResult,
+  MemoryFileWriteSuccess,
+  MemoryStorageTarget,
+} from "./filesystem-writer.js";

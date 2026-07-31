@@ -118,6 +118,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0066: Define aeos remember command plan.
 - TASK-0067: Implement remember command core flow.
 - TASK-0068: Add remember command JSON output.
+- TASK-0069: Implement memory persistence design.
 
 ## Do Not Load By Default
 
@@ -128,4 +129,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0069 Implement memory persistence design.
+TASK-0070 Integrate remember command persistence.
