@@ -2,6 +2,7 @@ import { validateAeosTask } from "@aeos/core";
 import type {
   AeosTask,
   MemoryEntry,
+  MemorySearchResult,
   MemoryType,
   MemoryValidationIssue,
   TaskValidationIssue,
@@ -24,6 +25,7 @@ Commands:
   status --json
   remember --type <type> --title <title>
   remember --type <type> --title <title> --json
+  search <query>
   task validate <path>
   task validate <path> --json
   version
@@ -97,6 +99,9 @@ type MemoryStorageTarget = {
 
 type MemoryPackage = {
   readonly buildMemoryMarkdownEntry: (entry: MemoryEntry) => string;
+  readonly createMemorySearchIndex: (
+    entries?: readonly MemoryEntry[],
+  ) => unknown;
   readonly createMemoryStorageTarget: (
     rootPath: string,
     collectionPath?: string,
@@ -111,6 +116,16 @@ type MemoryPackage = {
   readonly createMemoryWriteResult: (
     request: MemoryWriteRequestSuccess,
   ) => { readonly ok: true; readonly value: MemoryWriteResultSuccess } | { readonly ok: false };
+  readonly searchMemoryEntries: (
+    index: unknown,
+    query: {
+      readonly query: string;
+      readonly filter?: {
+        readonly types?: readonly MemoryType[];
+        readonly tags?: readonly string[];
+      };
+    },
+  ) => readonly MemorySearchResult[];
   readonly validateMemoryEntry: (entry: MemoryEntry) => {
     readonly valid: boolean;
     readonly issues: readonly MemoryValidationIssue[];
@@ -319,6 +334,14 @@ function isMemoryType(value: string): value is MemoryType {
   return (memoryTypes as readonly string[]).includes(value);
 }
 
+function printSearchFailure(reason?: string): void {
+  console.log("Search Results");
+
+  if (reason !== undefined) {
+    console.log(`Reason: ${reason}`);
+  }
+}
+
 function readFlagValue(args: readonly string[], flag: string): string | undefined {
   const index = args.indexOf(flag);
 
@@ -339,6 +362,25 @@ function readRepeatedFlagValues(args: readonly string[], flag: string): readonly
   }
 
   return values;
+}
+
+function readSearchQuery(args: readonly string[]): string | undefined {
+  const flagsWithValues = new Set(["--type", "--tag"]);
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (flagsWithValues.has(arg)) {
+      index += 1;
+      continue;
+    }
+
+    if (!arg.startsWith("--")) {
+      return arg;
+    }
+  }
+
+  return undefined;
 }
 
 function createRememberEntry(input: {
@@ -592,6 +634,63 @@ async function handleRemember(args: readonly string[]): Promise<void> {
   console.log(`Status: ${entry.frontmatter.status}`);
 }
 
+async function handleSearch(args: readonly string[]): Promise<void> {
+  const queryInput = readSearchQuery(args);
+  const typeInput = readFlagValue(args, "--type");
+  const tags = readRepeatedFlagValues(args, "--tag")
+    .map((tag) => tag.trim())
+    .filter((tag) => tag.length > 0);
+
+  if (queryInput === undefined || queryInput.trim().length === 0) {
+    printSearchFailure("missing query");
+    console.log('Usage: aeos search "query"');
+    setExitCode(1);
+    return;
+  }
+
+  if (typeInput !== undefined && !isMemoryType(typeInput)) {
+    printSearchFailure("invalid memory type");
+    console.log(`Type: ${typeInput}`);
+    setExitCode(1);
+    return;
+  }
+
+  const memory = await loadMemoryPackage();
+  const index = memory.createMemorySearchIndex([]);
+  const filter =
+    typeInput === undefined && tags.length === 0
+      ? undefined
+      : {
+          ...(typeInput === undefined ? {} : { types: [typeInput] }),
+          ...(tags.length === 0 ? {} : { tags }),
+        };
+  const results = memory.searchMemoryEntries(index, {
+    query: queryInput.trim(),
+    filter,
+  });
+
+  console.log("Search Results");
+  console.log(`Query: ${queryInput.trim()}`);
+  console.log(`Matches: ${results.length}`);
+
+  if (results.length === 0) {
+    return;
+  }
+
+  console.log("");
+
+  for (const result of results) {
+    console.log(
+      `${result.rank ?? 0}. ${result.entry.frontmatter.title}`,
+    );
+    console.log(`Type: ${result.entry.frontmatter.type}`);
+
+    if (result.entry.frontmatter.tags.length > 0) {
+      console.log(`Tags: ${result.entry.frontmatter.tags.join(", ")}`);
+    }
+  }
+}
+
 function handleTask(args: readonly string[]): void {
   if (args[0] !== "validate") {
     console.error("Error: unknown task command.");
@@ -628,6 +727,10 @@ export function main(argv: readonly string[]): void {
 
     case "remember":
       void handleRemember(args);
+      break;
+
+    case "search":
+      void handleSearch(args);
       break;
 
     case "task":

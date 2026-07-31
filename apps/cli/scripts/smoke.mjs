@@ -155,6 +155,7 @@ expectOutputIncludes('--help output did not include "AEOS CLI"', help, "AEOS CLI
 const helpCommand = runCli(["help"]);
 expectExitCode("help exited nonzero", helpCommand, 0);
 expectOutputIncludes('help output did not include "AEOS CLI"', helpCommand, "AEOS CLI");
+expectOutputIncludes('help output did not include "search <query>"', helpCommand, "search <query>");
 
 const status = runCli(["status"]);
 expectExitCode("status exited nonzero", status, 0);
@@ -255,6 +256,38 @@ if (typeof parsedContext.lineCount !== "number" || parsedContext.lineCount <= 0)
 
 const unknown = runCli(["unknown-command"]);
 expectNonzero("unknown command exited zero", unknown);
+
+const searchNoMatches = runCli([
+  "search",
+  `smoke-no-search-match-${smokeRunId}`,
+]);
+expectExitCode("search no-match command exited nonzero", searchNoMatches, 0);
+if (
+  searchNoMatches.stdout !==
+  `Search Results\nQuery: smoke-no-search-match-${smokeRunId}\nMatches: 0\n`
+) {
+  fail("search no-match output was not stable", searchNoMatches);
+}
+
+const searchNoMatchesWithFilters = runCli([
+  "search",
+  `smoke-filtered-no-search-match-${smokeRunId}`,
+  "--type",
+  "decision",
+  "--tag",
+  "architecture",
+]);
+expectExitCode(
+  "search no-match command with filters exited nonzero",
+  searchNoMatchesWithFilters,
+  0,
+);
+if (
+  searchNoMatchesWithFilters.stdout !==
+  `Search Results\nQuery: smoke-filtered-no-search-match-${smokeRunId}\nMatches: 0\n`
+) {
+  fail("search filtered no-match output was not stable", searchNoMatchesWithFilters);
+}
 
 const remember = runCli([
   "remember",
