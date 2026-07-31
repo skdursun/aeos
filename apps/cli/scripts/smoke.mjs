@@ -209,6 +209,30 @@ expectOutputIncludes(
   "Path: brain/decision/",
 );
 
+const rememberJson = runCli([
+  "remember",
+  "--type",
+  "decision",
+  "--title",
+  "Use pnpm workspace",
+  "--json",
+]);
+expectExitCode("remember --json exited nonzero", rememberJson, 0);
+const parsedRemember = parseJsonStdout(
+  "remember --json output was not valid JSON",
+  rememberJson,
+);
+if (
+  parsedRemember.ok !== true ||
+  parsedRemember.type !== "decision" ||
+  parsedRemember.title !== "Use pnpm workspace" ||
+  parsedRemember.markdownPrepared !== true ||
+  parsedRemember.persisted !== false
+) {
+  fail("remember --json output did not match expected success", rememberJson);
+}
+expectEmptyArray("remember --json tags was not empty", parsedRemember.tags);
+
 const rememberMissingTitle = runCli(["remember", "--type", "decision"]);
 expectNonzero("remember without title exited zero", rememberMissingTitle);
 expectOutputIncludes(
@@ -229,6 +253,33 @@ expectOutputIncludes(
   'remember invalid type output did not include "Memory: fail"',
   rememberInvalidType,
   "Memory: fail",
+);
+
+const rememberInvalidTypeJson = runCli([
+  "remember",
+  "--type",
+  "unknown",
+  "--title",
+  "Invalid type",
+  "--json",
+]);
+expectNonzero("remember invalid type --json exited zero", rememberInvalidTypeJson);
+const parsedRememberInvalidType = parseJsonStdout(
+  "remember invalid type --json output was not valid JSON",
+  rememberInvalidTypeJson,
+);
+if (
+  parsedRememberInvalidType.ok !== false ||
+  parsedRememberInvalidType.reason !== "invalid_memory_type"
+) {
+  fail(
+    "remember invalid type --json output did not match expected failure",
+    rememberInvalidTypeJson,
+  );
+}
+expectEmptyArray(
+  "remember invalid type --json issues was not empty",
+  parsedRememberInvalidType.issues,
 );
 
 const validTaskPath = fileURLToPath(

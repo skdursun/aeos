@@ -23,6 +23,7 @@ Commands:
   status
   status --json
   remember --type <type> --title <title>
+  remember --type <type> --title <title> --json
   task validate <path>
   task validate <path> --json
   version
@@ -56,6 +57,27 @@ type TaskValidationJsonOutput = {
   issues: readonly TaskValidationIssue[];
   reason: TaskValidationJsonReason;
 };
+
+type RememberJsonFailureReason =
+  | "missing_title"
+  | "missing_type"
+  | "invalid_memory_type"
+  | "validation_failed";
+
+type RememberJsonOutput =
+  | {
+      readonly ok: true;
+      readonly type: MemoryType;
+      readonly title: string;
+      readonly tags: readonly string[];
+      readonly markdownPrepared: true;
+      readonly persisted: false;
+    }
+  | {
+      readonly ok: false;
+      readonly reason: RememberJsonFailureReason;
+      readonly issues: readonly MemoryValidationIssue[];
+    };
 
 type MemoryWriteRequestSuccess = {
   readonly entry: MemoryEntry;
@@ -119,6 +141,10 @@ function printTaskValidationFailure(reason?: string): void {
 function writeTaskValidationJson(
   value: TaskValidationJsonOutput,
 ): void {
+  writeJsonLine(value);
+}
+
+function writeRememberJson(value: RememberJsonOutput): void {
   writeJsonLine(value);
 }
 
@@ -352,11 +378,22 @@ function createMemoryId(
 }
 
 async function handleRemember(args: readonly string[]): Promise<void> {
+  const json = args.includes("--json");
   const typeInput = readFlagValue(args, "--type");
   const titleInput = readFlagValue(args, "--title");
   const tags = readRepeatedFlagValues(args, "--tag");
 
   if (typeInput === undefined || typeInput.trim().length === 0) {
+    if (json) {
+      writeRememberJson({
+        ok: false,
+        reason: "missing_type",
+        issues: [],
+      });
+      setExitCode(1);
+      return;
+    }
+
     printRememberFailure("missing memory type");
     console.log("Usage: aeos remember --type <type> --title <title>");
     setExitCode(1);
@@ -364,6 +401,16 @@ async function handleRemember(args: readonly string[]): Promise<void> {
   }
 
   if (!isMemoryType(typeInput)) {
+    if (json) {
+      writeRememberJson({
+        ok: false,
+        reason: "invalid_memory_type",
+        issues: [],
+      });
+      setExitCode(1);
+      return;
+    }
+
     printRememberFailure("invalid memory type");
     console.log(`Type: ${typeInput}`);
     setExitCode(1);
@@ -371,6 +418,16 @@ async function handleRemember(args: readonly string[]): Promise<void> {
   }
 
   if (titleInput === undefined || titleInput.trim().length === 0) {
+    if (json) {
+      writeRememberJson({
+        ok: false,
+        reason: "missing_title",
+        issues: [],
+      });
+      setExitCode(1);
+      return;
+    }
+
     printRememberFailure("missing memory title");
     console.log("Usage: aeos remember --type <type> --title <title>");
     setExitCode(1);
@@ -386,6 +443,16 @@ async function handleRemember(args: readonly string[]): Promise<void> {
   const validation = memory.validateMemoryEntry(entry);
 
   if (!validation.valid) {
+    if (json) {
+      writeRememberJson({
+        ok: false,
+        reason: "validation_failed",
+        issues: validation.issues,
+      });
+      setExitCode(1);
+      return;
+    }
+
     printRememberFailure();
 
     for (const issue of validation.issues) {
@@ -403,6 +470,16 @@ async function handleRemember(args: readonly string[]): Promise<void> {
   });
 
   if (!writeRequest.ok) {
+    if (json) {
+      writeRememberJson({
+        ok: false,
+        reason: "validation_failed",
+        issues: [],
+      });
+      setExitCode(2);
+      return;
+    }
+
     console.error("Error: failed to prepare memory write request.");
     setExitCode(2);
     return;
@@ -411,14 +488,46 @@ async function handleRemember(args: readonly string[]): Promise<void> {
   const writeResult = memory.createMemoryWriteResult(writeRequest.value);
 
   if (!writeResult.ok) {
+    if (json) {
+      writeRememberJson({
+        ok: false,
+        reason: "validation_failed",
+        issues: [],
+      });
+      setExitCode(2);
+      return;
+    }
+
     console.error("Error: failed to prepare memory write result.");
     setExitCode(2);
     return;
   }
 
   if (writeResult.value.content !== content) {
+    if (json) {
+      writeRememberJson({
+        ok: false,
+        reason: "validation_failed",
+        issues: [],
+      });
+      setExitCode(2);
+      return;
+    }
+
     console.error("Error: memory content preparation mismatch.");
     setExitCode(2);
+    return;
+  }
+
+  if (json) {
+    writeRememberJson({
+      ok: true,
+      type: entry.frontmatter.type,
+      title: entry.frontmatter.title,
+      tags: entry.frontmatter.tags,
+      markdownPrepared: true,
+      persisted: false,
+    });
     return;
   }
 
