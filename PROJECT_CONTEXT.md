@@ -65,6 +65,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0016: Define core shared TypeScript types.
 - TASK-0017: Define AEOS adapter TypeScript interfaces.
 - TASK-0018: Define AEOS core task TypeScript contracts.
+- TASK-0019: Define AEOS core memory TypeScript contracts.
 
 ## Do Not Load By Default
 
@@ -75,4 +76,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0019 Define core memory TypeScript contracts.
+TASK-0020 Define core policy TypeScript contracts.
