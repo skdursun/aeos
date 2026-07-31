@@ -54,6 +54,24 @@ function expectBooleanProperty(message, value, propertyName) {
   }
 }
 
+function parseJsonStdout(message, result) {
+  if (result.stderr.trim().length > 0) {
+    fail(`${message}: stderr was not empty`, result);
+  }
+
+  try {
+    return JSON.parse(result.stdout);
+  } catch {
+    fail(message, result);
+  }
+}
+
+function expectEmptyArray(message, value) {
+  if (!Array.isArray(value) || value.length !== 0) {
+    fail(message);
+  }
+}
+
 const version = runCli(["--version"]);
 expectExitCode("--version exited nonzero", version, 0);
 expectOutputIncludes('--version output did not include "aeos"', version, "aeos");
@@ -210,6 +228,21 @@ try {
     "Usage: aeos task validate <path>",
   );
 
+  const missingPathJson = runCli(["task", "validate", "--json"]);
+  expectNonzero("missing path --json validation exited zero", missingPathJson);
+  const parsedMissingPath = parseJsonStdout(
+    "missing path --json output was not valid JSON",
+    missingPathJson,
+  );
+  if (
+    parsedMissingPath.ok !== false ||
+    parsedMissingPath.path !== "" ||
+    parsedMissingPath.status !== "fail" ||
+    parsedMissingPath.reason !== "missing_task_file_path"
+  ) {
+    fail("missing path --json output did not match expected failure", missingPathJson);
+  }
+
   const missingFile = runCli(["task", "validate", missingTaskPath]);
   expectNonzero("missing file validation exited zero", missingFile);
   expectOutputIncludes(
@@ -228,6 +261,21 @@ try {
     missingTaskPath,
   );
 
+  const missingFileJson = runCli(["task", "validate", missingTaskPath, "--json"]);
+  expectNonzero("missing file --json validation exited zero", missingFileJson);
+  const parsedMissingFile = parseJsonStdout(
+    "missing file --json output was not valid JSON",
+    missingFileJson,
+  );
+  if (
+    parsedMissingFile.ok !== false ||
+    parsedMissingFile.path !== missingTaskPath ||
+    parsedMissingFile.status !== "fail" ||
+    parsedMissingFile.reason !== "task_file_not_found"
+  ) {
+    fail("missing file --json output did not match expected failure", missingFileJson);
+  }
+
   const invalidJson = runCli(["task", "validate", invalidJsonPath]);
   expectNonzero("invalid JSON validation exited zero", invalidJson);
   expectOutputIncludes(
@@ -241,6 +289,21 @@ try {
     "Reason: invalid JSON",
   );
 
+  const invalidJsonJson = runCli(["task", "validate", invalidJsonPath, "--json"]);
+  expectNonzero("invalid JSON --json validation exited zero", invalidJsonJson);
+  const parsedInvalidJson = parseJsonStdout(
+    "invalid JSON --json output was not valid JSON",
+    invalidJsonJson,
+  );
+  if (
+    parsedInvalidJson.ok !== false ||
+    parsedInvalidJson.path !== invalidJsonPath ||
+    parsedInvalidJson.status !== "fail" ||
+    parsedInvalidJson.reason !== "invalid_json"
+  ) {
+    fail("invalid JSON --json output did not match expected failure", invalidJsonJson);
+  }
+
   const validTask = runCli(["task", "validate", validTaskPath]);
   expectExitCode("valid task validation exited nonzero", validTask, 0);
   expectOutputIncludes(
@@ -248,6 +311,22 @@ try {
     validTask,
     "Task validation: pass",
   );
+
+  const validTaskJson = runCli(["task", "validate", validTaskPath, "--json"]);
+  expectExitCode("valid task --json validation exited nonzero", validTaskJson, 0);
+  const parsedValidTask = parseJsonStdout(
+    "valid task --json output was not valid JSON",
+    validTaskJson,
+  );
+  if (
+    parsedValidTask.ok !== true ||
+    parsedValidTask.path !== validTaskPath ||
+    parsedValidTask.status !== "pass" ||
+    parsedValidTask.reason !== null
+  ) {
+    fail("valid task --json output did not match expected pass", validTaskJson);
+  }
+  expectEmptyArray("valid task --json issues was not empty", parsedValidTask.issues);
 
   const invalidTask = runCli(["task", "validate", invalidTaskPath]);
   expectNonzero("invalid task validation exited zero", invalidTask);
@@ -261,6 +340,23 @@ try {
     invalidTask,
     "- id: Task id is required.",
   );
+
+  const invalidTaskJson = runCli(["task", "validate", invalidTaskPath, "--json"]);
+  expectNonzero("invalid task --json validation exited zero", invalidTaskJson);
+  const parsedInvalidTask = parseJsonStdout(
+    "invalid task --json output was not valid JSON",
+    invalidTaskJson,
+  );
+  if (
+    parsedInvalidTask.ok !== false ||
+    parsedInvalidTask.path !== invalidTaskPath ||
+    parsedInvalidTask.status !== "fail" ||
+    parsedInvalidTask.reason !== "validation_failed" ||
+    !Array.isArray(parsedInvalidTask.issues) ||
+    parsedInvalidTask.issues.length === 0
+  ) {
+    fail("invalid task --json output did not match expected failure", invalidTaskJson);
+  }
 } finally {
   rmSync(smokeDir, { recursive: true, force: true });
 }
