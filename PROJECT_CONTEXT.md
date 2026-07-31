@@ -120,6 +120,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0068: Add remember command JSON output.
 - TASK-0069: Implement memory persistence design.
 - TASK-0070: Integrate remember command persistence.
+- TASK-0071: Add remember persistence smoke review.
 
 ## Do Not Load By Default
 
@@ -130,4 +131,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0071 Add remember persistence smoke review.
+TASK-0072 Implement aeos search command plan.

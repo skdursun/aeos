@@ -312,6 +312,72 @@ if (!existsSync(rememberJsonAbsolutePath)) {
   fail("remember --json returned path did not exist", rememberJson);
 }
 
+const duplicateTitle = `Smoke duplicate persistence ${smokeRunId}`;
+const rememberDuplicateFirst = runCli([
+  "remember",
+  "--type",
+  "decision",
+  "--title",
+  duplicateTitle,
+  "--tag",
+  "duplicate",
+  "--json",
+]);
+expectExitCode("first duplicate remember --json exited nonzero", rememberDuplicateFirst, 0);
+const parsedDuplicateFirst = parseJsonStdout(
+  "first duplicate remember --json output was not valid JSON",
+  rememberDuplicateFirst,
+);
+if (
+  parsedDuplicateFirst.ok !== true ||
+  parsedDuplicateFirst.persisted !== true ||
+  typeof parsedDuplicateFirst.path !== "string" ||
+  parsedDuplicateFirst.path.length === 0
+) {
+  fail(
+    "first duplicate remember --json output did not match expected success",
+    rememberDuplicateFirst,
+  );
+}
+const duplicateAbsolutePath = rememberPathToAbsolute(parsedDuplicateFirst.path);
+createdMemoryPaths.add(duplicateAbsolutePath);
+if (!existsSync(duplicateAbsolutePath)) {
+  fail("first duplicate remember --json returned path did not exist", rememberDuplicateFirst);
+}
+
+const rememberDuplicateSecond = runCli([
+  "remember",
+  "--type",
+  "decision",
+  "--title",
+  duplicateTitle,
+  "--tag",
+  "duplicate",
+  "--json",
+]);
+expectNonzero("second duplicate remember --json exited zero", rememberDuplicateSecond);
+const parsedDuplicateSecond = parseJsonStdout(
+  "second duplicate remember --json output was not valid JSON",
+  rememberDuplicateSecond,
+);
+if (
+  parsedDuplicateSecond.ok !== false ||
+  parsedDuplicateSecond.reason !== "filesystem_failed" ||
+  parsedDuplicateSecond.persisted !== false
+) {
+  fail(
+    "second duplicate remember --json output did not match expected failure",
+    rememberDuplicateSecond,
+  );
+}
+expectEmptyArray(
+  "second duplicate remember --json issues was not empty",
+  parsedDuplicateSecond.issues,
+);
+if (!existsSync(duplicateAbsolutePath)) {
+  fail("second duplicate remember removed the original memory file", rememberDuplicateSecond);
+}
+
 const memoryFilesBeforeInvalidRemember = listMemoryFiles();
 const rememberMissingTitle = runCli(["remember", "--type", "decision"]);
 expectNonzero("remember without title exited zero", rememberMissingTitle);
