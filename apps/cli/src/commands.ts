@@ -28,6 +28,7 @@ Commands:
   search <query>
   search <query> [--json]
   project status
+  project status --json
   task validate <path>
   task validate <path> --json
   version
@@ -102,6 +103,21 @@ type SearchJsonOutput =
   | {
       readonly ok: false;
       readonly reason: "missing_query" | "invalid_memory_type";
+    };
+
+type ProjectStatusJsonOutput =
+  | {
+      readonly ok: true;
+      readonly root: string;
+      readonly packageName: string;
+      readonly version: string;
+      readonly projectContextPresent: boolean;
+      readonly agentsPresent: boolean;
+      readonly workspacePresent: boolean;
+    }
+  | {
+      readonly ok: false;
+      readonly reason: "project_root_not_found";
     };
 
 type MemoryWriteRequestSuccess = {
@@ -243,6 +259,10 @@ function writeRememberJson(value: RememberJsonOutput): void {
 }
 
 function writeSearchJson(value: SearchJsonOutput): void {
+  writeJsonLine(value);
+}
+
+function writeProjectStatusJson(value: ProjectStatusJsonOutput): void {
   writeJsonLine(value);
 }
 
@@ -407,11 +427,21 @@ function formatPresence(present: boolean): "present" | "missing" {
   return present ? "present" : "missing";
 }
 
-async function handleProjectStatus(): Promise<void> {
+async function handleProjectStatus(args: readonly string[]): Promise<void> {
+  const json = args.includes("--json");
   const projects = await loadProjectsPackage();
   const rootResult = projects.detectProjectRoot(getCwd());
 
   if (!rootResult.ok) {
+    if (json) {
+      writeProjectStatusJson({
+        ok: false,
+        reason: "project_root_not_found",
+      });
+      setExitCode(1);
+      return;
+    }
+
     console.error("Project Status");
     console.error(`Error: ${rootResult.error.code}`);
     console.error(`Path: ${rootResult.error.startPath}`);
@@ -420,6 +450,19 @@ async function handleProjectStatus(): Promise<void> {
   }
 
   const metadata = projects.readProjectMetadata(rootResult.rootPath);
+
+  if (json) {
+    writeProjectStatusJson({
+      ok: true,
+      root: metadata.projectRoot,
+      packageName: metadata.packageName ?? "",
+      version: metadata.packageVersion ?? "",
+      projectContextPresent: metadata.hasProjectContext,
+      agentsPresent: metadata.hasAgents,
+      workspacePresent: metadata.hasWorkspace,
+    });
+    return;
+  }
 
   console.log("Project Status");
   console.log("");
@@ -860,7 +903,7 @@ async function handleProject(args: readonly string[]): Promise<void> {
     return;
   }
 
-  await handleProjectStatus();
+  await handleProjectStatus(args.slice(1));
 }
 
 function handleUnknownCommand(command: string): void {

@@ -50,6 +50,7 @@ condition.
 - TASK-0080: Add project metadata reader examples.
 - TASK-0081: Implement project status command plan.
 - TASK-0082: Implement project status command core flow.
+- TASK-0083: Add project status JSON output.
 
 ## Do Not Load By Default
 
@@ -60,4 +61,4 @@ condition.
 
 ## Next Task
 
-TASK-0083 Add project status JSON output.
+TASK-0084 Implement project context command plan.

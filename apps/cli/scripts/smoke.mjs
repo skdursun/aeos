@@ -161,6 +161,11 @@ expectOutputIncludes(
   helpCommand,
   "search <query> [--json]",
 );
+expectOutputIncludes(
+  'help output did not include "project status --json"',
+  helpCommand,
+  "project status --json",
+);
 
 const status = runCli(["status"]);
 expectExitCode("status exited nonzero", status, 0);
@@ -178,6 +183,40 @@ expectOutputIncludes(
   'project status output did not include "Root"',
   projectStatus,
   "Root",
+);
+
+const projectStatusJson = runCli(["project", "status", "--json"]);
+expectExitCode("project status --json exited nonzero", projectStatusJson, 0);
+const parsedProjectStatusJson = parseJsonStdout(
+  "project status --json output was not valid JSON",
+  projectStatusJson,
+);
+if (
+  parsedProjectStatusJson.ok !== true ||
+  typeof parsedProjectStatusJson.root !== "string" ||
+  parsedProjectStatusJson.root.length === 0 ||
+  !existsSync(parsedProjectStatusJson.root) ||
+  typeof parsedProjectStatusJson.packageName !== "string"
+) {
+  fail(
+    "project status --json output did not match expected success",
+    projectStatusJson,
+  );
+}
+expectBooleanProperty(
+  "project status --json projectContextPresent was not boolean",
+  parsedProjectStatusJson,
+  "projectContextPresent",
+);
+expectBooleanProperty(
+  "project status --json agentsPresent was not boolean",
+  parsedProjectStatusJson,
+  "agentsPresent",
+);
+expectBooleanProperty(
+  "project status --json workspacePresent was not boolean",
+  parsedProjectStatusJson,
+  "workspacePresent",
 );
 
 const statusJson = runCli(["status", "--json"]);
