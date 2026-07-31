@@ -10,3 +10,4 @@ export * from "./task-validation.js";
 export * from "./memory-validation.js";
 export * from "./policy-decision.js";
 export * from "./audit-event.js";
+export * from "./verification-report.js";
