@@ -4,6 +4,7 @@ import type {
   MemorySearchQuery,
   MemorySearchResult,
 } from "@aeos/core";
+import { canIndexMemoryEntry } from "./validation.js";
 
 const TITLE_MATCH_SCORE = 3;
 const TAG_MATCH_SCORE = 2;
@@ -13,6 +14,10 @@ export class MemorySearchIndex {
   private readonly entries = new Map<MemoryEntryId, MemoryEntry>();
 
   public addMemoryEntry(entry: MemoryEntry): void {
+    if (!canIndexMemoryEntry(entry)) {
+      return;
+    }
+
     this.entries.set(entry.id, entry);
   }
 

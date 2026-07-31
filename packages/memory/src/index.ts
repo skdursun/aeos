@@ -6,6 +6,12 @@ export {
 } from "./markdown-entry.js";
 
 export {
+  canBuildMarkdownEntry,
+  canIndexMemoryEntry,
+  validateMemoryEntry,
+} from "./validation.js";
+
+export {
   MemorySearchIndex,
   addMemoryEntry,
   clearMemoryIndex,

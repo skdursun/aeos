@@ -3,6 +3,7 @@ import type {
   MemoryEntry,
   MemoryFrontmatter,
 } from "@aeos/core";
+import { validateMemoryEntry } from "./validation.js";
 
 type YamlScalar = string | number | boolean;
 type YamlValue = YamlScalar | readonly string[] | null | undefined;
@@ -13,6 +14,12 @@ interface YamlField {
 }
 
 export function buildMemoryMarkdownEntry(input: MemoryEntry): string {
+  const validation = validateMemoryEntry(input);
+
+  if (!validation.valid) {
+    throw new Error("Cannot build Markdown for an invalid memory entry.");
+  }
+
   const frontmatter = serializeMemoryFrontmatter(input.frontmatter);
   const body = serializeMemoryBodySections(input.sections);
 
