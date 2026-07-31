@@ -15,8 +15,12 @@ const cliPath = fileURLToPath(new URL("../dist/index.js", import.meta.url));
 const projectRoot = fileURLToPath(new URL("../../..", import.meta.url));
 
 function runCli(args) {
+  return runCliFrom(projectRoot, args);
+}
+
+function runCliFrom(cwd, args) {
   return spawnSync(process.execPath, [cliPath, ...args], {
-    cwd: projectRoot,
+    cwd,
     encoding: "utf8",
   });
 }
@@ -166,6 +170,11 @@ expectOutputIncludes(
   helpCommand,
   "project status --json",
 );
+expectOutputIncludes(
+  'help output did not include "project context"',
+  helpCommand,
+  "project context",
+);
 
 const status = runCli(["status"]);
 expectExitCode("status exited nonzero", status, 0);
@@ -218,6 +227,57 @@ expectBooleanProperty(
   parsedProjectStatusJson,
   "workspacePresent",
 );
+
+const projectContext = runCli(["project", "context"]);
+expectExitCode("project context exited nonzero", projectContext, 0);
+expectOutputIncludes(
+  'project context output did not include "Project Context"',
+  projectContext,
+  "Project Context",
+);
+expectOutputIncludes(
+  'project context output did not include "Root"',
+  projectContext,
+  "Root",
+);
+
+const missingContextProjectRoot = mkdtempSync(
+  join(tmpdir(), "aeos-cli-project-context-"),
+);
+
+try {
+  writeFileSync(
+    join(missingContextProjectRoot, "package.json"),
+    '{"name":"smoke-missing-context"}\n',
+  );
+
+  const missingProjectContext = runCliFrom(missingContextProjectRoot, [
+    "project",
+    "context",
+  ]);
+  expectExitCode(
+    "project context with missing PROJECT_CONTEXT.md exited nonzero",
+    missingProjectContext,
+    0,
+  );
+  expectOutputIncludes(
+    'missing project context output did not include "Project Context"',
+    missingProjectContext,
+    "Project Context",
+  );
+  expectOutputIncludes(
+    'missing project context output did not include "Context:"',
+    missingProjectContext,
+    "Context:",
+  );
+  expectOutputIncludes(
+    'missing project context output did not include "missing"',
+    missingProjectContext,
+    "missing",
+  );
+} finally {
+  rmSync(missingContextProjectRoot, { recursive: true, force: true });
+}
 
 const statusJson = runCli(["status", "--json"]);
 expectExitCode("status --json exited nonzero", statusJson, 0);

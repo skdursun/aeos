@@ -29,6 +29,7 @@ Commands:
   search <query> [--json]
   project status
   project status --json
+  project context
   task validate <path>
   task validate <path> --json
   version
@@ -137,11 +138,17 @@ type MemoryStorageTarget = {
 
 type ProjectMetadata = {
   readonly projectRoot: string;
+  readonly projectName: string | undefined;
   readonly packageName: string | undefined;
   readonly packageVersion: string | undefined;
   readonly hasProjectContext: boolean;
   readonly hasAgents: boolean;
   readonly hasWorkspace: boolean;
+  readonly context: {
+    readonly path: string;
+    readonly exists: boolean;
+    readonly projectName: string | undefined;
+  };
 };
 
 type ProjectRootDetectionResult =
@@ -483,6 +490,44 @@ async function handleProjectStatus(args: readonly string[]): Promise<void> {
   console.log("");
   console.log("Workspace:");
   console.log(formatPresence(metadata.hasWorkspace));
+}
+
+async function handleProjectContext(): Promise<void> {
+  const projects = await loadProjectsPackage();
+  const rootResult = projects.detectProjectRoot(getCwd());
+
+  if (!rootResult.ok) {
+    console.error("Project Context");
+    console.error(`Error: ${rootResult.error.code}`);
+    console.error(`Path: ${rootResult.error.startPath}`);
+    setExitCode(1);
+    return;
+  }
+
+  const metadata = projects.readProjectMetadata(rootResult.rootPath);
+  const projectName =
+    metadata.projectName ?? metadata.packageName ?? "unknown";
+
+  console.log("Project Context");
+  console.log("");
+  console.log("Root:");
+  console.log(metadata.projectRoot);
+  console.log("");
+  console.log("Project:");
+  console.log(projectName);
+  console.log("");
+  console.log("Context:");
+  console.log(formatPresence(metadata.hasProjectContext));
+  console.log("");
+  console.log("Agents:");
+  console.log(formatPresence(metadata.hasAgents));
+  console.log("");
+  console.log("Current Context:");
+  console.log(
+    metadata.hasProjectContext
+      ? `Project context for ${projectName}.`
+      : "missing",
+  );
 }
 
 function readFlagValue(args: readonly string[], flag: string): string | undefined {
@@ -896,14 +941,20 @@ function handleTask(args: readonly string[]): void {
 }
 
 async function handleProject(args: readonly string[]): Promise<void> {
-  if (args[0] !== "status") {
-    console.error("Error: unknown project command.");
-    console.error("Usage: aeos project status");
-    setExitCode(1);
+  if (args[0] === "status") {
+    await handleProjectStatus(args.slice(1));
     return;
   }
 
-  await handleProjectStatus(args.slice(1));
+  if (args[0] === "context") {
+    await handleProjectContext();
+    return;
+  }
+
+  console.error("Error: unknown project command.");
+  console.error("Usage: aeos project status");
+  console.error("Usage: aeos project context");
+  setExitCode(1);
 }
 
 function handleUnknownCommand(command: string): void {

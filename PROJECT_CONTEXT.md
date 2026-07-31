@@ -53,6 +53,7 @@ condition.
 - TASK-0082: Implement project status command core flow.
 - TASK-0083: Add project status JSON output.
 - TASK-0084: Define project context command plan.
+- TASK-0085: Implement project context command.
 
 ## Do Not Load By Default
 
@@ -63,4 +64,4 @@ condition.
 
 ## Next Task
 
-TASK-0085 Implement project context command.
+TASK-0086 Add project context JSON output.
