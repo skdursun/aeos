@@ -7,3 +7,4 @@ export type * from "./audit.js";
 export type * from "./verification.js";
 export * from "./result.js";
 export * from "./task-validation.js";
+export * from "./memory-validation.js";
