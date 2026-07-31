@@ -45,6 +45,7 @@ condition.
 - TASK-0076: Define Project MVP implementation plan.
 - TASK-0077: Implement project package root detector.
 - TASK-0078: Add project root detector typecheck examples.
+- TASK-0079: Implement project metadata reader.
 
 ## Do Not Load By Default
 
@@ -55,4 +56,4 @@ condition.
 
 ## Next Task
 
-TASK-0079 Implement project metadata reader.
+TASK-0080 Add project metadata reader examples.
