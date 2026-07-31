@@ -59,6 +59,7 @@ condition.
 - TASK-0087: Define project validate command plan.
 - TASK-0088: Implement project validate command.
 - TASK-0089: Add project validate JSON output.
+- TASK-0090: Perform Project MVP Review.
 
 ## Do Not Load By Default
 
@@ -69,4 +70,4 @@ condition.
 
 ## Next Task
 
-TASK-0090 Perform Project MVP Review.
+TASK-0091 Define Template MVP implementation plan.
