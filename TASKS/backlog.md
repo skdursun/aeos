@@ -65,3 +65,16 @@
 8. TASK-0074: Add remember JSON output placeholder. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
 9. TASK-0075: Add remember smoke verification. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
 10. TASK-0076: Review remember command MVP behavior. Docs. Effort: Medium. Verification: `git status --short`.
+
+## Search Command MVP Backlog
+
+1. TASK-0073: Implement aeos search command core flow. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+2. TASK-0074: Add search command usage errors. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+3. TASK-0075: Add memory file reader for search indexing. Code. Effort: High. Verification: `pnpm --filter @aeos/memory check`.
+4. TASK-0076: Add search type filter. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+5. TASK-0077: Add deterministic search result formatting. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+6. TASK-0078: Add search no-results behavior. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+7. TASK-0079: Add search command smoke checks. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+8. TASK-0080: Add search JSON output placeholder. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+9. TASK-0081: Review search command deterministic behavior. Docs. Effort: Medium. Verification: `git status --short`.
+10. TASK-0082: Update search command context handoff. Docs. Effort: Low. Verification: `git status --short`.
