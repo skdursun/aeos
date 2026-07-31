@@ -107,6 +107,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0056: Define Memory MVP implementation plan.
 - TASK-0057: Implement memory package Markdown entry builder.
 - TASK-0058: Add memory Markdown builder typecheck examples.
+- TASK-0059: Implement memory package in-memory search index.
 
 ## Do Not Load By Default
 
@@ -117,4 +118,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0059 Implement memory package in-memory search index.
+TASK-0060 Add memory search index typecheck examples.

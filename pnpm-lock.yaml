@@ -22,7 +22,11 @@ importers:
 
   packages/core: {}
 
-  packages/memory: {}
+  packages/memory:
+    dependencies:
+      '@aeos/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/models: {}
 
