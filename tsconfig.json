@@ -1,0 +1,15 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./apps/cli" },
+    { "path": "./packages/core" },
+    { "path": "./packages/agents" },
+    { "path": "./packages/models" },
+    { "path": "./packages/tools" },
+    { "path": "./packages/memory" },
+    { "path": "./packages/projects" },
+    { "path": "./packages/verifier" },
+    { "path": "./packages/policies" },
+    { "path": "./packages/templates" }
+  ]
+}

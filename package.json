@@ -10,5 +10,8 @@
     "check": "tsc -b --pretty false",
     "build": "tsc -b --pretty false",
     "clean": "find . -name dist -type d -prune -exec rm -rf {} +"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
   }
 }

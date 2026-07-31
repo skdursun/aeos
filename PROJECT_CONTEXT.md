@@ -61,6 +61,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0012: Define AEOS initial implementation plan.
 - TASK-0013: Decide AEOS runtime and package manager.
 - TASK-0014: Create AEOS TypeScript monorepo scaffold.
+- TASK-0015: Add TypeScript dependency and verify monorepo typecheck.
 
 ## Do Not Load By Default
 
@@ -71,4 +72,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0015 Add TypeScript dependency and verify monorepo typecheck.
+TASK-0016 Define core shared TypeScript types.
