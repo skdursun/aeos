@@ -68,6 +68,26 @@ if (!outputOf(context).includes("AEOS") && !outputOf(context).includes("Pro Perf
   fail('context output did not include "AEOS" or "Pro Performans"', context);
 }
 
+const compactContext = runCli(["context", "--compact"]);
+expectExitCode("context --compact exited nonzero", compactContext, 0);
+if (
+  !outputOf(compactContext).includes("Project") &&
+  !outputOf(compactContext).includes("Pro Performans")
+) {
+  fail(
+    'context --compact output did not include "Project" or "Pro Performans"',
+    compactContext,
+  );
+}
+expectOutputIncludes(
+  'context --compact output did not include "Next Task"',
+  compactContext,
+  "Next Task",
+);
+if (outputOf(compactContext).length >= outputOf(context).length) {
+  fail("context --compact output was not shorter than full context output", compactContext);
+}
+
 const unknown = runCli(["unknown-command"]);
 expectNonzero("unknown command exited zero", unknown);
 

@@ -26,6 +26,7 @@ Usage:
   aeos <command>
 Commands:
   context
+  context --compact
   status
   task validate <path>
   version
@@ -93,6 +94,61 @@ function printContext(): void {
   }
 
   process.stdout.write(fs.readFileSync(projectContextPath, "utf8"));
+}
+
+function getCompactContext(projectContext: string): string {
+  const lines = projectContext.split(/\r?\n/);
+  const output: string[] = [];
+  const sectionNames = new Set(["Goal", "Next Task"]);
+  let activeSection: string | undefined;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (
+      trimmed.startsWith("Project:") ||
+      trimmed.startsWith("Product:") ||
+      trimmed.startsWith("Current Phase:")
+    ) {
+      output.push(trimmed);
+      activeSection = undefined;
+      continue;
+    }
+
+    if (trimmed.startsWith("## ")) {
+      const sectionName = trimmed.slice(3).trim();
+      activeSection = sectionNames.has(sectionName) ? sectionName : undefined;
+
+      if (activeSection !== undefined) {
+        output.push(trimmed);
+      }
+
+      continue;
+    }
+
+    if (activeSection !== undefined && trimmed.length > 0) {
+      output.push(trimmed);
+    }
+  }
+
+  return output.slice(0, 40).join("\n");
+}
+
+function printCompactContext(): void {
+  const fs = process.getBuiltinModule("fs");
+  const path = process.getBuiltinModule("path");
+  const projectContextPath = path.join(process.cwd(), "PROJECT_CONTEXT.md");
+
+  if (!fs.existsSync(projectContextPath)) {
+    console.error("Error: PROJECT_CONTEXT.md not found in current directory.");
+    process.exitCode = 1;
+    return;
+  }
+
+  const compactContext = getCompactContext(
+    fs.readFileSync(projectContextPath, "utf8"),
+  );
+  process.stdout.write(`${compactContext}\n`);
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -167,7 +223,11 @@ function validateTaskFile(filePath: string | undefined): void {
 switch (command) {
   case "context":
     try {
-      printContext();
+      if (process.argv[3] === "--compact") {
+        printCompactContext();
+      } else {
+        printContext();
+      }
     } catch (error) {
       console.error("Error: failed to read PROJECT_CONTEXT.md.");
       if (error instanceof Error) {
