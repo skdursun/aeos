@@ -116,6 +116,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0064: Add memory writer typecheck examples.
 - TASK-0065: Perform memory package writer review.
 - TASK-0066: Define aeos remember command plan.
+- TASK-0067: Implement remember command core flow.
 
 ## Do Not Load By Default
 
@@ -126,4 +127,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0067 Implement remember command core flow.
+TASK-0068 Add remember command JSON output.

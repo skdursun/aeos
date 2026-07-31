@@ -188,6 +188,49 @@ if (typeof parsedContext.lineCount !== "number" || parsedContext.lineCount <= 0)
 const unknown = runCli(["unknown-command"]);
 expectNonzero("unknown command exited zero", unknown);
 
+const remember = runCli([
+  "remember",
+  "--type",
+  "decision",
+  "--title",
+  "Use pnpm workspace",
+  "--tag",
+  "architecture",
+]);
+expectExitCode("remember exited nonzero", remember, 0);
+expectOutputIncludes(
+  'remember output did not include "Memory: prepared"',
+  remember,
+  "Memory: prepared",
+);
+expectOutputIncludes(
+  'remember output did not include "Path: brain/decision/"',
+  remember,
+  "Path: brain/decision/",
+);
+
+const rememberMissingTitle = runCli(["remember", "--type", "decision"]);
+expectNonzero("remember without title exited zero", rememberMissingTitle);
+expectOutputIncludes(
+  'remember without title output did not include "Memory: fail"',
+  rememberMissingTitle,
+  "Memory: fail",
+);
+
+const rememberInvalidType = runCli([
+  "remember",
+  "--type",
+  "unknown",
+  "--title",
+  "Invalid type",
+]);
+expectNonzero("remember with invalid type exited zero", rememberInvalidType);
+expectOutputIncludes(
+  'remember invalid type output did not include "Memory: fail"',
+  rememberInvalidType,
+  "Memory: fail",
+);
+
 const validTaskPath = fileURLToPath(
   new URL("../fixtures/tasks/valid-task.json", import.meta.url),
 );
