@@ -22,15 +22,13 @@ condition.
 
 - Keep context loading small and intentional.
 - Capture implementation plans before code changes.
-- Implement AEOS memory CLI flows through small scoped tasks.
-- Keep search MVP deterministic before semantic search.
+- Define Project MVP before template, verification, and orchestration work.
+- Keep Project MVP commands local, deterministic, and side-effect free.
 
 ## Relevant Docs For Current Phase
 
 - `AGENTS.md`
-- `docs/MEMORY_MVP_IMPLEMENTATION_PLAN.md`
-- `docs/REMEMBER_COMMAND_IMPLEMENTATION_PLAN.md`
-- `docs/SEARCH_COMMAND_IMPLEMENTATION_PLAN.md`
+- `docs/PROJECT_MVP_IMPLEMENTATION_PLAN.md`
 - `TASKS/backlog.md`
 
 ## Recent Completed Tasks
@@ -44,6 +42,7 @@ condition.
 - TASK-0073: Implement aeos search command core flow.
 - TASK-0074: Add search command JSON output.
 - TASK-0075: Perform Memory MVP review.
+- TASK-0076: Define Project MVP implementation plan.
 
 ## Do Not Load By Default
 
@@ -54,4 +53,4 @@ condition.
 
 ## Next Task
 
-TASK-0076 Define Project MVP implementation plan.
+TASK-0077 Implement project package root detector.
