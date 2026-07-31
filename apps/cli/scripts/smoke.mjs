@@ -133,6 +133,18 @@ function rememberPathToAbsolute(memoryPath) {
   return absolutePath;
 }
 
+function expectProjectValidationCheckShape(message, check) {
+  if (
+    typeof check.name !== "string" ||
+    check.name.length === 0 ||
+    !["pass", "warn", "fail"].includes(check.status) ||
+    typeof check.message !== "string" ||
+    check.message.length === 0
+  ) {
+    fail(message);
+  }
+}
+
 const smokeRunId = String(Date.now());
 const createdMemoryPaths = new Set();
 
@@ -184,6 +196,11 @@ expectOutputIncludes(
   'help output did not include "project validate"',
   helpCommand,
   "project validate",
+);
+expectOutputIncludes(
+  'help output did not include "project validate --json"',
+  helpCommand,
+  "project validate --json",
 );
 
 const status = runCli(["status"]);
@@ -362,6 +379,52 @@ expectOutputIncludes(
   "PASS project_root",
 );
 
+const projectValidateJson = runCli(["project", "validate", "--json"]);
+expectExitCode("project validate --json exited nonzero", projectValidateJson, 0);
+const parsedProjectValidateJson = parseJsonStdout(
+  "project validate --json output was not valid JSON",
+  projectValidateJson,
+);
+if (
+  typeof parsedProjectValidateJson.ok !== "boolean" ||
+  typeof parsedProjectValidateJson.valid !== "boolean" ||
+  parsedProjectValidateJson.ok !== true ||
+  parsedProjectValidateJson.valid !== true ||
+  !Array.isArray(parsedProjectValidateJson.checks)
+) {
+  fail(
+    "project validate --json output did not match expected success",
+    projectValidateJson,
+  );
+}
+const requiredProjectValidationChecks = [
+  "project_root",
+  "package_metadata",
+  "project_context",
+  "agents_file",
+  "workspace_marker",
+];
+for (const checkName of requiredProjectValidationChecks) {
+  const check = parsedProjectValidateJson.checks.find(
+    (value) => value.name === checkName,
+  );
+
+  if (check === undefined) {
+    fail(`project validate --json missing check: ${checkName}`, projectValidateJson);
+  }
+
+  expectProjectValidationCheckShape(
+    `project validate --json check was malformed: ${checkName}`,
+    check,
+  );
+}
+for (const check of parsedProjectValidateJson.checks) {
+  expectProjectValidationCheckShape(
+    `project validate --json check was malformed: ${check.name}`,
+    check,
+  );
+}
+
 const missingOptionalMetadataRoot = mkdtempSync(
   join(tmpdir(), "aeos-cli-project-validate-"),
 );
@@ -393,8 +456,76 @@ try {
     missingOptionalMetadata,
     "WARN package_metadata",
   );
+
+  const missingOptionalMetadataJson = runCliFrom(missingOptionalMetadataRoot, [
+    "project",
+    "validate",
+    "--json",
+  ]);
+  expectExitCode(
+    "project validate --json with missing optional metadata exited nonzero",
+    missingOptionalMetadataJson,
+    0,
+  );
+  const parsedMissingOptionalMetadataJson = parseJsonStdout(
+    "project validate --json with missing optional metadata output was not valid JSON",
+    missingOptionalMetadataJson,
+  );
+  if (
+    parsedMissingOptionalMetadataJson.ok !== true ||
+    parsedMissingOptionalMetadataJson.valid !== true ||
+    !Array.isArray(parsedMissingOptionalMetadataJson.checks)
+  ) {
+    fail(
+      "project validate --json with missing optional metadata output did not match expected warning success",
+      missingOptionalMetadataJson,
+    );
+  }
+  const packageMetadataCheck = parsedMissingOptionalMetadataJson.checks.find(
+    (check) => check.name === "package_metadata",
+  );
+  if (
+    packageMetadataCheck === undefined ||
+    packageMetadataCheck.status !== "warn"
+  ) {
+    fail(
+      "project validate --json with missing optional metadata did not include package metadata warning",
+      missingOptionalMetadataJson,
+    );
+  }
 } finally {
   rmSync(missingOptionalMetadataRoot, { recursive: true, force: true });
+}
+
+const missingProjectRoot = mkdtempSync(
+  join(tmpdir(), "aeos-cli-project-validate-missing-root-"),
+);
+
+try {
+  const missingProjectRootJson = runCliFrom(missingProjectRoot, [
+    "project",
+    "validate",
+    "--json",
+  ]);
+  expectNonzero("project validate --json missing root exited zero", missingProjectRootJson);
+  const parsedMissingProjectRootJson = parseJsonStdout(
+    "project validate --json missing root output was not valid JSON",
+    missingProjectRootJson,
+  );
+  if (
+    parsedMissingProjectRootJson.ok !== false ||
+    parsedMissingProjectRootJson.valid !== false ||
+    parsedMissingProjectRootJson.reason !== "project_root_not_found" ||
+    !Array.isArray(parsedMissingProjectRootJson.checks) ||
+    parsedMissingProjectRootJson.checks.length !== 0
+  ) {
+    fail(
+      "project validate --json missing root output did not match expected failure",
+      missingProjectRootJson,
+    );
+  }
+} finally {
+  rmSync(missingProjectRoot, { recursive: true, force: true });
 }
 
 const statusJson = runCli(["status", "--json"]);

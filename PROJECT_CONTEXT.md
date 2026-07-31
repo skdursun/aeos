@@ -58,6 +58,7 @@ condition.
 - TASK-0086: Add project context JSON output.
 - TASK-0087: Define project validate command plan.
 - TASK-0088: Implement project validate command.
+- TASK-0089: Add project validate JSON output.
 
 ## Do Not Load By Default
 
@@ -68,4 +69,4 @@ condition.
 
 ## Next Task
 
-TASK-0089 Add project validate JSON output.
+TASK-0090 Perform Project MVP Review.

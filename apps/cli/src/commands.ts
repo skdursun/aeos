@@ -32,6 +32,7 @@ Commands:
   project context
   project context --json
   project validate
+  project validate --json
   task validate <path>
   task validate <path> --json
   version
@@ -142,6 +143,7 @@ type ProjectValidationStatus = "pass" | "fail" | "warn";
 type ProjectValidationCheck = {
   readonly name: string;
   readonly status: ProjectValidationStatus;
+  readonly message: string;
 };
 
 type ProjectValidationIssue = {
@@ -156,6 +158,27 @@ type ProjectValidationResult = {
   readonly checks: readonly ProjectValidationCheck[];
   readonly issues: readonly ProjectValidationIssue[];
 };
+
+type ProjectValidationJsonOutput =
+  | {
+      readonly ok: true;
+      readonly valid: boolean;
+      readonly checks: readonly ProjectValidationCheck[];
+    }
+  | {
+      readonly ok: false;
+      readonly valid: false;
+      readonly reason: "project_root_not_found";
+      readonly checks: readonly [];
+    };
+
+const projectValidationJsonCheckNames = new Set([
+  "project_root",
+  "package_metadata",
+  "project_context",
+  "agents_file",
+  "workspace_marker",
+]);
 
 type MemoryWriteRequestSuccess = {
   readonly entry: MemoryEntry;
@@ -324,6 +347,16 @@ function writeProjectStatusJson(value: ProjectStatusJsonOutput): void {
 
 function writeProjectContextJson(value: ProjectContextJsonOutput): void {
   writeJsonLine(value);
+}
+
+function writeProjectValidationJson(value: ProjectValidationJsonOutput): void {
+  writeJsonLine(value);
+}
+
+function getProjectValidationJsonChecks(
+  checks: readonly ProjectValidationCheck[],
+): readonly ProjectValidationCheck[] {
+  return checks.filter((check) => projectValidationJsonCheckNames.has(check.name));
 }
 
 function validateTaskFile(filePath: string | undefined, json: boolean): void {
@@ -502,6 +535,7 @@ function buildProjectValidationResult(
     checks.push({
       name: "project_root",
       status: "fail",
+      message: "Project root could not be detected.",
     });
     issues.push({
       code: rootResult.error.code,
@@ -520,12 +554,14 @@ function buildProjectValidationResult(
   checks.push({
     name: "project_root",
     status: "pass",
+    message: "Project root detected.",
   });
 
   if (metadata === undefined) {
     checks.push({
       name: "package_metadata",
       status: "fail",
+      message: "Project metadata could not be read.",
     });
     issues.push({
       code: "package_metadata_unreadable",
@@ -545,6 +581,7 @@ function buildProjectValidationResult(
     checks.push({
       name: "package_metadata",
       status: "warn",
+      message: "package.json is missing.",
     });
     issues.push({
       code: "package_metadata_missing",
@@ -557,6 +594,7 @@ function buildProjectValidationResult(
     checks.push({
       name: "package_metadata",
       status: "fail",
+      message: "package.json exists but package name could not be read.",
     });
     issues.push({
       code: "package_metadata_unreadable",
@@ -567,12 +605,16 @@ function buildProjectValidationResult(
     checks.push({
       name: "package_metadata",
       status: "pass",
+      message: "package.json metadata is readable.",
     });
   }
 
   checks.push({
     name: "project_context",
     status: metadata.hasProjectContext ? "pass" : "fail",
+    message: metadata.hasProjectContext
+      ? "PROJECT_CONTEXT.md is present."
+      : "PROJECT_CONTEXT.md is missing.",
   });
   if (!metadata.hasProjectContext) {
     issues.push({
@@ -583,8 +625,9 @@ function buildProjectValidationResult(
   }
 
   checks.push({
-    name: "agents",
+    name: "agents_file",
     status: metadata.hasAgents ? "pass" : "fail",
+    message: metadata.hasAgents ? "AGENTS.md is present." : "AGENTS.md is missing.",
   });
   if (!metadata.hasAgents) {
     issues.push({
@@ -595,8 +638,11 @@ function buildProjectValidationResult(
   }
 
   checks.push({
-    name: "workspace",
+    name: "workspace_marker",
     status: metadata.hasWorkspace ? "pass" : "fail",
+    message: metadata.hasWorkspace
+      ? "pnpm-workspace.yaml is present."
+      : "pnpm-workspace.yaml is missing.",
   });
   if (!metadata.hasWorkspace) {
     issues.push({
@@ -613,6 +659,9 @@ function buildProjectValidationResult(
   checks.push({
     name: "consistency",
     status: consistent ? "pass" : "fail",
+    message: consistent
+      ? "Project metadata is internally consistent."
+      : "Detected root and metadata presence flags are inconsistent.",
   });
   if (!consistent) {
     issues.push({
@@ -788,19 +837,59 @@ async function handleProjectContext(args: readonly string[]): Promise<void> {
 }
 
 async function handleProjectValidate(args: readonly string[]): Promise<void> {
-  if (args.length > 0) {
+  const json = args.includes("--json");
+  const unknownArgs = args.filter((arg) => arg !== "--json");
+
+  if (unknownArgs.length > 0) {
+    if (json) {
+      writeProjectValidationJson({
+        ok: false,
+        valid: false,
+        reason: "project_root_not_found",
+        checks: [],
+      });
+      setExitCode(1);
+      return;
+    }
+
     console.error("Error: unknown project validate option.");
-    console.error("Usage: aeos project validate");
+    console.error("Usage: aeos project validate [--json]");
     setExitCode(1);
     return;
   }
 
   const projects = await loadProjectsPackage();
   const rootResult = projects.detectProjectRoot(getCwd());
+
+  if (!rootResult.ok && json) {
+    writeProjectValidationJson({
+      ok: false,
+      valid: false,
+      reason: "project_root_not_found",
+      checks: [],
+    });
+    setExitCode(1);
+    return;
+  }
+
   const metadata = rootResult.ok
     ? projects.readProjectMetadata(rootResult.rootPath)
     : undefined;
   const result = buildProjectValidationResult(rootResult, metadata);
+
+  if (json) {
+    writeProjectValidationJson({
+      ok: true,
+      valid: result.status !== "fail",
+      checks: getProjectValidationJsonChecks(result.checks),
+    });
+
+    if (result.status === "fail") {
+      setExitCode(1);
+    }
+
+    return;
+  }
 
   printProjectValidationResult(result);
 
