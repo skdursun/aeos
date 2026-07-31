@@ -156,6 +156,11 @@ const helpCommand = runCli(["help"]);
 expectExitCode("help exited nonzero", helpCommand, 0);
 expectOutputIncludes('help output did not include "AEOS CLI"', helpCommand, "AEOS CLI");
 expectOutputIncludes('help output did not include "search <query>"', helpCommand, "search <query>");
+expectOutputIncludes(
+  'help output did not include "search <query> [--json]"',
+  helpCommand,
+  "search <query> [--json]",
+);
 
 const status = runCli(["status"]);
 expectExitCode("status exited nonzero", status, 0);
@@ -268,6 +273,62 @@ if (
 ) {
   fail("search no-match output was not stable", searchNoMatches);
 }
+
+const searchJson = runCli(["search", "decision", "--json"]);
+expectExitCode("search --json exited nonzero", searchJson, 0);
+const parsedSearchJson = parseJsonStdout(
+  "search --json output was not valid JSON",
+  searchJson,
+);
+if (
+  parsedSearchJson.ok !== true ||
+  parsedSearchJson.query !== "decision" ||
+  typeof parsedSearchJson.count !== "number" ||
+  !Array.isArray(parsedSearchJson.results)
+) {
+  fail("search --json output did not match expected success", searchJson);
+}
+
+const searchMissingQueryJson = runCli(["search", "--json"]);
+expectNonzero("search missing query --json exited zero", searchMissingQueryJson);
+const parsedSearchMissingQueryJson = parseJsonStdout(
+  "search missing query --json output was not valid JSON",
+  searchMissingQueryJson,
+);
+if (
+  parsedSearchMissingQueryJson.ok !== false ||
+  parsedSearchMissingQueryJson.reason !== "missing_query"
+) {
+  fail(
+    "search missing query --json output did not match expected failure",
+    searchMissingQueryJson,
+  );
+}
+
+const searchNoMatchesJson = runCli([
+  "search",
+  `smoke-json-no-search-match-${smokeRunId}`,
+  "--json",
+]);
+expectExitCode("search no-match --json command exited nonzero", searchNoMatchesJson, 0);
+const parsedSearchNoMatchesJson = parseJsonStdout(
+  "search no-match --json output was not valid JSON",
+  searchNoMatchesJson,
+);
+if (
+  parsedSearchNoMatchesJson.ok !== true ||
+  parsedSearchNoMatchesJson.query !== `smoke-json-no-search-match-${smokeRunId}` ||
+  parsedSearchNoMatchesJson.count !== 0
+) {
+  fail(
+    "search no-match --json output did not match expected success",
+    searchNoMatchesJson,
+  );
+}
+expectEmptyArray(
+  "search no-match --json results was not empty",
+  parsedSearchNoMatchesJson.results,
+);
 
 const searchNoMatchesWithFilters = runCli([
   "search",

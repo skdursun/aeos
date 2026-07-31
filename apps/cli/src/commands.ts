@@ -26,6 +26,7 @@ Commands:
   remember --type <type> --title <title>
   remember --type <type> --title <title> --json
   search <query>
+  search <query> [--json]
   task validate <path>
   task validate <path> --json
   version
@@ -80,6 +81,24 @@ type RememberJsonOutput =
       readonly reason: RememberJsonFailureReason;
       readonly persisted: false;
       readonly issues: readonly MemoryValidationIssue[];
+    };
+
+type SearchJsonOutput =
+  | {
+      readonly ok: true;
+      readonly query: string;
+      readonly count: number;
+      readonly results: readonly {
+        readonly id: string;
+        readonly title: string;
+        readonly type: MemoryType;
+        readonly tags: readonly string[];
+        readonly score: number;
+      }[];
+    }
+  | {
+      readonly ok: false;
+      readonly reason: "missing_query";
     };
 
 type MemoryWriteRequestSuccess = {
@@ -182,6 +201,10 @@ function writeTaskValidationJson(
 }
 
 function writeRememberJson(value: RememberJsonOutput): void {
+  writeJsonLine(value);
+}
+
+function writeSearchJson(value: SearchJsonOutput): void {
   writeJsonLine(value);
 }
 
@@ -635,6 +658,7 @@ async function handleRemember(args: readonly string[]): Promise<void> {
 }
 
 async function handleSearch(args: readonly string[]): Promise<void> {
+  const json = args.includes("--json");
   const queryInput = readSearchQuery(args);
   const typeInput = readFlagValue(args, "--type");
   const tags = readRepeatedFlagValues(args, "--tag")
@@ -642,6 +666,15 @@ async function handleSearch(args: readonly string[]): Promise<void> {
     .filter((tag) => tag.length > 0);
 
   if (queryInput === undefined || queryInput.trim().length === 0) {
+    if (json) {
+      writeSearchJson({
+        ok: false,
+        reason: "missing_query",
+      });
+      setExitCode(1);
+      return;
+    }
+
     printSearchFailure("missing query");
     console.log('Usage: aeos search "query"');
     setExitCode(1);
@@ -668,6 +701,22 @@ async function handleSearch(args: readonly string[]): Promise<void> {
     query: queryInput.trim(),
     filter,
   });
+
+  if (json) {
+    writeSearchJson({
+      ok: true,
+      query: queryInput.trim(),
+      count: results.length,
+      results: results.map((result) => ({
+        id: result.entry.id,
+        title: result.entry.frontmatter.title,
+        type: result.entry.frontmatter.type,
+        tags: result.entry.frontmatter.tags,
+        score: result.score,
+      })),
+    });
+    return;
+  }
 
   console.log("Search Results");
   console.log(`Query: ${queryInput.trim()}`);
