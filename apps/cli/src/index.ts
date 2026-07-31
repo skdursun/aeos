@@ -4,6 +4,9 @@ declare const process: {
   argv: string[];
   cwd(): string;
   exitCode?: number;
+  stdout: {
+    write(value: string): void;
+  };
   getBuiltinModule(id: "fs"): {
     existsSync(path: string): boolean;
     readFileSync(path: string, encoding: "utf8"): string;
@@ -19,6 +22,7 @@ const helpText = `AEOS CLI
 Usage:
   aeos <command>
 Commands:
+  context
   status
   version
   help`;
@@ -73,7 +77,33 @@ Agents File: ${formatPresence(fs.existsSync(agentsPath))}
 Git Repository: ${formatYesNo(fs.existsSync(gitPath))}`);
 }
 
+function printContext(): void {
+  const fs = process.getBuiltinModule("fs");
+  const path = process.getBuiltinModule("path");
+  const projectContextPath = path.join(process.cwd(), "PROJECT_CONTEXT.md");
+
+  if (!fs.existsSync(projectContextPath)) {
+    console.error("Error: PROJECT_CONTEXT.md not found in current directory.");
+    process.exitCode = 1;
+    return;
+  }
+
+  process.stdout.write(fs.readFileSync(projectContextPath, "utf8"));
+}
+
 switch (command) {
+  case "context":
+    try {
+      printContext();
+    } catch (error) {
+      console.error("Error: failed to read PROJECT_CONTEXT.md.");
+      if (error instanceof Error) {
+        console.error(error.message);
+      }
+      process.exitCode = 1;
+    }
+    break;
+
   case "status":
     try {
       printStatus();

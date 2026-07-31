@@ -2,9 +2,11 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const cliPath = fileURLToPath(new URL("../dist/index.js", import.meta.url));
+const projectRoot = fileURLToPath(new URL("../../..", import.meta.url));
 
 function runCli(args) {
   return spawnSync(process.execPath, [cliPath, ...args], {
+    cwd: projectRoot,
     encoding: "utf8",
   });
 }
@@ -46,6 +48,17 @@ if (!status.stdout.includes("AEOS Status")) {
 }
 if (!status.stdout.includes("Project Root")) {
   fail('status output did not include "Project Root"', status);
+}
+
+const context = runCli(["context"]);
+if (context.status !== 0) {
+  fail("context exited nonzero", context);
+}
+if (!context.stdout.includes("Project:")) {
+  fail('context output did not include "Project:"', context);
+}
+if (!context.stdout.includes("AEOS") && !context.stdout.includes("Pro Performans")) {
+  fail('context output did not include "AEOS" or "Pro Performans"', context);
 }
 
 const unknown = runCli(["unknown-command"]);
