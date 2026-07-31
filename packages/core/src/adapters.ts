@@ -2,7 +2,6 @@ import type {
   AeosError,
   AeosId,
   AgentRole,
-  AuditEventType,
   Capability,
   FileChangeSummary,
   ISODateTime,
@@ -15,6 +14,7 @@ import type {
   VerificationStatus,
   VerificationSummary,
 } from "./types.js";
+import type { AuditActor, AuditEvent } from "./audit.js";
 
 export type AdapterKind =
   | "model"
@@ -75,64 +75,6 @@ export interface AdapterResult<T> {
   readonly warnings?: readonly string[];
   readonly error?: AeosError;
   readonly audit?: AuditEvent;
-}
-
-export interface AuditActor {
-  readonly id: string;
-  readonly type: "human" | "agent" | "model" | "tool" | "system";
-  readonly adapterId?: AeosId;
-}
-
-export interface AuditTarget {
-  readonly type:
-    | "task"
-    | "file"
-    | "tool"
-    | "policy"
-    | "verification"
-    | "memory"
-    | "model"
-    | "template"
-    | "project"
-    | "system";
-  readonly id?: string;
-  readonly path?: string;
-  readonly scope?: readonly string[];
-}
-
-export interface AuditResult {
-  readonly status:
-    | "ok"
-    | "partial"
-    | "blocked"
-    | "denied"
-    | "failed"
-    | "not_run";
-  readonly decision?: PolicyDecisionStatus;
-  readonly exitCode?: number;
-  readonly errorCode?: string;
-  readonly retryable?: boolean;
-}
-
-export interface AuditEvent {
-  readonly id: AeosId;
-  readonly timestamp: ISODateTime;
-  readonly eventType: AuditEventType;
-  readonly taskId: AeosId;
-  readonly correlationId: AeosId;
-  readonly parentEventId?: AeosId;
-  readonly actor: AuditActor;
-  readonly action: string;
-  readonly target: AuditTarget;
-  readonly result: AuditResult;
-  readonly adapterId?: AeosId;
-  readonly riskClass?: RiskClass;
-  readonly permissionLevel?: PermissionLevel;
-  readonly approvalState?: ApprovalState;
-  readonly policyDecisionId?: AeosId;
-  readonly durationMs?: number;
-  readonly metadata?: JsonObject;
-  readonly redactionsApplied: boolean;
 }
 
 export interface AuditContext {
@@ -296,7 +238,7 @@ export interface McpToolAdapter extends BaseAdapter<"mcp_tool"> {
   ): Promise<AdapterResult<ToolResult>>;
 }
 
-export interface MemoryQuery {
+export interface AdapterMemoryQuery {
   readonly scope: readonly string[];
   readonly query?: string;
   readonly tags?: readonly string[];
@@ -305,7 +247,7 @@ export interface MemoryQuery {
   readonly metadata?: JsonObject;
 }
 
-export interface MemoryEntry {
+export interface AdapterMemoryEntry {
   readonly id: AeosId;
   readonly type: string;
   readonly scope: readonly string[];
@@ -318,13 +260,13 @@ export interface MemoryEntry {
   readonly metadata?: JsonObject;
 }
 
-export interface MemoryWriteRequest {
-  readonly entry: MemoryEntryDraft;
+export interface AdapterMemoryWriteRequest {
+  readonly entry: AdapterMemoryEntryDraft;
   readonly mode: "create" | "update" | "upsert";
   readonly metadata?: JsonObject;
 }
 
-export interface MemoryEntryDraft {
+export interface AdapterMemoryEntryDraft {
   readonly type: string;
   readonly scope: readonly string[];
   readonly content: JsonObject;
@@ -334,7 +276,7 @@ export interface MemoryEntryDraft {
   readonly metadata?: JsonObject;
 }
 
-export interface MemoryWriteResult {
+export interface AdapterMemoryWriteResult {
   readonly entryId?: AeosId;
   readonly status: "written" | "unchanged" | "rejected" | "conflict";
   readonly reason?: string;
@@ -343,13 +285,13 @@ export interface MemoryWriteResult {
 
 export interface MemoryAdapter extends BaseAdapter<"memory"> {
   query(
-    request: MemoryQuery,
+    request: AdapterMemoryQuery,
     context: AdapterContext,
-  ): Promise<AdapterResult<readonly MemoryEntry[]>>;
+  ): Promise<AdapterResult<readonly AdapterMemoryEntry[]>>;
   write(
-    request: MemoryWriteRequest,
+    request: AdapterMemoryWriteRequest,
     context: AdapterContext,
-  ): Promise<AdapterResult<MemoryWriteResult>>;
+  ): Promise<AdapterResult<AdapterMemoryWriteResult>>;
 }
 
 export interface ProjectDescribeRequest {
@@ -413,15 +355,15 @@ export interface TemplateAdapter extends BaseAdapter<"template"> {
   ): Promise<AdapterResult<TemplateRenderResult>>;
 }
 
-export interface VerificationRequest {
+export interface AdapterVerificationRequest {
   readonly taskId: AeosId;
   readonly scope: readonly string[];
   readonly changedFiles: readonly FileChangeSummary[];
-  readonly checks: readonly VerificationCheckRequest[];
+  readonly checks: readonly AdapterVerificationCheckRequest[];
   readonly metadata?: JsonObject;
 }
 
-export interface VerificationCheckRequest {
+export interface AdapterVerificationCheckRequest {
   readonly id: AeosId;
   readonly name: string;
   readonly level:
@@ -439,7 +381,7 @@ export interface VerificationCheckRequest {
   readonly expectedEvidence: readonly string[];
 }
 
-export interface VerificationResult {
+export interface AdapterVerificationResult {
   readonly taskId: AeosId;
   readonly status: VerificationStatus;
   readonly checkedScope: readonly string[];
@@ -454,12 +396,12 @@ export interface VerificationResult {
 
 export interface VerifierAdapter extends BaseAdapter<"verifier"> {
   verify(
-    request: VerificationRequest,
+    request: AdapterVerificationRequest,
     context: AdapterContext,
-  ): Promise<AdapterResult<VerificationResult>>;
+  ): Promise<AdapterResult<AdapterVerificationResult>>;
 }
 
-export interface PolicyRequest {
+export interface AdapterPolicyRequest {
   readonly actor: AuditActor;
   readonly action: string;
   readonly scope: readonly string[];
@@ -472,7 +414,7 @@ export interface PolicyRequest {
   readonly metadata?: JsonObject;
 }
 
-export interface PolicyDecision {
+export interface AdapterPolicyDecision {
   readonly id: AeosId;
   readonly status: PolicyDecisionStatus;
   readonly reason: string;
@@ -485,9 +427,9 @@ export interface PolicyDecision {
 
 export interface PolicyAdapter extends BaseAdapter<"policy"> {
   evaluate(
-    request: PolicyRequest,
+    request: AdapterPolicyRequest,
     context: AdapterContext,
-  ): Promise<AdapterResult<PolicyDecision>>;
+  ): Promise<AdapterResult<AdapterPolicyDecision>>;
 }
 
 export interface AuditAppendResult {
