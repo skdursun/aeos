@@ -175,6 +175,11 @@ expectOutputIncludes(
   helpCommand,
   "project context",
 );
+expectOutputIncludes(
+  'help output did not include "project context --json"',
+  helpCommand,
+  "project context --json",
+);
 
 const status = runCli(["status"]);
 expectExitCode("status exited nonzero", status, 0);
@@ -241,6 +246,35 @@ expectOutputIncludes(
   "Root",
 );
 
+const projectContextJson = runCli(["project", "context", "--json"]);
+expectExitCode("project context --json exited nonzero", projectContextJson, 0);
+const parsedProjectContextJson = parseJsonStdout(
+  "project context --json output was not valid JSON",
+  projectContextJson,
+);
+if (
+  parsedProjectContextJson.ok !== true ||
+  typeof parsedProjectContextJson.root !== "string" ||
+  parsedProjectContextJson.root.length === 0 ||
+  !existsSync(parsedProjectContextJson.root) ||
+  typeof parsedProjectContextJson.context !== "string"
+) {
+  fail(
+    "project context --json output did not match expected success",
+    projectContextJson,
+  );
+}
+expectBooleanProperty(
+  "project context --json contextPresent was not boolean",
+  parsedProjectContextJson,
+  "contextPresent",
+);
+expectBooleanProperty(
+  "project context --json agentsPresent was not boolean",
+  parsedProjectContextJson,
+  "agentsPresent",
+);
+
 const missingContextProjectRoot = mkdtempSync(
   join(tmpdir(), "aeos-cli-project-context-"),
 );
@@ -274,6 +308,37 @@ try {
     'missing project context output did not include "missing"',
     missingProjectContext,
     "missing",
+  );
+
+  const missingProjectContextJson = runCliFrom(missingContextProjectRoot, [
+    "project",
+    "context",
+    "--json",
+  ]);
+  expectExitCode(
+    "project context --json with missing PROJECT_CONTEXT.md exited nonzero",
+    missingProjectContextJson,
+    0,
+  );
+  const parsedMissingProjectContextJson = parseJsonStdout(
+    "project context --json with missing PROJECT_CONTEXT.md output was not valid JSON",
+    missingProjectContextJson,
+  );
+  if (
+    parsedMissingProjectContextJson.ok !== true ||
+    parsedMissingProjectContextJson.contextPresent !== false ||
+    typeof parsedMissingProjectContextJson.context !== "string" ||
+    parsedMissingProjectContextJson.context !== ""
+  ) {
+    fail(
+      "project context --json with missing PROJECT_CONTEXT.md output did not match expected success",
+      missingProjectContextJson,
+    );
+  }
+  expectBooleanProperty(
+    "project context --json with missing PROJECT_CONTEXT.md agentsPresent was not boolean",
+    parsedMissingProjectContextJson,
+    "agentsPresent",
   );
 } finally {
   rmSync(missingContextProjectRoot, { recursive: true, force: true });

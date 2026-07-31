@@ -30,6 +30,7 @@ Commands:
   project status
   project status --json
   project context
+  project context --json
   task validate <path>
   task validate <path> --json
   version
@@ -115,6 +116,20 @@ type ProjectStatusJsonOutput =
       readonly projectContextPresent: boolean;
       readonly agentsPresent: boolean;
       readonly workspacePresent: boolean;
+    }
+  | {
+      readonly ok: false;
+      readonly reason: "project_root_not_found";
+    };
+
+type ProjectContextJsonOutput =
+  | {
+      readonly ok: true;
+      readonly root: string;
+      readonly project: string;
+      readonly contextPresent: boolean;
+      readonly agentsPresent: boolean;
+      readonly context: string;
     }
   | {
       readonly ok: false;
@@ -270,6 +285,10 @@ function writeSearchJson(value: SearchJsonOutput): void {
 }
 
 function writeProjectStatusJson(value: ProjectStatusJsonOutput): void {
+  writeJsonLine(value);
+}
+
+function writeProjectContextJson(value: ProjectContextJsonOutput): void {
   writeJsonLine(value);
 }
 
@@ -492,11 +511,21 @@ async function handleProjectStatus(args: readonly string[]): Promise<void> {
   console.log(formatPresence(metadata.hasWorkspace));
 }
 
-async function handleProjectContext(): Promise<void> {
+async function handleProjectContext(args: readonly string[]): Promise<void> {
+  const json = args.includes("--json");
   const projects = await loadProjectsPackage();
   const rootResult = projects.detectProjectRoot(getCwd());
 
   if (!rootResult.ok) {
+    if (json) {
+      writeProjectContextJson({
+        ok: false,
+        reason: "project_root_not_found",
+      });
+      setExitCode(1);
+      return;
+    }
+
     console.error("Project Context");
     console.error(`Error: ${rootResult.error.code}`);
     console.error(`Path: ${rootResult.error.startPath}`);
@@ -507,6 +536,23 @@ async function handleProjectContext(): Promise<void> {
   const metadata = projects.readProjectMetadata(rootResult.rootPath);
   const projectName =
     metadata.projectName ?? metadata.packageName ?? "unknown";
+
+  if (json) {
+    const fs = getFs();
+    const context = metadata.hasProjectContext
+      ? fs.readFileSync(metadata.context.path, "utf8")
+      : "";
+
+    writeProjectContextJson({
+      ok: true,
+      root: metadata.projectRoot,
+      project: projectName,
+      contextPresent: metadata.hasProjectContext,
+      agentsPresent: metadata.hasAgents,
+      context,
+    });
+    return;
+  }
 
   console.log("Project Context");
   console.log("");
@@ -947,7 +993,7 @@ async function handleProject(args: readonly string[]): Promise<void> {
   }
 
   if (args[0] === "context") {
-    await handleProjectContext();
+    await handleProjectContext(args.slice(1));
     return;
   }
 
