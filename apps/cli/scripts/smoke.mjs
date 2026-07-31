@@ -134,6 +134,39 @@ if (outputOf(compactContext).length >= outputOf(context).length) {
   fail("context --compact output was not shorter than full context output", compactContext);
 }
 
+const contextJson = runCli(["context", "--json"]);
+expectExitCode("context --json exited nonzero", contextJson, 0);
+
+let parsedContext;
+
+try {
+  parsedContext = JSON.parse(contextJson.stdout);
+} catch {
+  fail("context --json output was not valid JSON", contextJson);
+}
+
+if (parsedContext.projectContextPresent !== true) {
+  fail("context --json projectContextPresent was not true", contextJson);
+}
+
+if (
+  typeof parsedContext.content !== "string" ||
+  !parsedContext.content.includes("Project")
+) {
+  fail('context --json content did not include "Project"', contextJson);
+}
+
+if (
+  typeof parsedContext.compact !== "string" ||
+  !parsedContext.compact.includes("Next Task")
+) {
+  fail('context --json compact did not include "Next Task"', contextJson);
+}
+
+if (typeof parsedContext.lineCount !== "number" || parsedContext.lineCount <= 0) {
+  fail("context --json lineCount was not a positive number", contextJson);
+}
+
 const unknown = runCli(["unknown-command"]);
 expectNonzero("unknown command exited zero", unknown);
 

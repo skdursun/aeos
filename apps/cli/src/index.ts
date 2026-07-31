@@ -27,6 +27,7 @@ Usage:
 Commands:
   context
   context --compact
+  context --json
   status
   status --json
   task validate <path>
@@ -178,6 +179,43 @@ function printCompactContext(): void {
   process.stdout.write(`${compactContext}\n`);
 }
 
+function countLines(content: string): number {
+  return content.length === 0 ? 0 : content.split(/\r\n|\n|\r/).length;
+}
+
+function printContextJson(): void {
+  const fs = process.getBuiltinModule("fs");
+  const path = process.getBuiltinModule("path");
+  const projectContextPath = path.join(process.cwd(), "PROJECT_CONTEXT.md");
+  const projectContextPresent = fs.existsSync(projectContextPath);
+
+  if (!projectContextPresent) {
+    process.stdout.write(
+      `${JSON.stringify({
+        projectContextPath,
+        projectContextPresent,
+        content: "",
+        compact: "",
+        lineCount: 0,
+      })}\n`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  const content = fs.readFileSync(projectContextPath, "utf8");
+
+  process.stdout.write(
+    `${JSON.stringify({
+      projectContextPath,
+      projectContextPresent,
+      content,
+      compact: getCompactContext(content),
+      lineCount: countLines(content),
+    })}\n`,
+  );
+}
+
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -252,6 +290,8 @@ switch (command) {
     try {
       if (process.argv[3] === "--compact") {
         printCompactContext();
+      } else if (process.argv[3] === "--json") {
+        printContextJson();
       } else {
         printContext();
       }
