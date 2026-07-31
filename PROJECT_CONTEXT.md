@@ -85,6 +85,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0035: Add verification report typecheck examples.
 - TASK-0036: Perform Core Foundation Review.
 - TASK-0037: Define CLI MVP implementation plan.
+- TASK-0038: Implement minimal CLI entrypoint and version command.
 
 ## Do Not Load By Default
 
@@ -95,4 +96,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0038 Implement minimal CLI entrypoint and version command.
+TASK-0039 Add CLI typecheck examples or smoke script.
