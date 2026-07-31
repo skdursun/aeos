@@ -37,3 +37,18 @@
 10. TASK-0047: Implement task validate command shell. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
 11. TASK-0048: Bind task validate to core helpers. Code. Effort: High. Verification: `pnpm --filter @aeos/cli check`.
 12. TASK-0049: Review CLI MVP command consistency. Docs. Effort: Medium. Verification: `git status --short`.
+
+## Memory MVP Backlog
+
+1. TASK-0057: Implement memory package Markdown entry builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/memory check`.
+2. TASK-0058: Add memory filename and slug helpers. Code. Effort: Low. Verification: `pnpm --filter @aeos/memory check`.
+3. TASK-0059: Tighten core memory frontmatter validation. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+4. TASK-0060: Implement memory Markdown parser. Code. Effort: Medium. Verification: `pnpm --filter @aeos/memory check`.
+5. TASK-0061: Implement memory file validation. Code. Effort: High. Verification: `pnpm --filter @aeos/memory check`.
+6. TASK-0062: Add memory secret-content blocking. Code. Effort: Medium. Verification: `pnpm --filter @aeos/memory check`.
+7. TASK-0063: Implement local memory writer. Code. Effort: High. Verification: `pnpm --filter @aeos/memory check`.
+8. TASK-0064: Implement file-based memory search. Code. Effort: High. Verification: `pnpm --filter @aeos/memory check`.
+9. TASK-0065: Add memory validate CLI command. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+10. TASK-0066: Add memory search CLI command. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+11. TASK-0067: Add remember CLI command. Code. Effort: High. Verification: `pnpm --filter @aeos/cli check`.
+12. TASK-0068: Review Memory MVP command behavior. Docs. Effort: Medium. Verification: `git status --short`.

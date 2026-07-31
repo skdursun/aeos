@@ -44,6 +44,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - `docs/IMPLEMENTATION_PLAN.md`
 - `docs/RUNTIME_DECISION.md`
 - `docs/CLI_MVP_IMPLEMENTATION_PLAN.md`
+- `docs/MEMORY_MVP_IMPLEMENTATION_PLAN.md`
 - `TASKS/task-template.md`
 - `TASKS/backlog.md`
 
@@ -103,6 +104,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0053: Implement root-level CLI convenience scripts.
 - TASK-0054: Add root-level core convenience scripts.
 - TASK-0055: Perform CLI MVP Review.
+- TASK-0056: Define Memory MVP implementation plan.
 
 ## Do Not Load By Default
 
@@ -113,4 +115,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0056 Define Memory MVP implementation plan.
+TASK-0057 Implement memory package Markdown entry builder.
