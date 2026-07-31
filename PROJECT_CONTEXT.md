@@ -46,6 +46,7 @@ condition.
 - TASK-0077: Implement project package root detector.
 - TASK-0078: Add project root detector typecheck examples.
 - TASK-0079: Implement project metadata reader.
+- TASK-0080: Add project metadata reader examples.
 
 ## Do Not Load By Default
 
@@ -56,4 +57,4 @@ condition.
 
 ## Next Task
 
-TASK-0080 Add project metadata reader examples.
+TASK-0081 Implement project status command plan.
