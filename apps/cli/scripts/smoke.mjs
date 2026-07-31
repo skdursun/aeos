@@ -58,9 +58,17 @@ const version = runCli(["--version"]);
 expectExitCode("--version exited nonzero", version, 0);
 expectOutputIncludes('--version output did not include "aeos"', version, "aeos");
 
+const versionCommand = runCli(["version"]);
+expectExitCode("version exited nonzero", versionCommand, 0);
+expectOutputIncludes('version output did not include "aeos"', versionCommand, "aeos");
+
 const help = runCli(["--help"]);
 expectExitCode("--help exited nonzero", help, 0);
 expectOutputIncludes('--help output did not include "AEOS CLI"', help, "AEOS CLI");
+
+const helpCommand = runCli(["help"]);
+expectExitCode("help exited nonzero", helpCommand, 0);
+expectOutputIncludes('help output did not include "AEOS CLI"', helpCommand, "AEOS CLI");
 
 const status = runCli(["status"]);
 expectExitCode("status exited nonzero", status, 0);

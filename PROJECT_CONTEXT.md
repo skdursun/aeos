@@ -97,6 +97,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0047: Implement aeos context JSON option.
 - TASK-0048: Refactor CLI command handling into small functions.
 - TASK-0049: Split CLI helpers into local modules.
+- TASK-0050: Add CLI module smoke stability check.
 
 ## Do Not Load By Default
 
@@ -107,4 +108,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0050 Add CLI module smoke stability check.
+TASK-0051 Implement aeos task validate JSON output.
