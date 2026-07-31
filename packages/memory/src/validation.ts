@@ -21,6 +21,10 @@ const MEMORY_REDACTION_STATUSES = [
   "blocked",
 ] as const satisfies readonly MemoryRedactionStatus[];
 
+const SECRET_CONTENT_PATTERN =
+  /\b(?:api[_-]?key|credential|password|private[_-]?key|secret|token)\b|-----BEGIN [A-Z ]*PRIVATE KEY-----/i;
+const RAW_TRANSCRIPT_PATTERN = /\b(?:assistant|user|system):\s/i;
+
 export function validateMemoryEntry(
   entry: MemoryEntry,
 ): MemoryValidationResult {
@@ -82,6 +86,14 @@ function findMemoryEntryIssues(
         "summary",
       ),
     );
+  } else if (containsBlockedMemoryContent(entry.summary)) {
+    issues.push(
+      createMemoryEntryIssue(
+        "memory_entry_blocked_secret_content",
+        "Memory entry summary must not include obvious secret or transcript markers.",
+        "summary",
+      ),
+    );
   }
 
   if (!Array.isArray(entry.sections)) {
@@ -126,6 +138,14 @@ function findMemoryEntryIssues(
           createMemoryEntryIssue(
             "memory_entry_section_missing_content",
             "Memory entry section content is required.",
+            `sections.${index}.content`,
+          ),
+        );
+      } else if (containsBlockedMemoryContent(section.content)) {
+        issues.push(
+          createMemoryEntryIssue(
+            "memory_entry_blocked_secret_content",
+            "Memory entry section must not include obvious secret or transcript markers.",
             `sections.${index}.content`,
           ),
         );
@@ -233,6 +253,10 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
     value !== null &&
     !Array.isArray(value)
   );
+}
+
+function containsBlockedMemoryContent(value: string): boolean {
+  return SECRET_CONTENT_PATTERN.test(value) || RAW_TRANSCRIPT_PATTERN.test(value);
 }
 
 function createMemoryEntryIssue(

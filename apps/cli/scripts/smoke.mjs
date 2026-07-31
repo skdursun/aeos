@@ -377,6 +377,22 @@ if (!existsSync(rememberAbsolutePath)) {
   fail("valid remember did not create memory file", remember);
 }
 
+const searchPersisted = runCli([
+  "search",
+  `Smoke human persistence ${smokeRunId}`,
+]);
+expectExitCode("search persisted memory exited nonzero", searchPersisted, 0);
+expectOutputIncludes(
+  "search persisted memory did not include remembered title",
+  searchPersisted,
+  `Smoke human persistence ${smokeRunId}`,
+);
+expectOutputIncludes(
+  "search persisted memory did not include remembered path",
+  searchPersisted,
+  rememberPath,
+);
+
 const rememberJson = runCli([
   "remember",
   "--type",
@@ -404,6 +420,29 @@ const rememberJsonAbsolutePath = rememberPathToAbsolute(parsedRemember.path);
 createdMemoryPaths.add(rememberJsonAbsolutePath);
 if (!existsSync(rememberJsonAbsolutePath)) {
   fail("remember --json returned path did not exist", rememberJson);
+}
+
+const searchPersistedJson = runCli([
+  "search",
+  `Smoke JSON persistence ${smokeRunId}`,
+  "--json",
+]);
+expectExitCode("search persisted memory --json exited nonzero", searchPersistedJson, 0);
+const parsedSearchPersistedJson = parseJsonStdout(
+  "search persisted memory --json output was not valid JSON",
+  searchPersistedJson,
+);
+if (
+  parsedSearchPersistedJson.ok !== true ||
+  parsedSearchPersistedJson.count !== 1 ||
+  parsedSearchPersistedJson.results[0]?.title !==
+    `Smoke JSON persistence ${smokeRunId}` ||
+  parsedSearchPersistedJson.results[0]?.path !== parsedRemember.path
+) {
+  fail(
+    "search persisted memory --json output did not match expected result",
+    searchPersistedJson,
+  );
 }
 
 const duplicateTitle = `Smoke duplicate persistence ${smokeRunId}`;

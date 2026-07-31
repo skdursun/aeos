@@ -94,11 +94,13 @@ type SearchJsonOutput =
         readonly type: MemoryType;
         readonly tags: readonly string[];
         readonly score: number;
+        readonly path?: string;
+        readonly excerpt?: string;
       }[];
     }
   | {
       readonly ok: false;
-      readonly reason: "missing_query";
+      readonly reason: "missing_query" | "invalid_memory_type";
     };
 
 type MemoryWriteRequestSuccess = {
@@ -135,6 +137,9 @@ type MemoryPackage = {
   readonly createMemoryWriteResult: (
     request: MemoryWriteRequestSuccess,
   ) => { readonly ok: true; readonly value: MemoryWriteResultSuccess } | { readonly ok: false };
+  readonly loadMemoryEntriesFromStorage: (
+    rootPath: string,
+  ) => Promise<readonly MemoryEntry[]>;
   readonly searchMemoryEntries: (
     index: unknown,
     query: {
@@ -614,8 +619,8 @@ async function handleRemember(args: readonly string[]): Promise<void> {
   }
 
   const fileWriteResult = await memory.writeMemoryFile({
-    target: memory.createMemoryStorageTarget("."),
-    path: writeResult.value.path,
+    target: memory.createMemoryStorageTarget(".aeos/memory"),
+    path: writeResult.value.path.slice(".aeos/memory/".length),
     content: writeResult.value.content,
     createParentDirectory: true,
   });
@@ -682,6 +687,15 @@ async function handleSearch(args: readonly string[]): Promise<void> {
   }
 
   if (typeInput !== undefined && !isMemoryType(typeInput)) {
+    if (json) {
+      writeSearchJson({
+        ok: false,
+        reason: "invalid_memory_type",
+      });
+      setExitCode(1);
+      return;
+    }
+
     printSearchFailure("invalid memory type");
     console.log(`Type: ${typeInput}`);
     setExitCode(1);
@@ -689,7 +703,8 @@ async function handleSearch(args: readonly string[]): Promise<void> {
   }
 
   const memory = await loadMemoryPackage();
-  const index = memory.createMemorySearchIndex([]);
+  const entries = await memory.loadMemoryEntriesFromStorage(".aeos/memory");
+  const index = memory.createMemorySearchIndex(entries);
   const filter =
     typeInput === undefined && tags.length === 0
       ? undefined
@@ -713,6 +728,8 @@ async function handleSearch(args: readonly string[]): Promise<void> {
         type: result.entry.frontmatter.type,
         tags: result.entry.frontmatter.tags,
         score: result.score,
+        path: result.entry.path,
+        excerpt: result.excerpt,
       })),
     });
     return;
@@ -736,6 +753,14 @@ async function handleSearch(args: readonly string[]): Promise<void> {
 
     if (result.entry.frontmatter.tags.length > 0) {
       console.log(`Tags: ${result.entry.frontmatter.tags.join(", ")}`);
+    }
+
+    if (result.entry.path !== undefined) {
+      console.log(`Path: ${result.entry.path}`);
+    }
+
+    if (result.excerpt !== undefined) {
+      console.log(`Excerpt: ${result.excerpt}`);
     }
   }
 }

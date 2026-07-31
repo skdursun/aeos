@@ -43,6 +43,7 @@ condition.
 - TASK-0072: Implement aeos search command plan.
 - TASK-0073: Implement aeos search command core flow.
 - TASK-0074: Add search command JSON output.
+- TASK-0075: Perform Memory MVP review.
 
 ## Do Not Load By Default
 
@@ -53,4 +54,4 @@ condition.
 
 ## Next Task
 
-TASK-0075 Add Memory MVP review.
+TASK-0076 Define Project MVP implementation plan.

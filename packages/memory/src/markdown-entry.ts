@@ -21,9 +21,11 @@ export function buildMemoryMarkdownEntry(input: MemoryEntry): string {
   }
 
   const frontmatter = serializeMemoryFrontmatter(input.frontmatter);
+  const title = input.frontmatter.title.trim();
+  const summary = input.summary.trim();
   const body = serializeMemoryBodySections(input.sections);
 
-  return `---\n${frontmatter}\n---\n\n${body}\n`;
+  return `---\n${frontmatter}\n---\n\n# ${title}\n\n${summary}\n\n${body}\n`;
 }
 
 export function serializeMemoryFrontmatter(

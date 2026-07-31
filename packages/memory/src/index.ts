@@ -12,6 +12,11 @@ export {
 } from "./validation.js";
 
 export {
+  loadMemoryEntriesFromStorage,
+  parseMemoryMarkdownEntry,
+} from "./reader.js";
+
+export {
   MemorySearchIndex,
   addMemoryEntry,
   clearMemoryIndex,
