@@ -66,6 +66,19 @@
 9. TASK-0090: Implement project status JSON output. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
 10. TASK-0091: Implement project context JSON output. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
 
+## Project Context MVP Backlog
+
+1. TASK-0085: Implement project context command. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+2. TASK-0086: Add project context usage errors. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+3. TASK-0087: Add project context smoke notes. Docs. Effort: Low. Verification: `git status --short`.
+4. TASK-0088: Review project context human output. Docs. Effort: Low. Verification: `git status --short`.
+5. TASK-0089: Define project context JSON contract. Docs. Effort: Low. Verification: `git status --short`.
+6. TASK-0090: Implement project context JSON output. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+7. TASK-0091: Add project context JSON error output. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+8. TASK-0092: Add project context metadata field plan. Docs. Effort: Medium. Verification: `git status --short`.
+9. TASK-0093: Extend project context metadata reader. Code. Effort: Medium. Verification: `pnpm --filter @aeos/projects check`.
+10. TASK-0094: Render expanded project context fields. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+
 ## Memory MVP Backlog
 
 1. TASK-0057: Implement memory package Markdown entry builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/memory check`.

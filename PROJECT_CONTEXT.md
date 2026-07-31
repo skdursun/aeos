@@ -30,6 +30,7 @@ condition.
 - `AGENTS.md`
 - `docs/PROJECT_MVP_IMPLEMENTATION_PLAN.md`
 - `docs/PROJECT_COMMAND_IMPLEMENTATION_PLAN.md`
+- `docs/PROJECT_CONTEXT_COMMAND_IMPLEMENTATION_PLAN.md`
 - `TASKS/backlog.md`
 
 ## Recent Completed Tasks
@@ -51,6 +52,7 @@ condition.
 - TASK-0081: Implement project status command plan.
 - TASK-0082: Implement project status command core flow.
 - TASK-0083: Add project status JSON output.
+- TASK-0084: Define project context command plan.
 
 ## Do Not Load By Default
 
@@ -61,4 +63,4 @@ condition.
 
 ## Next Task
 
-TASK-0084 Implement project context command plan.
+TASK-0085 Implement project context command.
