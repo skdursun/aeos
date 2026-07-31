@@ -44,6 +44,7 @@ condition.
 - TASK-0075: Perform Memory MVP review.
 - TASK-0076: Define Project MVP implementation plan.
 - TASK-0077: Implement project package root detector.
+- TASK-0078: Add project root detector typecheck examples.
 
 ## Do Not Load By Default
 
@@ -54,4 +55,4 @@ condition.
 
 ## Next Task
 
-TASK-0078 Add project root detector typecheck examples.
+TASK-0079 Implement project metadata reader.
