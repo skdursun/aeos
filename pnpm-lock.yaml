@@ -12,7 +12,11 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2
 
-  apps/cli: {}
+  apps/cli:
+    dependencies:
+      '@aeos/core':
+        specifier: workspace:*
+        version: link:../../packages/core
 
   packages/agents: {}
 
