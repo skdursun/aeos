@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,6 +48,12 @@ function expectOutputIncludes(message, result, expectedText) {
   }
 }
 
+function expectBooleanProperty(message, value, propertyName) {
+  if (typeof value[propertyName] !== "boolean") {
+    fail(message);
+  }
+}
+
 const version = runCli(["--version"]);
 expectExitCode("--version exited nonzero", version, 0);
 expectOutputIncludes('--version output did not include "aeos"', version, "aeos");
@@ -60,6 +66,46 @@ const status = runCli(["status"]);
 expectExitCode("status exited nonzero", status, 0);
 expectOutputIncludes('status output did not include "AEOS Status"', status, "AEOS Status");
 expectOutputIncludes('status output did not include "Project Root"', status, "Project Root");
+
+const statusJson = runCli(["status", "--json"]);
+expectExitCode("status --json exited nonzero", statusJson, 0);
+
+let parsedStatus;
+
+try {
+  parsedStatus = JSON.parse(statusJson.stdout);
+} catch {
+  fail("status --json output was not valid JSON", statusJson);
+}
+
+if (
+  typeof parsedStatus.projectRoot !== "string" ||
+  parsedStatus.projectRoot.length === 0 ||
+  !existsSync(parsedStatus.projectRoot)
+) {
+  fail("status --json projectRoot did not exist", statusJson);
+}
+
+expectBooleanProperty(
+  "status --json workspacePresent was not boolean",
+  parsedStatus,
+  "workspacePresent",
+);
+expectBooleanProperty(
+  "status --json projectContextPresent was not boolean",
+  parsedStatus,
+  "projectContextPresent",
+);
+expectBooleanProperty(
+  "status --json agentsFilePresent was not boolean",
+  parsedStatus,
+  "agentsFilePresent",
+);
+expectBooleanProperty(
+  "status --json gitRepositoryPresent was not boolean",
+  parsedStatus,
+  "gitRepositoryPresent",
+);
 
 const context = runCli(["context"]);
 expectExitCode("context exited nonzero", context, 0);

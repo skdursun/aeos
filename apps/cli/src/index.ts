@@ -28,6 +28,7 @@ Commands:
   context
   context --compact
   status
+  status --json
   task validate <path>
   version
   help`;
@@ -62,7 +63,16 @@ function getPackageName(packageJsonPath: string): string {
   }
 }
 
-function printStatus(): void {
+type StatusSnapshot = {
+  projectRoot: string;
+  packageName: string;
+  workspacePresent: boolean;
+  projectContextPresent: boolean;
+  agentsFilePresent: boolean;
+  gitRepositoryPresent: boolean;
+};
+
+function getStatusSnapshot(): StatusSnapshot {
   const fs = process.getBuiltinModule("fs");
   const path = process.getBuiltinModule("path");
   const projectRoot = process.cwd();
@@ -73,13 +83,30 @@ function printStatus(): void {
   const agentsPath = path.join(projectRoot, "AGENTS.md");
   const gitPath = path.join(projectRoot, ".git");
 
+  return {
+    projectRoot,
+    packageName: getPackageName(packageJsonPath),
+    workspacePresent: fs.existsSync(workspacePath),
+    projectContextPresent: fs.existsSync(projectContextPath),
+    agentsFilePresent: fs.existsSync(agentsPath),
+    gitRepositoryPresent: fs.existsSync(gitPath),
+  };
+}
+
+function printStatus(): void {
+  const status = getStatusSnapshot();
+
   console.log(`AEOS Status
-Project Root: ${projectRoot}
-Package: ${getPackageName(packageJsonPath)}
-Workspace: ${formatYesNo(fs.existsSync(workspacePath))}
-Project Context: ${formatPresence(fs.existsSync(projectContextPath))}
-Agents File: ${formatPresence(fs.existsSync(agentsPath))}
-Git Repository: ${formatYesNo(fs.existsSync(gitPath))}`);
+Project Root: ${status.projectRoot}
+Package: ${status.packageName}
+Workspace: ${formatYesNo(status.workspacePresent)}
+Project Context: ${formatPresence(status.projectContextPresent)}
+Agents File: ${formatPresence(status.agentsFilePresent)}
+Git Repository: ${formatYesNo(status.gitRepositoryPresent)}`);
+}
+
+function printStatusJson(): void {
+  process.stdout.write(`${JSON.stringify(getStatusSnapshot())}\n`);
 }
 
 function printContext(): void {
@@ -239,7 +266,11 @@ switch (command) {
 
   case "status":
     try {
-      printStatus();
+      if (process.argv[3] === "--json") {
+        printStatusJson();
+      } else {
+        printStatus();
+      }
     } catch (error) {
       console.error("Error: failed to inspect project status.");
       if (error instanceof Error) {

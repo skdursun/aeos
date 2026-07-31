@@ -93,6 +93,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0043: Polish aeos task validate errors.
 - TASK-0044: Add task validation JSON fixtures.
 - TASK-0045: Implement aeos context compact option.
+- TASK-0046: Implement aeos status JSON option.
 
 ## Do Not Load By Default
 
@@ -103,4 +104,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0046 Implement aeos status JSON option.
+TASK-0047 Implement aeos context JSON option.
