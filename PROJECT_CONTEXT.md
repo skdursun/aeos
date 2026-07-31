@@ -82,6 +82,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0033: Add audit event typecheck examples.
 - TASK-0034: Define minimal verification report helpers.
 - TASK-0035: Add verification report typecheck examples.
+- TASK-0036: Perform Core Foundation Review.
 
 ## Do Not Load By Default
 
@@ -92,4 +93,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0036 Perform Core Foundation Review.
+TASK-0037 Define CLI MVP implementation plan.
