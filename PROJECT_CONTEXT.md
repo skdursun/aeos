@@ -71,6 +71,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0022: Define AEOS core verification TypeScript contracts.
 - TASK-0023: Review and normalize core type exports.
 - TASK-0024: Define core result and error helpers.
+- TASK-0025: Add minimal core result helper typecheck examples.
 
 ## Do Not Load By Default
 
@@ -81,4 +82,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0025 Add minimal core result helper tests or examples.
+TASK-0026 Define minimal core task validation helpers.
