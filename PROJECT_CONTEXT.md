@@ -75,6 +75,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0026: Define minimal core task validation helpers.
 - TASK-0027: Add task validation typecheck examples.
 - TASK-0028: Define minimal memory frontmatter validation helpers.
+- TASK-0029: Add memory validation typecheck examples.
 
 ## Do Not Load By Default
 
@@ -85,4 +86,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0029 Add memory validation typecheck examples.
+TASK-0030 Define minimal policy decision helpers.
