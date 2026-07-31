@@ -180,6 +180,11 @@ expectOutputIncludes(
   helpCommand,
   "project context --json",
 );
+expectOutputIncludes(
+  'help output did not include "project validate"',
+  helpCommand,
+  "project validate",
+);
 
 const status = runCli(["status"]);
 expectExitCode("status exited nonzero", status, 0);
@@ -335,13 +340,61 @@ try {
       missingProjectContextJson,
     );
   }
-  expectBooleanProperty(
-    "project context --json with missing PROJECT_CONTEXT.md agentsPresent was not boolean",
-    parsedMissingProjectContextJson,
-    "agentsPresent",
-  );
+expectBooleanProperty(
+  "project context --json with missing PROJECT_CONTEXT.md agentsPresent was not boolean",
+  parsedMissingProjectContextJson,
+  "agentsPresent",
+);
 } finally {
   rmSync(missingContextProjectRoot, { recursive: true, force: true });
+}
+
+const projectValidate = runCli(["project", "validate"]);
+expectExitCode("project validate exited nonzero", projectValidate, 0);
+expectOutputIncludes(
+  'project validate output did not include "Project Validation"',
+  projectValidate,
+  "Project Validation",
+);
+expectOutputIncludes(
+  'project validate output did not include project root validation result',
+  projectValidate,
+  "PASS project_root",
+);
+
+const missingOptionalMetadataRoot = mkdtempSync(
+  join(tmpdir(), "aeos-cli-project-validate-"),
+);
+
+try {
+  writeFileSync(
+    join(missingOptionalMetadataRoot, "PROJECT_CONTEXT.md"),
+    "# Project Context\n\nProject: Smoke\n",
+  );
+  writeFileSync(join(missingOptionalMetadataRoot, "AGENTS.md"), "# Agents\n");
+  writeFileSync(join(missingOptionalMetadataRoot, "pnpm-workspace.yaml"), "packages: []\n");
+
+  const missingOptionalMetadata = runCliFrom(missingOptionalMetadataRoot, [
+    "project",
+    "validate",
+  ]);
+  expectExitCode(
+    "project validate with missing optional metadata exited nonzero",
+    missingOptionalMetadata,
+    0,
+  );
+  expectOutputIncludes(
+    'project validate with missing optional metadata did not include "Project Validation"',
+    missingOptionalMetadata,
+    "Project Validation",
+  );
+  expectOutputIncludes(
+    'project validate with missing optional metadata did not include package metadata warning',
+    missingOptionalMetadata,
+    "WARN package_metadata",
+  );
+} finally {
+  rmSync(missingOptionalMetadataRoot, { recursive: true, force: true });
 }
 
 const statusJson = runCli(["status", "--json"]);

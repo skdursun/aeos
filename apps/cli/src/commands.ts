@@ -31,6 +31,7 @@ Commands:
   project status --json
   project context
   project context --json
+  project validate
   task validate <path>
   task validate <path> --json
   version
@@ -136,6 +137,26 @@ type ProjectContextJsonOutput =
       readonly reason: "project_root_not_found";
     };
 
+type ProjectValidationStatus = "pass" | "fail" | "warn";
+
+type ProjectValidationCheck = {
+  readonly name: string;
+  readonly status: ProjectValidationStatus;
+};
+
+type ProjectValidationIssue = {
+  readonly code: string;
+  readonly message: string;
+  readonly path?: string;
+};
+
+type ProjectValidationResult = {
+  readonly status: ProjectValidationStatus;
+  readonly root: string | undefined;
+  readonly checks: readonly ProjectValidationCheck[];
+  readonly issues: readonly ProjectValidationIssue[];
+};
+
 type MemoryWriteRequestSuccess = {
   readonly entry: MemoryEntry;
   readonly path: string;
@@ -159,10 +180,20 @@ type ProjectMetadata = {
   readonly hasProjectContext: boolean;
   readonly hasAgents: boolean;
   readonly hasWorkspace: boolean;
+  readonly package: {
+    readonly path: string;
+    readonly exists: boolean;
+    readonly name: string | undefined;
+    readonly version: string | undefined;
+  };
   readonly context: {
     readonly path: string;
     readonly exists: boolean;
     readonly projectName: string | undefined;
+  };
+  readonly agents: {
+    readonly path: string;
+    readonly exists: boolean;
   };
 };
 
@@ -170,9 +201,12 @@ type ProjectRootDetectionResult =
   | {
       readonly ok: true;
       readonly rootPath: string;
+      readonly markers: readonly string[];
     }
   | {
       readonly ok: false;
+      readonly rootPath: undefined;
+      readonly markers: readonly string[];
       readonly error: {
         readonly code: string;
         readonly startPath: string;
@@ -453,6 +487,183 @@ function formatPresence(present: boolean): "present" | "missing" {
   return present ? "present" : "missing";
 }
 
+function formatValidationStatus(status: ProjectValidationStatus): string {
+  return status.toUpperCase();
+}
+
+function buildProjectValidationResult(
+  rootResult: ProjectRootDetectionResult,
+  metadata: ProjectMetadata | undefined,
+): ProjectValidationResult {
+  const checks: ProjectValidationCheck[] = [];
+  const issues: ProjectValidationIssue[] = [];
+
+  if (!rootResult.ok) {
+    checks.push({
+      name: "project_root",
+      status: "fail",
+    });
+    issues.push({
+      code: rootResult.error.code,
+      message: "Project root could not be detected.",
+      path: rootResult.error.startPath,
+    });
+
+    return {
+      status: "fail",
+      root: undefined,
+      checks,
+      issues,
+    };
+  }
+
+  checks.push({
+    name: "project_root",
+    status: "pass",
+  });
+
+  if (metadata === undefined) {
+    checks.push({
+      name: "package_metadata",
+      status: "fail",
+    });
+    issues.push({
+      code: "package_metadata_unreadable",
+      message: "Project metadata could not be read.",
+      path: rootResult.rootPath,
+    });
+
+    return {
+      status: "fail",
+      root: rootResult.rootPath,
+      checks,
+      issues,
+    };
+  }
+
+  if (!metadata.package.exists) {
+    checks.push({
+      name: "package_metadata",
+      status: "warn",
+    });
+    issues.push({
+      code: "package_metadata_missing",
+      message: "package.json is missing.",
+      path: metadata.package.path,
+    });
+  } else if (
+    metadata.package.name === undefined
+  ) {
+    checks.push({
+      name: "package_metadata",
+      status: "fail",
+    });
+    issues.push({
+      code: "package_metadata_unreadable",
+      message: "package.json exists but package name could not be read.",
+      path: metadata.package.path,
+    });
+  } else {
+    checks.push({
+      name: "package_metadata",
+      status: "pass",
+    });
+  }
+
+  checks.push({
+    name: "project_context",
+    status: metadata.hasProjectContext ? "pass" : "fail",
+  });
+  if (!metadata.hasProjectContext) {
+    issues.push({
+      code: "missing_project_context",
+      message: "PROJECT_CONTEXT.md is missing.",
+      path: metadata.context.path,
+    });
+  }
+
+  checks.push({
+    name: "agents",
+    status: metadata.hasAgents ? "pass" : "fail",
+  });
+  if (!metadata.hasAgents) {
+    issues.push({
+      code: "missing_agents",
+      message: "AGENTS.md is missing.",
+      path: metadata.agents.path,
+    });
+  }
+
+  checks.push({
+    name: "workspace",
+    status: metadata.hasWorkspace ? "pass" : "fail",
+  });
+  if (!metadata.hasWorkspace) {
+    issues.push({
+      code: "missing_workspace_marker",
+      message: "pnpm-workspace.yaml is missing.",
+    });
+  }
+
+  const consistent =
+    metadata.projectRoot === rootResult.rootPath &&
+    metadata.hasProjectContext === metadata.context.exists &&
+    metadata.hasAgents === metadata.agents.exists;
+
+  checks.push({
+    name: "consistency",
+    status: consistent ? "pass" : "fail",
+  });
+  if (!consistent) {
+    issues.push({
+      code: "project_metadata_inconsistent",
+      message: "Detected root and metadata presence flags are inconsistent.",
+      path: metadata.projectRoot,
+    });
+  }
+
+  const hasFailure = checks.some((check) => check.status === "fail");
+  const hasWarning = checks.some((check) => check.status === "warn");
+
+  return {
+    status: hasFailure ? "fail" : hasWarning ? "warn" : "pass",
+    root: metadata.projectRoot,
+    checks,
+    issues,
+  };
+}
+
+function printProjectValidationResult(result: ProjectValidationResult): void {
+  console.log("Project Validation");
+  console.log("");
+  console.log(`Status: ${formatValidationStatus(result.status)}`);
+  console.log(`Root: ${result.root ?? "unknown"}`);
+  console.log("");
+  console.log("Checks:");
+
+  for (const check of result.checks) {
+    console.log(`${formatValidationStatus(check.status)} ${check.name}`);
+  }
+
+  if (result.issues.length === 0) {
+    console.log("");
+    console.log("Summary: all checks passed");
+    return;
+  }
+
+  console.log("");
+  console.log("Issues:");
+  for (const issue of result.issues) {
+    const path = issue.path === undefined ? "" : ` (${issue.path})`;
+    console.log(`${formatValidationStatus(issue.code === "package_metadata_missing" ? "warn" : "fail")} ${issue.code}: ${issue.message}${path}`);
+  }
+
+  console.log("");
+  console.log(
+    `Summary: ${result.issues.length} issue${result.issues.length === 1 ? "" : "s"} found`,
+  );
+}
+
 async function handleProjectStatus(args: readonly string[]): Promise<void> {
   const json = args.includes("--json");
   const projects = await loadProjectsPackage();
@@ -574,6 +785,28 @@ async function handleProjectContext(args: readonly string[]): Promise<void> {
       ? `Project context for ${projectName}.`
       : "missing",
   );
+}
+
+async function handleProjectValidate(args: readonly string[]): Promise<void> {
+  if (args.length > 0) {
+    console.error("Error: unknown project validate option.");
+    console.error("Usage: aeos project validate");
+    setExitCode(1);
+    return;
+  }
+
+  const projects = await loadProjectsPackage();
+  const rootResult = projects.detectProjectRoot(getCwd());
+  const metadata = rootResult.ok
+    ? projects.readProjectMetadata(rootResult.rootPath)
+    : undefined;
+  const result = buildProjectValidationResult(rootResult, metadata);
+
+  printProjectValidationResult(result);
+
+  if (result.status === "fail") {
+    setExitCode(1);
+  }
 }
 
 function readFlagValue(args: readonly string[], flag: string): string | undefined {
@@ -997,9 +1230,15 @@ async function handleProject(args: readonly string[]): Promise<void> {
     return;
   }
 
+  if (args[0] === "validate") {
+    await handleProjectValidate(args.slice(1));
+    return;
+  }
+
   console.error("Error: unknown project command.");
   console.error("Usage: aeos project status");
   console.error("Usage: aeos project context");
+  console.error("Usage: aeos project validate");
   setExitCode(1);
 }
 
