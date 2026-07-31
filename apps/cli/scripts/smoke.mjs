@@ -26,54 +26,58 @@ function fail(message, result) {
   process.exit(1);
 }
 
+function outputOf(result) {
+  return `${result.stdout}${result.stderr}`;
+}
+
+function expectExitCode(message, result, expectedStatus) {
+  if (result.status !== expectedStatus) {
+    fail(message, result);
+  }
+}
+
+function expectNonzero(message, result) {
+  if (result.status === 0) {
+    fail(message, result);
+  }
+}
+
+function expectOutputIncludes(message, result, expectedText) {
+  if (!outputOf(result).includes(expectedText)) {
+    fail(message, result);
+  }
+}
+
 const version = runCli(["--version"]);
-if (version.status !== 0) {
-  fail("--version exited nonzero", version);
-}
-if (!version.stdout.includes("aeos")) {
-  fail('--version output did not include "aeos"', version);
-}
+expectExitCode("--version exited nonzero", version, 0);
+expectOutputIncludes('--version output did not include "aeos"', version, "aeos");
 
 const help = runCli(["--help"]);
-if (help.status !== 0) {
-  fail("--help exited nonzero", help);
-}
-if (!help.stdout.includes("AEOS CLI")) {
-  fail('--help output did not include "AEOS CLI"', help);
-}
+expectExitCode("--help exited nonzero", help, 0);
+expectOutputIncludes('--help output did not include "AEOS CLI"', help, "AEOS CLI");
 
 const status = runCli(["status"]);
-if (status.status !== 0) {
-  fail("status exited nonzero", status);
-}
-if (!status.stdout.includes("AEOS Status")) {
-  fail('status output did not include "AEOS Status"', status);
-}
-if (!status.stdout.includes("Project Root")) {
-  fail('status output did not include "Project Root"', status);
-}
+expectExitCode("status exited nonzero", status, 0);
+expectOutputIncludes('status output did not include "AEOS Status"', status, "AEOS Status");
+expectOutputIncludes('status output did not include "Project Root"', status, "Project Root");
 
 const context = runCli(["context"]);
-if (context.status !== 0) {
-  fail("context exited nonzero", context);
-}
-if (!context.stdout.includes("Project:")) {
-  fail('context output did not include "Project:"', context);
-}
-if (!context.stdout.includes("AEOS") && !context.stdout.includes("Pro Performans")) {
+expectExitCode("context exited nonzero", context, 0);
+expectOutputIncludes('context output did not include "Project:"', context, "Project:");
+if (!outputOf(context).includes("AEOS") && !outputOf(context).includes("Pro Performans")) {
   fail('context output did not include "AEOS" or "Pro Performans"', context);
 }
 
 const unknown = runCli(["unknown-command"]);
-if (unknown.status === 0) {
-  fail("unknown command exited zero", unknown);
-}
+expectNonzero("unknown command exited zero", unknown);
 
 const smokeDir = mkdtempSync(join(tmpdir(), "aeos-cli-smoke-"));
 
 try {
   const validTaskPath = join(smokeDir, "valid-task.json");
   const invalidTaskPath = join(smokeDir, "invalid-task.json");
+  const invalidJsonPath = join(smokeDir, "invalid-json.json");
+  const missingTaskPath = join(smokeDir, "missing-task.json");
 
   writeFileSync(
     validTaskPath,
@@ -128,21 +132,77 @@ try {
     ),
   );
 
+  writeFileSync(invalidJsonPath, "{ invalid json");
+
+  const missingPath = runCli(["task", "validate"]);
+  expectNonzero("missing path validation exited zero", missingPath);
+  expectOutputIncludes(
+    'missing path output did not include "Task validation: fail"',
+    missingPath,
+    "Task validation: fail",
+  );
+  expectOutputIncludes(
+    'missing path output did not include "Reason: missing task file path"',
+    missingPath,
+    "Reason: missing task file path",
+  );
+  expectOutputIncludes(
+    'missing path output did not include task validate usage',
+    missingPath,
+    "Usage: aeos task validate <path>",
+  );
+
+  const missingFile = runCli(["task", "validate", missingTaskPath]);
+  expectNonzero("missing file validation exited zero", missingFile);
+  expectOutputIncludes(
+    'missing file output did not include "Task validation: fail"',
+    missingFile,
+    "Task validation: fail",
+  );
+  expectOutputIncludes(
+    'missing file output did not include "Reason: task file not found"',
+    missingFile,
+    "Reason: task file not found",
+  );
+  expectOutputIncludes(
+    "missing file output did not include provided path",
+    missingFile,
+    missingTaskPath,
+  );
+
+  const invalidJson = runCli(["task", "validate", invalidJsonPath]);
+  expectNonzero("invalid JSON validation exited zero", invalidJson);
+  expectOutputIncludes(
+    'invalid JSON output did not include "Task validation: fail"',
+    invalidJson,
+    "Task validation: fail",
+  );
+  expectOutputIncludes(
+    'invalid JSON output did not include "Reason: invalid JSON"',
+    invalidJson,
+    "Reason: invalid JSON",
+  );
+
   const validTask = runCli(["task", "validate", validTaskPath]);
-  if (validTask.status !== 0) {
-    fail("valid task validation exited nonzero", validTask);
-  }
-  if (!validTask.stdout.includes("Task validation: pass")) {
-    fail('valid task output did not include "Task validation: pass"', validTask);
-  }
+  expectExitCode("valid task validation exited nonzero", validTask, 0);
+  expectOutputIncludes(
+    'valid task output did not include "Task validation: pass"',
+    validTask,
+    "Task validation: pass",
+  );
 
   const invalidTask = runCli(["task", "validate", invalidTaskPath]);
-  if (invalidTask.status === 0) {
-    fail("invalid task validation exited zero", invalidTask);
-  }
-  if (!invalidTask.stdout.includes("Task validation: fail")) {
-    fail('invalid task output did not include "Task validation: fail"', invalidTask);
-  }
+  expectNonzero("invalid task validation exited zero", invalidTask);
+  expectOutputIncludes(
+    'invalid task output did not include "Task validation: fail"',
+    invalidTask,
+    "Task validation: fail",
+  );
+  expectOutputIncludes(
+    'invalid task output did not include concise issue summary',
+    invalidTask,
+    "- id: Task id is required.",
+  );
 } finally {
   rmSync(smokeDir, { recursive: true, force: true });
 }

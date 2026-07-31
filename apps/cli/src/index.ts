@@ -106,10 +106,18 @@ function formatIssue(issue: TaskValidationIssue): string {
     : `- ${location}: ${issue.message}`;
 }
 
+function printTaskValidationFailure(reason?: string): void {
+  console.log("Task validation: fail");
+
+  if (reason !== undefined) {
+    console.log(`Reason: ${reason}`);
+  }
+}
+
 function validateTaskFile(filePath: string | undefined): void {
   if (filePath === undefined || filePath.trim().length === 0) {
-    console.error("Error: missing task file path.");
-    console.error("Usage: aeos task validate <path>");
+    printTaskValidationFailure("missing task file path");
+    console.log("Usage: aeos task validate <path>");
     process.exitCode = 1;
     return;
   }
@@ -117,7 +125,8 @@ function validateTaskFile(filePath: string | undefined): void {
   const fs = process.getBuiltinModule("fs");
 
   if (!fs.existsSync(filePath)) {
-    console.error(`Error: task file not found: ${filePath}`);
+    printTaskValidationFailure("task file not found");
+    console.log(`Path: ${filePath}`);
     process.exitCode = 1;
     return;
   }
@@ -126,17 +135,14 @@ function validateTaskFile(filePath: string | undefined): void {
 
   try {
     parsedTask = JSON.parse(fs.readFileSync(filePath, "utf8"));
-  } catch (error) {
-    console.error(`Error: failed to parse JSON task file: ${filePath}`);
-    if (error instanceof Error) {
-      console.error(error.message);
-    }
+  } catch {
+    printTaskValidationFailure("invalid JSON");
     process.exitCode = 1;
     return;
   }
 
   if (!isJsonObject(parsedTask)) {
-    console.log("Task validation: fail");
+    printTaskValidationFailure();
     console.log("- Task file must contain a JSON object.");
     process.exitCode = 1;
     return;
@@ -149,7 +155,7 @@ function validateTaskFile(filePath: string | undefined): void {
     return;
   }
 
-  console.log("Task validation: fail");
+  printTaskValidationFailure();
 
   for (const issue of result.issues) {
     console.log(formatIssue(issue));
