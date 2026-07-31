@@ -52,3 +52,16 @@
 10. TASK-0066: Add memory search CLI command. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
 11. TASK-0067: Add remember CLI command. Code. Effort: High. Verification: `pnpm --filter @aeos/cli check`.
 12. TASK-0068: Review Memory MVP command behavior. Docs. Effort: Medium. Verification: `git status --short`.
+
+## Remember Command MVP Backlog
+
+1. TASK-0067: Implement remember command core flow. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+2. TASK-0068: Add remember command usage errors. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+3. TASK-0069: Add remember command interactive input. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+4. TASK-0070: Add remember input normalization helper. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+5. TASK-0071: Add remember validation output. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+6. TASK-0072: Add remember prepared artifact output. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+7. TASK-0073: Add remember source task and tag flags. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+8. TASK-0074: Add remember JSON output placeholder. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+9. TASK-0075: Add remember smoke verification. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+10. TASK-0076: Review remember command MVP behavior. Docs. Effort: Medium. Verification: `git status --short`.
