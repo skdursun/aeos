@@ -167,6 +167,19 @@ expectExitCode("status exited nonzero", status, 0);
 expectOutputIncludes('status output did not include "AEOS Status"', status, "AEOS Status");
 expectOutputIncludes('status output did not include "Project Root"', status, "Project Root");
 
+const projectStatus = runCli(["project", "status"]);
+expectExitCode("project status exited nonzero", projectStatus, 0);
+expectOutputIncludes(
+  'project status output did not include "Project Status"',
+  projectStatus,
+  "Project Status",
+);
+expectOutputIncludes(
+  'project status output did not include "Root"',
+  projectStatus,
+  "Root",
+);
+
 const statusJson = runCli(["status", "--json"]);
 expectExitCode("status --json exited nonzero", statusJson, 0);
 const parsedStatus = parseJsonStdout(

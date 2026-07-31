@@ -9,7 +9,7 @@ import type {
 } from "@aeos/core";
 
 import { handleContext } from "./context.js";
-import { getFs, setExitCode, writeJsonLine } from "./output.js";
+import { getCwd, getFs, setExitCode, writeJsonLine } from "./output.js";
 import { handleStatus } from "./status.js";
 
 const versionText = "aeos 0.0.0";
@@ -27,6 +27,7 @@ Commands:
   remember --type <type> --title <title> --json
   search <query>
   search <query> [--json]
+  project status
   task validate <path>
   task validate <path> --json
   version
@@ -118,6 +119,33 @@ type MemoryStorageTarget = {
   readonly collectionPath?: string;
 };
 
+type ProjectMetadata = {
+  readonly projectRoot: string;
+  readonly packageName: string | undefined;
+  readonly packageVersion: string | undefined;
+  readonly hasProjectContext: boolean;
+  readonly hasAgents: boolean;
+  readonly hasWorkspace: boolean;
+};
+
+type ProjectRootDetectionResult =
+  | {
+      readonly ok: true;
+      readonly rootPath: string;
+    }
+  | {
+      readonly ok: false;
+      readonly error: {
+        readonly code: string;
+        readonly startPath: string;
+      };
+    };
+
+type ProjectsPackage = {
+  readonly detectProjectRoot: (startPath: string) => ProjectRootDetectionResult;
+  readonly readProjectMetadata: (projectRoot: string) => ProjectMetadata;
+};
+
 type MemoryPackage = {
   readonly buildMemoryMarkdownEntry: (entry: MemoryEntry) => string;
   readonly createMemorySearchIndex: (
@@ -171,6 +199,11 @@ type MemoryPackage = {
 async function loadMemoryPackage(): Promise<MemoryPackage> {
   // @ts-expect-error @aeos/cli loads the existing memory package artifact without metadata changes.
   return import("../../../packages/memory/dist/index.js") as Promise<MemoryPackage>;
+}
+
+async function loadProjectsPackage(): Promise<ProjectsPackage> {
+  // @ts-ignore @aeos/cli loads the existing projects package artifact without metadata changes.
+  return import("../../../packages/projects/dist/index.js") as Promise<ProjectsPackage>;
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -368,6 +401,45 @@ function printSearchFailure(reason?: string): void {
   if (reason !== undefined) {
     console.log(`Reason: ${reason}`);
   }
+}
+
+function formatPresence(present: boolean): "present" | "missing" {
+  return present ? "present" : "missing";
+}
+
+async function handleProjectStatus(): Promise<void> {
+  const projects = await loadProjectsPackage();
+  const rootResult = projects.detectProjectRoot(getCwd());
+
+  if (!rootResult.ok) {
+    console.error("Project Status");
+    console.error(`Error: ${rootResult.error.code}`);
+    console.error(`Path: ${rootResult.error.startPath}`);
+    setExitCode(1);
+    return;
+  }
+
+  const metadata = projects.readProjectMetadata(rootResult.rootPath);
+
+  console.log("Project Status");
+  console.log("");
+  console.log("Root:");
+  console.log(metadata.projectRoot);
+  console.log("");
+  console.log("Package:");
+  console.log(metadata.packageName ?? "unknown");
+  console.log("");
+  console.log("Version:");
+  console.log(metadata.packageVersion ?? "unknown");
+  console.log("");
+  console.log("Project Context:");
+  console.log(formatPresence(metadata.hasProjectContext));
+  console.log("");
+  console.log("Agents:");
+  console.log(formatPresence(metadata.hasAgents));
+  console.log("");
+  console.log("Workspace:");
+  console.log(formatPresence(metadata.hasWorkspace));
 }
 
 function readFlagValue(args: readonly string[], flag: string): string | undefined {
@@ -780,6 +852,17 @@ function handleTask(args: readonly string[]): void {
   validateTaskFile(filePath, json);
 }
 
+async function handleProject(args: readonly string[]): Promise<void> {
+  if (args[0] !== "status") {
+    console.error("Error: unknown project command.");
+    console.error("Usage: aeos project status");
+    setExitCode(1);
+    return;
+  }
+
+  await handleProjectStatus();
+}
+
 function handleUnknownCommand(command: string): void {
   console.error(`Error: unknown command '${command}'`);
   console.error("Run 'aeos help' for usage.");
@@ -805,6 +888,10 @@ export function main(argv: readonly string[]): void {
 
     case "search":
       void handleSearch(args);
+      break;
+
+    case "project":
+      void handleProject(args);
       break;
 
     case "task":
