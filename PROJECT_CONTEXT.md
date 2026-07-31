@@ -110,6 +110,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0059: Implement memory package in-memory search index.
 - TASK-0060: Add memory search index typecheck examples.
 - TASK-0061: Implement memory package validation integration.
+- TASK-0062: Add memory validation integration examples.
 
 ## Do Not Load By Default
 
@@ -120,4 +121,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0062 Add memory validation integration examples.
+TASK-0063 Implement memory package file writer design.
