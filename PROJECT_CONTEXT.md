@@ -72,6 +72,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0023: Review and normalize core type exports.
 - TASK-0024: Define core result and error helpers.
 - TASK-0025: Add minimal core result helper typecheck examples.
+- TASK-0026: Define minimal core task validation helpers.
 
 ## Do Not Load By Default
 
@@ -82,4 +83,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0026 Define minimal core task validation helpers.
+TASK-0027 Add task validation typecheck examples.
