@@ -79,6 +79,19 @@
 9. TASK-0093: Extend project context metadata reader. Code. Effort: Medium. Verification: `pnpm --filter @aeos/projects check`.
 10. TASK-0094: Render expanded project context fields. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
 
+## Project Validate MVP Backlog
+
+1. TASK-0088: Implement project validate command. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+2. TASK-0089: Add project validate usage handling. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+3. TASK-0090: Add project validate smoke notes. Docs. Effort: Low. Verification: `git status --short`.
+4. TASK-0091: Review project validate human output. Docs. Effort: Low. Verification: `git status --short`.
+5. TASK-0092: Define project validate JSON contract. Docs. Effort: Low. Verification: `git status --short`.
+6. TASK-0093: Implement project validate JSON output. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+7. TASK-0094: Extract project validation builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+8. TASK-0095: Plan project validation package API. Docs. Effort: Low. Verification: `git status --short`.
+9. TASK-0096: Implement project validation package API. Code. Effort: Medium. Verification: `pnpm --filter @aeos/projects check`.
+10. TASK-0097: Review project validate MVP behavior. Docs. Effort: Medium. Verification: `git status --short`.
+
 ## Memory MVP Backlog
 
 1. TASK-0057: Implement memory package Markdown entry builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/memory check`.

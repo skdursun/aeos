@@ -31,6 +31,7 @@ condition.
 - `docs/PROJECT_MVP_IMPLEMENTATION_PLAN.md`
 - `docs/PROJECT_COMMAND_IMPLEMENTATION_PLAN.md`
 - `docs/PROJECT_CONTEXT_COMMAND_IMPLEMENTATION_PLAN.md`
+- `docs/PROJECT_VALIDATE_IMPLEMENTATION_PLAN.md`
 - `TASKS/backlog.md`
 
 ## Recent Completed Tasks
@@ -55,6 +56,7 @@ condition.
 - TASK-0084: Define project context command plan.
 - TASK-0085: Implement project context command.
 - TASK-0086: Add project context JSON output.
+- TASK-0087: Define project validate command plan.
 
 ## Do Not Load By Default
 
@@ -65,4 +67,4 @@ condition.
 
 ## Next Task
 
-TASK-0087 Implement project validate command plan.
+TASK-0088 Implement project validate command.
