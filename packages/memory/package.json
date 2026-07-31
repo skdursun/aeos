@@ -12,5 +12,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json --pretty false",
     "check": "tsc -p tsconfig.json --pretty false"
+  },
+  "dependencies": {
+    "@aeos/core": "workspace:*"
   }
 }
