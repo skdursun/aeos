@@ -62,20 +62,21 @@ type RememberJsonFailureReason =
   | "missing_title"
   | "missing_type"
   | "invalid_memory_type"
-  | "validation_failed";
+  | "validation_failed"
+  | "filesystem_failed";
 
 type RememberJsonOutput =
   | {
       readonly ok: true;
       readonly type: MemoryType;
       readonly title: string;
-      readonly tags: readonly string[];
-      readonly markdownPrepared: true;
-      readonly persisted: false;
+      readonly path: string;
+      readonly persisted: true;
     }
   | {
       readonly ok: false;
       readonly reason: RememberJsonFailureReason;
+      readonly persisted: false;
       readonly issues: readonly MemoryValidationIssue[];
     };
 
@@ -89,8 +90,17 @@ type MemoryWriteResultSuccess = {
   readonly path: string;
 };
 
+type MemoryStorageTarget = {
+  readonly rootPath: string;
+  readonly collectionPath?: string;
+};
+
 type MemoryPackage = {
   readonly buildMemoryMarkdownEntry: (entry: MemoryEntry) => string;
+  readonly createMemoryStorageTarget: (
+    rootPath: string,
+    collectionPath?: string,
+  ) => MemoryStorageTarget;
   readonly createMemoryWriteRequest: (
     entry: MemoryEntry,
     target: {
@@ -105,6 +115,18 @@ type MemoryPackage = {
     readonly valid: boolean;
     readonly issues: readonly MemoryValidationIssue[];
   };
+  readonly writeMemoryFile: (request: {
+    readonly target: MemoryStorageTarget;
+    readonly path: string;
+    readonly content: string;
+    readonly createParentDirectory?: boolean;
+  }) => Promise<
+    | { readonly ok: true; readonly value: { readonly path: string } }
+    | {
+        readonly ok: false;
+        readonly error: { readonly code: string; readonly message: string };
+      }
+  >;
 };
 
 async function loadMemoryPackage(): Promise<MemoryPackage> {
@@ -388,6 +410,7 @@ async function handleRemember(args: readonly string[]): Promise<void> {
       writeRememberJson({
         ok: false,
         reason: "missing_type",
+        persisted: false,
         issues: [],
       });
       setExitCode(1);
@@ -405,6 +428,7 @@ async function handleRemember(args: readonly string[]): Promise<void> {
       writeRememberJson({
         ok: false,
         reason: "invalid_memory_type",
+        persisted: false,
         issues: [],
       });
       setExitCode(1);
@@ -422,6 +446,7 @@ async function handleRemember(args: readonly string[]): Promise<void> {
       writeRememberJson({
         ok: false,
         reason: "missing_title",
+        persisted: false,
         issues: [],
       });
       setExitCode(1);
@@ -447,6 +472,7 @@ async function handleRemember(args: readonly string[]): Promise<void> {
       writeRememberJson({
         ok: false,
         reason: "validation_failed",
+        persisted: false,
         issues: validation.issues,
       });
       setExitCode(1);
@@ -465,7 +491,7 @@ async function handleRemember(args: readonly string[]): Promise<void> {
 
   const content = memory.buildMemoryMarkdownEntry(entry);
   const writeRequest = memory.createMemoryWriteRequest(entry, {
-    rootPath: "brain",
+    rootPath: ".aeos/memory",
     collectionPath: entry.frontmatter.type,
   });
 
@@ -474,6 +500,7 @@ async function handleRemember(args: readonly string[]): Promise<void> {
       writeRememberJson({
         ok: false,
         reason: "validation_failed",
+        persisted: false,
         issues: [],
       });
       setExitCode(2);
@@ -492,6 +519,7 @@ async function handleRemember(args: readonly string[]): Promise<void> {
       writeRememberJson({
         ok: false,
         reason: "validation_failed",
+        persisted: false,
         issues: [],
       });
       setExitCode(2);
@@ -508,6 +536,7 @@ async function handleRemember(args: readonly string[]): Promise<void> {
       writeRememberJson({
         ok: false,
         reason: "validation_failed",
+        persisted: false,
         issues: [],
       });
       setExitCode(2);
@@ -519,14 +548,39 @@ async function handleRemember(args: readonly string[]): Promise<void> {
     return;
   }
 
+  const fileWriteResult = await memory.writeMemoryFile({
+    target: memory.createMemoryStorageTarget("."),
+    path: writeResult.value.path,
+    content: writeResult.value.content,
+    createParentDirectory: true,
+  });
+
+  if (!fileWriteResult.ok) {
+    if (json) {
+      writeRememberJson({
+        ok: false,
+        reason: "filesystem_failed",
+        persisted: false,
+        issues: [],
+      });
+      setExitCode(2);
+      return;
+    }
+
+    console.error(
+      `Error: ${fileWriteResult.error.message} (${fileWriteResult.error.code})`,
+    );
+    setExitCode(2);
+    return;
+  }
+
   if (json) {
     writeRememberJson({
       ok: true,
       type: entry.frontmatter.type,
       title: entry.frontmatter.title,
-      tags: entry.frontmatter.tags,
-      markdownPrepared: true,
-      persisted: false,
+      path: writeResult.value.path,
+      persisted: true,
     });
     return;
   }

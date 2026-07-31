@@ -1,7 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const cliPath = fileURLToPath(new URL("../dist/index.js", import.meta.url));
@@ -71,6 +78,67 @@ function expectEmptyArray(message, value) {
     fail(message);
   }
 }
+
+function listMemoryFiles() {
+  const memoryRoot = join(projectRoot, ".aeos", "memory");
+
+  if (!existsSync(memoryRoot)) {
+    return [];
+  }
+
+  const files = [];
+  const pending = [memoryRoot];
+
+  while (pending.length > 0) {
+    const currentPath = pending.pop();
+
+    for (const entry of readdirSync(currentPath, { withFileTypes: true })) {
+      const entryPath = join(currentPath, entry.name);
+
+      if (entry.isDirectory()) {
+        pending.push(entryPath);
+      } else if (entry.isFile()) {
+        files.push(entryPath);
+      }
+    }
+  }
+
+  return files.sort();
+}
+
+function extractRememberPath(result) {
+  const pathLine = result.stdout
+    .split("\n")
+    .find((line) => line.startsWith("Path: "));
+
+  if (pathLine === undefined) {
+    fail('remember output did not include "Path: "', result);
+  }
+
+  return pathLine.slice("Path: ".length);
+}
+
+function rememberPathToAbsolute(memoryPath) {
+  const absolutePath = resolve(projectRoot, memoryPath);
+  const memoryRoot = resolve(projectRoot, ".aeos", "memory");
+
+  if (!absolutePath.startsWith(`${memoryRoot}/`)) {
+    fail(`remember path was outside .aeos/memory: ${memoryPath}`);
+  }
+
+  return absolutePath;
+}
+
+const smokeRunId = String(Date.now());
+const createdMemoryPaths = new Set();
+
+process.once("exit", () => {
+  for (const path of createdMemoryPaths) {
+    if (existsSync(path)) {
+      unlinkSync(path);
+    }
+  }
+});
 
 const version = runCli(["--version"]);
 expectExitCode("--version exited nonzero", version, 0);
@@ -193,7 +261,7 @@ const remember = runCli([
   "--type",
   "decision",
   "--title",
-  "Use pnpm workspace",
+  `Smoke human persistence ${smokeRunId}`,
   "--tag",
   "architecture",
 ]);
@@ -204,17 +272,23 @@ expectOutputIncludes(
   "Memory: prepared",
 );
 expectOutputIncludes(
-  'remember output did not include "Path: brain/decision/"',
+  'remember output did not include "Path: .aeos/memory/decision/"',
   remember,
-  "Path: brain/decision/",
+  "Path: .aeos/memory/decision/",
 );
+const rememberPath = extractRememberPath(remember);
+const rememberAbsolutePath = rememberPathToAbsolute(rememberPath);
+createdMemoryPaths.add(rememberAbsolutePath);
+if (!existsSync(rememberAbsolutePath)) {
+  fail("valid remember did not create memory file", remember);
+}
 
 const rememberJson = runCli([
   "remember",
   "--type",
   "decision",
   "--title",
-  "Use pnpm workspace",
+  `Smoke JSON persistence ${smokeRunId}`,
   "--json",
 ]);
 expectExitCode("remember --json exited nonzero", rememberJson, 0);
@@ -225,14 +299,20 @@ const parsedRemember = parseJsonStdout(
 if (
   parsedRemember.ok !== true ||
   parsedRemember.type !== "decision" ||
-  parsedRemember.title !== "Use pnpm workspace" ||
-  parsedRemember.markdownPrepared !== true ||
-  parsedRemember.persisted !== false
+  parsedRemember.title !== `Smoke JSON persistence ${smokeRunId}` ||
+  typeof parsedRemember.path !== "string" ||
+  parsedRemember.path.length === 0 ||
+  parsedRemember.persisted !== true
 ) {
   fail("remember --json output did not match expected success", rememberJson);
 }
-expectEmptyArray("remember --json tags was not empty", parsedRemember.tags);
+const rememberJsonAbsolutePath = rememberPathToAbsolute(parsedRemember.path);
+createdMemoryPaths.add(rememberJsonAbsolutePath);
+if (!existsSync(rememberJsonAbsolutePath)) {
+  fail("remember --json returned path did not exist", rememberJson);
+}
 
+const memoryFilesBeforeInvalidRemember = listMemoryFiles();
 const rememberMissingTitle = runCli(["remember", "--type", "decision"]);
 expectNonzero("remember without title exited zero", rememberMissingTitle);
 expectOutputIncludes(
@@ -240,6 +320,15 @@ expectOutputIncludes(
   rememberMissingTitle,
   "Memory: fail",
 );
+const memoryFilesAfterInvalidRemember = listMemoryFiles();
+if (
+  memoryFilesAfterInvalidRemember.length !== memoryFilesBeforeInvalidRemember.length ||
+  memoryFilesAfterInvalidRemember.some(
+    (path, index) => path !== memoryFilesBeforeInvalidRemember[index],
+  )
+) {
+  fail("invalid remember created a memory file", rememberMissingTitle);
+}
 
 const rememberInvalidType = runCli([
   "remember",
@@ -444,6 +533,12 @@ try {
     fail("invalid task --json output did not match expected failure", invalidTaskJson);
   }
 } finally {
+  for (const path of createdMemoryPaths) {
+    if (existsSync(path)) {
+      unlinkSync(path);
+    }
+  }
+
   rmSync(smokeDir, { recursive: true, force: true });
 }
 
