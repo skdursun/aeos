@@ -113,6 +113,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0062: Add memory validation integration examples.
 - TASK-0063: Implement memory package file writer design.
 - TASK-0064: Add memory writer typecheck examples.
+- TASK-0065: Perform memory package writer review.
 
 ## Do Not Load By Default
 
@@ -123,4 +124,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0065 Implement memory package writer review.
+TASK-0066 Implement aeos remember command plan.

@@ -52,8 +52,15 @@ export function createMemoryWriteRequest(
 export function createMemoryWriteResult(
   request: MemoryWriteRequest,
 ): MemoryWriteResult {
+  const validation = validateMemoryEntry(request.entry);
+
+  if (!validation.valid) {
+    return err(createInvalidMemoryEntryError(validation));
+  }
+
   return ok({
     ...request,
+    validation,
     content: prepareMemoryFileContent(request.entry),
   });
 }
