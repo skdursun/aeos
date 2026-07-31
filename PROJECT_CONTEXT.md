@@ -79,6 +79,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0030: Define minimal policy decision helpers.
 - TASK-0031: Add policy decision typecheck examples.
 - TASK-0032: Define minimal audit event helpers.
+- TASK-0033: Add audit event typecheck examples.
 
 ## Do Not Load By Default
 
@@ -89,4 +90,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0033 Add audit event typecheck examples.
+TASK-0034 Define minimal verification report helpers.
