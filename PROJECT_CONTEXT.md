@@ -29,6 +29,7 @@ condition.
 
 - `AGENTS.md`
 - `docs/PROJECT_MVP_IMPLEMENTATION_PLAN.md`
+- `docs/PROJECT_COMMAND_IMPLEMENTATION_PLAN.md`
 - `TASKS/backlog.md`
 
 ## Recent Completed Tasks
@@ -47,6 +48,7 @@ condition.
 - TASK-0078: Add project root detector typecheck examples.
 - TASK-0079: Implement project metadata reader.
 - TASK-0080: Add project metadata reader examples.
+- TASK-0081: Implement project status command plan.
 
 ## Do Not Load By Default
 
@@ -57,4 +59,4 @@ condition.
 
 ## Next Task
 
-TASK-0081 Implement project status command plan.
+TASK-0082 Implement project status command core flow.
