@@ -20,3 +20,17 @@ export {
   removeMemoryEntry,
   searchMemoryEntries,
 } from "./search-index.js";
+
+export {
+  buildMemoryFilePath,
+  createMemoryWriteRequest,
+  createMemoryWriteResult,
+  prepareMemoryFileContent,
+} from "./writer.js";
+export type {
+  MemoryWriteRequest,
+  MemoryWriteRequestResult,
+  MemoryWriteResult,
+  MemoryWriteSuccess,
+  MemoryWriteTarget,
+} from "./writer.js";
