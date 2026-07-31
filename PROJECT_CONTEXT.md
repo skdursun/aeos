@@ -99,6 +99,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0049: Split CLI helpers into local modules.
 - TASK-0050: Add CLI module smoke stability check.
 - TASK-0051: Implement aeos task validate JSON output.
+- TASK-0052: Review CLI JSON output consistency.
 
 ## Do Not Load By Default
 
@@ -109,4 +110,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0052 Add CLI JSON output consistency review.
+TASK-0053 Implement root-level CLI convenience scripts.

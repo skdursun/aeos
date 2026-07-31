@@ -95,14 +95,10 @@ expectOutputIncludes('status output did not include "Project Root"', status, "Pr
 
 const statusJson = runCli(["status", "--json"]);
 expectExitCode("status --json exited nonzero", statusJson, 0);
-
-let parsedStatus;
-
-try {
-  parsedStatus = JSON.parse(statusJson.stdout);
-} catch {
-  fail("status --json output was not valid JSON", statusJson);
-}
+const parsedStatus = parseJsonStdout(
+  "status --json output was not valid JSON",
+  statusJson,
+);
 
 if (
   typeof parsedStatus.projectRoot !== "string" ||
@@ -162,14 +158,10 @@ if (outputOf(compactContext).length >= outputOf(context).length) {
 
 const contextJson = runCli(["context", "--json"]);
 expectExitCode("context --json exited nonzero", contextJson, 0);
-
-let parsedContext;
-
-try {
-  parsedContext = JSON.parse(contextJson.stdout);
-} catch {
-  fail("context --json output was not valid JSON", contextJson);
-}
+const parsedContext = parseJsonStdout(
+  "context --json output was not valid JSON",
+  contextJson,
+);
 
 if (parsedContext.projectContextPresent !== true) {
   fail("context --json projectContextPresent was not true", contextJson);
