@@ -9,7 +9,11 @@
   "scripts": {
     "check": "tsc -b --pretty false",
     "build": "tsc -b --pretty false",
-    "clean": "find . -name dist -type d -prune -exec rm -rf {} +"
+    "clean": "find . -name dist -type d -prune -exec rm -rf {} +",
+    "cli:check": "pnpm --filter @aeos/cli check",
+    "cli:build": "pnpm --filter @aeos/cli build",
+    "cli:smoke": "pnpm --filter @aeos/cli smoke",
+    "cli:verify": "pnpm cli:check && pnpm cli:build && pnpm cli:smoke"
   },
   "devDependencies": {
     "typescript": "^7.0.2"
