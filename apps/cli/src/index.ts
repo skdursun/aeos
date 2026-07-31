@@ -34,8 +34,6 @@ Commands:
   version
   help`;
 
-const command = process.argv[2] ?? "help";
-
 function formatPresence(isPresent: boolean): "present" | "missing" {
   return isPresent ? "present" : "missing";
 }
@@ -73,10 +71,10 @@ type StatusSnapshot = {
   gitRepositoryPresent: boolean;
 };
 
-function getStatusSnapshot(): StatusSnapshot {
+function createStatus(cwd: string): StatusSnapshot {
   const fs = process.getBuiltinModule("fs");
   const path = process.getBuiltinModule("path");
-  const projectRoot = process.cwd();
+  const projectRoot = cwd;
 
   const packageJsonPath = path.join(projectRoot, "package.json");
   const workspacePath = path.join(projectRoot, "pnpm-workspace.yaml");
@@ -94,9 +92,7 @@ function getStatusSnapshot(): StatusSnapshot {
   };
 }
 
-function printStatus(): void {
-  const status = getStatusSnapshot();
-
+function printStatus(status: StatusSnapshot = createStatus(process.cwd())): void {
   console.log(`AEOS Status
 Project Root: ${status.projectRoot}
 Package: ${status.packageName}
@@ -106,26 +102,36 @@ Agents File: ${formatPresence(status.agentsFilePresent)}
 Git Repository: ${formatYesNo(status.gitRepositoryPresent)}`);
 }
 
-function printStatusJson(): void {
-  process.stdout.write(`${JSON.stringify(getStatusSnapshot())}\n`);
+function printStatusJson(status: StatusSnapshot = createStatus(process.cwd())): void {
+  process.stdout.write(`${JSON.stringify(status)}\n`);
+}
+
+function readProjectContext(cwd: string): string | null {
+  const fs = process.getBuiltinModule("fs");
+  const path = process.getBuiltinModule("path");
+  const projectContextPath = path.join(cwd, "PROJECT_CONTEXT.md");
+
+  if (!fs.existsSync(projectContextPath)) {
+    return null;
+  }
+
+  return fs.readFileSync(projectContextPath, "utf8");
 }
 
 function printContext(): void {
-  const fs = process.getBuiltinModule("fs");
-  const path = process.getBuiltinModule("path");
-  const projectContextPath = path.join(process.cwd(), "PROJECT_CONTEXT.md");
+  const projectContext = readProjectContext(process.cwd());
 
-  if (!fs.existsSync(projectContextPath)) {
+  if (projectContext === null) {
     console.error("Error: PROJECT_CONTEXT.md not found in current directory.");
     process.exitCode = 1;
     return;
   }
 
-  process.stdout.write(fs.readFileSync(projectContextPath, "utf8"));
+  process.stdout.write(projectContext);
 }
 
-function getCompactContext(projectContext: string): string {
-  const lines = projectContext.split(/\r?\n/);
+function createCompactContext(content: string): string {
+  const lines = content.split(/\r?\n/);
   const output: string[] = [];
   const sectionNames = new Set(["Goal", "Next Task"]);
   let activeSection: string | undefined;
@@ -163,19 +169,15 @@ function getCompactContext(projectContext: string): string {
 }
 
 function printCompactContext(): void {
-  const fs = process.getBuiltinModule("fs");
-  const path = process.getBuiltinModule("path");
-  const projectContextPath = path.join(process.cwd(), "PROJECT_CONTEXT.md");
+  const projectContext = readProjectContext(process.cwd());
 
-  if (!fs.existsSync(projectContextPath)) {
+  if (projectContext === null) {
     console.error("Error: PROJECT_CONTEXT.md not found in current directory.");
     process.exitCode = 1;
     return;
   }
 
-  const compactContext = getCompactContext(
-    fs.readFileSync(projectContextPath, "utf8"),
-  );
+  const compactContext = createCompactContext(projectContext);
   process.stdout.write(`${compactContext}\n`);
 }
 
@@ -184,10 +186,10 @@ function countLines(content: string): number {
 }
 
 function printContextJson(): void {
-  const fs = process.getBuiltinModule("fs");
   const path = process.getBuiltinModule("path");
   const projectContextPath = path.join(process.cwd(), "PROJECT_CONTEXT.md");
-  const projectContextPresent = fs.existsSync(projectContextPath);
+  const content = readProjectContext(process.cwd());
+  const projectContextPresent = content !== null;
 
   if (!projectContextPresent) {
     process.stdout.write(
@@ -203,14 +205,12 @@ function printContextJson(): void {
     return;
   }
 
-  const content = fs.readFileSync(projectContextPath, "utf8");
-
   process.stdout.write(
     `${JSON.stringify({
       projectContextPath,
       projectContextPresent,
       content,
-      compact: getCompactContext(content),
+      compact: createCompactContext(content),
       lineCount: countLines(content),
     })}\n`,
   );
@@ -285,65 +285,96 @@ function validateTaskFile(filePath: string | undefined): void {
   process.exitCode = 1;
 }
 
-switch (command) {
-  case "context":
-    try {
-      if (process.argv[3] === "--compact") {
-        printCompactContext();
-      } else if (process.argv[3] === "--json") {
-        printContextJson();
-      } else {
-        printContext();
-      }
-    } catch (error) {
-      console.error("Error: failed to read PROJECT_CONTEXT.md.");
-      if (error instanceof Error) {
-        console.error(error.message);
-      }
-      process.exitCode = 1;
-    }
-    break;
-
-  case "status":
-    try {
-      if (process.argv[3] === "--json") {
-        printStatusJson();
-      } else {
-        printStatus();
-      }
-    } catch (error) {
-      console.error("Error: failed to inspect project status.");
-      if (error instanceof Error) {
-        console.error(error.message);
-      }
-      process.exitCode = 1;
-    }
-    break;
-
-  case "task":
-    if (process.argv[3] !== "validate") {
-      console.error("Error: unknown task command.");
-      console.error("Usage: aeos task validate <path>");
-      process.exitCode = 1;
-      break;
-    }
-
-    validateTaskFile(process.argv[4]);
-    break;
-
-  case "--version":
-  case "version":
-    console.log(versionText);
-    break;
-
-  case "--help":
-  case "help":
-    console.log(helpText);
-    break;
-
-  default:
-    console.error(`Error: unknown command '${command}'`);
-    console.error("Run 'aeos help' for usage.");
-    process.exitCode = 1;
-    break;
+function printVersion(): void {
+  console.log(versionText);
 }
+
+function printHelp(): void {
+  console.log(helpText);
+}
+
+function handleStatus(args: readonly string[]): void {
+  try {
+    if (args[0] === "--json") {
+      printStatusJson();
+    } else {
+      printStatus();
+    }
+  } catch (error) {
+    console.error("Error: failed to inspect project status.");
+    if (error instanceof Error) {
+      console.error(error.message);
+    }
+    process.exitCode = 1;
+  }
+}
+
+function handleContext(args: readonly string[]): void {
+  try {
+    if (args[0] === "--compact") {
+      printCompactContext();
+    } else if (args[0] === "--json") {
+      printContextJson();
+    } else {
+      printContext();
+    }
+  } catch (error) {
+    console.error("Error: failed to read PROJECT_CONTEXT.md.");
+    if (error instanceof Error) {
+      console.error(error.message);
+    }
+    process.exitCode = 1;
+  }
+}
+
+function handleTask(args: readonly string[]): void {
+  if (args[0] !== "validate") {
+    console.error("Error: unknown task command.");
+    console.error("Usage: aeos task validate <path>");
+    process.exitCode = 1;
+    return;
+  }
+
+  validateTaskFile(args[1]);
+}
+
+function handleUnknownCommand(command: string): void {
+  console.error(`Error: unknown command '${command}'`);
+  console.error("Run 'aeos help' for usage.");
+  process.exitCode = 1;
+}
+
+function main(argv: readonly string[]): void {
+  const command = argv[2] ?? "help";
+  const args = argv.slice(3);
+
+  switch (command) {
+    case "context":
+      handleContext(args);
+      break;
+
+    case "status":
+      handleStatus(args);
+      break;
+
+    case "task":
+      handleTask(args);
+      break;
+
+    case "--version":
+    case "version":
+      printVersion();
+      break;
+
+    case "--help":
+    case "help":
+      printHelp();
+      break;
+
+    default:
+      handleUnknownCommand(command);
+      break;
+  }
+}
+
+main(process.argv);
