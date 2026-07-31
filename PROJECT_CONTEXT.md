@@ -102,6 +102,7 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 - TASK-0052: Review CLI JSON output consistency.
 - TASK-0053: Implement root-level CLI convenience scripts.
 - TASK-0054: Add root-level core convenience scripts.
+- TASK-0055: Perform CLI MVP Review.
 
 ## Do Not Load By Default
 
@@ -112,4 +113,4 @@ Every Codex thread/session is stateless and must receive a tiny isolated task wi
 
 ## Next Task
 
-TASK-0055 Perform CLI MVP Review.
+TASK-0056 Define Memory MVP implementation plan.
