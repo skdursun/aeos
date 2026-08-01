@@ -73,6 +73,7 @@ condition.
 - TASK-0097: Implement template selection design.
 - TASK-0098: Add template selection examples.
 - TASK-0099: Define template rendering implementation plan.
+- TASK-0100: Implement template variable resolver.
 
 ## Do Not Load By Default
 
@@ -83,4 +84,4 @@ condition.
 
 ## Next Task
 
-TASK-0100 Implement template variable resolver.
+TASK-0101 Add variable resolver examples.

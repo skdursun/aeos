@@ -42,3 +42,13 @@ export {
   readTemplateMetadata,
   validateTemplateMetadataShape,
 } from "./metadata-reader.js";
+
+export type {
+  TemplateVariableMap,
+  VariableResolveResult,
+} from "./variable-resolver.js";
+
+export {
+  findMissingVariables,
+  resolveTemplateVariables,
+} from "./variable-resolver.js";
