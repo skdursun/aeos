@@ -30,6 +30,7 @@ condition.
 - TASK-0122: Implement aeos init command.
 - TASK-0123: Complete init command JSON and safety review.
 - TASK-0124: Define init generation design.
+- TASK-0125: Implement generation contracts.
 
 ## Do Not Load By Default
 
@@ -40,7 +41,7 @@ condition.
 
 ## Next Task
 
-TASK-0125 Implement generation contracts.
+TASK-0126 Add generation contract examples.
 
 ## Current Plans
 
