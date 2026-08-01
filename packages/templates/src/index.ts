@@ -1,6 +1,22 @@
 export const packageName = "@aeos/templates";
 
 export type {
+  DiscoveredTemplate,
+  TemplateDiscoveryIssue,
+  TemplateDiscoveryIssueCode,
+  TemplateDiscoveryOptions,
+  TemplateDiscoveryResult,
+  TemplateLookupResult,
+} from "./discovery.js";
+
+export {
+  discoverTemplates,
+  findTemplateById,
+  listTemplateIds,
+  templateMetadataFileName,
+} from "./discovery.js";
+
+export type {
   TemplateMetadata,
   TemplateMetadataReadError,
   TemplateMetadataReadErrorCode,
