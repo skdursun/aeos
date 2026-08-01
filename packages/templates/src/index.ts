@@ -17,6 +17,19 @@ export {
 } from "./discovery.js";
 
 export type {
+  TemplateSelectionIssue,
+  TemplateSelectionIssueCode,
+  TemplateSelectionRequest,
+  TemplateSelectionResult,
+  TemplateSelectionValidationResult,
+} from "./selection.js";
+
+export {
+  selectTemplate,
+  validateTemplateSelection,
+} from "./selection.js";
+
+export type {
   TemplateMetadata,
   TemplateMetadataReadError,
   TemplateMetadataReadErrorCode,
