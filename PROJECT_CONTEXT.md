@@ -70,6 +70,7 @@ condition.
 - TASK-0095: Implement template discovery engine.
 - TASK-0096: Add template discovery examples.
 - TASK-0097: Implement template selection design.
+- TASK-0098: Add template selection examples.
 
 ## Do Not Load By Default
 
@@ -80,4 +81,4 @@ condition.
 
 ## Next Task
 
-TASK-0098 Add template selection examples.
+TASK-0099 Implement template rendering plan.
