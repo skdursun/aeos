@@ -25,6 +25,7 @@ condition.
 - Define Template MVP before `aeos init`.
 - Keep template work local, deterministic, dependency-free, and side-effect
   free until generation is explicitly implemented.
+- Define `aeos init` before implementing init workflow code.
 
 ## Relevant Docs For Current Phase
 
@@ -36,6 +37,7 @@ condition.
 - `docs/TEMPLATE_MVP_IMPLEMENTATION_PLAN.md`
 - `docs/TEMPLATE_DISCOVERY_IMPLEMENTATION_PLAN.md`
 - `docs/TEMPLATE_RENDERING_IMPLEMENTATION_PLAN.md`
+- `docs/INIT_IMPLEMENTATION_PLAN.md`
 - `TASKS/backlog.md`
 
 ## Recent Completed Tasks
@@ -78,6 +80,7 @@ condition.
 - TASK-0102: Implement template rendering core flow.
 - TASK-0103: Add renderer examples.
 - TASK-0104: Perform template rendering review.
+- TASK-0105: Define aeos init implementation plan.
 
 ## Do Not Load By Default
 
@@ -88,4 +91,4 @@ condition.
 
 ## Next Task
 
-TASK-0105 Define aeos init implementation plan.
+TASK-0106 Implement init workflow contracts.
