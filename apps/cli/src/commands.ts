@@ -1,6 +1,9 @@
-import { validateAeosTask } from "@aeos/core";
+import { runInitPipeline, validateAeosTask } from "@aeos/core";
 import type {
   AeosTask,
+  InitIssue,
+  InitResult,
+  InitStage,
   MemoryEntry,
   MemorySearchResult,
   MemoryType,
@@ -23,6 +26,8 @@ Commands:
   context --json
   status
   status --json
+  init
+  init --json
   remember --type <type> --title <title>
   remember --type <type> --title <title> --json
   search <query>
@@ -49,6 +54,33 @@ const memoryTypes = [
   "research",
   "postmortem",
 ] as const satisfies readonly MemoryType[];
+
+const initStages = [
+  "project_detection",
+  "template_selection",
+  "variable_resolution",
+  "rendering",
+  "file_writing",
+  "validation",
+] as const satisfies readonly InitStage[];
+
+type InitJsonOutput =
+  | {
+      readonly ok: true;
+      readonly status: "success";
+      readonly stages: readonly InitStage[];
+      readonly artifacts: readonly {
+        readonly path: string;
+        readonly status: string;
+        readonly summary: string;
+        readonly sourcePath?: string;
+      }[];
+    }
+  | {
+      readonly ok: false;
+      readonly status: "failure";
+      readonly errors: readonly InitIssue[];
+    };
 
 type TaskValidationJsonStatus = "pass" | "fail";
 
@@ -341,6 +373,10 @@ function writeSearchJson(value: SearchJsonOutput): void {
   writeJsonLine(value);
 }
 
+function writeInitJson(value: InitJsonOutput): void {
+  writeJsonLine(value);
+}
+
 function writeProjectStatusJson(value: ProjectStatusJsonOutput): void {
   writeJsonLine(value);
 }
@@ -522,6 +558,104 @@ function formatPresence(present: boolean): "present" | "missing" {
 
 function formatValidationStatus(status: ProjectValidationStatus): string {
   return status.toUpperCase();
+}
+
+function formatInitStatus(result: InitResult): "success" | "failure" {
+  return result.ok ? "success" : "failure";
+}
+
+function printInitResult(result: InitResult): void {
+  console.log("AEOS Init");
+  console.log("");
+  console.log("Status:");
+  console.log(formatInitStatus(result));
+  console.log("");
+  console.log("Stages:");
+
+  for (const stage of initStages) {
+    console.log(`- ${stage}`);
+  }
+
+  console.log("");
+  console.log("Artifacts:");
+  console.log(String(result.generatedFiles.length));
+
+  if (result.errors.length > 0) {
+    console.log("");
+    console.log("Errors:");
+
+    for (const error of result.errors) {
+      const path = error.path === undefined ? "" : ` (${error.path})`;
+      console.log(`- ${error.code}: ${error.message}${path}`);
+    }
+  }
+}
+
+function createInitJsonOutput(result: InitResult): InitJsonOutput {
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: "failure",
+      errors: result.errors,
+    };
+  }
+
+  return {
+    ok: true,
+    status: "success",
+    stages: initStages,
+    artifacts: result.generatedFiles.map((file) => ({
+      path: file.path,
+      status: file.status,
+      summary: file.summary,
+      sourcePath: file.sourcePath,
+    })),
+  };
+}
+
+async function handleInit(args: readonly string[]): Promise<void> {
+  const json = args.includes("--json");
+  const unknownArgs = args.filter((arg) => arg !== "--json");
+
+  if (unknownArgs.length > 0) {
+    if (json) {
+      writeInitJson({
+        ok: false,
+        status: "failure",
+        errors: [
+          {
+            code: "init_unknown_option",
+            message: "Unknown init option.",
+          },
+        ],
+      });
+      setExitCode(1);
+      return;
+    }
+
+    console.error("Error: unknown init option.");
+    console.error("Usage: aeos init [--json]");
+    setExitCode(1);
+    return;
+  }
+
+  const result = await runInitPipeline({
+    projectRoot: getCwd(),
+    template: {
+      templateId: "default",
+    },
+    variables: {},
+  });
+
+  if (json) {
+    writeInitJson(createInitJsonOutput(result));
+  } else {
+    printInitResult(result);
+  }
+
+  if (!result.ok) {
+    setExitCode(1);
+  }
 }
 
 function buildProjectValidationResult(
@@ -1348,6 +1482,10 @@ export function main(argv: readonly string[]): void {
 
     case "status":
       handleStatus(args);
+      break;
+
+    case "init":
+      void handleInit(args);
       break;
 
     case "remember":

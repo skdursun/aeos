@@ -83,6 +83,32 @@ function expectEmptyArray(message, value) {
   }
 }
 
+function expectInitJsonShape(message, value) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    typeof value.ok !== "boolean" ||
+    !["success", "failure"].includes(value.status)
+  ) {
+    fail(message);
+  }
+
+  if (value.ok) {
+    if (
+      value.status !== "success" ||
+      !Array.isArray(value.stages) ||
+      !Array.isArray(value.artifacts)
+    ) {
+      fail(message);
+    }
+    return;
+  }
+
+  if (value.status !== "failure" || !Array.isArray(value.errors)) {
+    fail(message);
+  }
+}
+
 function listMemoryFiles() {
   const memoryRoot = join(projectRoot, ".aeos", "memory");
 
@@ -202,6 +228,53 @@ expectOutputIncludes(
   helpCommand,
   "project validate --json",
 );
+expectOutputIncludes(
+  'help output did not include "init"',
+  helpCommand,
+  "init",
+);
+expectOutputIncludes(
+  'help output did not include "init --json"',
+  helpCommand,
+  "init --json",
+);
+
+const init = runCli(["init"]);
+expectNonzero("init exited zero before template selection is configured", init);
+expectOutputIncludes('init output did not include "AEOS Init"', init, "AEOS Init");
+expectOutputIncludes('init output did not include "Status:"', init, "Status:");
+expectOutputIncludes(
+  'init output did not include failure status',
+  init,
+  "failure",
+);
+expectOutputIncludes('init output did not include "Stages:"', init, "Stages:");
+for (const stage of [
+  "project_detection",
+  "template_selection",
+  "variable_resolution",
+  "rendering",
+  "file_writing",
+  "validation",
+]) {
+  expectOutputIncludes(`init output did not include stage ${stage}`, init, `- ${stage}`);
+}
+expectOutputIncludes('init output did not include "Artifacts:"', init, "Artifacts:");
+
+const initJson = runCli(["init", "--json"]);
+expectNonzero("init --json exited zero before template selection is configured", initJson);
+const parsedInitJson = parseJsonStdout(
+  "init --json output was not valid JSON",
+  initJson,
+);
+expectInitJsonShape("init --json output shape was invalid", parsedInitJson);
+if (
+  parsedInitJson.ok !== false ||
+  parsedInitJson.status !== "failure" ||
+  parsedInitJson.errors.length === 0
+) {
+  fail("init --json output did not match expected safe failure", initJson);
+}
 
 const status = runCli(["status"]);
 expectExitCode("status exited nonzero", status, 0);

@@ -39,6 +39,7 @@ condition.
 - TASK-0119: Implement init adapter integration.
 - TASK-0120: Add init integration examples.
 - TASK-0121: Define aeos init CLI implementation plan.
+- TASK-0122: Implement aeos init command.
 
 ## Do Not Load By Default
 
@@ -49,7 +50,7 @@ condition.
 
 ## Next Task
 
-TASK-0122 Implement aeos init command.
+TASK-0123 Add init command JSON and safety review.
 
 ## Current Plans
 
