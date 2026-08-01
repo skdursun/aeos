@@ -82,6 +82,7 @@ condition.
 - TASK-0104: Perform template rendering review.
 - TASK-0105: Define aeos init implementation plan.
 - TASK-0106: Implement init workflow contracts.
+- TASK-0107: Add init workflow contract examples.
 
 ## Do Not Load By Default
 
@@ -92,4 +93,4 @@ condition.
 
 ## Next Task
 
-TASK-0107 Add init workflow contract examples.
+TASK-0108 Define init execution engine plan.
