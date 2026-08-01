@@ -26,21 +26,10 @@ condition.
 
 ## Recent Completed Tasks
 
-- TASK-0109: Implement init execution engine contracts.
-- TASK-0110: Add init execution engine contract examples.
-- TASK-0111: Define init execution pipeline plan.
-- TASK-0112: Implement init pipeline executor.
-- TASK-0113: Add init executor examples.
-- TASK-0114: Implement init pipeline integration plan.
-- TASK-0115: Implement init adapters.
-- TASK-0116: Add init adapter examples.
-- TASK-0117: Implement init pipeline wiring.
-- TASK-0118: Add init pipeline examples.
-- TASK-0119: Implement init adapter integration.
-- TASK-0120: Add init integration examples.
 - TASK-0121: Define aeos init CLI implementation plan.
 - TASK-0122: Implement aeos init command.
 - TASK-0123: Complete init command JSON and safety review.
+- TASK-0124: Define init generation design.
 
 ## Do Not Load By Default
 
@@ -51,8 +40,9 @@ condition.
 
 ## Next Task
 
-TASK-0124 Implement init generation design.
+TASK-0125 Implement generation contracts.
 
 ## Current Plans
 
 - docs/INIT_CLI_IMPLEMENTATION_PLAN.md
+- docs/INIT_GENERATION_IMPLEMENTATION_PLAN.md
