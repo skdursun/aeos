@@ -40,6 +40,7 @@ condition.
 - TASK-0120: Add init integration examples.
 - TASK-0121: Define aeos init CLI implementation plan.
 - TASK-0122: Implement aeos init command.
+- TASK-0123: Complete init command JSON and safety review.
 
 ## Do Not Load By Default
 
@@ -50,7 +51,7 @@ condition.
 
 ## Next Task
 
-TASK-0123 Add init command JSON and safety review.
+TASK-0124 Implement init generation design.
 
 ## Current Plans
 

@@ -136,6 +136,40 @@ function listMemoryFiles() {
   return files.sort();
 }
 
+function listRelativeFiles(rootPath) {
+  if (!existsSync(rootPath)) {
+    return [];
+  }
+
+  const files = [];
+  const pending = [rootPath];
+
+  while (pending.length > 0) {
+    const currentPath = pending.pop();
+
+    for (const entry of readdirSync(currentPath, { withFileTypes: true })) {
+      const entryPath = join(currentPath, entry.name);
+
+      if (entry.isDirectory()) {
+        pending.push(entryPath);
+      } else if (entry.isFile()) {
+        files.push(entryPath.slice(rootPath.length + 1));
+      }
+    }
+  }
+
+  return files.sort();
+}
+
+function expectSameFiles(message, before, after) {
+  if (
+    before.length !== after.length ||
+    after.some((path, index) => path !== before[index])
+  ) {
+    fail(message);
+  }
+}
+
 function extractRememberPath(result) {
   const pathLine = result.stdout
     .split("\n")
@@ -274,6 +308,64 @@ if (
   parsedInitJson.errors.length === 0
 ) {
   fail("init --json output did not match expected safe failure", initJson);
+}
+
+const initUnknownJson = runCli(["init", "--unknown", "--json"]);
+expectNonzero("init unknown option --json exited zero", initUnknownJson);
+const parsedInitUnknownJson = parseJsonStdout(
+  "init unknown option --json output was not valid JSON",
+  initUnknownJson,
+);
+if (
+  parsedInitUnknownJson.ok !== false ||
+  parsedInitUnknownJson.status !== "failure" ||
+  !Array.isArray(parsedInitUnknownJson.errors) ||
+  parsedInitUnknownJson.errors[0]?.code !== "init_unknown_option"
+) {
+  fail("init unknown option --json output did not match expected failure", initUnknownJson);
+}
+
+const initSafetyRoot = mkdtempSync(join(tmpdir(), "aeos-cli-init-safety-"));
+
+try {
+  writeFileSync(join(initSafetyRoot, "package.json"), '{"name":"init-safety"}\n');
+  writeFileSync(
+    join(initSafetyRoot, "PROJECT_CONTEXT.md"),
+    "# Project Context\n\nProject: Init Safety\n",
+  );
+  writeFileSync(join(initSafetyRoot, "AGENTS.md"), "# Agents\n");
+  writeFileSync(join(initSafetyRoot, "pnpm-workspace.yaml"), "packages: []\n");
+
+  const filesBeforeInit = listRelativeFiles(initSafetyRoot);
+  const isolatedInit = runCliFrom(initSafetyRoot, ["init"]);
+  expectNonzero("isolated init exited zero before template selection is configured", isolatedInit);
+  expectOutputIncludes(
+    'isolated init output did not include "AEOS Init"',
+    isolatedInit,
+    "AEOS Init",
+  );
+  expectSameFiles(
+    "isolated init changed files before generation is implemented",
+    filesBeforeInit,
+    listRelativeFiles(initSafetyRoot),
+  );
+
+  const isolatedInitJson = runCliFrom(initSafetyRoot, ["init", "--json"]);
+  expectNonzero(
+    "isolated init --json exited zero before template selection is configured",
+    isolatedInitJson,
+  );
+  expectInitJsonShape(
+    "isolated init --json output shape was invalid",
+    parseJsonStdout("isolated init --json output was not valid JSON", isolatedInitJson),
+  );
+  expectSameFiles(
+    "isolated init --json changed files before generation is implemented",
+    filesBeforeInit,
+    listRelativeFiles(initSafetyRoot),
+  );
+} finally {
+  rmSync(initSafetyRoot, { recursive: true, force: true });
 }
 
 const status = runCli(["status"]);
