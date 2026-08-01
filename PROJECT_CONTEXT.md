@@ -85,6 +85,7 @@ condition.
 - TASK-0106: Implement init workflow contracts.
 - TASK-0107: Add init workflow contract examples.
 - TASK-0108: Define init execution engine plan.
+- TASK-0109: Implement init execution engine contracts.
 
 ## Do Not Load By Default
 
@@ -95,4 +96,4 @@ condition.
 
 ## Next Task
 
-TASK-0109 Implement init execution engine contracts.
+TASK-0110 Add init execution engine contract examples.
