@@ -63,6 +63,7 @@ condition.
 - TASK-0089: Add project validate JSON output.
 - TASK-0090: Perform Project MVP Review.
 - TASK-0091: Define Template MVP implementation plan.
+- TASK-0092: Implement template package metadata reader.
 
 ## Do Not Load By Default
 
@@ -73,4 +74,4 @@ condition.
 
 ## Next Task
 
-TASK-0092 Implement template package metadata reader.
+TASK-0093 Add template metadata reader examples.
