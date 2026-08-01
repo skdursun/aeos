@@ -120,6 +120,21 @@
 9. TASK-0103: Implement template selection by ID. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
 10. TASK-0104: Add template discovery examples. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
 
+## Template Rendering MVP Backlog
+
+1. TASK-0100: Implement template variable resolver. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+2. TASK-0101: Add variable resolver examples. Code. Effort: Low. Verification: `pnpm --filter @aeos/templates check`.
+3. TASK-0102: Define template source file reader. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+4. TASK-0103: Validate template source paths. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+5. TASK-0104: Define placeholder substitution contract. Code/docs. Effort: Low. Verification: `pnpm --filter @aeos/templates check`.
+6. TASK-0105: Implement template content substitution. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+7. TASK-0106: Build template file mapping helper. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+8. TASK-0107: Implement render plan builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+9. TASK-0108: Add render plan validation. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+10. TASK-0109: Implement target conflict checker. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+11. TASK-0110: Implement safe file generation. Code. Effort: High. Verification: `pnpm --filter @aeos/templates check`.
+12. TASK-0111: Add rendering verification summary. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+
 ## Memory MVP Backlog
 
 1. TASK-0057: Implement memory package Markdown entry builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/memory check`.

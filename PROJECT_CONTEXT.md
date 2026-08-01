@@ -35,6 +35,7 @@ condition.
 - `docs/PROJECT_VALIDATE_IMPLEMENTATION_PLAN.md`
 - `docs/TEMPLATE_MVP_IMPLEMENTATION_PLAN.md`
 - `docs/TEMPLATE_DISCOVERY_IMPLEMENTATION_PLAN.md`
+- `docs/TEMPLATE_RENDERING_IMPLEMENTATION_PLAN.md`
 - `TASKS/backlog.md`
 
 ## Recent Completed Tasks
@@ -71,6 +72,7 @@ condition.
 - TASK-0096: Add template discovery examples.
 - TASK-0097: Implement template selection design.
 - TASK-0098: Add template selection examples.
+- TASK-0099: Define template rendering implementation plan.
 
 ## Do Not Load By Default
 
@@ -81,4 +83,4 @@ condition.
 
 ## Next Task
 
-TASK-0099 Implement template rendering plan.
+TASK-0100 Implement template variable resolver.
