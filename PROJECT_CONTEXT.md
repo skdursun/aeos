@@ -64,6 +64,7 @@ condition.
 - TASK-0090: Perform Project MVP Review.
 - TASK-0091: Define Template MVP implementation plan.
 - TASK-0092: Implement template package metadata reader.
+- TASK-0093: Add template metadata reader examples.
 
 ## Do Not Load By Default
 
@@ -74,4 +75,4 @@ condition.
 
 ## Next Task
 
-TASK-0093 Add template metadata reader examples.
+TASK-0094 Implement template discovery plan.
