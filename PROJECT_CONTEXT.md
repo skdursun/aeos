@@ -77,6 +77,7 @@ condition.
 - TASK-0101: Add variable resolver examples.
 - TASK-0102: Implement template rendering core flow.
 - TASK-0103: Add renderer examples.
+- TASK-0104: Perform template rendering review.
 
 ## Do Not Load By Default
 
@@ -87,4 +88,4 @@ condition.
 
 ## Next Task
 
-TASK-0104 Implement template rendering review.
+TASK-0105 Define aeos init implementation plan.

@@ -1,11 +1,6 @@
 import type { TemplateVariableMap } from "./variable-resolver.js";
 import { resolveTemplateVariables } from "./variable-resolver.js";
 
-export interface TemplateRenderInput {
-  readonly content: string;
-  readonly variables: TemplateVariableMap;
-}
-
 export type TemplateRenderResult =
   | {
       readonly ok: true;

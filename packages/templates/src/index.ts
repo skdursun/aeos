@@ -54,7 +54,6 @@ export {
 } from "./variable-resolver.js";
 
 export type {
-  TemplateRenderInput,
   TemplateRenderResult,
   TemplateRenderValidationIssue,
   TemplateRenderValidationIssueCode,

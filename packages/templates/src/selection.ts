@@ -115,9 +115,9 @@ export function validateTemplateSelection(
 ): TemplateSelectionValidationResult {
   if (!result.ok) {
     return {
-      ok: result.issues.length > 0,
+      ok: false,
       issues: result.issues.length > 0
-        ? []
+        ? result.issues
         : [
             {
               code: "template_selection_invalid_request",
