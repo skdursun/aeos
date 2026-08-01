@@ -1,8 +1,10 @@
+import type { InitResult } from "./init.js";
+import type { InitExecutionContext, InitStageResult } from "./init-engine.js";
+import type { InitAdapterSet } from "./init-adapters.js";
 import {
   createDefaultInitPipeline,
   createInitPipelineHandlers,
   runInitPipeline,
-  type InitPipelineHandlers,
 } from "./init-pipeline.js";
 
 const exampleRequest = {
@@ -19,142 +21,146 @@ const exampleRequest = {
   requestedAt: "2026-01-01T00:00:00.000Z",
 } satisfies Parameters<typeof createDefaultInitPipeline>[0];
 
-export const defaultPipelineExample =
-  createDefaultInitPipeline(exampleRequest);
+export const defaultPipelineExample = createDefaultInitPipeline(exampleRequest);
 
-export const injectedHandlerExample: InitPipelineHandlers =
-  createInitPipelineHandlers({
-    project: {
-      runProjectDetection: () => ({
-        stage: "project_detection",
-        status: "success",
-        issues: [],
-        artifacts: [],
-      }),
-    },
-    template: {
-      runTemplateSelection: () => ({
-        stage: "template_selection",
-        status: "success",
-        issues: [],
-        artifacts: [],
-      }),
-      runVariableResolution: () => ({
-        stage: "variable_resolution",
-        status: "success",
-        issues: [],
-        artifacts: [],
-      }),
-    },
-    render: {
-      runRendering: () => ({
-        stage: "rendering",
-        status: "success",
-        issues: [],
-        artifacts: [
-          {
-            path: "AGENTS.md",
-            summary: "Plan AGENTS.md from selected template.",
-            sourcePath: "AGENTS.md.template",
-          },
-        ],
-      }),
-    },
-    write: {
-      runFileWriting: () => ({
-        stage: "file_writing",
-        status: "success",
-        issues: [],
-        artifacts: [
-          {
-            path: "AGENTS.md",
-            summary: "Create AGENTS.md from rendered template.",
-            sourcePath: "AGENTS.md.template",
-          },
-        ],
-      }),
-    },
-    validation: {
-      runValidation: () => ({
-        stage: "validation",
-        status: "success",
-        issues: [],
-        artifacts: [],
-      }),
-    },
-  });
+export const adapterBackedHandlersExample =
+  createInitPipelineHandlers(createSuccessfulExampleAdapters());
 
-export async function successfulPipelineExecutionExample() {
-  const result = await runInitPipeline(exampleRequest, {
-    project: {
-      runProjectDetection: () => ({
-        stage: "project_detection",
-        status: "success",
-        issues: [],
-        artifacts: [],
-      }),
-    },
-    template: {
-      runTemplateSelection: () => ({
-        stage: "template_selection",
-        status: "success",
-        issues: [],
-        artifacts: [],
-      }),
-      runVariableResolution: () => ({
-        stage: "variable_resolution",
-        status: "success",
-        issues: [],
-        artifacts: [],
-      }),
-    },
-    render: {
-      runRendering: () => ({
-        stage: "rendering",
-        status: "success",
-        issues: [],
-        artifacts: [
-          {
-            path: "AGENTS.md",
-            summary: "Plan AGENTS.md from selected template.",
-            sourcePath: "AGENTS.md.template",
-          },
-        ],
-      }),
-    },
-    write: {
-      runFileWriting: () => ({
-        stage: "file_writing",
-        status: "success",
-        issues: [],
-        artifacts: [
-          {
-            path: "AGENTS.md",
-            summary: "Create AGENTS.md from rendered template.",
-            sourcePath: "AGENTS.md.template",
-          },
-        ],
-      }),
-    },
-    validation: {
-      runValidation: () => ({
-        stage: "validation",
-        status: "success",
-        issues: [],
-        artifacts: [],
-      }),
-    },
-  });
+export async function successfulStageFlowExample(): Promise<{
+  readonly ok: boolean;
+  readonly status: InitResult["validation"]["status"];
+  readonly completedStages: readonly string[];
+  readonly generatedArtifacts: readonly GeneratedArtifactSummary[];
+}> {
+  const result = await runInitPipeline(
+    exampleRequest,
+    createSuccessfulExampleAdapters(),
+  );
 
   return {
     ok: result.ok,
     status: result.validation.status,
-    variablesUsed: result.variablesUsed,
+    completedStages: result.validation.checksRun,
+    generatedArtifacts: summarizeGeneratedArtifacts(result),
   };
 }
 
-export async function failedStageExecutionExample() {
-  const result = await runInitPipeline(exampleRequest, {
+export async function failedStageFlowExample(): Promise<{
+  readonly ok: boolean;
+  readonly status: InitResult["validation"]["status"];
+  readonly errorCodes: readonly string[];
+  readonly skippedStages: readonly string[];
+}> {
+  const result = await runInitPipeline(
+    exampleRequest,
+    createFailedExampleAdapters(),
+  );
+
+  return {
+    ok: result.ok,
+    status: result.validation.status,
+    errorCodes: result.errors.map((issue) => issue.code),
+    skippedStages: result.validation.skipped,
+  };
+}
+
+export function handleInitResultExample(result: InitResult):
+  | {
+      readonly kind: "success";
+      readonly generatedArtifacts: readonly GeneratedArtifactSummary[];
+    }
+  | {
+      readonly kind: "failure";
+      readonly status: InitResult["validation"]["status"];
+      readonly errors: readonly string[];
+    } {
+  if (!result.ok) {
+    return {
+      kind: "failure",
+      status: result.validation.status,
+      errors: result.errors.map((issue) => issue.message),
+    };
+  }
+
+  return {
+    kind: "success",
+    generatedArtifacts: summarizeGeneratedArtifacts(result),
+  };
+}
+
+interface GeneratedArtifactSummary {
+  readonly path: string;
+  readonly status: InitResult["generatedFiles"][number]["status"];
+  readonly summary: string;
+  readonly sourcePath?: string;
+}
+
+function createSuccessfulExampleAdapters(): InitAdapterSet {
+  return {
+    project: {
+      runProjectDetection: () =>
+        createStageResult("project_detection", [
+          {
+            path: exampleRequest.projectRoot,
+            summary: "Detected example project root.",
+          },
+        ]),
+    },
+    template: {
+      runTemplateSelection: () =>
+        createStageResult("template_selection", [
+          {
+            path: "/templates/aeos-basic",
+            summary: "Selected aeos-basic template.",
+          },
+        ]),
+      runVariableResolution: (context) =>
+        createStageResult("variable_resolution", [
+          {
+            path: context.request.template.templateId,
+            summary: `Resolved ${context.plan.variableNames.length.toString()} variables.`,
+          },
+        ]),
+    },
+    render: {
+      runRendering: () =>
+        createStageResult("rendering", [
+          {
+            path: "AGENTS.md",
+            summary: "Planned AGENTS.md from selected template.",
+            sourcePath: "AGENTS.md.template",
+          },
+          {
+            path: "PROJECT_CONTEXT.md",
+            summary: "Planned PROJECT_CONTEXT.md from selected template.",
+            sourcePath: "PROJECT_CONTEXT.md.template",
+          },
+        ]),
+    },
+    write: {
+      runFileWriting: (context) =>
+        createStageResult("file_writing", [
+          ...context.generatedFiles.map((file) => ({
+            path: file.path,
+            summary: `Created ${file.path}.`,
+            sourcePath: file.sourcePath,
+          })),
+        ]),
+    },
+    validation: {
+      runValidation: (context) =>
+        createStageResult("validation", [
+          {
+            path: context.plan.targetRoot,
+            summary: `Validated ${context.generatedFiles.length.toString()} generated files.`,
+          },
+        ]),
+    },
+  };
+}
+
+function createFailedExampleAdapters(): InitAdapterSet {
+  return {
     project: {
       runProjectDetection: () => ({
         stage: "project_detection",
@@ -172,76 +178,49 @@ export async function failedStageExecutionExample() {
     validation: {
       runValidation: (context) => ({
         stage: "validation",
-        status: context.validation?.failed.length === 0 ? "success" : "failure",
+        status: "failure",
         issues: context.validation?.failed ?? [],
-        artifacts: [],
-      }),
-    },
-  });
-
-  return {
-    ok: result.ok,
-    errors: result.errors,
-    skippedStages: result.validation.skipped,
-  };
-}
-
-export async function initResultHandlingExample() {
-  const result = await runInitPipeline(exampleRequest);
-
-  if (!result.ok) {
-    return {
-      status: result.validation.status,
-      errors: result.errors.map((issue) => issue.code),
-    };
-  }
-
-  return {
-    status: result.validation.status,
-    generatedPaths: result.generatedFiles.map((file) => file.path),
-  };
-}
-
-export async function artifactAggregationExample() {
-  const result = await runInitPipeline(exampleRequest, {
-    render: {
-      runRendering: () => ({
-        stage: "rendering",
-        status: "success",
-        issues: [],
         artifacts: [
           {
-            path: "README.md",
-            summary: "Plan README.md.",
-            sourcePath: "README.md.template",
+            path: context.plan.targetRoot,
+            summary: "Validation received the failed stage context.",
           },
         ],
       }),
     },
-    write: {
-      runFileWriting: () => ({
-        stage: "file_writing",
-        status: "success",
-        issues: [],
-        artifacts: [
-          {
-            path: "README.md",
-            summary: "Create README.md.",
-            sourcePath: "README.md.template",
-          },
-          {
-            path: "AGENTS.md",
-            summary: "Create AGENTS.md.",
-            sourcePath: "AGENTS.md.template",
-          },
-        ],
-      }),
-    },
-  });
+  };
+}
 
+function createStageResult(
+  stage: InitStageResult["stage"],
+  artifacts: InitStageResult["artifacts"],
+): InitStageResult {
+  return {
+    stage,
+    status: "success",
+    issues: [],
+    artifacts,
+  };
+}
+
+function summarizeGeneratedArtifacts(
+  result: InitResult,
+): readonly GeneratedArtifactSummary[] {
   return result.generatedFiles.map((file) => ({
     path: file.path,
     status: file.status,
+    summary: file.summary,
     sourcePath: file.sourcePath,
   }));
+}
+
+export function adapterBackedContextExample(
+  context: InitExecutionContext,
+): InitStageResult {
+  return createStageResult("validation", [
+    {
+      path: context.plan.targetRoot,
+      summary: `Context has ${context.completedStages.length.toString()} completed stages.`,
+    },
+  ]);
 }
