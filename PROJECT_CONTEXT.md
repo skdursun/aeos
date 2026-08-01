@@ -35,6 +35,7 @@ condition.
 - TASK-0115: Implement init adapters.
 - TASK-0116: Add init adapter examples.
 - TASK-0117: Implement init pipeline wiring.
+- TASK-0118: Add init pipeline examples.
 
 ## Current Planning Docs
 
@@ -49,4 +50,4 @@ condition.
 
 ## Next Task
 
-TASK-0118 Add init pipeline examples.
+TASK-0119 Implement init adapter integration.
