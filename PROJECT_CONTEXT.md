@@ -68,6 +68,7 @@ condition.
 - TASK-0093: Add template metadata reader examples.
 - TASK-0094: Define template discovery implementation plan.
 - TASK-0095: Implement template discovery engine.
+- TASK-0096: Add template discovery examples.
 
 ## Do Not Load By Default
 
@@ -78,4 +79,4 @@ condition.
 
 ## Next Task
 
-TASK-0096 Add template discovery examples.
+TASK-0097 Implement template selection design.
