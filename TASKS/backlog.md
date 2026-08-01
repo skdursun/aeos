@@ -207,6 +207,24 @@
 14. TASK-0128: Review integration boundary behavior. Docs. Effort: Medium. Verification: `git status --short`.
 15. TASK-0129: Define filesystem generation follow-up plan. Docs. Effort: Medium. Verification: `git status --short`.
 
+## Init CLI MVP Backlog
+
+1. TASK-0122: Implement aeos init command routing. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+2. TASK-0123: Add init help text. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+3. TASK-0124: Parse init boolean flags. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+4. TASK-0125: Parse init template flag. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+5. TASK-0126: Parse init variable flags. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+6. TASK-0127: Add init JSON error output. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+7. TASK-0128: Add init human error output. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+8. TASK-0129: Load core init pipeline from CLI. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+9. TASK-0130: Build init request from CLI input. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+10. TASK-0131: Implement non-interactive init execution. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+11. TASK-0132: Add init human result output. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+12. TASK-0133: Add init JSON success output. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+13. TASK-0134: Implement init dry-run CLI behavior. Code. Effort: High. Verification: `pnpm --filter @aeos/cli check`.
+14. TASK-0135: Add init interactive prompts. Code. Effort: High. Verification: `pnpm --filter @aeos/cli check`.
+15. TASK-0136: Review init CLI MVP behavior. Code/docs. Effort: Medium. Verification: `git status --short`.
+
 ## Memory MVP Backlog
 
 1. TASK-0057: Implement memory package Markdown entry builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/memory check`.

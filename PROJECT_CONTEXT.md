@@ -37,6 +37,8 @@ condition.
 - TASK-0117: Implement init pipeline wiring.
 - TASK-0118: Add init pipeline examples.
 - TASK-0119: Implement init adapter integration.
+- TASK-0120: Add init integration examples.
+- TASK-0121: Define aeos init CLI implementation plan.
 
 ## Do Not Load By Default
 
@@ -47,4 +49,8 @@ condition.
 
 ## Next Task
 
-TASK-0120 Add init integration examples.
+TASK-0122 Implement aeos init command.
+
+## Current Plans
+
+- docs/INIT_CLI_IMPLEMENTATION_PLAN.md
