@@ -22,8 +22,9 @@ condition.
 
 - Keep context loading small and intentional.
 - Capture implementation plans before code changes.
-- Define Project MVP before template, verification, and orchestration work.
-- Keep Project MVP commands local, deterministic, and side-effect free.
+- Define Template MVP before `aeos init`.
+- Keep template work local, deterministic, dependency-free, and side-effect
+  free until generation is explicitly implemented.
 
 ## Relevant Docs For Current Phase
 
@@ -32,6 +33,7 @@ condition.
 - `docs/PROJECT_COMMAND_IMPLEMENTATION_PLAN.md`
 - `docs/PROJECT_CONTEXT_COMMAND_IMPLEMENTATION_PLAN.md`
 - `docs/PROJECT_VALIDATE_IMPLEMENTATION_PLAN.md`
+- `docs/TEMPLATE_MVP_IMPLEMENTATION_PLAN.md`
 - `TASKS/backlog.md`
 
 ## Recent Completed Tasks
@@ -60,6 +62,7 @@ condition.
 - TASK-0088: Implement project validate command.
 - TASK-0089: Add project validate JSON output.
 - TASK-0090: Perform Project MVP Review.
+- TASK-0091: Define Template MVP implementation plan.
 
 ## Do Not Load By Default
 
@@ -70,4 +73,4 @@ condition.
 
 ## Next Task
 
-TASK-0091 Define Template MVP implementation plan.
+TASK-0092 Implement template package metadata reader.

@@ -92,6 +92,21 @@
 9. TASK-0096: Implement project validation package API. Code. Effort: Medium. Verification: `pnpm --filter @aeos/projects check`.
 10. TASK-0097: Review project validate MVP behavior. Docs. Effort: Medium. Verification: `git status --short`.
 
+## Template MVP Backlog
+
+1. TASK-0092: Implement template package metadata reader. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+2. TASK-0093: Add template metadata validation issues. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+3. TASK-0094: Implement local template discovery. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+4. TASK-0095: Implement template selection by ID. Code. Effort: Low. Verification: `pnpm --filter @aeos/templates check`.
+5. TASK-0096: Implement template variable validation. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+6. TASK-0097: Define template placeholder rendering contract. Docs. Effort: Low. Verification: `git status --short`.
+7. TASK-0098: Implement template content substitution. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+8. TASK-0099: Implement template render plan builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+9. TASK-0100: Add render path safety validation. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+10. TASK-0101: Implement safe template file generation. Code. Effort: High. Verification: `pnpm --filter @aeos/templates check`.
+11. TASK-0102: Add template verification hook results. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+12. TASK-0103: Review Template MVP package behavior. Docs. Effort: Medium. Verification: `git status --short`.
+
 ## Memory MVP Backlog
 
 1. TASK-0057: Implement memory package Markdown entry builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/memory check`.
