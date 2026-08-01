@@ -153,6 +153,24 @@
 14. TASK-0119: Add aeos init human output. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
 15. TASK-0120: Review init MVP behavior. Docs. Effort: Medium. Verification: `git status --short`.
 
+## Init Engine MVP Backlog
+
+1. TASK-0109: Implement init execution engine contracts. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+2. TASK-0110: Add init engine request validation. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+3. TASK-0111: Add init project detection stage. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+4. TASK-0112: Add init template discovery stage. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+5. TASK-0113: Add init template selection stage. Code. Effort: Low. Verification: `pnpm --filter @aeos/core check`.
+6. TASK-0114: Add init variable resolution stage. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+7. TASK-0115: Define init render plan structure. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+8. TASK-0116: Implement init render planning. Code. Effort: High. Verification: `pnpm --filter @aeos/core check`.
+9. TASK-0117: Add init path safety checks. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+10. TASK-0118: Add init conflict preflight. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+11. TASK-0119: Implement init file writing stage. Code. Effort: High. Verification: `pnpm --filter @aeos/core check`.
+12. TASK-0120: Add init write failure reporting. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+13. TASK-0121: Add init post-generation validation. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+14. TASK-0122: Add init audit and memory summaries. Code. Effort: Low. Verification: `pnpm --filter @aeos/core check`.
+15. TASK-0123: Review init engine MVP behavior. Docs. Effort: Medium. Verification: `git status --short`.
+
 ## Memory MVP Backlog
 
 1. TASK-0057: Implement memory package Markdown entry builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/memory check`.
