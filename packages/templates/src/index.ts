@@ -52,3 +52,16 @@ export {
   findMissingVariables,
   resolveTemplateVariables,
 } from "./variable-resolver.js";
+
+export type {
+  TemplateRenderInput,
+  TemplateRenderResult,
+  TemplateRenderValidationIssue,
+  TemplateRenderValidationIssueCode,
+  TemplateRenderValidationResult,
+} from "./renderer.js";
+
+export {
+  renderTemplate,
+  validateRenderResult,
+} from "./renderer.js";

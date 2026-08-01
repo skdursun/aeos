@@ -75,6 +75,7 @@ condition.
 - TASK-0099: Define template rendering implementation plan.
 - TASK-0100: Implement template variable resolver.
 - TASK-0101: Add variable resolver examples.
+- TASK-0102: Implement template rendering core flow.
 
 ## Do Not Load By Default
 
@@ -85,4 +86,4 @@ condition.
 
 ## Next Task
 
-TASK-0102 Implement template rendering core flow.
+TASK-0103 Add renderer examples.
