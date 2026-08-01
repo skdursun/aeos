@@ -25,7 +25,7 @@ condition.
 - Define Template MVP before `aeos init`.
 - Keep template work local, deterministic, dependency-free, and side-effect
   free until generation is explicitly implemented.
-- Define init execution engine before implementing production init behavior.
+- Define init execution pipeline before implementing production init behavior.
 
 ## Relevant Docs For Current Phase
 
@@ -39,6 +39,7 @@ condition.
 - `docs/TEMPLATE_RENDERING_IMPLEMENTATION_PLAN.md`
 - `docs/INIT_IMPLEMENTATION_PLAN.md`
 - `docs/INIT_ENGINE_IMPLEMENTATION_PLAN.md`
+- `docs/INIT_PIPELINE_IMPLEMENTATION_PLAN.md`
 - `TASKS/backlog.md`
 
 ## Recent Completed Tasks
@@ -87,6 +88,7 @@ condition.
 - TASK-0108: Define init execution engine plan.
 - TASK-0109: Implement init execution engine contracts.
 - TASK-0110: Add init execution engine contract examples.
+- TASK-0111: Define init execution pipeline plan.
 
 ## Do Not Load By Default
 
@@ -97,4 +99,4 @@ condition.
 
 ## Next Task
 
-TASK-0111 Implement init execution pipeline plan.
+TASK-0112 Implement init pipeline executor.
