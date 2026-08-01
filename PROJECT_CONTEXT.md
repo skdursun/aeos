@@ -31,6 +31,7 @@ condition.
 - TASK-0123: Complete init command JSON and safety review.
 - TASK-0124: Define init generation design.
 - TASK-0125: Implement generation contracts.
+- TASK-0126: Add generation contract examples.
 
 ## Do Not Load By Default
 
@@ -41,7 +42,7 @@ condition.
 
 ## Next Task
 
-TASK-0126 Add generation contract examples.
+TASK-0127 Implement generation engine design.
 
 ## Current Plans
 
