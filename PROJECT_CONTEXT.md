@@ -31,6 +31,11 @@ condition.
 - TASK-0111: Define init execution pipeline plan.
 - TASK-0112: Implement init pipeline executor.
 - TASK-0113: Add init executor examples.
+- TASK-0114: Implement init pipeline integration plan.
+
+## Current Planning Docs
+
+- `docs/INIT_PIPELINE_INTEGRATION_PLAN.md`
 
 ## Do Not Load By Default
 
@@ -41,4 +46,4 @@ condition.
 
 ## Next Task
 
-TASK-0114 Implement init pipeline integration plan.
+TASK-0115 Implement init adapters.

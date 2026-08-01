@@ -189,6 +189,24 @@
 14. TASK-0125: Implement init validation summary builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
 15. TASK-0126: Review init pipeline MVP behavior. Docs. Effort: Medium. Verification: `git status --short`.
 
+## Init Pipeline Integration MVP Backlog
+
+1. TASK-0115: Implement init adapters. Code. Effort: High. Verification: `pnpm --filter @aeos/core check`.
+2. TASK-0116: Add init adapter examples. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+3. TASK-0117: Implement project detection integration adapter. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+4. TASK-0118: Add project detection integration examples. Code. Effort: Low. Verification: `pnpm --filter @aeos/core check`.
+5. TASK-0119: Implement template selection integration adapter. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+6. TASK-0120: Add template selection integration examples. Code. Effort: Low. Verification: `pnpm --filter @aeos/core check`.
+7. TASK-0121: Implement variable resolution integration adapter. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+8. TASK-0122: Add variable resolution integration examples. Code. Effort: Low. Verification: `pnpm --filter @aeos/core check`.
+9. TASK-0123: Implement rendering integration adapter. Code. Effort: High. Verification: `pnpm --filter @aeos/core check`.
+10. TASK-0124: Add rendering integration examples. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+11. TASK-0125: Add file writing placeholder integration. Code. Effort: Low. Verification: `pnpm --filter @aeos/core check`.
+12. TASK-0126: Add audit-ready summary integration. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+13. TASK-0127: Add memory-ready summary integration. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+14. TASK-0128: Review integration boundary behavior. Docs. Effort: Medium. Verification: `git status --short`.
+15. TASK-0129: Define filesystem generation follow-up plan. Docs. Effort: Medium. Verification: `git status --short`.
+
 ## Memory MVP Backlog
 
 1. TASK-0057: Implement memory package Markdown entry builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/memory check`.
