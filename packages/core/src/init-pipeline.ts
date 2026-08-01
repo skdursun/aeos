@@ -1,6 +1,7 @@
 import type { InitRequest, InitResult } from "./init.js";
 import type { InitAdapterSet } from "./init-adapters.js";
 import {
+  createDefaultInitAdapters,
   createInitStageHandlers,
   type InitAdapterStageHandlers,
 } from "./init-adapters.js";
@@ -33,7 +34,7 @@ export function createDefaultInitPipeline(
 
 export async function runInitPipeline(
   request: InitRequest,
-  adapters: InitAdapterSet = {},
+  adapters: InitAdapterSet = createDefaultInitAdapters(),
   options: InitPipelineOptions = {},
 ): Promise<InitResult> {
   const handlers = createInitPipelineHandlers(adapters);
