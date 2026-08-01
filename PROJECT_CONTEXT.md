@@ -34,6 +34,7 @@ condition.
 - `docs/PROJECT_CONTEXT_COMMAND_IMPLEMENTATION_PLAN.md`
 - `docs/PROJECT_VALIDATE_IMPLEMENTATION_PLAN.md`
 - `docs/TEMPLATE_MVP_IMPLEMENTATION_PLAN.md`
+- `docs/TEMPLATE_DISCOVERY_IMPLEMENTATION_PLAN.md`
 - `TASKS/backlog.md`
 
 ## Recent Completed Tasks
@@ -65,6 +66,7 @@ condition.
 - TASK-0091: Define Template MVP implementation plan.
 - TASK-0092: Implement template package metadata reader.
 - TASK-0093: Add template metadata reader examples.
+- TASK-0094: Define template discovery implementation plan.
 
 ## Do Not Load By Default
 
@@ -75,4 +77,4 @@ condition.
 
 ## Next Task
 
-TASK-0094 Implement template discovery plan.
+TASK-0095 Implement template discovery engine.

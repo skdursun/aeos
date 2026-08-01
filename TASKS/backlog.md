@@ -107,6 +107,19 @@
 11. TASK-0102: Add template verification hook results. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
 12. TASK-0103: Review Template MVP package behavior. Docs. Effort: Medium. Verification: `git status --short`.
 
+## Template Discovery MVP Backlog
+
+1. TASK-0095: Implement template discovery engine. Code. Effort: Low. Verification: `pnpm --filter @aeos/templates check`.
+2. TASK-0096: Add template metadata filename constant. Code. Effort: Low. Verification: `pnpm --filter @aeos/templates check`.
+3. TASK-0097: Implement templates root entry reader. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+4. TASK-0098: Filter direct child template directories. Code. Effort: Low. Verification: `pnpm --filter @aeos/templates check`.
+5. TASK-0099: Build template candidate metadata paths. Code. Effort: Low. Verification: `pnpm --filter @aeos/templates check`.
+6. TASK-0100: Read candidate metadata during discovery. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+7. TASK-0101: Sort discovered templates and discovery issues. Code. Effort: Low. Verification: `pnpm --filter @aeos/templates check`.
+8. TASK-0102: Detect duplicate template IDs. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+9. TASK-0103: Implement template selection by ID. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+10. TASK-0104: Add template discovery examples. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+
 ## Memory MVP Backlog
 
 1. TASK-0057: Implement memory package Markdown entry builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/memory check`.
