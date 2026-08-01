@@ -32,6 +32,7 @@ condition.
 - TASK-0112: Implement init pipeline executor.
 - TASK-0113: Add init executor examples.
 - TASK-0114: Implement init pipeline integration plan.
+- TASK-0115: Implement init adapters.
 
 ## Current Planning Docs
 
@@ -46,4 +47,4 @@ condition.
 
 ## Next Task
 
-TASK-0115 Implement init adapters.
+TASK-0116 Add init adapter examples.
