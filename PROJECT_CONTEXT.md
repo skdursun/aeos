@@ -48,6 +48,7 @@ condition.
 - TASK-0177: Design smart template recommendation CLI.
 - TASK-0178: Implement built-in smart template candidates.
 - TASK-0179: Add built-in smart template candidate examples.
+- TASK-0180: Add built-in smart template candidate smoke tests.
 
 ## Do Not Load By Default
 
@@ -58,7 +59,7 @@ condition.
 
 ## Next Task
 
-TASK-0180 Add built-in smart template candidate smoke tests.
+TASK-0181 Implement aeos template recommend command.
 
 ## Current Plans
 

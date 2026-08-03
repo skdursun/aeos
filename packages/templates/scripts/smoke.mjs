@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 
 import {
+  getBuiltInSmartTemplateCandidateById,
+  listBuiltInSmartTemplateCandidates,
   scoreSmartTemplateCandidate,
   selectSmartTemplate,
 } from "../dist/index.js";
@@ -282,6 +284,199 @@ const genericCandidate = candidate("generic-aeos", {
     ["custom-only-next"],
   );
   assert.equal(result.recommendation.selectedCandidate?.templateId, "custom-only-next");
+}
+
+{
+  const first = listBuiltInSmartTemplateCandidates();
+  const second = listBuiltInSmartTemplateCandidates();
+  const expectedTemplateIds = [
+    "aeos-generic-minimal",
+    "aeos-nextjs-typescript",
+    "aeos-wordpress-php",
+    "aeos-php-composer",
+  ];
+
+  assert.deepEqual(
+    first.map((item) => item.templateId),
+    expectedTemplateIds,
+    "built-in smart template candidates must stay deterministically ordered",
+  );
+  assert.deepEqual(second, first, "repeated built-in candidate listing must be stable");
+}
+
+{
+  assert.doesNotThrow(() => getBuiltInSmartTemplateCandidateById("aeos-nextjs-typescript"));
+  assert.doesNotThrow(() => getBuiltInSmartTemplateCandidateById("aeos-wordpress-php"));
+  assert.equal(
+    getBuiltInSmartTemplateCandidateById("aeos-nextjs-typescript")?.templateId,
+    "aeos-nextjs-typescript",
+  );
+  assert.equal(
+    getBuiltInSmartTemplateCandidateById("aeos-wordpress-php")?.templateId,
+    "aeos-wordpress-php",
+  );
+  assert.equal(getBuiltInSmartTemplateCandidateById("missing-template"), undefined);
+}
+
+{
+  const builtInCandidates = listBuiltInSmartTemplateCandidates();
+  const result = select({
+    profile: profile({
+      summary: {
+        confidence: "high",
+        primaryLanguage: "typescript",
+        primaryFramework: "nextjs",
+        primaryPackageManager: "pnpm",
+        primaryRuntime: "node",
+      },
+      evidenceIds: [
+        "language:typescript:tsconfig",
+        "framework:nextjs:dependency",
+        "package-manager:pnpm:lockfile",
+        "runtime:node:package",
+      ],
+    }),
+    candidates: builtInCandidates,
+  });
+
+  assert.equal(result.recommendation.selectedCandidate?.templateId, "aeos-nextjs-typescript");
+  assert.equal(result.fallbackUsed, false);
+  assert.ok(result.recommendation.evidence.ruleIds.length > 0);
+}
+
+{
+  const builtInCandidates = listBuiltInSmartTemplateCandidates();
+  const result = select({
+    profile: profile({
+      summary: {
+        confidence: "high",
+        primaryLanguage: "php",
+        primaryFramework: "wordpress",
+        primaryPackageManager: "composer",
+        primaryRuntime: "php",
+      },
+      evidenceIds: [
+        "language:php:composer",
+        "framework:wordpress:files",
+        "package-manager:composer:lockfile",
+        "runtime:php:composer",
+      ],
+    }),
+    candidates: builtInCandidates,
+  });
+
+  assert.equal(result.recommendation.selectedCandidate?.templateId, "aeos-wordpress-php");
+  assert.equal(result.fallbackUsed, false);
+  assert.ok(result.recommendation.evidence.ruleIds.length > 0);
+}
+
+{
+  const builtInCandidates = listBuiltInSmartTemplateCandidates();
+  const result = select({
+    profile: profile({
+      summary: {
+        confidence: "high",
+        primaryLanguage: "php",
+        primaryFramework: "unknown",
+        primaryPackageManager: "composer",
+        primaryRuntime: "php",
+      },
+      evidenceIds: [
+        "language:php:composer",
+        "package-manager:composer:lockfile",
+        "runtime:php:composer",
+      ],
+    }),
+    candidates: builtInCandidates,
+  });
+
+  assert.equal(
+    result.recommendation.selectedCandidate?.templateId,
+    "aeos-php-composer",
+    "PHP/composer without WordPress evidence should deterministically prefer the more specific non-WordPress candidate",
+  );
+  assert.equal(result.fallbackUsed, false);
+}
+
+{
+  const builtInCandidates = listBuiltInSmartTemplateCandidates();
+  const result = select({
+    profile: profile({
+      summary: {
+        confidence: "unknown",
+      },
+    }),
+    candidates: builtInCandidates,
+  });
+
+  assert.equal(result.recommendation.selectedCandidate, undefined);
+  assert.equal(result.fallbackUsed, true);
+  assert.equal(result.recommendation.fallback, "generic");
+  assert.equal(result.recommendation.confidence, "unknown");
+  assert.ok(result.recommendation.evidence.ruleIds.includes("fallback.generic"));
+  assert.ok(result.issues.some((issue) => issue.code === "no_confident_match"));
+}
+
+{
+  const builtInCandidates = listBuiltInSmartTemplateCandidates();
+  const expectedTemplateIds = builtInCandidates.map((item) => item.templateId).sort();
+  const result = select({
+    profile: profile({
+      summary: {
+        confidence: "high",
+        primaryLanguage: "typescript",
+        primaryFramework: "nextjs",
+        primaryPackageManager: "pnpm",
+        primaryRuntime: "node",
+      },
+      evidenceIds: [
+        "language:typescript:tsconfig",
+        "framework:nextjs:dependency",
+        "package-manager:pnpm:lockfile",
+        "runtime:node:package",
+      ],
+    }),
+    candidates: builtInCandidates,
+  });
+
+  assert.deepEqual(
+    result.candidates.map((item) => item.templateId).sort(),
+    expectedTemplateIds,
+    "selector must only return supplied built-in smart template candidates",
+  );
+  assert.ok(
+    result.candidates.every((item) => expectedTemplateIds.includes(item.templateId)),
+    "selector result must not include invented catalog candidates",
+  );
+}
+
+{
+  const first = listBuiltInSmartTemplateCandidates();
+
+  first[0].templateId = "mutated-local-copy";
+  first[1].supportedLanguages.push("mutated-language");
+  first[2].evidence.ruleIds.push("mutated-rule");
+  first[3].issues.push({
+    code: "unknown",
+    message: "mutated issue",
+    severity: "info",
+  });
+
+  const later = listBuiltInSmartTemplateCandidates();
+
+  assert.deepEqual(
+    later.map((item) => item.templateId),
+    [
+      "aeos-generic-minimal",
+      "aeos-nextjs-typescript",
+      "aeos-wordpress-php",
+      "aeos-php-composer",
+    ],
+    "mutating a listed candidate must not affect later built-in candidate lists",
+  );
+  assert.equal(later[1].supportedLanguages.includes("mutated-language"), false);
+  assert.equal(later[2].evidence.ruleIds.includes("mutated-rule"), false);
+  assert.equal(later[3].issues.some((issue) => issue.message === "mutated issue"), false);
 }
 
 console.log("smart template selector smoke passed");
