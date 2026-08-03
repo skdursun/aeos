@@ -36,6 +36,7 @@ condition.
 - TASK-0128: Add generation engine examples.
 - TASK-0129: Integrate generation engine into init pipeline.
 - TASK-0130: Add init pipeline generation smoke examples.
+- TASK-0131: Implement filesystem generation adapter design.
 
 ## Do Not Load By Default
 
@@ -46,7 +47,7 @@ condition.
 
 ## Next Task
 
-TASK-0131 Implement filesystem generation adapter design.
+TASK-0132 Add filesystem generation adapter examples.
 
 ## Current Plans
 
