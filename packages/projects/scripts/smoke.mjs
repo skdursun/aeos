@@ -4,8 +4,11 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  buildProjectIntelligenceProfile,
   collectProjectScanEntries,
+  countProjectIntelligenceProfile,
   createDefaultProjectIntelligenceDetectorInput,
+  groupProjectEvidenceBySignal,
   listProjectIntelligenceSignalDefinitions,
   matchProjectIntelligenceSignals,
 } from "../dist/index.js";
@@ -99,6 +102,34 @@ function assertEvidenceSignalIfSupported(result, signalId) {
   if (hasSignalDefinition(signalId)) {
     assertEvidenceSignals(result, [signalId]);
   }
+}
+
+function evidence({
+  id,
+  category,
+  source = "file",
+  path,
+  signal,
+  reason = "Smoke test evidence.",
+  confidence,
+}) {
+  return {
+    id: id ?? `evidence:${path}:${signal}`,
+    category,
+    source,
+    path,
+    signal,
+    reason,
+    confidence,
+  };
+}
+
+function signalValues(signals, key) {
+  return signals.map((signal) => signal[key]);
+}
+
+function evidenceIds(signals) {
+  return signals.flatMap((signal) => signal.evidence);
 }
 
 async function smokeBasicDeterministicScan() {
@@ -449,6 +480,373 @@ function smokeSignalMatcherCustomDefinitionFiltering() {
   ]);
 }
 
+function smokeProfileBuilderTypescriptNextProfileAssembly() {
+  const profile = buildProjectIntelligenceProfile({
+    projectRoot: "/project/typescript-next",
+    evidence: [
+      evidence({
+        category: "language",
+        source: "manifest",
+        path: "package.json",
+        signal: "language.javascript.package_json",
+        confidence: "high",
+      }),
+      evidence({
+        category: "runtime",
+        source: "manifest",
+        path: "package.json",
+        signal: "runtime.node.package_json",
+        confidence: "high",
+      }),
+      evidence({
+        category: "framework",
+        path: "next.config.ts",
+        signal: "framework.nextjs.config_ts",
+        confidence: "high",
+      }),
+      evidence({
+        category: "package_manager",
+        source: "lockfile",
+        path: "pnpm-lock.yaml",
+        signal: "package_manager.pnpm.lockfile",
+        confidence: "high",
+      }),
+      evidence({
+        category: "framework",
+        path: "vite.config.ts",
+        signal: "framework.react.vite_config_ts",
+        confidence: "medium",
+      }),
+      evidence({
+        category: "language",
+        path: "tsconfig.json",
+        signal: "language.typescript.tsconfig",
+        confidence: "high",
+      }),
+    ],
+  });
+  const counts = countProjectIntelligenceProfile(profile);
+
+  assert.deepEqual(signalValues(profile.languages, "language"), [
+    "javascript",
+    "typescript",
+  ]);
+  assert.deepEqual(signalValues(profile.frameworks, "framework"), [
+    "nextjs",
+    "react",
+  ]);
+  assert.deepEqual(signalValues(profile.packageManagers, "packageManager"), [
+    "pnpm",
+  ]);
+  assert.deepEqual(signalValues(profile.runtimes, "runtime"), ["node"]);
+  assert.equal(profile.summary.primaryLanguage, "javascript");
+  assert.equal(profile.summary.primaryFramework, "nextjs");
+  assert.equal(profile.summary.primaryPackageManager, "pnpm");
+  assert.equal(profile.summary.primaryRuntime, "node");
+  assert.equal(profile.summary.confidence, "high");
+  assert.deepEqual(counts, {
+    languageCount: 2,
+    frameworkCount: 2,
+    packageManagerCount: 1,
+    runtimeCount: 1,
+    infrastructureCount: 0,
+    evidenceCount: 6,
+    issueCount: 0,
+  });
+  assert.equal(evidenceIds(profile.languages).length > 0, true);
+  assert.equal(profile.evidence.length, 6);
+}
+
+function smokeProfileBuilderPhpWordpressProfileAssembly() {
+  const profile = buildProjectIntelligenceProfile({
+    projectRoot: "/project/php-wordpress",
+    evidence: [
+      evidence({
+        category: "framework",
+        path: "wp-config.php",
+        signal: "framework.wordpress.wp_config",
+        confidence: "high",
+      }),
+      evidence({
+        category: "language",
+        source: "manifest",
+        path: "composer.json",
+        signal: "language.php.composer_json",
+        confidence: "high",
+      }),
+      evidence({
+        category: "runtime",
+        source: "manifest",
+        path: "composer.json",
+        signal: "runtime.php.composer_json",
+        confidence: "high",
+      }),
+      evidence({
+        category: "package_manager",
+        source: "lockfile",
+        path: "composer.lock",
+        signal: "package_manager.composer.lockfile",
+        confidence: "high",
+      }),
+      evidence({
+        category: "language",
+        path: "index.php",
+        signal: "language.php.php",
+        confidence: "low",
+      }),
+    ],
+  });
+  const counts = countProjectIntelligenceProfile(profile);
+
+  assert.deepEqual(signalValues(profile.languages, "language"), ["php"]);
+  assert.deepEqual(signalValues(profile.frameworks, "framework"), ["wordpress"]);
+  assert.deepEqual(signalValues(profile.packageManagers, "packageManager"), [
+    "composer",
+  ]);
+  assert.deepEqual(signalValues(profile.runtimes, "runtime"), ["php"]);
+  assert.equal(profile.summary.primaryLanguage, "php");
+  assert.equal(profile.summary.primaryFramework, "wordpress");
+  assert.equal(profile.summary.primaryPackageManager, "composer");
+  assert.equal(profile.summary.primaryRuntime, "php");
+  assert.deepEqual(counts, {
+    languageCount: 1,
+    frameworkCount: 1,
+    packageManagerCount: 1,
+    runtimeCount: 1,
+    infrastructureCount: 0,
+    evidenceCount: 5,
+    issueCount: 0,
+  });
+}
+
+function smokeProfileBuilderInfrastructureProfileAssembly() {
+  const profile = buildProjectIntelligenceProfile({
+    projectRoot: "/project/infrastructure",
+    evidence: [
+      evidence({
+        category: "infrastructure",
+        path: "main.tf",
+        signal: "infrastructure.terraform.main_tf",
+        confidence: "high",
+      }),
+      evidence({
+        category: "infrastructure",
+        path: ".github/workflows",
+        signal: "infrastructure.github_actions.workflows",
+        confidence: "high",
+      }),
+      evidence({
+        category: "infrastructure",
+        path: "Dockerfile",
+        signal: "infrastructure.docker.dockerfile",
+        confidence: "high",
+      }),
+    ],
+  });
+
+  assert.deepEqual(signalValues(profile.infrastructure, "infrastructure"), [
+    "docker",
+    "github_actions",
+    "terraform",
+  ]);
+  assert.equal(profile.summary.hasInfrastructure, true);
+  assert.equal(countProjectIntelligenceProfile(profile).infrastructureCount, 3);
+}
+
+function smokeProfileBuilderConfidenceAggregation() {
+  const profile = buildProjectIntelligenceProfile({
+    projectRoot: "/project/confidence",
+    evidence: [
+      evidence({
+        id: "evidence:unknown",
+        category: "language",
+        path: "README",
+        signal: "language.typescript.unknown",
+        confidence: "unknown",
+      }),
+      evidence({
+        id: "evidence:low",
+        category: "language",
+        path: "src/index.ts",
+        signal: "language.typescript.ts",
+        confidence: "low",
+      }),
+      evidence({
+        id: "evidence:medium",
+        category: "language",
+        path: "package.json",
+        signal: "language.typescript.package",
+        confidence: "medium",
+      }),
+      evidence({
+        id: "evidence:high",
+        category: "language",
+        path: "tsconfig.json",
+        signal: "language.typescript.tsconfig",
+        confidence: "high",
+      }),
+    ],
+  });
+
+  assert.equal(profile.languages[0]?.language, "typescript");
+  assert.equal(profile.languages[0]?.confidence, "high");
+  assert.equal(profile.summary.confidence, "high");
+}
+
+function smokeProfileBuilderDeduplication() {
+  const duplicate = evidence({
+    id: "evidence:tsconfig",
+    category: "language",
+    path: "tsconfig.json",
+    signal: "language.typescript.tsconfig",
+    confidence: "high",
+  });
+  const profile = buildProjectIntelligenceProfile({
+    projectRoot: "/project/deduplication",
+    evidence: [duplicate, duplicate],
+  });
+
+  assert.deepEqual(signalValues(profile.languages, "language"), ["typescript"]);
+  assert.deepEqual(profile.languages[0]?.evidence, ["evidence:tsconfig"]);
+}
+
+function smokeProfileBuilderDeterministicOrdering() {
+  const profile = buildProjectIntelligenceProfile({
+    projectRoot: "/project/ordering",
+    evidence: [
+      evidence({
+        category: "framework",
+        path: "vite.config.ts",
+        signal: "framework.react.vite_config_ts",
+        confidence: "medium",
+      }),
+      evidence({
+        category: "language",
+        path: "tsconfig.json",
+        signal: "language.typescript.tsconfig",
+        confidence: "high",
+      }),
+      evidence({
+        category: "package_manager",
+        source: "lockfile",
+        path: "pnpm-lock.yaml",
+        signal: "package_manager.pnpm.lockfile",
+        confidence: "high",
+      }),
+      evidence({
+        category: "language",
+        source: "manifest",
+        path: "package.json",
+        signal: "language.javascript.package_json",
+        confidence: "high",
+      }),
+      evidence({
+        category: "framework",
+        path: "next.config.ts",
+        signal: "framework.nextjs.config_ts",
+        confidence: "high",
+      }),
+      evidence({
+        category: "infrastructure",
+        path: "main.tf",
+        signal: "infrastructure.terraform.main_tf",
+        confidence: "high",
+      }),
+      evidence({
+        category: "infrastructure",
+        path: "Dockerfile",
+        signal: "infrastructure.docker.dockerfile",
+        confidence: "high",
+      }),
+    ],
+  });
+
+  assert.deepEqual(signalValues(profile.languages, "language"), [
+    "javascript",
+    "typescript",
+  ]);
+  assert.deepEqual(signalValues(profile.frameworks, "framework"), [
+    "nextjs",
+    "react",
+  ]);
+  assert.deepEqual(signalValues(profile.infrastructure, "infrastructure"), [
+    "docker",
+    "terraform",
+  ]);
+}
+
+function smokeProfileBuilderIssuePreservation() {
+  const issues = [
+    {
+      code: "profile.issue.one",
+      message: "First issue.",
+      severity: "warning",
+      evidence: ["evidence:one"],
+    },
+    {
+      code: "profile.issue.two",
+      message: "Second issue.",
+      severity: "info",
+      evidence: [],
+    },
+  ];
+  const profile = buildProjectIntelligenceProfile({
+    projectRoot: "/project/issues",
+    evidence: [],
+    issues,
+  });
+
+  assert.equal(profile.issues, issues);
+  assert.deepEqual(profile.issues, issues);
+  assert.equal(countProjectIntelligenceProfile(profile).issueCount, 2);
+}
+
+function smokeProfileBuilderEvidencePreservation() {
+  const unsortedEvidence = [
+    evidence({
+      id: "evidence:z",
+      category: "language",
+      path: "z.ts",
+      signal: "language.typescript.ts",
+      confidence: "low",
+    }),
+    evidence({
+      id: "evidence:a",
+      category: "language",
+      path: "a.ts",
+      signal: "language.typescript.ts",
+      confidence: "low",
+    }),
+  ];
+  const profile = buildProjectIntelligenceProfile({
+    projectRoot: "/project/evidence",
+    evidence: unsortedEvidence,
+  });
+  const grouped = groupProjectEvidenceBySignal([
+    evidence({
+      id: "evidence:b",
+      category: "language",
+      path: "b.ts",
+      signal: "language.typescript.ts",
+      confidence: "low",
+    }),
+    evidence({
+      id: "evidence:a",
+      category: "framework",
+      path: "a.config.ts",
+      signal: "framework.react.vite_config_ts",
+      confidence: "medium",
+    }),
+  ]);
+
+  assert.equal(profile.evidence, unsortedEvidence);
+  assert.deepEqual(profile.evidence.map((item) => item.id), ["evidence:z", "evidence:a"]);
+  assert.deepEqual(Object.keys(grouped), [
+    "framework.react.vite_config_ts",
+    "language.typescript.ts",
+  ]);
+}
+
 async function cleanup() {
   for (const root of createdRoots.reverse()) {
     await rm(root, { recursive: true, force: true });
@@ -469,6 +867,14 @@ try {
   smokeSignalMatcherDeterministicOrdering();
   smokeSignalMatcherUnsupportedDependencyName();
   smokeSignalMatcherCustomDefinitionFiltering();
+  smokeProfileBuilderTypescriptNextProfileAssembly();
+  smokeProfileBuilderPhpWordpressProfileAssembly();
+  smokeProfileBuilderInfrastructureProfileAssembly();
+  smokeProfileBuilderConfidenceAggregation();
+  smokeProfileBuilderDeduplication();
+  smokeProfileBuilderDeterministicOrdering();
+  smokeProfileBuilderIssuePreservation();
+  smokeProfileBuilderEvidencePreservation();
 
   if (skipped.length > 0) {
     console.log(`smoke: ok (${skipped.join("; ")})`);

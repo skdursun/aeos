@@ -69,6 +69,7 @@ condition.
 - TASK-0159: Add intelligence signal matcher smoke tests.
 - TASK-0160: Implement intelligence profile builder.
 - TASK-0161: Add intelligence profile builder examples.
+- TASK-0162: Add intelligence profile builder smoke tests.
 
 ## Do Not Load By Default
 
@@ -79,7 +80,7 @@ condition.
 
 ## Next Task
 
-TASK-0162 Add intelligence profile builder smoke tests.
+TASK-0163 Implement project intelligence detector orchestration.
 
 ## Current Plans
 
