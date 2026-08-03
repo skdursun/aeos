@@ -27,6 +27,7 @@ import {
   completeItemCoverageResult,
   incompleteSitemapCoverageResult,
 } from "../dist/agentic-coverage-verifier.example.js";
+import { verifyAgenticCoverage } from "../dist/index.js";
 
 async function pathExists(path) {
   try {
@@ -182,6 +183,60 @@ function assertVerifierResultShape(result) {
   );
 }
 
+function emptyArtifactCoverage() {
+  return {
+    expectedArtifacts: [],
+    verifiedArtifacts: [],
+    missingArtifacts: [],
+    extraArtifacts: [],
+  };
+}
+
+function completeInventory(expectedItemCount, source = "smoke-inventory") {
+  return {
+    source,
+    expectedItemCount,
+    discoveredItemCount: expectedItemCount,
+    status: "complete",
+    issues: [],
+  };
+}
+
+function coverageCounts({
+  expectedItemCount,
+  completedItemCount,
+  failedItemCount = 0,
+  skippedItemCount = 0,
+  pendingItemCount = 0,
+  retryableItemCount = 0,
+  artifacts = emptyArtifactCoverage(),
+}) {
+  return {
+    status:
+      pendingItemCount === 0 && retryableItemCount === 0
+        ? "satisfied"
+        : "incomplete",
+    expectedItemCount,
+    completedItemCount,
+    verifiedItemCount: completedItemCount,
+    explicitlyFailedItemCount: failedItemCount,
+    explicitlySkippedItemCount: skippedItemCount,
+    pendingItemCount,
+    retryableItemCount,
+    artifacts,
+    rules: [],
+    issues: [],
+  };
+}
+
+function assertNoIssueCountDrift(result) {
+  assert.equal(
+    result.summary.issueCount,
+    result.issues.length,
+    `${result.taskId} summary issue count should match verifier issues`,
+  );
+}
+
 const verifierResults = [
   incompleteSitemapCoverageResult,
   completeItemCoverageResult,
@@ -193,6 +248,441 @@ for (const verifierResult of verifierResults) {
   assertVerifierResultShape(verifierResult);
   assertVerifierIssueCountMatches(verifierResult);
 }
+
+const smokeIncompleteSitemapCoverage = verifyAgenticCoverage({
+  taskId: "smoke-incomplete-sitemap-coverage",
+  inventory: completeInventory(400, "sitemap.xml"),
+  coverage: coverageCounts({
+    expectedItemCount: 400,
+    completedItemCount: 20,
+    pendingItemCount: 380,
+  }),
+});
+
+assertVerifierResultShape(smokeIncompleteSitemapCoverage);
+assertNoIssueCountDrift(smokeIncompleteSitemapCoverage);
+assert.equal(
+  smokeIncompleteSitemapCoverage.itemCoverage.expectedItems,
+  400,
+  "logic smoke A should represent 400 expected sitemap items",
+);
+assert.equal(
+  smokeIncompleteSitemapCoverage.itemCoverage.completedItems,
+  20,
+  "logic smoke A should represent only 20 completed sitemap items",
+);
+assert.equal(
+  smokeIncompleteSitemapCoverage.itemCoverage.pendingItems,
+  380,
+  "logic smoke A should represent 380 remaining sitemap items",
+);
+assert.equal(
+  smokeIncompleteSitemapCoverage.ok,
+  false,
+  "logic smoke A must reject incomplete sitemap coverage",
+);
+assert.equal(
+  smokeIncompleteSitemapCoverage.status,
+  "incomplete",
+  "logic smoke A should be incomplete",
+);
+assert.ok(
+  smokeIncompleteSitemapCoverage.issues.length > 0,
+  "logic smoke A should expose verifier issues",
+);
+assert.equal(
+  smokeIncompleteSitemapCoverage.itemCoverage.coverageComplete,
+  false,
+  "logic smoke A must not mark item coverage complete",
+);
+assert.notEqual(
+  smokeIncompleteSitemapCoverage.itemCoverage.completedItems,
+  smokeIncompleteSitemapCoverage.itemCoverage.expectedItems,
+  "logic smoke A must not allow 20 of 400 to pass as complete",
+);
+
+const smokeCompleteItemCoverage = verifyAgenticCoverage({
+  taskId: "smoke-complete-item-coverage",
+  inventory: completeInventory(10),
+  coverage: coverageCounts({
+    expectedItemCount: 10,
+    completedItemCount: 7,
+    failedItemCount: 2,
+    skippedItemCount: 1,
+  }),
+});
+const smokeCompleteAccountedItems =
+  smokeCompleteItemCoverage.itemCoverage.completedItems +
+  smokeCompleteItemCoverage.itemCoverage.failedItems +
+  smokeCompleteItemCoverage.itemCoverage.skippedItems;
+
+assertVerifierResultShape(smokeCompleteItemCoverage);
+assertNoIssueCountDrift(smokeCompleteItemCoverage);
+assert.equal(
+  smokeCompleteItemCoverage.itemCoverage.expectedItems,
+  smokeCompleteAccountedItems,
+  "logic smoke B should account for completed, failed, and skipped items",
+);
+assert.equal(
+  smokeCompleteItemCoverage.itemCoverage.pendingItems,
+  0,
+  "logic smoke B should have no pending items",
+);
+assert.equal(
+  smokeCompleteItemCoverage.itemCoverage.retryableItems,
+  0,
+  "logic smoke B should have no retryable items",
+);
+assert.equal(
+  smokeCompleteItemCoverage.ok,
+  true,
+  "logic smoke B should verify complete item coverage",
+);
+assert.equal(
+  smokeCompleteItemCoverage.status,
+  "verified",
+  "logic smoke B should be verified",
+);
+assert.equal(
+  smokeCompleteItemCoverage.summary.issueCount,
+  0,
+  "logic smoke B should not report verifier issues",
+);
+
+const smokePendingRetryableCoverage = verifyAgenticCoverage({
+  taskId: "smoke-pending-retryable-coverage",
+  inventory: completeInventory(3),
+  coverage: coverageCounts({
+    expectedItemCount: 3,
+    completedItemCount: 2,
+    failedItemCount: 1,
+    pendingItemCount: 1,
+    retryableItemCount: 1,
+  }),
+});
+
+assertNoIssueCountDrift(smokePendingRetryableCoverage);
+assert.equal(
+  smokePendingRetryableCoverage.itemCoverage.expectedItems,
+  smokePendingRetryableCoverage.itemCoverage.completedItems +
+    smokePendingRetryableCoverage.itemCoverage.failedItems +
+    smokePendingRetryableCoverage.itemCoverage.skippedItems,
+  "logic smoke C should balance only when pending and retryable items are ignored",
+);
+assert.equal(
+  smokePendingRetryableCoverage.status,
+  "incomplete",
+  "logic smoke C should keep pending and retryable coverage incomplete",
+);
+assert.equal(
+  smokePendingRetryableCoverage.ok,
+  false,
+  "logic smoke C must not verify while pending or retryable items remain",
+);
+assert.ok(
+  smokePendingRetryableCoverage.issues.some(
+    (issue) => issue.code === "item_coverage_incomplete",
+  ),
+  "logic smoke C should expose an item coverage issue",
+);
+
+const smokeArtifactGapCoverage = verifyAgenticCoverage({
+  taskId: "smoke-artifact-gap-coverage",
+  inventory: completeInventory(1, "artifact-manifest"),
+  coverage: coverageCounts({
+    expectedItemCount: 1,
+    completedItemCount: 1,
+    artifacts: {
+      expectedArtifacts: ["report.json", "summary.json"],
+      verifiedArtifacts: ["report.json"],
+      missingArtifacts: [],
+      extraArtifacts: [],
+    },
+  }),
+});
+
+assertNoIssueCountDrift(smokeArtifactGapCoverage);
+assert.equal(
+  smokeArtifactGapCoverage.summary.expectedArtifacts,
+  2,
+  "logic smoke D should represent expected artifact count",
+);
+assert.equal(
+  smokeArtifactGapCoverage.summary.verifiedArtifacts,
+  1,
+  "logic smoke D should represent verified artifact count",
+);
+assert.ok(
+  smokeArtifactGapCoverage.summary.missingArtifacts > 0,
+  "logic smoke D should represent missing artifacts",
+);
+assert.equal(
+  smokeArtifactGapCoverage.artifactCoverage.status,
+  "incomplete",
+  "logic smoke D artifact coverage should be incomplete",
+);
+assert.equal(
+  smokeArtifactGapCoverage.status,
+  "incomplete",
+  "logic smoke D result should be incomplete",
+);
+assert.equal(
+  smokeArtifactGapCoverage.ok,
+  false,
+  "logic smoke D must reject missing artifacts",
+);
+
+const smokeBatchMismatchCoverage = verifyAgenticCoverage({
+  taskId: "smoke-batch-mismatch-coverage",
+  inventory: completeInventory(2, "batch-inventory"),
+  workItems: [
+    { id: "batch-item-a", state: "completed" },
+    { id: "batch-item-b", state: "completed" },
+  ],
+  batches: [
+    {
+      id: "batch-a",
+      workItemIds: ["batch-item-a", "batch-item-b"],
+      expectedItemCount: 2,
+      completedCount: 1,
+      failedCount: 1,
+      skippedCount: 0,
+      retryableCount: 0,
+    },
+  ],
+});
+const [smokeBatchMismatchCheck] = smokeBatchMismatchCoverage.batchCoverage;
+
+assertNoIssueCountDrift(smokeBatchMismatchCoverage);
+assert.ok(
+  smokeBatchMismatchCheck.issues.some(
+    (issue) => issue.code === "batch_accounting_mismatch",
+  ),
+  "logic smoke E should expose a mismatched batch issue",
+);
+assert.ok(
+  ["failed", "incomplete"].includes(smokeBatchMismatchCheck.status),
+  "logic smoke E batch check should be failed or incomplete",
+);
+assert.ok(
+  ["failed", "incomplete"].includes(smokeBatchMismatchCoverage.status),
+  "logic smoke E result should be failed or incomplete",
+);
+assert.equal(
+  smokeBatchMismatchCoverage.summary.issueCount,
+  smokeBatchMismatchCoverage.issues.length,
+  "logic smoke E summary issue count should match issues length",
+);
+
+const smokeInventoryMismatchCoverage = verifyAgenticCoverage({
+  taskId: "smoke-inventory-mismatch-coverage",
+  inventory: {
+    source: "crawler-inventory",
+    expectedItemCount: 3,
+    discoveredItemCount: 2,
+    status: "incomplete",
+    issues: [],
+  },
+});
+
+assertNoIssueCountDrift(smokeInventoryMismatchCoverage);
+assert.notEqual(
+  smokeInventoryMismatchCoverage.inventoryCoverage.expectedItemCount,
+  smokeInventoryMismatchCoverage.inventoryCoverage.discoveredItemCount,
+  "logic smoke F should expose inventory expected/discovered mismatch",
+);
+assert.equal(
+  smokeInventoryMismatchCoverage.inventoryCoverage.inventoryComplete,
+  false,
+  "logic smoke F should mark inventory incomplete",
+);
+assert.notEqual(
+  smokeInventoryMismatchCoverage.status,
+  "verified",
+  "logic smoke F must not verify inventory mismatches",
+);
+assert.equal(
+  smokeInventoryMismatchCoverage.ok,
+  false,
+  "logic smoke F must reject inventory mismatches",
+);
+assert.ok(
+  smokeInventoryMismatchCoverage.issues.length > 0,
+  "logic smoke F should expose verifier issues",
+);
+
+const smokeAuditConsistencyCoverage = verifyAgenticCoverage({
+  taskId: "smoke-audit-consistency-coverage",
+  inventory: completeInventory(1, "audit-inventory"),
+  coverage: coverageCounts({
+    expectedItemCount: 1,
+    completedItemCount: 1,
+  }),
+  verificationSnapshot: {
+    verifierId: "coverage-verifier",
+    status: "fail",
+    checkedAt: "2026-08-03T10:00:00.000Z",
+    coverageStatus: "incomplete",
+    issues: [],
+    auditEventIds: ["audit-a", "audit-b", "audit-c"],
+  },
+  auditReferences: [
+    {
+      auditEventIds: ["audit-a"],
+      createdAt: "2026-08-03T09:55:00.000Z",
+      lastEventAt: "2026-08-03T09:59:00.000Z",
+    },
+  ],
+  options: {
+    requireAuditConsistency: true,
+  },
+});
+
+assertNoIssueCountDrift(smokeAuditConsistencyCoverage);
+assert.deepEqual(
+  smokeAuditConsistencyCoverage.auditConsistency.missingAuditEventIds,
+  ["audit-b", "audit-c"],
+  "logic smoke G should represent missing audit event ids",
+);
+assert.notEqual(
+  smokeAuditConsistencyCoverage.auditConsistency.consistencyStatus,
+  "verified",
+  "logic smoke G audit consistency should not be verified",
+);
+assert.notEqual(
+  smokeAuditConsistencyCoverage.status,
+  "verified",
+  "logic smoke G result should not verify when required audit events are missing",
+);
+assert.ok(
+  smokeAuditConsistencyCoverage.issues.some(
+    (issue) => issue.code === "audit_event_missing",
+  ),
+  "logic smoke G should expose an audit consistency issue",
+);
+
+const smokeAggregatedInput = {
+  taskId: "smoke-aggregated-coverage",
+  inventory: {
+    source: "aggregate-inventory",
+    expectedItemCount: 3,
+    discoveredItemCount: 2,
+    status: "incomplete",
+    issues: [],
+  },
+  workItems: [
+    { id: "aggregate-item-a", state: "completed" },
+    { id: "aggregate-item-b", state: "pending" },
+  ],
+  batches: [
+    {
+      id: "aggregate-batch",
+      workItemIds: ["aggregate-item-a", "aggregate-item-b"],
+      expectedItemCount: 3,
+      completedCount: 2,
+      failedCount: 0,
+      skippedCount: 0,
+      retryableCount: 0,
+    },
+  ],
+  coverage: coverageCounts({
+    expectedItemCount: 3,
+    completedItemCount: 1,
+    pendingItemCount: 2,
+    artifacts: {
+      expectedArtifacts: ["aggregate-report.json"],
+      verifiedArtifacts: [],
+      missingArtifacts: [],
+      extraArtifacts: [],
+    },
+  }),
+  verificationSnapshot: {
+    verifierId: "coverage-verifier",
+    status: "fail",
+    checkedAt: "2026-08-03T10:00:00.000Z",
+    coverageStatus: "failed",
+    issues: [],
+    auditEventIds: ["aggregate-audit-a", "aggregate-audit-b"],
+  },
+  auditReferences: [
+    {
+      auditEventIds: ["aggregate-audit-a"],
+      createdAt: "2026-08-03T09:55:00.000Z",
+      lastEventAt: "2026-08-03T09:59:00.000Z",
+    },
+  ],
+  options: {
+    requireAuditConsistency: true,
+  },
+};
+const smokeAggregatedCoverage = verifyAgenticCoverage(smokeAggregatedInput);
+const smokeRepeatedAggregatedCoverage =
+  verifyAgenticCoverage(smokeAggregatedInput);
+
+assertNoIssueCountDrift(smokeAggregatedCoverage);
+assert.equal(
+  smokeAggregatedCoverage.status,
+  "failed",
+  "logic smoke H should follow deterministic failed status priority",
+);
+assert.deepEqual(
+  smokeRepeatedAggregatedCoverage,
+  smokeAggregatedCoverage,
+  "logic smoke H repeated verification should produce equivalent results",
+);
+assert.deepEqual(
+  smokeAggregatedCoverage.issues.map((issue) => issue.code),
+  smokeRepeatedAggregatedCoverage.issues.map((issue) => issue.code),
+  "logic smoke H issue ordering should be stable",
+);
+
+const smokeCompletedLifecycleCoverage = verifyAgenticCoverage({
+  taskId: "smoke-completed-lifecycle-without-proof",
+  lifecycle: {
+    taskId: "smoke-completed-lifecycle-without-proof",
+    state: "completed",
+    inventory: completeInventory(4, "lifecycle-inventory"),
+    workItems: [],
+    batches: [],
+    coverage: coverageCounts({
+      expectedItemCount: 4,
+      completedItemCount: 1,
+      pendingItemCount: 3,
+    }),
+    attempts: [],
+    issues: [],
+    summary: {
+      totalWorkItemCount: 4,
+      completedWorkItemCount: 1,
+      verifiedWorkItemCount: 1,
+      failedWorkItemCount: 0,
+      skippedWorkItemCount: 0,
+      retryableWorkItemCount: 0,
+      pendingWorkItemCount: 3,
+      batchCount: 0,
+      issueCount: 0,
+      artifactCoverageStatus: "incomplete",
+      verificationStatus: "skipped",
+    },
+  },
+});
+
+assertNoIssueCountDrift(smokeCompletedLifecycleCoverage);
+assert.ok(
+  ["failed", "incomplete"].includes(smokeCompletedLifecycleCoverage.status),
+  "logic smoke I should reject completed lifecycle state without coverage proof",
+);
+assert.equal(
+  smokeCompletedLifecycleCoverage.ok,
+  false,
+  "logic smoke I must not accept lifecycle self-report as proof",
+);
+assert.ok(
+  smokeCompletedLifecycleCoverage.issues.length > 0,
+  "logic smoke I should expose coverage proof issues",
+);
+
+assertVerifierResultShape(smokeAggregatedCoverage);
 
 assert.equal(
   incompleteSitemapCoverageResult.taskId,
