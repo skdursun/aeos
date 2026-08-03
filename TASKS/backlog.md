@@ -285,6 +285,22 @@
 8. TASK-0174: Review project profile MVP behavior. Docs. Effort: Medium. Verification: `git status --short`.
 9. TASK-0175: Design explicit hidden config handling. Docs. Effort: Medium. Verification: `git status --short`.
 
+## Smart Init Template Selection Backlog
+
+1. TASK-0172: Implement smart template selection contracts. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+2. TASK-0173: Add smart selection contract examples. Code. Effort: Low. Verification: `pnpm --filter @aeos/templates check`.
+3. TASK-0174: Extend template metadata with selection tags. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+4. TASK-0175: Add metadata validation examples for selection tags. Code. Effort: Low. Verification: `pnpm --filter @aeos/templates check`.
+5. TASK-0176: Implement profile summary adapter for smart selection. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+6. TASK-0177: Implement deterministic candidate scoring. Code. Effort: High. Verification: `pnpm --filter @aeos/templates check`.
+7. TASK-0178: Add smart scoring examples. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+8. TASK-0179: Implement ambiguity and fallback normalization. Code. Effort: Medium. Verification: `pnpm --filter @aeos/templates check`.
+9. TASK-0180: Integrate smart selection into init planning. Code. Effort: High. Verification: `pnpm --filter @aeos/core check`.
+10. TASK-0181: Add init smart selection examples. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+11. TASK-0182: Add aeos init --smart CLI routing. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+12. TASK-0183: Add template recommend CLI command. Code. Effort: High. Verification: `pnpm --filter @aeos/cli check`.
+13. TASK-0184: Add smart selection smoke tests. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+
 ## Memory MVP Backlog
 
 1. TASK-0057: Implement memory package Markdown entry builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/memory check`.

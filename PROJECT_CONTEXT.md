@@ -25,6 +25,8 @@ condition.
   are explicitly implemented.
 - Keep `aeos init` filesystem writes behind explicit CLI intent.
 - Keep project intelligence deterministic, evidence-based, and local-first.
+- Keep smart init/template selection deterministic, local-first, and fallback
+  safe.
 
 ## Recent Completed Tasks
 
@@ -36,6 +38,7 @@ condition.
 - TASK-0168: Add project profile JSON safety review.
 - TASK-0169: Add project profile documentation.
 - TASK-0170: Add project profile final smoke review.
+- TASK-0171: Design smart init/template selection.
 
 ## Do Not Load By Default
 
@@ -46,7 +49,7 @@ condition.
 
 ## Next Task
 
-TASK-0171 Design smart init/template selection.
+TASK-0172 Implement smart template selection contracts.
 
 ## Current Plans
 
@@ -56,3 +59,4 @@ TASK-0171 Design smart init/template selection.
 - docs/PROJECT_INTELLIGENCE_LAYER_DESIGN.md
 - docs/PROJECT_INTELLIGENCE_DETECTOR_IMPLEMENTATION_PLAN.md
 - docs/PROJECT_PROFILE_COMMAND_DESIGN.md
+- docs/SMART_INIT_TEMPLATE_SELECTION_DESIGN.md
