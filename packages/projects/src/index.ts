@@ -36,6 +36,19 @@ export {
 } from "./intelligence-signal-matcher.js";
 
 export type {
+  ProjectEvidenceBySignal,
+  ProjectIntelligenceProfileBuilderInput,
+  ProjectIntelligenceProfileCounts,
+} from "./intelligence-profile-builder.js";
+
+export {
+  buildProjectIntelligenceProfile,
+  countProjectIntelligenceProfile,
+  groupProjectEvidenceBySignal,
+  summarizeProjectIntelligenceProfile,
+} from "./intelligence-profile-builder.js";
+
+export type {
   ProjectIntelligenceDetectorInput,
   ProjectIntelligenceDetectorIssue,
   ProjectIntelligenceDetectorLimits,
