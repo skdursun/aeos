@@ -249,9 +249,27 @@ function expectProjectValidationCheckShape(message, check) {
 }
 
 function expectProjectProfileJsonShape(message, value) {
+  const expectedKeys = [
+    "issues",
+    "ok",
+    "profile",
+    "projectRoot",
+    "scannedEntries",
+    "summary",
+  ];
+
   if (
     typeof value !== "object" ||
-    value === null ||
+    value === null
+  ) {
+    fail(message);
+  }
+
+  const keys = Object.keys(value).sort();
+
+  if (
+    keys.length !== expectedKeys.length ||
+    keys.some((key, index) => key !== expectedKeys[index]) ||
     value.ok !== true ||
     typeof value.projectRoot !== "string" ||
     value.projectRoot.length === 0 ||
@@ -264,6 +282,65 @@ function expectProjectProfileJsonShape(message, value) {
   ) {
     fail(message);
   }
+
+  if (
+    !Array.isArray(value.profile.languages) ||
+    !Array.isArray(value.profile.frameworks) ||
+    !Array.isArray(value.profile.packageManagers) ||
+    !Array.isArray(value.profile.runtimes) ||
+    !Array.isArray(value.profile.infrastructure) ||
+    typeof value.profile.monorepo !== "object" ||
+    value.profile.monorepo === null ||
+    !Array.isArray(value.profile.evidence) ||
+    !Array.isArray(value.profile.issues) ||
+    typeof value.profile.summary !== "object" ||
+    value.profile.summary === null ||
+    typeof value.summary.scannedEntryCount !== "number" ||
+    typeof value.summary.evidenceCount !== "number" ||
+    typeof value.summary.issueCount !== "number" ||
+    typeof value.summary.truncated !== "boolean" ||
+    typeof value.summary.timedOut !== "boolean"
+  ) {
+    fail(message);
+  }
+}
+
+function expectProjectProfileFailureJsonShape(message, value) {
+  const expectedKeys = [
+    "issues",
+    "ok",
+    "profile",
+    "projectRoot",
+    "reason",
+    "scannedEntries",
+    "summary",
+  ];
+
+  if (
+    typeof value !== "object" ||
+    value === null
+  ) {
+    fail(message);
+  }
+
+  const keys = Object.keys(value).sort();
+
+  if (
+    keys.length !== expectedKeys.length ||
+    keys.some((key, index) => key !== expectedKeys[index]) ||
+    value.ok !== false ||
+    typeof value.projectRoot !== "string" ||
+    value.projectRoot.length === 0 ||
+    value.profile !== null ||
+    !Array.isArray(value.scannedEntries) ||
+    value.scannedEntries.length !== 0 ||
+    !Array.isArray(value.issues) ||
+    value.issues.length !== 0 ||
+    value.summary !== null ||
+    value.reason !== "project_profile_failed"
+  ) {
+    fail(message);
+  }
 }
 
 function expectProfileEvidenceSignal(message, profile, signal, result) {
@@ -272,6 +349,26 @@ function expectProfileEvidenceSignal(message, profile, signal, result) {
     profile === null ||
     !Array.isArray(profile.evidence) ||
     !profile.evidence.some((item) => item.signal === signal)
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectProfileNoEvidenceSignal(message, profile, signal, result) {
+  if (
+    typeof profile !== "object" ||
+    profile === null ||
+    !Array.isArray(profile.evidence) ||
+    profile.evidence.some((item) => item.signal === signal)
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectProfileSignalValue(message, signals, propertyName, expectedValue, result) {
+  if (
+    !Array.isArray(signals) ||
+    !signals.some((signal) => signal[propertyName] === expectedValue)
   ) {
     fail(message, result);
   }
@@ -292,6 +389,15 @@ function createWordPressStyleProject(rootPath) {
   writeFileSync(join(rootPath, "composer.lock"), "{}\n");
   writeFileSync(join(rootPath, "wp-config.php"), "<?php\n");
   writeFileSync(join(rootPath, "index.php"), "<?php\n");
+}
+
+function createInfrastructureStyleProject(rootPath) {
+  mkdirSync(join(rootPath, ".github", "workflows"), { recursive: true });
+  writeFileSync(join(rootPath, "Dockerfile"), "FROM node:22-alpine\n");
+  writeFileSync(join(rootPath, "docker-compose.yml"), "services: {}\n");
+  writeFileSync(join(rootPath, "main.tf"), "terraform {}\n");
+  writeFileSync(join(rootPath, ".github", "workflows", "ci.yml"), "name: CI\n");
+  writeFileSync(join(rootPath, ".nvmrc"), "22\n");
 }
 
 const smokeRunId = String(Date.now());
@@ -1120,16 +1226,20 @@ const nextProfileRoot = mkdtempSync(join(tmpdir(), "aeos-cli-project-profile-nex
 const wordpressProfileRoot = mkdtempSync(
   join(tmpdir(), "aeos-cli-project-profile-wordpress-"),
 );
+const infrastructureProfileRoot = mkdtempSync(
+  join(tmpdir(), "aeos-cli-project-profile-infra-"),
+);
 const emptyProfileRoot = mkdtempSync(join(tmpdir(), "aeos-cli-project-profile-empty-"));
 
 try {
   createNextStyleProject(nextProfileRoot);
 
+  const nextProfileFilesBefore = listRelativeFiles(nextProfileRoot);
   const nextProfile = runCliFrom(nextProfileRoot, ["project", "profile"]);
   expectExitCode("project profile Next-style fixture exited nonzero", nextProfile, 0);
   for (const expectedText of [
     "Project Profile",
-    "Project root:",
+    "Root:",
     "Languages:",
     "typescript",
     "javascript",
@@ -1149,7 +1259,33 @@ try {
       expectedText,
     );
   }
+  expectOutputExcludes(
+    "project profile Next-style fixture overpromised dependency parsing",
+    nextProfile,
+    "dependency parsing exists",
+  );
+  expectOutputExcludes(
+    "project profile Next-style fixture overpromised package content parsing",
+    nextProfile,
+    "package content parsing",
+  );
+  expectOutputExcludes(
+    "project profile Next-style fixture overpromised AI detection",
+    nextProfile,
+    "AI",
+  );
+  expectOutputExcludes(
+    "project profile Next-style fixture printed confidence claims",
+    nextProfile,
+    "Confidence:",
+  );
+  expectSameFiles(
+    "project profile Next-style fixture created unexpected files",
+    nextProfileFilesBefore,
+    listRelativeFiles(nextProfileRoot),
+  );
 
+  const nextProfileJsonFilesBefore = listRelativeFiles(nextProfileRoot);
   const nextProfileJson = runCliFrom(nextProfileRoot, [
     "project",
     "profile",
@@ -1167,6 +1303,11 @@ try {
   expectProjectProfileJsonShape(
     "project profile --json Next-style fixture shape was invalid",
     parsedNextProfileJson,
+  );
+  expectSameFiles(
+    "project profile --json Next-style fixture created unexpected files",
+    nextProfileJsonFilesBefore,
+    listRelativeFiles(nextProfileRoot),
   );
   if (parsedNextProfileJson.projectRoot !== realpathSync(nextProfileRoot)) {
     fail(
@@ -1190,6 +1331,12 @@ try {
     "project profile --json Next-style fixture missed pnpm evidence",
     parsedNextProfileJson.profile,
     "package_manager.pnpm.lockfile",
+    nextProfileJson,
+  );
+  expectIssueCode(
+    "project profile --json Next-style fixture did not honestly report unsupported dependency signals",
+    parsedNextProfileJson.issues,
+    "matcher.signal.dependency_name_unsupported",
     nextProfileJson,
   );
 
@@ -1228,7 +1375,71 @@ try {
       wordpressProfileJson,
     );
   }
+  expectIssueCode(
+    "project profile --json WordPress-style fixture did not honestly report unsupported dependency signals",
+    parsedWordPressProfileJson.issues,
+    "matcher.signal.dependency_name_unsupported",
+    wordpressProfileJson,
+  );
 
+  createInfrastructureStyleProject(infrastructureProfileRoot);
+
+  const infrastructureProfileFilesBefore = listRelativeFiles(infrastructureProfileRoot);
+  const infrastructureProfileJson = runCliFrom(infrastructureProfileRoot, [
+    "project",
+    "profile",
+    "--json",
+  ]);
+  expectExitCode(
+    "project profile --json infrastructure fixture exited nonzero",
+    infrastructureProfileJson,
+    0,
+  );
+  const parsedInfrastructureProfileJson = parseJsonOnlyStdout(
+    "project profile --json infrastructure fixture output was not valid JSON only",
+    infrastructureProfileJson,
+  );
+  expectProjectProfileJsonShape(
+    "project profile --json infrastructure fixture shape was invalid",
+    parsedInfrastructureProfileJson,
+  );
+  expectSameFiles(
+    "project profile --json infrastructure fixture created unexpected files",
+    infrastructureProfileFilesBefore,
+    listRelativeFiles(infrastructureProfileRoot),
+  );
+  expectProfileSignalValue(
+    "project profile --json infrastructure fixture missed docker infrastructure",
+    parsedInfrastructureProfileJson.profile.infrastructure,
+    "infrastructure",
+    "docker",
+    infrastructureProfileJson,
+  );
+  expectProfileSignalValue(
+    "project profile --json infrastructure fixture missed terraform infrastructure",
+    parsedInfrastructureProfileJson.profile.infrastructure,
+    "infrastructure",
+    "terraform",
+    infrastructureProfileJson,
+  );
+  expectProfileNoEvidenceSignal(
+    "project profile --json infrastructure fixture scanned hidden GitHub Actions despite hidden files being disabled",
+    parsedInfrastructureProfileJson.profile,
+    "infrastructure.github_actions.workflow",
+    infrastructureProfileJson,
+  );
+  if (
+    parsedInfrastructureProfileJson.scannedEntries.some(
+      (entry) => entry.path.startsWith(".github/") || entry.path === ".nvmrc",
+    )
+  ) {
+    fail(
+      "project profile --json infrastructure fixture included hidden scan entries",
+      infrastructureProfileJson,
+    );
+  }
+
+  const emptyProfileFilesBefore = listRelativeFiles(emptyProfileRoot);
   const emptyProfileJson = runCliFrom(emptyProfileRoot, [
     "project",
     "profile",
@@ -1247,6 +1458,11 @@ try {
     "project profile --json empty fixture shape was invalid",
     parsedEmptyProfileJson,
   );
+  expectSameFiles(
+    "project profile --json empty fixture created unexpected files",
+    emptyProfileFilesBefore,
+    listRelativeFiles(emptyProfileRoot),
+  );
   if (
     parsedEmptyProfileJson.projectRoot !== realpathSync(emptyProfileRoot) ||
     !Array.isArray(parsedEmptyProfileJson.profile.evidence) ||
@@ -1259,9 +1475,26 @@ try {
       emptyProfileJson,
     );
   }
+
+  const unknownProfileJson = runCliFrom(emptyProfileRoot, [
+    "project",
+    "profile",
+    "--unknown",
+    "--json",
+  ]);
+  expectNonzero("project profile unknown option --json exited zero", unknownProfileJson);
+  const parsedUnknownProfileJson = parseJsonOnlyStdout(
+    "project profile unknown option --json output was not valid JSON only",
+    unknownProfileJson,
+  );
+  expectProjectProfileFailureJsonShape(
+    "project profile unknown option --json failure shape was invalid",
+    parsedUnknownProfileJson,
+  );
 } finally {
   rmSync(nextProfileRoot, { recursive: true, force: true });
   rmSync(wordpressProfileRoot, { recursive: true, force: true });
+  rmSync(infrastructureProfileRoot, { recursive: true, force: true });
   rmSync(emptyProfileRoot, { recursive: true, force: true });
 }
 

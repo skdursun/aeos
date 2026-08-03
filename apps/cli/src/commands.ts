@@ -742,7 +742,7 @@ function printProjectProfileResult(
     : "no";
 
   console.log("Project Profile");
-  console.log(`Project root: ${profile.projectRoot}`);
+  console.log(`Root: ${profile.projectRoot}`);
   console.log(
     `Languages: ${formatSignalList(profile.languages, (signal) => signal.language)}`,
   );

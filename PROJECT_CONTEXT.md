@@ -33,6 +33,7 @@ condition.
   detector orchestration, examples, and smoke tests.
 - TASK-0166: Design aeos project profile command.
 - TASK-0167: Implement aeos project profile command.
+- TASK-0168: Add project profile JSON safety review.
 
 ## Do Not Load By Default
 
@@ -43,7 +44,7 @@ condition.
 
 ## Next Task
 
-TASK-0168 Add project profile JSON safety review.
+TASK-0169 Add project profile documentation.
 
 ## Current Plans
 
