@@ -256,6 +256,25 @@
 9. TASK-0147: Add write-mode success smoke tests. Code. Effort: High. Verification: `pnpm --filter @aeos/cli check`.
 10. TASK-0148: Review init write mode MVP behavior. Docs. Effort: Medium. Verification: `git status --short`.
 
+## Project Intelligence Layer Backlog
+
+1. TASK-0147: Implement project intelligence contracts. Code. Effort: Medium. Verification: `pnpm --filter @aeos/projects check`.
+2. TASK-0148: Add project intelligence contract examples. Code. Effort: Low. Verification: `pnpm --filter @aeos/projects check`.
+3. TASK-0149: Implement manifest evidence helpers. Code. Effort: Medium. Verification: `pnpm --filter @aeos/projects check`.
+4. TASK-0150: Implement package manager detection. Code. Effort: Medium. Verification: `pnpm --filter @aeos/projects check`.
+5. TASK-0151: Implement language detection. Code. Effort: Medium. Verification: `pnpm --filter @aeos/projects check`.
+6. TASK-0152: Implement runtime detection. Code. Effort: Medium. Verification: `pnpm --filter @aeos/projects check`.
+7. TASK-0153: Implement framework detection. Code. Effort: High. Verification: `pnpm --filter @aeos/projects check`.
+8. TASK-0154: Implement infrastructure detection. Code. Effort: Medium. Verification: `pnpm --filter @aeos/projects check`.
+9. TASK-0155: Implement monorepo detection. Code. Effort: Medium. Verification: `pnpm --filter @aeos/projects check`.
+10. TASK-0156: Add confidence and ambiguity normalization. Code. Effort: Medium. Verification: `pnpm --filter @aeos/projects check`.
+11. TASK-0157: Add stack profile builder. Code. Effort: High. Verification: `pnpm --filter @aeos/projects check`.
+12. TASK-0158: Add stack profile examples. Code. Effort: Medium. Verification: `pnpm --filter @aeos/projects check`.
+13. TASK-0159: Define project profile CLI output. Docs. Effort: Low. Verification: `git status --short`.
+14. TASK-0160: Implement aeos project profile command. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+15. TASK-0161: Implement aeos project profile JSON output. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+16. TASK-0162: Review project intelligence MVP behavior. Docs. Effort: Medium. Verification: `git status --short`.
+
 ## Memory MVP Backlog
 
 1. TASK-0057: Implement memory package Markdown entry builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/memory check`.

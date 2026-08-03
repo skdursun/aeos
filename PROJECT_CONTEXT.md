@@ -24,6 +24,7 @@ condition.
 - Keep generation planning dependency-free and side-effect free until file writes
   are explicitly implemented.
 - Keep `aeos init` filesystem writes behind explicit CLI intent.
+- Keep project intelligence deterministic, evidence-based, and local-first.
 
 ## Recent Completed Tasks
 
@@ -52,6 +53,7 @@ condition.
 - TASK-0143: Add init write mode safety review.
 - TASK-0144: Add init write mode documentation.
 - TASK-0145: Add init write mode final smoke review.
+- TASK-0146: Define Project Intelligence Layer design.
 
 ## Do Not Load By Default
 
@@ -62,10 +64,11 @@ condition.
 
 ## Next Task
 
-TASK-0146 Define Project Intelligence Layer design.
+TASK-0147 Implement project intelligence contracts.
 
 ## Current Plans
 
 - docs/INIT_CLI_IMPLEMENTATION_PLAN.md
 - docs/INIT_GENERATION_IMPLEMENTATION_PLAN.md
 - docs/INIT_WRITE_MODE_CLI_DESIGN.md
+- docs/PROJECT_INTELLIGENCE_LAYER_DESIGN.md
