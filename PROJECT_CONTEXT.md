@@ -42,6 +42,7 @@ condition.
 - TASK-0134: Add safe filesystem generation writer examples.
 - TASK-0135: Add filesystem generation writer smoke tests.
 - TASK-0136: Integrate filesystem writer into init pipeline safe mode.
+- TASK-0137: Add init pipeline filesystem writer smoke tests.
 
 ## Do Not Load By Default
 
@@ -52,7 +53,7 @@ condition.
 
 ## Next Task
 
-TASK-0137 Add init pipeline filesystem writer smoke tests.
+TASK-0138 Enable aeos init write mode behind explicit CLI flag design.
 
 ## Current Plans
 

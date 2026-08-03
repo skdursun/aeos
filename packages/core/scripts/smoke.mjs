@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import {
   mkdtemp,
+  mkdir,
   readFile,
   rm,
   stat,
+  writeFile as writeNodeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { createFilesystemGenerationAdapter } from "../dist/filesystem-generation-writer.js";
+import { runInitPipeline } from "../dist/init-pipeline.js";
 
 async function pathExists(path) {
   try {
@@ -25,6 +28,71 @@ async function pathExists(path) {
 
 function issueCodes(result) {
   return result.issues.map((issue) => issue.code);
+}
+
+function resultIssueCodes(result) {
+  return result.errors.map((issue) => issue.code);
+}
+
+function createInitRequest(projectRoot) {
+  return {
+    projectRoot,
+    template: {
+      templateId: "smoke-template",
+      templateVersion: "0.0.0-smoke",
+    },
+    variables: {
+      projectName: "Smoke Project",
+    },
+    requestedAt: "2026-08-03T00:00:00.000Z",
+  };
+}
+
+function createRenderedArtifact(targetPath, content) {
+  return {
+    path: targetPath,
+    summary: `Render ${targetPath}.`,
+    stage: "rendering",
+    renderedArtifact: {
+      targetPath,
+      content,
+      kind: "text",
+      summary: `Render ${targetPath}.`,
+      sourcePath: "smoke-template/AGENTS.md",
+      templateId: "smoke-template",
+      templateVersion: "0.0.0-smoke",
+    },
+  };
+}
+
+function createRenderOnlyAdapters(artifacts) {
+  return {
+    render: {
+      runRendering() {
+        return {
+          stage: "rendering",
+          status: "success",
+          issues: [],
+          artifacts,
+        };
+      },
+    },
+  };
+}
+
+async function runRenderedInitPipeline(targetRoot, artifacts, generation) {
+  return runInitPipeline(
+    createInitRequest(targetRoot),
+    createRenderOnlyAdapters(artifacts),
+    {
+      stages: ["rendering", "file_writing"],
+      generation,
+    },
+  );
+}
+
+function generatedFileFor(result, path) {
+  return result.generatedFiles.find((file) => file.path === path);
 }
 
 const tempRoot = await mkdtemp(join(tmpdir(), "aeos-core-smoke-"));
@@ -221,6 +289,148 @@ try {
     await pathExists(absoluteOutsidePath),
     false,
     "absolute target path file write must not write outside targetRoot",
+  );
+
+  const defaultPipelineRoot = join(tempRoot, "init-default-pipeline");
+  const defaultPipelineContent = "# Default Pipeline\n";
+  const defaultPipelineResult = await runRenderedInitPipeline(
+    defaultPipelineRoot,
+    [createRenderedArtifact("AGENTS.md", defaultPipelineContent)],
+  );
+
+  assert.equal(
+    defaultPipelineResult.ok,
+    true,
+    "default init pipeline generation should report ok",
+  );
+  assert.deepEqual(
+    resultIssueCodes(defaultPipelineResult),
+    [],
+    "default init pipeline generation should not report errors",
+  );
+  assert.equal(
+    await pathExists(join(defaultPipelineRoot, "AGENTS.md")),
+    false,
+    "default init pipeline generation must not write files",
+  );
+  assert.deepEqual(
+    defaultPipelineResult.generatedFiles,
+    [
+      {
+        path: "AGENTS.md",
+        status: "planned",
+        summary: "Render AGENTS.md.",
+        sourcePath: "smoke-template/AGENTS.md",
+      },
+    ],
+    "default init pipeline generation should report planned files",
+  );
+
+  const writePipelineRoot = join(tempRoot, "init-write-pipeline");
+  const writePipelineContent = "# Written Pipeline\n";
+  const writePipelineResult = await runRenderedInitPipeline(
+    writePipelineRoot,
+    [createRenderedArtifact("AGENTS.md", writePipelineContent)],
+    {
+      fileSystemAdapter: createFilesystemGenerationAdapter({
+        targetRoot: writePipelineRoot,
+      }),
+      writeMode: "write",
+    },
+  );
+
+  assert.equal(
+    writePipelineResult.ok,
+    true,
+    "explicit filesystem-backed init pipeline generation should report ok",
+  );
+  assert.equal(
+    await readFile(join(writePipelineRoot, "AGENTS.md"), "utf8"),
+    writePipelineContent,
+    "explicit filesystem-backed init pipeline generation should write rendered content",
+  );
+  assert.deepEqual(
+    generatedFileFor(writePipelineResult, "AGENTS.md"),
+    {
+      path: "AGENTS.md",
+      status: "created",
+      summary: "Render AGENTS.md.",
+      sourcePath: "smoke-template/AGENTS.md",
+    },
+    "explicit filesystem-backed init pipeline generation should report created files",
+  );
+
+  const conflictPipelineRoot = join(tempRoot, "init-conflict-pipeline");
+  const conflictPath = join(conflictPipelineRoot, "AGENTS.md");
+  const existingContent = "# Existing\n";
+  await mkdir(conflictPipelineRoot, { recursive: true });
+  await writeNodeFile(conflictPath, existingContent);
+
+  const conflictPipelineResult = await runRenderedInitPipeline(
+    conflictPipelineRoot,
+    [createRenderedArtifact("AGENTS.md", "# Replacement\n")],
+    {
+      fileSystemAdapter: createFilesystemGenerationAdapter({
+        targetRoot: conflictPipelineRoot,
+      }),
+      writeMode: "write",
+    },
+  );
+
+  assert.equal(
+    conflictPipelineResult.ok,
+    false,
+    "overwrite-disabled init pipeline generation should fail on conflict",
+  );
+  assert.equal(
+    await readFile(conflictPath, "utf8"),
+    existingContent,
+    "overwrite-disabled init pipeline generation must not replace existing content",
+  );
+  assert.deepEqual(
+    resultIssueCodes(conflictPipelineResult),
+    ["generation_target_exists"],
+    "overwrite-disabled init pipeline generation should report target_exists",
+  );
+  assert.equal(
+    generatedFileFor(conflictPipelineResult, "AGENTS.md")?.status,
+    "blocked",
+    "overwrite-disabled init pipeline generation should report blocked file status",
+  );
+
+  const traversalPipelineRoot = join(tempRoot, "init-traversal-pipeline");
+  const outsidePipelinePath = join(tempRoot, "outside.md");
+  const traversalPipelineResult = await runRenderedInitPipeline(
+    traversalPipelineRoot,
+    [createRenderedArtifact("../outside.md", "# Outside\n")],
+    {
+      fileSystemAdapter: createFilesystemGenerationAdapter({
+        targetRoot: traversalPipelineRoot,
+      }),
+      writeMode: "write",
+    },
+  );
+
+  assert.equal(
+    traversalPipelineResult.ok,
+    false,
+    "path traversal init pipeline generation should fail",
+  );
+  assert.equal(
+    await pathExists(outsidePipelinePath),
+    false,
+    "path traversal init pipeline generation must not write outside targetRoot",
+  );
+  assert.ok(
+    resultIssueCodes(traversalPipelineResult).includes(
+      "generation_target_outside_root",
+    ),
+    "path traversal init pipeline generation should report target_outside_root",
+  );
+  assert.equal(
+    generatedFileFor(traversalPipelineResult, "../outside.md")?.status,
+    "blocked",
+    "path traversal init pipeline generation should report blocked file status",
   );
 
   console.log("filesystem generation writer smoke tests passed");
