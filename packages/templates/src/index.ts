@@ -52,6 +52,11 @@ export type {
 } from "./smart-selection.js";
 
 export {
+  getBuiltInSmartTemplateCandidateById,
+  listBuiltInSmartTemplateCandidates,
+} from "./built-in-smart-candidates.js";
+
+export {
   createSmartTemplateFallbackRecommendation,
   scoreSmartTemplateCandidate,
   selectSmartTemplate,

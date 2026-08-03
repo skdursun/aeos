@@ -46,6 +46,7 @@ condition.
 - TASK-0175: Add smart template selector examples.
 - TASK-0176: Add smart template selector smoke tests.
 - TASK-0177: Design smart template recommendation CLI.
+- TASK-0178: Implement built-in smart template candidates.
 
 ## Do Not Load By Default
 
@@ -56,7 +57,7 @@ condition.
 
 ## Next Task
 
-TASK-0178 Implement built-in smart template candidates.
+TASK-0179 Add built-in smart template candidate examples.
 
 ## Current Plans
 
