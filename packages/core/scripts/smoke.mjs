@@ -21,6 +21,12 @@ import {
   resumeCursorExample,
   verifiedCompleteLifecycle,
 } from "../dist/agentic-lifecycle.example.js";
+import {
+  artifactCoverageIncompleteResult,
+  batchInventoryAndAuditCoverageResult,
+  completeItemCoverageResult,
+  incompleteSitemapCoverageResult,
+} from "../dist/agentic-coverage-verifier.example.js";
 
 async function pathExists(path) {
   try {
@@ -124,6 +130,278 @@ function assertIssueCountMatches(result) {
     `${result.taskId} result issue count should match issues array length`,
   );
 }
+
+function assertVerifierIssueCountMatches(result) {
+  assert.equal(
+    result.summary.issueCount,
+    result.issues.length,
+    `${result.taskId} verifier issue count should match issues array length`,
+  );
+}
+
+function assertVerifierResultShape(result) {
+  assert.ok(
+    Object.hasOwn(result, "ok"),
+    `${result.taskId} verifier result should expose ok`,
+  );
+  assert.ok(
+    Object.hasOwn(result, "taskId"),
+    `${result.taskId} verifier result should expose taskId`,
+  );
+  assert.ok(
+    Object.hasOwn(result, "status"),
+    `${result.taskId} verifier result should expose status`,
+  );
+  assert.ok(
+    Object.hasOwn(result, "itemCoverage"),
+    `${result.taskId} verifier result should expose itemCoverage`,
+  );
+  assert.ok(
+    Object.hasOwn(result, "artifactCoverage"),
+    `${result.taskId} verifier result should expose artifactCoverage`,
+  );
+  assert.ok(
+    Object.hasOwn(result, "batchCoverage"),
+    `${result.taskId} verifier result should expose batchCoverage`,
+  );
+  assert.ok(
+    Object.hasOwn(result, "inventoryCoverage"),
+    `${result.taskId} verifier result should expose inventoryCoverage`,
+  );
+  assert.ok(
+    Object.hasOwn(result, "auditConsistency"),
+    `${result.taskId} verifier result should expose auditConsistency`,
+  );
+  assert.ok(
+    Object.hasOwn(result, "issues"),
+    `${result.taskId} verifier result should expose issues`,
+  );
+  assert.ok(
+    Object.hasOwn(result, "summary"),
+    `${result.taskId} verifier result should expose summary`,
+  );
+}
+
+const verifierResults = [
+  incompleteSitemapCoverageResult,
+  completeItemCoverageResult,
+  artifactCoverageIncompleteResult,
+  batchInventoryAndAuditCoverageResult,
+];
+
+for (const verifierResult of verifierResults) {
+  assertVerifierResultShape(verifierResult);
+  assertVerifierIssueCountMatches(verifierResult);
+}
+
+assert.equal(
+  incompleteSitemapCoverageResult.taskId,
+  "sitemap-audit",
+  "incomplete sitemap coverage result should preserve the sitemap task id",
+);
+assert.equal(
+  incompleteSitemapCoverageResult.itemCoverage.expectedItems,
+  400,
+  "incomplete sitemap verifier coverage should represent 400 expected items",
+);
+assert.equal(
+  incompleteSitemapCoverageResult.itemCoverage.completedItems,
+  20,
+  "incomplete sitemap verifier coverage should represent only 20 completed items",
+);
+assert.equal(
+  incompleteSitemapCoverageResult.itemCoverage.pendingItems,
+  380,
+  "incomplete sitemap verifier coverage should represent 380 pending items",
+);
+assert.equal(
+  incompleteSitemapCoverageResult.summary.pendingItems,
+  380,
+  "incomplete sitemap verifier summary should represent 380 remaining items",
+);
+assert.equal(
+  incompleteSitemapCoverageResult.status,
+  "incomplete",
+  "incomplete sitemap verifier coverage should report incomplete status",
+);
+assert.equal(
+  incompleteSitemapCoverageResult.ok,
+  false,
+  "incomplete sitemap verifier result must not report ok",
+);
+assert.ok(
+  incompleteSitemapCoverageResult.issues.length > 0,
+  "incomplete sitemap verifier result should include issues",
+);
+assert.notEqual(
+  incompleteSitemapCoverageResult.itemCoverage.completedItems,
+  incompleteSitemapCoverageResult.itemCoverage.expectedItems,
+  "20 of 400 completed items must not satisfy verifier item coverage",
+);
+assert.equal(
+  incompleteSitemapCoverageResult.itemCoverage.coverageComplete,
+  false,
+  "20 of 400 completed items must not be marked coverage complete",
+);
+
+const completeVerifierAccountedItems =
+  completeItemCoverageResult.itemCoverage.completedItems +
+  completeItemCoverageResult.itemCoverage.failedItems +
+  completeItemCoverageResult.itemCoverage.skippedItems;
+
+assert.equal(
+  completeItemCoverageResult.itemCoverage.expectedItems,
+  completeVerifierAccountedItems,
+  "complete verifier item coverage should account for completed, failed, and skipped items",
+);
+assert.equal(
+  completeItemCoverageResult.status,
+  "verified",
+  "complete verifier item coverage should report verified status",
+);
+assert.equal(
+  completeItemCoverageResult.ok,
+  true,
+  "complete verifier item coverage should report ok",
+);
+assert.equal(
+  completeItemCoverageResult.itemCoverage.pendingItems,
+  0,
+  "complete verifier item coverage should not have pending items",
+);
+assert.equal(
+  completeItemCoverageResult.itemCoverage.retryableItems,
+  0,
+  "complete verifier item coverage should not have retryable items",
+);
+assert.equal(
+  completeItemCoverageResult.summary.expectedItems,
+  completeVerifierAccountedItems,
+  "complete verifier summary should account for completed, failed, and skipped items",
+);
+assert.equal(
+  completeItemCoverageResult.summary.pendingItems,
+  0,
+  "complete verifier summary should not have pending items",
+);
+assert.equal(
+  completeItemCoverageResult.summary.retryableItems,
+  0,
+  "complete verifier summary should not have retryable items",
+);
+
+assert.equal(
+  artifactCoverageIncompleteResult.summary.expectedArtifacts,
+  5,
+  "incomplete artifact verifier summary should represent expected artifact count",
+);
+assert.equal(
+  artifactCoverageIncompleteResult.summary.verifiedArtifacts,
+  4,
+  "incomplete artifact verifier summary should represent verified artifact count",
+);
+assert.equal(
+  artifactCoverageIncompleteResult.summary.missingArtifacts,
+  1,
+  "incomplete artifact verifier summary should represent missing artifact count",
+);
+assert.equal(
+  artifactCoverageIncompleteResult.artifactCoverage.expectedArtifacts.length,
+  5,
+  "incomplete artifact verifier coverage should represent expected artifacts",
+);
+assert.equal(
+  artifactCoverageIncompleteResult.artifactCoverage.verifiedArtifacts.length,
+  4,
+  "incomplete artifact verifier coverage should represent verified artifacts",
+);
+assert.equal(
+  artifactCoverageIncompleteResult.artifactCoverage.missingArtifacts.length,
+  1,
+  "incomplete artifact verifier coverage should represent missing artifacts",
+);
+assert.equal(
+  artifactCoverageIncompleteResult.status,
+  "incomplete",
+  "missing artifact verifier coverage should report incomplete status",
+);
+assert.equal(
+  artifactCoverageIncompleteResult.ok,
+  false,
+  "missing artifact verifier coverage must not report ok",
+);
+assert.equal(
+  artifactCoverageIncompleteResult.artifactCoverage.coverageComplete,
+  false,
+  "missing artifacts must not be marked artifact coverage complete",
+);
+assert.notEqual(
+  artifactCoverageIncompleteResult.summary.expectedArtifacts,
+  artifactCoverageIncompleteResult.summary.verifiedArtifacts,
+  "missing artifacts must prevent pretending full artifact completion",
+);
+
+const [batchMismatchCoverage] =
+  batchInventoryAndAuditCoverageResult.batchCoverage;
+
+assert.ok(
+  batchInventoryAndAuditCoverageResult.batchCoverage.length > 0,
+  "batch mismatch verifier result should represent batch coverage",
+);
+assert.ok(
+  batchMismatchCoverage.issues.length > 0,
+  "batch mismatch verifier check should include issues",
+);
+assert.ok(
+  ["failed", "incomplete"].includes(batchMismatchCoverage.status),
+  "batch mismatch verifier check should report failed or incomplete status",
+);
+assert.ok(
+  ["failed", "incomplete"].includes(
+    batchInventoryAndAuditCoverageResult.status,
+  ),
+  "batch mismatch verifier result should report failed or incomplete status",
+);
+
+assert.notEqual(
+  batchInventoryAndAuditCoverageResult.inventoryCoverage.expectedItemCount,
+  batchInventoryAndAuditCoverageResult.inventoryCoverage.discoveredItemCount,
+  "inventory incomplete verifier coverage should expose differing expected and discovered counts",
+);
+assert.equal(
+  batchInventoryAndAuditCoverageResult.inventoryCoverage.inventoryComplete,
+  false,
+  "inventory incomplete verifier coverage should mark inventory incomplete",
+);
+assert.ok(
+  batchInventoryAndAuditCoverageResult.inventoryCoverage.issues.length > 0,
+  "inventory incomplete verifier coverage should include issues",
+);
+assert.notEqual(
+  batchInventoryAndAuditCoverageResult.status,
+  "verified",
+  "inventory incomplete verifier result must not report verified status",
+);
+assert.equal(
+  batchInventoryAndAuditCoverageResult.ok,
+  false,
+  "inventory incomplete verifier result must not report ok",
+);
+
+assert.deepEqual(
+  batchInventoryAndAuditCoverageResult.auditConsistency.missingAuditEventIds,
+  ["audit-event-002", "audit-event-004"],
+  "audit consistency verifier coverage should represent missing audit event ids",
+);
+assert.notEqual(
+  batchInventoryAndAuditCoverageResult.auditConsistency.consistencyStatus,
+  "verified",
+  "audit consistency verifier coverage should not be verified",
+);
+assert.ok(
+  batchInventoryAndAuditCoverageResult.auditConsistency.issues.length > 0,
+  "audit consistency verifier coverage should include issues",
+);
 
 const plannedResult = lifecycleResultFromExample(plannedSitemapLifecycle);
 
