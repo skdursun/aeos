@@ -56,6 +56,7 @@ condition.
 - TASK-0146: Define Project Intelligence Layer design.
 - TASK-0147: Implement project intelligence contracts.
 - TASK-0148: Add project intelligence contract examples.
+- TASK-0149: Implement project intelligence detector design.
 
 ## Do Not Load By Default
 
@@ -66,7 +67,7 @@ condition.
 
 ## Next Task
 
-TASK-0149 Implement project intelligence detector design.
+TASK-0150 Implement intelligence detector input contracts.
 
 ## Current Plans
 
@@ -74,3 +75,4 @@ TASK-0149 Implement project intelligence detector design.
 - docs/INIT_GENERATION_IMPLEMENTATION_PLAN.md
 - docs/INIT_WRITE_MODE_CLI_DESIGN.md
 - docs/PROJECT_INTELLIGENCE_LAYER_DESIGN.md
+- docs/PROJECT_INTELLIGENCE_DETECTOR_IMPLEMENTATION_PLAN.md
