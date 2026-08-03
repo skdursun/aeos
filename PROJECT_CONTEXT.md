@@ -60,6 +60,7 @@ condition.
 - TASK-0187: Add agentic lifecycle contract examples.
 - TASK-0188: Add agentic lifecycle contract smoke tests.
 - TASK-0189: Design agentic coverage verifier.
+- TASK-0190: Implement agentic coverage verifier contracts.
 
 ## Do Not Load By Default
 
@@ -70,7 +71,7 @@ condition.
 
 ## Next Task
 
-TASK-0190 Implement agentic coverage verifier contracts.
+TASK-0191 Add agentic coverage verifier contract examples.
 
 ## Current Plans
 
