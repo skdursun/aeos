@@ -38,6 +38,7 @@ condition.
 - TASK-0130: Add init pipeline generation smoke examples.
 - TASK-0131: Implement filesystem generation adapter design.
 - TASK-0132: Add filesystem generation adapter examples.
+- TASK-0133: Implement safe filesystem generation writer.
 
 ## Do Not Load By Default
 
@@ -48,7 +49,7 @@ condition.
 
 ## Next Task
 
-TASK-0133 Implement safe filesystem generation writer.
+TASK-0134 Add safe filesystem generation writer examples.
 
 ## Current Plans
 
