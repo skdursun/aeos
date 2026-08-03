@@ -50,6 +50,7 @@ condition.
 - TASK-0141: Add init write mode safety and artifact availability review.
 - TASK-0142: Provide minimal writable init artifact fixture.
 - TASK-0143: Add init write mode safety review.
+- TASK-0144: Add init write mode documentation.
 
 ## Do Not Load By Default
 
@@ -60,7 +61,7 @@ condition.
 
 ## Next Task
 
-TASK-0144 Add init write mode documentation.
+TASK-0145 Add init write mode final smoke review.
 
 ## Current Plans
 

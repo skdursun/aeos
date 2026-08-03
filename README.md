@@ -9,3 +9,17 @@ ChatGPT will be used for planning, product thinking, architecture discussion, an
 The operating rule is one Codex CLI session per micro-task. Each session receives only the context it needs, modifies only explicitly listed files, verifies its work, and stops.
 
 Current status: planning and scaffolding.
+
+## Init Write Mode
+
+`aeos init` is dry-run by default. To create the current MVP artifact,
+`AGENTS.md`, in the current working directory, pass `--write` explicitly:
+
+```sh
+aeos init
+aeos init --json
+aeos init --write
+aeos init --write --json
+```
+
+Write mode does not overwrite an existing `AGENTS.md`.

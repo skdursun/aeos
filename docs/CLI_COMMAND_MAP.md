@@ -31,9 +31,12 @@ adapters.
 ## Project Commands
 ### `aeos init`
 - Purpose: Create or validate the minimal AEOS project structure.
-- Example usage: `aeos init`
-- Expected behavior: Checks required root docs, task folders, and planning docs;
-  creates only missing allowed scaffolding when approved.
+- Example usage: `aeos init`, `aeos init --json`, `aeos init --write`,
+  `aeos init --write --json`
+- Expected behavior: Defaults to dry-run planning with no filesystem writes.
+  `--write` explicitly enables writing the current MVP artifact, `AGENTS.md`,
+  under the current working directory. Existing `AGENTS.md` files are not
+  overwritten; conflicts block the command and exit nonzero.
 - Phase: MVP.
 
 ### `aeos status`
