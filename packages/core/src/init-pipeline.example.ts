@@ -88,6 +88,30 @@ export async function generationBackedFileWritingExample(): Promise<{
   };
 }
 
+export async function generationBackedDryRunSmokeExample(): Promise<{
+  readonly ok: boolean;
+  readonly renderInputTargetPaths: readonly string[];
+  readonly generatedFiles: readonly GeneratedArtifactSummary[];
+  readonly errorCodes: readonly string[];
+}> {
+  const result = await runInitPipeline(
+    exampleRequest,
+    createSuccessfulExampleAdapters(),
+    {
+      generation: {
+        writeMode: "dry_run",
+      },
+    },
+  );
+
+  return {
+    ok: result.ok,
+    renderInputTargetPaths: result.renderInput?.targetPaths ?? [],
+    generatedFiles: summarizeGeneratedArtifacts(result),
+    errorCodes: result.errors.map((issue) => issue.code),
+  };
+}
+
 export async function generationBackedConflictExample(): Promise<{
   readonly ok: boolean;
   readonly errorCodes: readonly string[];
@@ -110,6 +134,32 @@ export async function generationBackedConflictExample(): Promise<{
     ok: result.ok,
     errorCodes: result.errors.map((issue) => issue.code),
     generatedArtifacts: summarizeGeneratedArtifacts(result),
+  };
+}
+
+export async function generationBackedDuplicateTargetSmokeExample(): Promise<{
+  readonly ok: boolean;
+  readonly renderInputTargetPaths: readonly string[];
+  readonly generatedFiles: readonly GeneratedArtifactSummary[];
+  readonly errorCodes: readonly string[];
+  readonly validationFailedCodes: readonly string[];
+}> {
+  const result = await runInitPipeline(
+    exampleRequest,
+    createDuplicateTargetExampleAdapters(),
+    {
+      generation: {
+        writeMode: "dry_run",
+      },
+    },
+  );
+
+  return {
+    ok: result.ok,
+    renderInputTargetPaths: result.renderInput?.targetPaths ?? [],
+    generatedFiles: summarizeGeneratedArtifacts(result),
+    errorCodes: result.errors.map((issue) => issue.code),
+    validationFailedCodes: result.validation.failed.map((issue) => issue.code),
   };
 }
 
@@ -136,6 +186,52 @@ export function handleInitResultExample(result: InitResult):
     generatedArtifacts: summarizeGeneratedArtifacts(result),
   };
 }
+
+export const generationBackedDryRunSmokeExpected = {
+  ok: true,
+  renderInputTargetPaths: ["AGENTS.md", "PROJECT_CONTEXT.md"],
+  generatedFiles: [
+    {
+      path: "AGENTS.md",
+      status: "planned",
+      summary: "Create AGENTS.md from selected template.",
+      sourcePath: "AGENTS.md.template",
+    },
+    {
+      path: "PROJECT_CONTEXT.md",
+      status: "planned",
+      summary: "Create PROJECT_CONTEXT.md from selected template.",
+      sourcePath: "PROJECT_CONTEXT.md.template",
+    },
+  ],
+  errorCodes: [],
+} satisfies Awaited<ReturnType<typeof generationBackedDryRunSmokeExample>>;
+
+export const generationBackedDuplicateTargetSmokeExpected = {
+  ok: false,
+  renderInputTargetPaths: ["AGENTS.md", "AGENTS.md"],
+  generatedFiles: [
+    {
+      path: "AGENTS.md",
+      status: "blocked",
+      summary: "Create AGENTS.md from selected template.",
+      sourcePath: "AGENTS.md.template",
+    },
+    {
+      path: "AGENTS.md",
+      status: "blocked",
+      summary: "Create duplicate AGENTS.md from selected template.",
+      sourcePath: "duplicate-agents.md.template",
+    },
+  ],
+  errorCodes: ["generation_duplicate_target", "generation_duplicate_target"],
+  validationFailedCodes: [
+    "generation_duplicate_target",
+    "generation_duplicate_target",
+  ],
+} satisfies Awaited<
+  ReturnType<typeof generationBackedDuplicateTargetSmokeExample>
+>;
 
 interface GeneratedArtifactSummary {
   readonly path: string;
@@ -220,6 +316,47 @@ function createSuccessfulExampleAdapters(): InitAdapterSet {
           {
             path: context.plan.targetRoot,
             summary: `Validated ${context.generatedFiles.length.toString()} generated files.`,
+          },
+        ]),
+    },
+  };
+}
+
+function createDuplicateTargetExampleAdapters(): InitAdapterSet {
+  const adapters = createSuccessfulExampleAdapters();
+
+  return {
+    ...adapters,
+    render: {
+      runRendering: () =>
+        createStageResult("rendering", [
+          {
+            path: "AGENTS.md",
+            summary: "Planned AGENTS.md from selected template.",
+            sourcePath: "AGENTS.md.template",
+            renderedArtifact: {
+              targetPath: "AGENTS.md",
+              content: "# Agent Instructions\n",
+              kind: "text",
+              summary: "Create AGENTS.md from selected template.",
+              sourcePath: "AGENTS.md.template",
+              templateId: exampleRequest.template.templateId,
+              templateVersion: exampleRequest.template.templateVersion,
+            },
+          },
+          {
+            path: "AGENTS.md",
+            summary: "Planned duplicate AGENTS.md from selected template.",
+            sourcePath: "duplicate-agents.md.template",
+            renderedArtifact: {
+              targetPath: "AGENTS.md",
+              content: "# Duplicate Agent Instructions\n",
+              kind: "text",
+              summary: "Create duplicate AGENTS.md from selected template.",
+              sourcePath: "duplicate-agents.md.template",
+              templateId: exampleRequest.template.templateId,
+              templateVersion: exampleRequest.template.templateVersion,
+            },
           },
         ]),
     },
