@@ -1,6 +1,16 @@
 export const packageName = "@aeos/projects";
 
 export type {
+  ProjectIntelligenceScanCollectorResult,
+} from "./intelligence-scan-collector.js";
+
+export {
+  collectProjectScanEntries,
+  createDefaultProjectIntelligenceDetectorInput,
+  normalizeProjectScanEntry,
+} from "./intelligence-scan-collector.js";
+
+export type {
   ProjectIntelligenceDetectorInput,
   ProjectIntelligenceDetectorIssue,
   ProjectIntelligenceDetectorLimits,
