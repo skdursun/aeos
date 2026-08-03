@@ -1,6 +1,19 @@
 export const packageName = "@aeos/projects";
 
 export type {
+  ProjectIntelligenceDetectorInput,
+  ProjectIntelligenceDetectorIssue,
+  ProjectIntelligenceDetectorLimits,
+  ProjectIntelligenceDetectorMode,
+  ProjectIntelligenceDetectorOptions,
+  ProjectIntelligenceDetectorResult,
+  ProjectIntelligenceDetectorScope,
+  ProjectIntelligenceIgnoreRule,
+  ProjectIntelligenceScanEntry,
+  ProjectIntelligenceScanEntryKind,
+} from "./intelligence-detector.js";
+
+export type {
   ProjectConfidence,
   ProjectEvidence,
   ProjectEvidenceSource,
