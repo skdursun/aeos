@@ -1,5 +1,24 @@
 # Backlog
 
+## Agentic Coverage Verifier Backlog
+
+1. TASK-0190: Implement agentic coverage verifier contracts. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+2. TASK-0191: Add agentic coverage verifier contract examples. Code. Effort: Low. Verification: `pnpm --filter @aeos/core check`.
+3. TASK-0192: Implement item coverage accounting helper. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+4. TASK-0193: Add item coverage accounting examples. Code. Effort: Low. Verification: `pnpm --filter @aeos/core check`.
+5. TASK-0194: Implement artifact coverage accounting helper. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+6. TASK-0195: Add artifact coverage examples. Code. Effort: Low. Verification: `pnpm --filter @aeos/core check`.
+7. TASK-0196: Implement inventory completeness checks. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+8. TASK-0197: Implement batch consistency checks. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+9. TASK-0198: Implement resume cursor consistency checks. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+10. TASK-0199: Implement verification snapshot consistency checks. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+11. TASK-0200: Implement audit reference presence checks. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+12. TASK-0201: Implement verifier result builder. Code. Effort: High. Verification: `pnpm --filter @aeos/core check`.
+13. TASK-0202: Add verifier smoke tests. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+14. TASK-0203: Design agentic task CLI verifier behavior. Docs. Effort: Medium. Verification: `git status --short`.
+15. TASK-0204: Implement verifier JSON renderer. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+16. TASK-0205: Review agentic coverage verifier MVP. Docs. Effort: Medium. Verification: `git status --short`.
+
 ## Agentic Task Lifecycle Backlog
 
 1. TASK-0186: Implement agentic task lifecycle contracts. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
