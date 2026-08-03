@@ -72,6 +72,7 @@ condition.
 - TASK-0162: Add intelligence profile builder smoke tests.
 - TASK-0163: Implement project intelligence detector orchestration.
 - TASK-0164: Add project intelligence detector orchestration examples.
+- TASK-0165: Add project intelligence detector orchestration smoke tests.
 
 ## Do Not Load By Default
 
@@ -82,7 +83,7 @@ condition.
 
 ## Next Task
 
-TASK-0165 Add project intelligence detector orchestration smoke tests.
+TASK-0166 Design aeos project profile command.
 
 ## Current Plans
 

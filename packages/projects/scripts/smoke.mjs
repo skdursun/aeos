@@ -8,6 +8,7 @@ import {
   collectProjectScanEntries,
   countProjectIntelligenceProfile,
   createDefaultProjectIntelligenceDetectorInput,
+  detectProjectIntelligence,
   groupProjectEvidenceBySignal,
   listProjectIntelligenceSignalDefinitions,
   matchProjectIntelligenceSignals,
@@ -82,8 +83,16 @@ function signalIds(result) {
   return result.evidence.map((evidence) => evidence.signal);
 }
 
+function detectorEvidenceSignalIds(result) {
+  return result.profile.evidence.map((evidence) => evidence.signal);
+}
+
 function evidenceKeys(result) {
   return result.evidence.map((evidence) => `${evidence.path}:${evidence.signal}`);
+}
+
+function detectorEvidenceKeys(result) {
+  return result.profile.evidence.map((evidence) => `${evidence.path}:${evidence.signal}`);
 }
 
 function hasSignalDefinition(signalId) {
@@ -102,6 +111,47 @@ function assertEvidenceSignalIfSupported(result, signalId) {
   if (hasSignalDefinition(signalId)) {
     assertEvidenceSignals(result, [signalId]);
   }
+}
+
+function assertDetectorEvidenceSignals(result, expectedSignalIds) {
+  const ids = detectorEvidenceSignalIds(result);
+
+  for (const expectedSignalId of expectedSignalIds) {
+    assert.ok(ids.includes(expectedSignalId), `Expected detector evidence for ${expectedSignalId}.`);
+  }
+}
+
+function assertDetectorEvidenceSignalIfSupported(result, signalId) {
+  if (hasSignalDefinition(signalId)) {
+    assertDetectorEvidenceSignals(result, [signalId]);
+  }
+}
+
+function assertProfileTargets(signals, key, expectedValues) {
+  assert.deepEqual(signalValues(signals, key), expectedValues);
+}
+
+function assertDetectorShape(result) {
+  assert.equal(result.summary.scannedEntryCount, result.scannedEntries.length);
+  assert.equal(result.summary.scannedEntries, result.scannedEntries.length);
+  assert.equal(result.summary.evidenceCount, result.profile.evidence.length);
+  assert.equal(result.summary.issueCount, result.issues.length);
+  assert.equal(result.profile.issues.length, result.issues.length);
+}
+
+function defaultUnsupportedDependencyIssueCount() {
+  return defaultSignalDefinitions.filter(
+    (definition) => definition.matchKind === "dependency_name",
+  ).length;
+}
+
+function stableDetectorSnapshot(result) {
+  return {
+    scannedEntries: result.scannedEntries,
+    evidence: result.profile.evidence,
+    profileSummary: result.profile.summary,
+    detectorSummary: result.summary,
+  };
 }
 
 function evidence({
@@ -847,6 +897,257 @@ function smokeProfileBuilderEvidencePreservation() {
   ]);
 }
 
+async function smokeDetectorOrchestratorTypescriptNextProject() {
+  const root = await createTempProject("detector-next");
+
+  await writeProjectFile(root, "package.json", "not json, and should not be parsed");
+  await writeProjectFile(root, "tsconfig.json", "{}");
+  await writeProjectFile(root, "next.config.js", "export default {};");
+  await writeProjectFile(root, "app/page.tsx", "export default function Page() { return null; }");
+  await writeProjectFile(root, "pnpm-lock.yaml", "lockfile");
+
+  const result = await detectProjectIntelligence(
+    inputFor(root, {
+      options: {
+        includeDependencySignals: true,
+      },
+    }),
+  );
+
+  assertDetectorShape(result);
+  assert.ok(result.scannedEntries.length > 0);
+  assert.ok(result.profile.evidence.length > 0);
+  assertProfileTargets(result.profile.languages, "language", [
+    "javascript",
+    "typescript",
+  ]);
+  assertProfileTargets(result.profile.frameworks, "framework", ["nextjs"]);
+  assertProfileTargets(result.profile.packageManagers, "packageManager", ["pnpm"]);
+  assertProfileTargets(result.profile.runtimes, "runtime", ["node"]);
+  assertDetectorEvidenceSignals(result, [
+    "framework.nextjs.app_directory",
+    "framework.nextjs.config_js",
+    "language.typescript.tsconfig",
+    "language.typescript.tsx",
+    "package_manager.pnpm.lockfile",
+  ]);
+  assertDetectorEvidenceSignalIfSupported(result, "language.javascript.package_json");
+  assertDetectorEvidenceSignalIfSupported(result, "runtime.node.package_json");
+  assert.deepEqual(result.summary, {
+    mode: "inventory",
+    scope: "bounded_workspace",
+    scannedEntryCount: 6,
+    scannedEntries: 6,
+    evidenceCount: 8,
+    issueCount: defaultUnsupportedDependencyIssueCount(),
+    languageCount: 2,
+    frameworkCount: 1,
+    packageManagerCount: 1,
+    runtimeCount: 1,
+    infrastructureCount: 0,
+    truncated: false,
+    timedOut: false,
+  });
+}
+
+async function smokeDetectorOrchestratorPhpWordpressProject() {
+  const root = await createTempProject("detector-wordpress");
+
+  await writeProjectFile(root, "composer.json", "not json, and should not be parsed");
+  await writeProjectFile(root, "composer.lock", "lockfile");
+  await writeProjectFile(root, "wp-config.php", "<?php");
+  await mkdir(path.join(root, "wp-content"), { recursive: true });
+  await writeProjectFile(root, "index.php", "<?php");
+
+  const result = await detectProjectIntelligence(
+    inputFor(root, {
+      options: {
+        includeDependencySignals: true,
+      },
+    }),
+  );
+
+  assertDetectorShape(result);
+  assert.ok(result.profile.evidence.length > 0);
+  assertProfileTargets(result.profile.languages, "language", ["php"]);
+  assertProfileTargets(result.profile.frameworks, "framework", ["wordpress"]);
+  assertProfileTargets(result.profile.packageManagers, "packageManager", [
+    "composer",
+  ]);
+  assertProfileTargets(result.profile.runtimes, "runtime", ["php"]);
+  assertDetectorEvidenceSignals(result, [
+    "framework.wordpress.wp_config",
+    "framework.wordpress.wp_content",
+    "language.php.composer_json",
+    "language.php.php",
+    "language.php.wp_config",
+    "package_manager.composer.lockfile",
+    "runtime.php.composer_json",
+    "runtime.php.php",
+  ]);
+  assert.deepEqual(result.summary, {
+    mode: "inventory",
+    scope: "bounded_workspace",
+    scannedEntryCount: 5,
+    scannedEntries: 5,
+    evidenceCount: 10,
+    issueCount: defaultUnsupportedDependencyIssueCount(),
+    languageCount: 1,
+    frameworkCount: 1,
+    packageManagerCount: 1,
+    runtimeCount: 1,
+    infrastructureCount: 0,
+    truncated: false,
+    timedOut: false,
+  });
+}
+
+async function smokeDetectorOrchestratorInfrastructureProject() {
+  const root = await createTempProject("detector-infrastructure");
+
+  await writeProjectFile(root, "Dockerfile", "FROM scratch");
+  await writeProjectFile(root, "docker-compose.yml", "services: {}");
+  await writeProjectFile(root, ".github/workflows/ci.yml", "name: ci");
+  await writeProjectFile(root, "main.tf", "terraform {}");
+
+  const result = await detectProjectIntelligence(
+    inputFor(root, {
+      options: {
+        includeHiddenFiles: true,
+        includeInfrastructure: true,
+      },
+    }),
+  );
+
+  assertDetectorShape(result);
+  assertProfileTargets(result.profile.infrastructure, "infrastructure", [
+    "docker",
+    "github_actions",
+    "terraform",
+  ]);
+  assertDetectorEvidenceSignals(result, [
+    "infrastructure.docker.compose_yml",
+    "infrastructure.docker.dockerfile",
+    "infrastructure.github_actions.workflows",
+    "infrastructure.terraform.main_tf",
+    "infrastructure.terraform.tf",
+  ]);
+  assert.equal(result.profile.summary.hasInfrastructure, true);
+  assert.deepEqual(result.summary, {
+    mode: "inventory",
+    scope: "bounded_workspace",
+    scannedEntryCount: 6,
+    scannedEntries: 6,
+    evidenceCount: 5,
+    issueCount: defaultUnsupportedDependencyIssueCount(),
+    languageCount: 0,
+    frameworkCount: 0,
+    packageManagerCount: 0,
+    runtimeCount: 0,
+    infrastructureCount: 3,
+    truncated: false,
+    timedOut: false,
+  });
+}
+
+async function smokeDetectorOrchestratorEmptyProject() {
+  const root = await createTempProject("detector-empty");
+  const result = await detectProjectIntelligence(inputFor(root));
+
+  assertDetectorShape(result);
+  assert.deepEqual(result.scannedEntries, []);
+  assert.deepEqual(result.profile.evidence, []);
+  assert.equal(result.profile.summary.primaryLanguage, "unknown");
+  assert.equal(result.profile.summary.primaryFramework, "unknown");
+  assert.equal(result.profile.summary.primaryPackageManager, "unknown");
+  assert.equal(result.profile.summary.primaryRuntime, "unknown");
+  assert.equal(result.profile.summary.hasInfrastructure, false);
+  assert.equal(result.summary.evidenceCount, 0);
+  assert.equal(result.summary.issueCount, defaultUnsupportedDependencyIssueCount());
+  assert.equal(result.summary.truncated, false);
+  assert.equal(result.summary.timedOut, false);
+}
+
+async function smokeDetectorOrchestratorIgnoreRules() {
+  const root = await createTempProject("detector-ignore");
+
+  await writeProjectFile(root, "package.json", "not json, and should not be parsed");
+  await writeProjectFile(root, "ignored.log", "ignored");
+  await writeProjectFile(root, "node_modules/package.json", "ignored");
+  await writeProjectFile(root, "src/ignored.ts", "ignored");
+
+  const result = await detectProjectIntelligence(
+    inputFor(root, {
+      options: {
+        includeDependencySignals: true,
+      },
+      ignoreRules: [
+        { path: undefined, directory: "node_modules", extension: undefined, pattern: undefined },
+        { path: undefined, directory: undefined, extension: ".log", pattern: undefined },
+        { path: "src/ignored.ts", directory: undefined, extension: undefined, pattern: undefined },
+      ],
+    }),
+  );
+  const scannedPaths = result.scannedEntries.map((entry) => entry.path);
+  const evidencePaths = result.profile.evidence.map((item) => item.path);
+
+  assertDetectorShape(result);
+  assertIncludesAll(scannedPaths, ["package.json", "src"]);
+  assertExcludesAll(scannedPaths, [
+    "ignored.log",
+    "node_modules",
+    "node_modules/package.json",
+    "src/ignored.ts",
+  ]);
+  assertExcludesAll(evidencePaths, [
+    "ignored.log",
+    "node_modules",
+    "node_modules/package.json",
+    "src/ignored.ts",
+  ]);
+}
+
+async function smokeDetectorOrchestratorDeterministicOrdering() {
+  const root = await createTempProject("detector-ordering");
+
+  await writeProjectFile(root, "src/z.ts", "export const z = true;");
+  await writeProjectFile(root, "Dockerfile", "FROM scratch");
+  await writeProjectFile(root, "package.json", "not json, and should not be parsed");
+  await writeProjectFile(root, "src/a.ts", "export const a = true;");
+  await writeProjectFile(root, "tsconfig.json", "{}");
+  await writeProjectFile(root, "pnpm-lock.yaml", "lockfile");
+
+  const input = inputFor(root, {
+    options: {
+      includeDependencySignals: true,
+      includeInfrastructure: true,
+    },
+  });
+  const first = await detectProjectIntelligence(input);
+  const second = await detectProjectIntelligence(input);
+  const scannedPaths = first.scannedEntries.map((entry) => entry.path);
+  const sortedScannedPaths = [...scannedPaths].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  const evidence = detectorEvidenceKeys(first);
+  const sortedEvidence = [...evidence].sort((left, right) => {
+    const [leftPath, leftSignal] = left.split(":");
+    const [rightPath, rightSignal] = right.split(":");
+    const pathComparison = leftPath.localeCompare(rightPath);
+
+    if (pathComparison !== 0) {
+      return pathComparison;
+    }
+
+    return leftSignal.localeCompare(rightSignal);
+  });
+
+  assertDetectorShape(first);
+  assert.deepEqual(scannedPaths, sortedScannedPaths);
+  assert.deepEqual(evidence, sortedEvidence);
+  assert.deepEqual(stableDetectorSnapshot(first), stableDetectorSnapshot(second));
+}
+
 async function cleanup() {
   for (const root of createdRoots.reverse()) {
     await rm(root, { recursive: true, force: true });
@@ -875,6 +1176,12 @@ try {
   smokeProfileBuilderDeterministicOrdering();
   smokeProfileBuilderIssuePreservation();
   smokeProfileBuilderEvidencePreservation();
+  await smokeDetectorOrchestratorTypescriptNextProject();
+  await smokeDetectorOrchestratorPhpWordpressProject();
+  await smokeDetectorOrchestratorInfrastructureProject();
+  await smokeDetectorOrchestratorEmptyProject();
+  await smokeDetectorOrchestratorIgnoreRules();
+  await smokeDetectorOrchestratorDeterministicOrdering();
 
   if (skipped.length > 0) {
     console.log(`smoke: ok (${skipped.join("; ")})`);
