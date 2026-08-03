@@ -42,6 +42,7 @@ condition.
 - TASK-0172: Implement smart template selection contracts.
 - TASK-0173: Add smart template selection contract examples.
 - TASK-0174: Implement smart template selector.
+- TASK-0175: Add smart template selector examples.
 
 ## Do Not Load By Default
 
@@ -52,7 +53,7 @@ condition.
 
 ## Next Task
 
-TASK-0175 Add smart template selector examples.
+TASK-0176 Add smart template selector smoke tests.
 
 ## Current Plans
 
