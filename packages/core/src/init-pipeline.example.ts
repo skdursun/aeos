@@ -3,6 +3,7 @@ import type { InitExecutionContext, InitStageResult } from "./init-engine.js";
 import type { InitAdapterSet } from "./init-adapters.js";
 import {
   createDefaultInitPipeline,
+  createGenerationBackedInitPipelineHandlers,
   createInitPipelineHandlers,
   runInitPipeline,
 } from "./init-pipeline.js";
@@ -25,6 +26,9 @@ export const defaultPipelineExample = createDefaultInitPipeline(exampleRequest);
 
 export const adapterBackedHandlersExample =
   createInitPipelineHandlers(createSuccessfulExampleAdapters());
+
+export const generationBackedHandlersExample =
+  createGenerationBackedInitPipelineHandlers(createSuccessfulExampleAdapters());
 
 export async function successfulStageFlowExample(): Promise<{
   readonly ok: boolean;
@@ -61,6 +65,51 @@ export async function failedStageFlowExample(): Promise<{
     status: result.validation.status,
     errorCodes: result.errors.map((issue) => issue.code),
     skippedStages: result.validation.skipped,
+  };
+}
+
+export async function generationBackedFileWritingExample(): Promise<{
+  readonly ok: boolean;
+  readonly generatedArtifacts: readonly GeneratedArtifactSummary[];
+}> {
+  const result = await runInitPipeline(
+    exampleRequest,
+    createSuccessfulExampleAdapters(),
+    {
+      generation: {
+        writeMode: "dry_run",
+      },
+    },
+  );
+
+  return {
+    ok: result.ok,
+    generatedArtifacts: summarizeGeneratedArtifacts(result),
+  };
+}
+
+export async function generationBackedConflictExample(): Promise<{
+  readonly ok: boolean;
+  readonly errorCodes: readonly string[];
+  readonly generatedArtifacts: readonly GeneratedArtifactSummary[];
+}> {
+  const result = await runInitPipeline(
+    exampleRequest,
+    createSuccessfulExampleAdapters(),
+    {
+      generation: {
+        writeMode: "dry_run",
+        existingTargets: {
+          files: ["AGENTS.md"],
+        },
+      },
+    },
+  );
+
+  return {
+    ok: result.ok,
+    errorCodes: result.errors.map((issue) => issue.code),
+    generatedArtifacts: summarizeGeneratedArtifacts(result),
   };
 }
 
@@ -129,11 +178,29 @@ function createSuccessfulExampleAdapters(): InitAdapterSet {
             path: "AGENTS.md",
             summary: "Planned AGENTS.md from selected template.",
             sourcePath: "AGENTS.md.template",
+            renderedArtifact: {
+              targetPath: "AGENTS.md",
+              content: "# Agent Instructions\n",
+              kind: "text",
+              summary: "Create AGENTS.md from selected template.",
+              sourcePath: "AGENTS.md.template",
+              templateId: exampleRequest.template.templateId,
+              templateVersion: exampleRequest.template.templateVersion,
+            },
           },
           {
             path: "PROJECT_CONTEXT.md",
             summary: "Planned PROJECT_CONTEXT.md from selected template.",
             sourcePath: "PROJECT_CONTEXT.md.template",
+            renderedArtifact: {
+              targetPath: "PROJECT_CONTEXT.md",
+              content: "# Project Context\n",
+              kind: "text",
+              summary: "Create PROJECT_CONTEXT.md from selected template.",
+              sourcePath: "PROJECT_CONTEXT.md.template",
+              templateId: exampleRequest.template.templateId,
+              templateVersion: exampleRequest.template.templateVersion,
+            },
           },
         ]),
     },

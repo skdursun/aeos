@@ -35,6 +35,16 @@ export interface InitRenderInput {
   readonly targetPaths: readonly string[];
 }
 
+export interface InitRenderedArtifact {
+  readonly targetPath: string;
+  readonly content: string;
+  readonly kind: "text";
+  readonly summary: string;
+  readonly sourcePath?: string;
+  readonly templateId?: string;
+  readonly templateVersion?: string;
+}
+
 export interface InitGeneratedFile {
   readonly path: string;
   readonly status: InitGeneratedFileStatus;

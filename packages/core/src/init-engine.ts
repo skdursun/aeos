@@ -1,6 +1,7 @@
 import type {
   InitGeneratedFile,
   InitIssue,
+  InitRenderedArtifact,
   InitRenderInput,
   InitRequest,
   InitValidationSummary,
@@ -21,6 +22,7 @@ export interface InitArtifactSummary {
   readonly summary: string;
   readonly sourcePath?: string;
   readonly stage?: InitStage;
+  readonly renderedArtifact?: InitRenderedArtifact;
 }
 
 export interface InitStageResult {
