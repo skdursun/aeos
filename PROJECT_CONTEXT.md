@@ -52,6 +52,7 @@ condition.
 - TASK-0181: Implement aeos template recommend command.
 - TASK-0182: Add template recommend JSON safety review.
 - TASK-0183: Add template recommend documentation.
+- TASK-0184: Add template recommend final smoke review.
 
 ## Do Not Load By Default
 
@@ -62,7 +63,7 @@ condition.
 
 ## Next Task
 
-TASK-0184 Add template recommend final smoke review.
+TASK-0185 Define agentic task lifecycle design.
 
 ## Current Plans
 

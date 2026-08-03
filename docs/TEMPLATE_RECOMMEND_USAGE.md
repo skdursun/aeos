@@ -20,8 +20,10 @@ aeos template recommend --json
 - Adapts the profile summary, evidence IDs, and issue codes into smart template
   selection input.
 - Scores a static built-in MVP candidate allow-list.
-- Returns a recommendation when evidence is strong enough.
-- Falls back to `minimal_agents` when there is no confident match.
+- Returns a recommendation when a built-in candidate has meaningful local
+  evidence.
+- Falls back to `minimal_agents` when there is no usable local evidence or no
+  candidate match.
 - Accepts only `--json`; unknown flags exit nonzero.
 
 ## Read-Only Guarantee
@@ -143,13 +145,16 @@ Confidence is reported as the selector confidence band:
 - `low`: broad weak evidence only.
 - `unknown`: no usable evidence or fallback.
 
-Low and unknown confidence should not be treated as a production-ready automatic
-template choice.
+Low and unknown confidence should not be treated as production-ready automatic
+template choices. A low-confidence recommendation means the MVP found only broad
+local evidence for a built-in candidate; `unknown` is used for fallback.
 
 ## Fallback Behavior
 Fallback is a valid result, not an error. The MVP uses `minimal_agents` when the
-profile has no usable signals, only weak evidence, ambiguity, or no confident
-candidate match.
+profile has no usable signals or no built-in candidate matches. Low-confidence
+recommendations remain possible when broad local evidence matches a built-in
+candidate, and should be treated as inspection output rather than automatic init
+input.
 
 Fallback does not call init and does not write files.
 

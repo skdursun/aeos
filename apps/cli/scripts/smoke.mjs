@@ -456,6 +456,14 @@ function expectKnownTemplateRecommendCandidateIds(message, value, result) {
   }
 }
 
+function expectTemplateRecommendNoWrites(message, rootPath, before, result) {
+  expectSameFiles(message, before, listRelativeFiles(rootPath));
+
+  if (existsSync(join(rootPath, "AGENTS.md"))) {
+    fail(`${message}: created AGENTS.md`, result);
+  }
+}
+
 function selectedTemplateId(value) {
   return value.recommendation.selectedCandidate?.templateId ??
     value.summary.selectedTemplateId;
@@ -717,6 +725,22 @@ for (const unsupportedInitHelpText of [
   );
 }
 expectTemplateRecommendNoOverpromises("help output", helpCommand);
+for (const unsupportedTemplateRecommendHelpText of [
+  "--template-root",
+  "--catalog",
+  "--remote",
+  "--marketplace",
+  "init --smart",
+  "remote templates",
+  "marketplace",
+  "production template catalog",
+]) {
+  expectOutputExcludes(
+    `help output overpromised unsupported template recommend behavior: ${unsupportedTemplateRecommendHelpText}`,
+    helpCommand,
+    unsupportedTemplateRecommendHelpText,
+  );
+}
 
 const init = runCli(["init"]);
 expectExitCode("init exited nonzero", init, 0);
@@ -1851,10 +1875,11 @@ try {
       "template recommend Next-style fixture",
       templateRecommend,
     );
-    expectSameFiles(
+    expectTemplateRecommendNoWrites(
       "template recommend Next-style fixture created unexpected files",
+      templateRecommendRoot,
       templateRecommendFilesBefore,
-      listRelativeFiles(templateRecommendRoot),
+      templateRecommend,
     );
 
     createNextStyleProject(templateRecommendJsonRoot);
@@ -1907,13 +1932,17 @@ try {
         templateRecommendJson,
       );
     }
-    expectSameFiles(
+    expectTemplateRecommendNoWrites(
       "template recommend --json Next-style fixture created unexpected files",
+      templateRecommendJsonRoot,
       templateRecommendJsonFilesBefore,
-      listRelativeFiles(templateRecommendJsonRoot),
+      templateRecommendJson,
     );
 
     createWordPressStyleProject(templateRecommendWordPressRoot);
+    const templateRecommendWordPressFilesBefore = listRelativeFiles(
+      templateRecommendWordPressRoot,
+    );
     const templateRecommendWordPress = runCliFrom(
       templateRecommendWordPressRoot,
       ["template", "recommend", "--json"],
@@ -1950,7 +1979,62 @@ try {
         templateRecommendWordPress,
       );
     }
+    expectTemplateRecommendNoWrites(
+      "template recommend --json WordPress-style fixture created unexpected files",
+      templateRecommendWordPressRoot,
+      templateRecommendWordPressFilesBefore,
+      templateRecommendWordPress,
+    );
 
+    const templateRecommendEmptyHumanFilesBefore = listRelativeFiles(
+      templateRecommendEmptyRoot,
+    );
+    const templateRecommendEmptyHuman = runCliFrom(templateRecommendEmptyRoot, [
+      "template",
+      "recommend",
+    ]);
+    expectExitCode(
+      "template recommend empty fixture exited nonzero",
+      templateRecommendEmptyHuman,
+      0,
+    );
+    for (const expectedText of [
+      "Template Recommendation",
+      "Project root:",
+      "Selected template: fallback minimal_agents",
+      "Confidence: unknown",
+      "Fallback used: true",
+      "Candidate count: 4",
+      "Evidence count:",
+      "Issue count:",
+      "fallback.minimal-agents",
+      "no_confident_match",
+    ]) {
+      expectOutputIncludes(
+        `template recommend empty fixture did not include ${expectedText}`,
+        templateRecommendEmptyHuman,
+        expectedText,
+      );
+    }
+    expectOutputExcludes(
+      "template recommend empty fixture claimed high confidence",
+      templateRecommendEmptyHuman,
+      "Confidence: high",
+    );
+    expectTemplateRecommendNoOverpromises(
+      "template recommend empty fixture",
+      templateRecommendEmptyHuman,
+    );
+    expectTemplateRecommendNoWrites(
+      "template recommend empty fixture created unexpected files",
+      templateRecommendEmptyRoot,
+      templateRecommendEmptyHumanFilesBefore,
+      templateRecommendEmptyHuman,
+    );
+
+    const templateRecommendEmptyFilesBefore = listRelativeFiles(
+      templateRecommendEmptyRoot,
+    );
     const templateRecommendEmpty = runCliFrom(templateRecommendEmptyRoot, [
       "template",
       "recommend",
@@ -1987,6 +2071,29 @@ try {
         templateRecommendEmpty,
       );
     }
+    if (
+      parsedTemplateRecommendEmpty.recommendation.fallbackUsed !== true ||
+      parsedTemplateRecommendEmpty.recommendation.fallback !== "minimal_agents" ||
+      parsedTemplateRecommendEmpty.recommendation.confidence !== "unknown" ||
+      parsedTemplateRecommendEmpty.summary.fallback !== "minimal_agents" ||
+      !parsedTemplateRecommendEmpty.recommendation.evidence.ruleIds.includes(
+        "fallback.minimal-agents",
+      ) ||
+      !parsedTemplateRecommendEmpty.recommendation.evidence.reducedByIssueCodes.includes(
+        "no_confident_match",
+      )
+    ) {
+      fail(
+        "template recommend --json empty fixture fallback fields were inconsistent",
+        templateRecommendEmpty,
+      );
+    }
+    expectTemplateRecommendNoWrites(
+      "template recommend --json empty fixture created unexpected files",
+      templateRecommendEmptyRoot,
+      templateRecommendEmptyFilesBefore,
+      templateRecommendEmpty,
+    );
 
     const noWriteFilesBefore = listRelativeFiles(templateRecommendNoWriteRoot);
     const templateRecommendNoWrite = runCliFrom(templateRecommendNoWriteRoot, [
@@ -1998,10 +2105,11 @@ try {
       templateRecommendNoWrite,
       0,
     );
-    expectSameFiles(
+    expectTemplateRecommendNoWrites(
       "template recommend no-write fixture changed files",
+      templateRecommendNoWriteRoot,
       noWriteFilesBefore,
-      listRelativeFiles(templateRecommendNoWriteRoot),
+      templateRecommendNoWrite,
     );
     if (
       existsSync(join(templateRecommendNoWriteRoot, "AGENTS.md")) ||
@@ -2027,10 +2135,11 @@ try {
       "template recommend --json no-write fixture output was not valid JSON only",
       templateRecommendNoWriteJson,
     );
-    expectSameFiles(
+    expectTemplateRecommendNoWrites(
       "template recommend --json no-write fixture changed files",
+      templateRecommendNoWriteRoot,
       noWriteJsonFilesBefore,
-      listRelativeFiles(templateRecommendNoWriteRoot),
+      templateRecommendNoWriteJson,
     );
     if (
       existsSync(join(templateRecommendNoWriteRoot, "AGENTS.md")) ||
