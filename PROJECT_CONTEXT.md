@@ -43,6 +43,7 @@ condition.
 - TASK-0173: Add smart template selection contract examples.
 - TASK-0174: Implement smart template selector.
 - TASK-0175: Add smart template selector examples.
+- TASK-0176: Add smart template selector smoke tests.
 
 ## Do Not Load By Default
 
@@ -53,7 +54,7 @@ condition.
 
 ## Next Task
 
-TASK-0176 Add smart template selector smoke tests.
+TASK-0177 Design smart template recommendation CLI.
 
 ## Current Plans
 
