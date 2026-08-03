@@ -369,6 +369,91 @@ function expectTemplateRecommendJsonShape(message, value) {
   ) {
     fail(message);
   }
+
+  const expectedSummaryKeys = [
+    "candidateCount",
+    "confidence",
+    "evidenceCount",
+    "fallback",
+    "fallbackUsed",
+    "issueCount",
+    "selectedTemplateId",
+  ];
+  const summaryKeys = Object.keys(value.summary).sort();
+
+  if (
+    summaryKeys.length !== expectedSummaryKeys.length ||
+    summaryKeys.some((key, index) => key !== expectedSummaryKeys[index])
+  ) {
+    fail(message);
+  }
+}
+
+function expectTemplateRecommendFailureJsonShape(message, value) {
+  const expectedKeys = [
+    "candidates",
+    "fallbackUsed",
+    "issues",
+    "mode",
+    "ok",
+    "projectRoot",
+    "reason",
+    "recommendation",
+    "summary",
+  ];
+
+  if (
+    typeof value !== "object" ||
+    value === null
+  ) {
+    fail(message);
+  }
+
+  const keys = Object.keys(value).sort();
+
+  if (
+    keys.length !== expectedKeys.length ||
+    keys.some((key, index) => key !== expectedKeys[index]) ||
+    value.ok !== false ||
+    typeof value.projectRoot !== "string" ||
+    value.projectRoot.length === 0 ||
+    value.mode !== "recommend" ||
+    value.recommendation !== null ||
+    !Array.isArray(value.candidates) ||
+    value.candidates.length !== 0 ||
+    value.fallbackUsed !== true ||
+    !Array.isArray(value.issues) ||
+    value.issues.length !== 0 ||
+    value.summary !== null ||
+    value.reason !== "template_recommend_failed"
+  ) {
+    fail(message);
+  }
+}
+
+function expectKnownTemplateRecommendCandidateIds(message, value, result) {
+  const knownCandidateIds = new Set([
+    "aeos-generic-minimal",
+    "aeos-nextjs-typescript",
+    "aeos-wordpress-php",
+    "aeos-php-composer",
+  ]);
+
+  if (
+    !Array.isArray(value.candidates) ||
+    value.candidates.length !== knownCandidateIds.size
+  ) {
+    fail(message, result);
+  }
+
+  for (const candidate of value.candidates) {
+    if (
+      typeof candidate.templateId !== "string" ||
+      !knownCandidateIds.has(candidate.templateId)
+    ) {
+      fail(message, result);
+    }
+  }
 }
 
 function selectedTemplateId(value) {
@@ -386,6 +471,7 @@ function expectTemplateRecommendNoOverpromises(message, result) {
     "AI guessing",
     "dependency parsing",
     "package content parsing",
+    "production template catalog",
   ]) {
     expectOutputExcludes(
       `${message} overpromised unsupported behavior: ${unexpectedText}`,
@@ -1756,6 +1842,11 @@ try {
       templateRecommend,
       "aeos-nextjs-typescript",
     );
+    expectOutputIncludes(
+      "template recommend Next-style fixture did not report non-fallback selection",
+      templateRecommend,
+      "Fallback used: false",
+    );
     expectTemplateRecommendNoOverpromises(
       "template recommend Next-style fixture",
       templateRecommend,
@@ -1788,6 +1879,11 @@ try {
       "template recommend --json Next-style fixture shape was invalid",
       parsedTemplateRecommendJson,
     );
+    expectKnownTemplateRecommendCandidateIds(
+      "template recommend --json Next-style fixture included an invented candidate id",
+      parsedTemplateRecommendJson,
+      templateRecommendJson,
+    );
     if (
       parsedTemplateRecommendJson.projectRoot !==
         realpathSync(templateRecommendJsonRoot) ||
@@ -1796,6 +1892,18 @@ try {
     ) {
       fail(
         "template recommend --json Next-style fixture did not select expected template",
+        templateRecommendJson,
+      );
+    }
+    if (
+      parsedTemplateRecommendJson.fallbackUsed !== false ||
+      parsedTemplateRecommendJson.summary.fallbackUsed !== false ||
+      parsedTemplateRecommendJson.summary.candidateCount !== 4 ||
+      parsedTemplateRecommendJson.summary.selectedTemplateId !==
+        "aeos-nextjs-typescript"
+    ) {
+      fail(
+        "template recommend --json Next-style fixture summary was not stable",
         templateRecommendJson,
       );
     }
@@ -1823,7 +1931,17 @@ try {
       "template recommend --json WordPress-style fixture shape was invalid",
       parsedTemplateRecommendWordPress,
     );
+    expectKnownTemplateRecommendCandidateIds(
+      "template recommend --json WordPress-style fixture included an invented candidate id",
+      parsedTemplateRecommendWordPress,
+      templateRecommendWordPress,
+    );
     if (
+      parsedTemplateRecommendWordPress.projectRoot !==
+        realpathSync(templateRecommendWordPressRoot) ||
+      parsedTemplateRecommendWordPress.fallbackUsed !== false ||
+      parsedTemplateRecommendWordPress.summary.fallbackUsed !== false ||
+      parsedTemplateRecommendWordPress.summary.candidateCount !== 4 ||
       selectedTemplateId(parsedTemplateRecommendWordPress) !==
       "aeos-wordpress-php"
     ) {
@@ -1851,10 +1969,18 @@ try {
       "template recommend --json empty fixture shape was invalid",
       parsedTemplateRecommendEmpty,
     );
+    expectKnownTemplateRecommendCandidateIds(
+      "template recommend --json empty fixture included an invented candidate id",
+      parsedTemplateRecommendEmpty,
+      templateRecommendEmpty,
+    );
     if (
       parsedTemplateRecommendEmpty.fallbackUsed !== true ||
       parsedTemplateRecommendEmpty.summary.fallbackUsed !== true ||
-      parsedTemplateRecommendEmpty.summary.confidence === "high"
+      parsedTemplateRecommendEmpty.summary.selectedTemplateId !== null ||
+      parsedTemplateRecommendEmpty.summary.candidateCount !== 4 ||
+      parsedTemplateRecommendEmpty.summary.confidence === "high" ||
+      selectedTemplateId(parsedTemplateRecommendEmpty) !== null
     ) {
       fail(
         "template recommend --json empty fixture claimed an unstable high-confidence match",
@@ -1886,6 +2012,35 @@ try {
         templateRecommendNoWrite,
       );
     }
+    const noWriteJsonFilesBefore = listRelativeFiles(templateRecommendNoWriteRoot);
+    const templateRecommendNoWriteJson = runCliFrom(templateRecommendNoWriteRoot, [
+      "template",
+      "recommend",
+      "--json",
+    ]);
+    expectExitCode(
+      "template recommend --json no-write fixture exited nonzero",
+      templateRecommendNoWriteJson,
+      0,
+    );
+    parseJsonOnlyStdout(
+      "template recommend --json no-write fixture output was not valid JSON only",
+      templateRecommendNoWriteJson,
+    );
+    expectSameFiles(
+      "template recommend --json no-write fixture changed files",
+      noWriteJsonFilesBefore,
+      listRelativeFiles(templateRecommendNoWriteRoot),
+    );
+    if (
+      existsSync(join(templateRecommendNoWriteRoot, "AGENTS.md")) ||
+      listRelativeFiles(templateRecommendNoWriteRoot).length !== 0
+    ) {
+      fail(
+        "template recommend --json no-write fixture created AGENTS.md or template output",
+        templateRecommendNoWriteJson,
+      );
+    }
 
     const templateRecommendUnknownJson = runCliFrom(templateRecommendEmptyRoot, [
       "template",
@@ -1901,16 +2056,10 @@ try {
       "template recommend unknown option --json output was not valid JSON only",
       templateRecommendUnknownJson,
     );
-    if (
-      parsedTemplateRecommendUnknownJson.ok !== false ||
-      parsedTemplateRecommendUnknownJson.reason !==
-        "template_recommend_failed"
-    ) {
-      fail(
-        "template recommend unknown option --json failure shape was invalid",
-        templateRecommendUnknownJson,
-      );
-    }
+    expectTemplateRecommendFailureJsonShape(
+      "template recommend unknown option --json failure shape was invalid",
+      parsedTemplateRecommendUnknownJson,
+    );
   } finally {
     rmSync(templateRecommendRoot, { recursive: true, force: true });
     rmSync(templateRecommendJsonRoot, { recursive: true, force: true });

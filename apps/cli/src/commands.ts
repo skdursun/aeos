@@ -468,7 +468,7 @@ type TemplateRecommendJsonOutput =
         readonly candidateCount: number;
         readonly evidenceCount: number;
         readonly issueCount: number;
-        readonly selectedTemplateId?: string;
+        readonly selectedTemplateId: string | null;
         readonly fallback: SmartTemplateSelectionFallback;
         readonly fallbackUsed: boolean;
         readonly confidence: SmartTemplateSelectionConfidence;
@@ -976,7 +976,7 @@ function createTemplateRecommendJsonOutput(
       candidateCount: result.summary.candidateCount,
       evidenceCount,
       issueCount: result.summary.issueCount,
-      selectedTemplateId: result.summary.selectedTemplateId,
+      selectedTemplateId: result.summary.selectedTemplateId ?? null,
       fallback: result.summary.fallback,
       fallbackUsed: result.fallbackUsed,
       confidence: result.summary.confidence,
