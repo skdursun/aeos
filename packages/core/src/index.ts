@@ -10,6 +10,8 @@ export type * from "./init-engine.js";
 export type * from "./init-adapters.js";
 export type * from "./init-pipeline.js";
 export type * from "./generation.js";
+export type * from "./generation-engine.js";
+export * from "./generation-engine.js";
 export * from "./init-executor.js";
 export * from "./init-adapters.js";
 export * from "./init-pipeline.js";

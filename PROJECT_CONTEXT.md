@@ -21,8 +21,8 @@ condition.
 ## Current Priorities
 
 - Keep context loading small and intentional.
-- Keep init orchestration dependency-free and side-effect free until generation
-  is explicitly implemented.
+- Keep generation planning dependency-free and side-effect free until file writes
+  are explicitly implemented.
 
 ## Recent Completed Tasks
 
@@ -32,6 +32,7 @@ condition.
 - TASK-0124: Define init generation design.
 - TASK-0125: Implement generation contracts.
 - TASK-0126: Add generation contract examples.
+- TASK-0127: Implement generation engine design.
 
 ## Do Not Load By Default
 
@@ -42,7 +43,7 @@ condition.
 
 ## Next Task
 
-TASK-0127 Implement generation engine design.
+TASK-0128 Add generation engine examples.
 
 ## Current Plans
 
