@@ -41,6 +41,7 @@ condition.
 - TASK-0171: Design smart init/template selection.
 - TASK-0172: Implement smart template selection contracts.
 - TASK-0173: Add smart template selection contract examples.
+- TASK-0174: Implement smart template selector.
 
 ## Do Not Load By Default
 
@@ -51,7 +52,7 @@ condition.
 
 ## Next Task
 
-TASK-0174 Implement smart template selector.
+TASK-0175 Add smart template selector examples.
 
 ## Current Plans
 

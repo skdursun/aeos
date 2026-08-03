@@ -51,6 +51,13 @@ export type {
   SmartTemplateType,
 } from "./smart-selection.js";
 
+export {
+  createSmartTemplateFallbackRecommendation,
+  scoreSmartTemplateCandidate,
+  selectSmartTemplate,
+  summarizeSmartTemplateSelectionResult,
+} from "./smart-selector.js";
+
 export type {
   TemplateMetadata,
   TemplateMetadataReadError,
