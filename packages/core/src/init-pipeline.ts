@@ -4,8 +4,16 @@ import type {
   GenerationResult,
   GenerationWriteMode,
 } from "./generation.js";
-import type { GenerationExistingTargetInfo } from "./generation-engine.js";
-import { executeGenerationPlan } from "./generation-engine.js";
+import type {
+  GenerationAdapterIssue,
+  GenerationFileSystemAdapter,
+  GenerationFileWriteResult,
+} from "./generation-adapters.js";
+import type {
+  GenerationExistingTargetInfo,
+  GenerationTargetInspectionFailure,
+} from "./generation-engine.js";
+import { executeGenerationPlan, summarizeGenerationResult } from "./generation-engine.js";
 import type {
   InitGeneratedFile,
   InitIssue,
@@ -40,6 +48,7 @@ export type InitPipelineHandlers = InitAdapterStageHandlers;
 export interface InitGenerationPipelineOptions {
   readonly writeMode?: GenerationWriteMode;
   readonly existingTargets?: GenerationExistingTargetInfo;
+  readonly fileSystemAdapter?: GenerationFileSystemAdapter;
 }
 
 export interface RunInitPipelineOptions extends InitPipelineOptions {
@@ -100,11 +109,11 @@ export async function runInitPipeline(
   return applyGenerationResult(createInitResult(pipelineResult), generationState);
 }
 
-function runGenerationBackedFileWriting(
+async function runGenerationBackedFileWriting(
   context: InitExecutionContext,
   options: InitGenerationPipelineOptions,
   state: InitGenerationPipelineState,
-): InitStageResult {
+): Promise<InitStageResult> {
   const renderingArtifacts = getRenderingArtifacts(context);
   const converted = convertInitArtifactsToGenerationRenderedArtifacts(
     renderingArtifacts,
@@ -122,35 +131,67 @@ function runGenerationBackedFileWriting(
     return createFailedInitStageResult("file_writing", converted.issues);
   }
 
+  const existingTargets =
+    options.fileSystemAdapter === undefined
+      ? options.existingTargets
+      : mergeExistingTargetInfo(
+          options.existingTargets,
+          await inspectGenerationTargets(
+            options.fileSystemAdapter,
+            converted.artifacts,
+          ),
+        );
+
   const generationResult = executeGenerationPlan(
     {
       targetRoot: context.plan.targetRoot,
       artifacts: converted.artifacts,
-      writeMode: options.writeMode ?? "dry_run",
+      writeMode: getGenerationWriteMode(options),
       overwrite: false,
     },
     {
-      existingTargets: options.existingTargets,
+      existingTargets,
     },
   );
 
   state.generationResult = generationResult;
 
-  const artifacts = generationResult.artifacts.map((artifact) =>
+  if (
+    options.fileSystemAdapter !== undefined &&
+    generationResult.ok &&
+    generationResult.writeMode === "write"
+  ) {
+    state.generationResult = await writeGenerationArtifacts(
+      options.fileSystemAdapter,
+      generationResult,
+      converted.artifacts,
+    );
+  }
+
+  const activeGenerationResult = state.generationResult;
+  const artifacts = activeGenerationResult.artifacts.map((artifact) =>
     createGenerationArtifactSummary(artifact),
   );
 
-  return generationResult.ok
+  return activeGenerationResult.ok
     ? createSuccessfulInitStageResult(
         "file_writing",
         artifacts,
-        generationResult.errors,
+        activeGenerationResult.errors,
       )
     : createFailedInitStageResult(
         "file_writing",
-        generationResult.errors,
+        activeGenerationResult.errors,
         artifacts,
       );
+}
+
+function getGenerationWriteMode(
+  options: InitGenerationPipelineOptions,
+): GenerationWriteMode {
+  return options.fileSystemAdapter === undefined
+    ? "dry_run"
+    : options.writeMode ?? "dry_run";
 }
 
 function getRenderingArtifacts(
@@ -276,4 +317,211 @@ function compareGenerationRenderedArtifacts(
   right: GenerationRenderedArtifact,
 ): number {
   return left.targetPath.localeCompare(right.targetPath);
+}
+
+async function inspectGenerationTargets(
+  adapter: GenerationFileSystemAdapter,
+  artifacts: readonly GenerationRenderedArtifact[],
+): Promise<GenerationExistingTargetInfo> {
+  const files = new Set<string>();
+  const directories = new Set<string>();
+  const inspectionFailures: GenerationTargetInspectionFailure[] = [];
+
+  for (const artifact of artifacts) {
+    const inspectedPaths = [
+      artifact.targetPath,
+      ...collectParentPaths(artifact.targetPath),
+    ];
+
+    for (const targetPath of inspectedPaths) {
+      const result = await adapter.getPathInfo(targetPath);
+      const pathInfo = result.pathInfo;
+
+      if (!result.ok || pathInfo.kind === "unknown") {
+        inspectionFailures.push({
+          targetPath: artifact.targetPath,
+          message: issueMessages(result.issues),
+        });
+        continue;
+      }
+
+      if (pathInfo.kind === "file") {
+        files.add(pathInfo.path);
+      }
+
+      if (pathInfo.kind === "directory") {
+        directories.add(pathInfo.path);
+      }
+    }
+  }
+
+  return {
+    files: [...files].sort(compareStrings),
+    directories: [...directories].sort(compareStrings),
+    inspectionFailures: inspectionFailures.sort((left, right) =>
+      compareStrings(left.targetPath, right.targetPath),
+    ),
+  };
+}
+
+function collectParentPaths(targetPath: string): readonly string[] {
+  const segments = targetPath
+    .replaceAll("\\", "/")
+    .split("/")
+    .filter((segment) => segment.length > 0 && segment !== ".");
+  const parentPaths: string[] = [];
+
+  for (let index = 1; index < segments.length; index += 1) {
+    parentPaths.push(segments.slice(0, index).join("/"));
+  }
+
+  return parentPaths;
+}
+
+function mergeExistingTargetInfo(
+  left: GenerationExistingTargetInfo | undefined,
+  right: GenerationExistingTargetInfo,
+): GenerationExistingTargetInfo {
+  return {
+    files: mergeSortedStrings(left?.files, right.files),
+    directories: mergeSortedStrings(left?.directories, right.directories),
+    inspectionFailures: [
+      ...(left?.inspectionFailures ?? []),
+      ...(right.inspectionFailures ?? []),
+    ].sort((leftFailure, rightFailure) =>
+      compareStrings(leftFailure.targetPath, rightFailure.targetPath),
+    ),
+  };
+}
+
+function mergeSortedStrings(
+  left: readonly string[] = [],
+  right: readonly string[] = [],
+): readonly string[] {
+  return [...new Set([...left, ...right])].sort(compareStrings);
+}
+
+async function writeGenerationArtifacts(
+  adapter: GenerationFileSystemAdapter,
+  generationResult: GenerationResult,
+  renderedArtifacts: readonly GenerationRenderedArtifact[],
+): Promise<GenerationResult> {
+  const renderedByTarget = new Map(
+    renderedArtifacts.map((artifact) => [artifact.targetPath, artifact]),
+  );
+  const writtenArtifacts: GenerationArtifact[] = [];
+  const writeIssues: InitIssue[] = [];
+
+  for (const artifact of generationResult.artifacts) {
+    const renderedArtifact = renderedByTarget.get(artifact.targetPath);
+
+    if (renderedArtifact === undefined) {
+      writtenArtifacts.push({
+        ...artifact,
+        status: "failed",
+      });
+      writeIssues.push({
+        code: "init_generation_rendered_artifact_missing",
+        message: "Generation artifact cannot be written without rendered content.",
+        path: artifact.targetPath,
+      });
+      continue;
+    }
+
+    const writeResult = await adapter.writeFile({
+      path: artifact.targetPath,
+      content: renderedArtifact.content,
+      dryRun: false,
+      overwrite: false,
+      parentDirectory: getParentPath(artifact.targetPath),
+    });
+
+    writtenArtifacts.push({
+      ...artifact,
+      targetPath: writeResult.path,
+      status: mapWriteStatus(writeResult),
+    });
+    writeIssues.push(...writeResult.issues.map(adapterIssueToInitIssue));
+  }
+
+  const errors = [
+    ...generationResult.errors,
+    ...writeIssues.filter((issue) => issue.details?.severity !== "warning"),
+  ];
+  const artifacts = writtenArtifacts.sort((left, right) =>
+    compareStrings(left.targetPath, right.targetPath),
+  );
+
+  return {
+    ...generationResult,
+    ok: errors.length === 0 && artifacts.every((artifact) => artifact.status === "generated"),
+    artifacts,
+    errors,
+    summary: summarizeGenerationResult({
+      targetRoot: generationResult.targetRoot,
+      writeMode: generationResult.writeMode,
+      overwrite: generationResult.overwrite,
+      artifacts,
+      conflicts: generationResult.conflicts,
+      errors,
+    }),
+  };
+}
+
+function getParentPath(targetPath: string): string | undefined {
+  const segments = targetPath
+    .replaceAll("\\", "/")
+    .split("/")
+    .filter((segment) => segment.length > 0 && segment !== ".");
+
+  return segments.length <= 1 ? undefined : segments.slice(0, -1).join("/");
+}
+
+function mapWriteStatus(
+  result: GenerationFileWriteResult,
+): GenerationArtifact["status"] {
+  if (result.status === "written") {
+    return "generated";
+  }
+
+  if (result.status === "failed") {
+    return "failed";
+  }
+
+  if (result.status === "blocked") {
+    return "blocked";
+  }
+
+  return "planned";
+}
+
+function adapterIssueToInitIssue(issue: GenerationAdapterIssue): InitIssue {
+  return {
+    code: `generation_${issue.code}`,
+    message: issue.message,
+    path: issue.path,
+    details: {
+      operation: issue.operation,
+      severity: issue.severity,
+      ...(issue.details ?? {}),
+    },
+  };
+}
+
+function issueMessages(issues: readonly GenerationAdapterIssue[]): string {
+  return issues.length === 0
+    ? "Target path could not be inspected safely."
+    : issues.map((issue) => issue.message).join(" ");
+}
+
+function compareStrings(left: string, right: string): number {
+  if (left < right) {
+    return -1;
+  }
+
+  if (left > right) {
+    return 1;
+  }
+
+  return 0;
 }

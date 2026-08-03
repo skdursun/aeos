@@ -1,6 +1,7 @@
 import type { InitResult } from "./init.js";
 import type { InitExecutionContext, InitStageResult } from "./init-engine.js";
 import type { InitAdapterSet } from "./init-adapters.js";
+import type { GenerationFileSystemAdapter } from "./generation-adapters.js";
 import {
   createDefaultInitPipeline,
   createGenerationBackedInitPipelineHandlers,
@@ -112,6 +113,48 @@ export async function generationBackedDryRunSmokeExample(): Promise<{
   };
 }
 
+export async function defaultDryRunNoWritePipelineExample(): Promise<{
+  readonly ok: boolean;
+  readonly generatedFiles: readonly GeneratedArtifactSummary[];
+  readonly errorCodes: readonly string[];
+}> {
+  const result = await runInitPipeline(
+    exampleRequest,
+    createSuccessfulExampleAdapters(),
+  );
+
+  return {
+    ok: result.ok,
+    generatedFiles: summarizeGeneratedArtifacts(result),
+    errorCodes: result.errors.map((issue) => issue.code),
+  };
+}
+
+export async function adapterBackedSafeWritingPipelineShapeExample(
+  fileSystemAdapter: GenerationFileSystemAdapter,
+): Promise<{
+  readonly ok: boolean;
+  readonly generatedFiles: readonly GeneratedArtifactSummary[];
+  readonly errorCodes: readonly string[];
+}> {
+  const result = await runInitPipeline(
+    exampleRequest,
+    createSuccessfulExampleAdapters(),
+    {
+      generation: {
+        writeMode: "write",
+        fileSystemAdapter,
+      },
+    },
+  );
+
+  return {
+    ok: result.ok,
+    generatedFiles: summarizeGeneratedArtifacts(result),
+    errorCodes: result.errors.map((issue) => issue.code),
+  };
+}
+
 export async function generationBackedConflictExample(): Promise<{
   readonly ok: boolean;
   readonly errorCodes: readonly string[];
@@ -134,6 +177,29 @@ export async function generationBackedConflictExample(): Promise<{
     ok: result.ok,
     errorCodes: result.errors.map((issue) => issue.code),
     generatedArtifacts: summarizeGeneratedArtifacts(result),
+  };
+}
+
+export async function adapterBackedConflictMappingExample(): Promise<{
+  readonly ok: boolean;
+  readonly generatedFiles: readonly GeneratedArtifactSummary[];
+  readonly errorCodes: readonly string[];
+}> {
+  const result = await runInitPipeline(
+    exampleRequest,
+    createSuccessfulExampleAdapters(),
+    {
+      generation: {
+        writeMode: "write",
+        fileSystemAdapter: createConflictExampleFileSystemAdapter(),
+      },
+    },
+  );
+
+  return {
+    ok: result.ok,
+    generatedFiles: summarizeGeneratedArtifacts(result),
+    errorCodes: result.errors.map((issue) => issue.code),
   };
 }
 
@@ -232,6 +298,44 @@ export const generationBackedDuplicateTargetSmokeExpected = {
 } satisfies Awaited<
   ReturnType<typeof generationBackedDuplicateTargetSmokeExample>
 >;
+
+export const defaultDryRunNoWritePipelineExpected = {
+  ok: true,
+  generatedFiles: [
+    {
+      path: "AGENTS.md",
+      status: "planned",
+      summary: "Create AGENTS.md from selected template.",
+      sourcePath: "AGENTS.md.template",
+    },
+    {
+      path: "PROJECT_CONTEXT.md",
+      status: "planned",
+      summary: "Create PROJECT_CONTEXT.md from selected template.",
+      sourcePath: "PROJECT_CONTEXT.md.template",
+    },
+  ],
+  errorCodes: [],
+} satisfies Awaited<ReturnType<typeof defaultDryRunNoWritePipelineExample>>;
+
+export const adapterBackedConflictMappingExpected = {
+  ok: false,
+  generatedFiles: [
+    {
+      path: "AGENTS.md",
+      status: "blocked",
+      summary: "Create AGENTS.md from selected template.",
+      sourcePath: "AGENTS.md.template",
+    },
+    {
+      path: "PROJECT_CONTEXT.md",
+      status: "planned",
+      summary: "Create PROJECT_CONTEXT.md from selected template.",
+      sourcePath: "PROJECT_CONTEXT.md.template",
+    },
+  ],
+  errorCodes: ["generation_target_exists"],
+} satisfies Awaited<ReturnType<typeof adapterBackedConflictMappingExample>>;
 
 interface GeneratedArtifactSummary {
   readonly path: string;
@@ -416,6 +520,67 @@ function summarizeGeneratedArtifacts(
     summary: file.summary,
     sourcePath: file.sourcePath,
   }));
+}
+
+function createConflictExampleFileSystemAdapter(): GenerationFileSystemAdapter {
+  return {
+    getPathInfo(path) {
+      if (path === "AGENTS.md") {
+        return {
+          ok: true,
+          pathInfo: {
+            path,
+            exists: true,
+            kind: "file",
+            issues: [
+              {
+                code: "target_is_file",
+                severity: "warning",
+                message: "Example target already exists.",
+                operation: "path_info",
+                path,
+              },
+            ],
+          },
+          issues: [],
+        };
+      }
+
+      return {
+        ok: true,
+        pathInfo: {
+          path,
+          exists: false,
+          kind: "missing",
+          issues: [],
+        },
+        issues: [],
+      };
+    },
+    ensureDirectory(request) {
+      return {
+        ok: true,
+        path: request.path,
+        dryRun: request.dryRun,
+        status: request.dryRun ? "planned" : "ensured",
+        created: !request.dryRun,
+        issues: [],
+      };
+    },
+    writeFile(request) {
+      return {
+        ok: true,
+        path: request.path,
+        dryRun: request.dryRun,
+        overwrite: false,
+        status: request.dryRun ? "planned" : "written",
+        written: !request.dryRun,
+        skipped: request.dryRun,
+        bytesWritten: request.content.length,
+        issues: [],
+      };
+    },
+  };
 }
 
 export function adapterBackedContextExample(
