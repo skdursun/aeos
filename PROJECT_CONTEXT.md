@@ -63,6 +63,7 @@ condition.
 - TASK-0190: Implement agentic coverage verifier contracts.
 - TASK-0191: Add agentic coverage verifier contract examples.
 - TASK-0192: Add agentic coverage verifier contract smoke tests.
+- TASK-0193: Implement agentic coverage verifier logic.
 
 ## Do Not Load By Default
 
@@ -73,7 +74,7 @@ condition.
 
 ## Next Task
 
-TASK-0193 Implement agentic coverage verifier logic.
+TASK-0194 Add agentic coverage verifier logic examples.
 
 ## Current Plans
 
