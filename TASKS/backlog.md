@@ -1,5 +1,26 @@
 # Backlog
 
+## Agentic Task Lifecycle Backlog
+
+1. TASK-0186: Implement agentic task lifecycle contracts. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+2. TASK-0187: Add lifecycle contract examples. Code. Effort: Low. Verification: `pnpm --filter @aeos/core check`.
+3. TASK-0188: Implement task state transition validator. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+4. TASK-0189: Implement work item state transition validator. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+5. TASK-0190: Implement lifecycle issue shapes. Code. Effort: Low. Verification: `pnpm --filter @aeos/core check`.
+6. TASK-0191: Implement lifecycle JSON result builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+7. TASK-0192: Implement basic inventory contract. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+8. TASK-0193: Add inventory examples. Code. Effort: Low. Verification: `pnpm --filter @aeos/core check`.
+9. TASK-0194: Implement batch planning contract. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+10. TASK-0195: Implement coverage summary calculator. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+11. TASK-0196: Add item completion rule checks. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+12. TASK-0197: Add artifact completion rule checks. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+13. TASK-0198: Add crawl inventory completion rule checks. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+14. TASK-0199: Implement lifecycle verifier summary adapter boundary. Code. Effort: High. Verification: `pnpm --filter @aeos/core check`.
+15. TASK-0200: Implement lifecycle audit reference contract. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+16. TASK-0201: Add lifecycle resume selector. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+17. TASK-0202: Design lifecycle CLI command behavior. Docs. Effort: Medium. Verification: `git status --short`.
+18. TASK-0203: Add lifecycle smoke review. Docs. Effort: Medium. Verification: `git status --short`.
+
 ## Initial Implementation Backlog
 
 1. TASK-0013: Decide AEOS runtime and package manager. Docs only. Effort: High. Verification: `format_check`.

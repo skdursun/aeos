@@ -28,6 +28,8 @@ condition.
 - Keep smart init/template selection deterministic, local-first, and fallback
   safe.
 - Keep template recommendation read-only, deterministic, and separate from init.
+- Keep agentic task execution externally verified, coverage-aware, auditable, and
+  resumable without trusting model self-reporting.
 
 ## Recent Completed Tasks
 
@@ -53,6 +55,7 @@ condition.
 - TASK-0182: Add template recommend JSON safety review.
 - TASK-0183: Add template recommend documentation.
 - TASK-0184: Add template recommend final smoke review.
+- TASK-0185: Define agentic task lifecycle design.
 
 ## Do Not Load By Default
 
@@ -63,7 +66,7 @@ condition.
 
 ## Next Task
 
-TASK-0185 Define agentic task lifecycle design.
+TASK-0186 Implement agentic task lifecycle contracts.
 
 ## Current Plans
 
@@ -74,4 +77,5 @@ TASK-0185 Define agentic task lifecycle design.
 - docs/PROJECT_INTELLIGENCE_DETECTOR_IMPLEMENTATION_PLAN.md
 - docs/PROJECT_PROFILE_COMMAND_DESIGN.md
 - docs/SMART_INIT_TEMPLATE_SELECTION_DESIGN.md
+- docs/AGENTIC_TASK_LIFECYCLE_DESIGN.md
 - docs/TEMPLATE_RECOMMEND_COMMAND_DESIGN.md
