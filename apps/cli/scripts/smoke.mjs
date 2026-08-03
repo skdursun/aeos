@@ -1,7 +1,6 @@
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -321,7 +320,7 @@ expectOutputIncludes(
 );
 
 const init = runCli(["init"]);
-expectNonzero("init exited zero before template selection is configured", init);
+expectExitCode("init exited nonzero", init, 0);
 expectOutputIncludes('init output did not include "AEOS Init"', init, "AEOS Init");
 expectOutputIncludes('init output did not include dry-run mode', init, "dry_run");
 expectOutputIncludes(
@@ -337,9 +336,9 @@ expectOutputIncludes(
 expectOutputIncludes('init output did not include target root', init, "Target root:");
 expectOutputIncludes('init output did not include "Status:"', init, "Status:");
 expectOutputIncludes(
-  'init output did not include failure status',
+  'init output did not include success status',
   init,
-  "failure",
+  "success",
 );
 expectOutputIncludes('init output did not include "Stages:"', init, "Stages:");
 for (const stage of [
@@ -353,26 +352,31 @@ for (const stage of [
   expectOutputIncludes(`init output did not include stage ${stage}`, init, `- ${stage}`);
 }
 expectOutputIncludes('init output did not include "Artifacts:"', init, "Artifacts:");
+expectOutputIncludes(
+  'init output did not include planned AGENTS.md',
+  init,
+  "planned AGENTS.md",
+);
 
 const initJson = runCli(["init", "--json"]);
-expectNonzero("init --json exited zero before template selection is configured", initJson);
-const parsedInitJson = parseJsonStdout(
+expectExitCode("init --json exited nonzero", initJson, 0);
+const parsedInitJson = parseJsonOnlyStdout(
   "init --json output was not valid JSON",
   initJson,
 );
 expectInitJsonShape("init --json output shape was invalid", parsedInitJson);
 if (
-  parsedInitJson.ok !== false ||
+  parsedInitJson.ok !== true ||
   parsedInitJson.mode !== "dry_run" ||
   parsedInitJson.writeEnabled !== false ||
-  parsedInitJson.status !== "failure" ||
-  parsedInitJson.errors.length === 0
+  parsedInitJson.status !== "success" ||
+  !parsedInitJson.generatedFiles.some((file) => file.path === "AGENTS.md")
 ) {
-  fail("init --json output did not match expected safe failure", initJson);
+  fail("init --json output did not match expected dry-run plan", initJson);
 }
 
 const initWrite = runCli(["init", "--write"]);
-expectNonzero("init --write exited zero before write artifacts are available", initWrite);
+expectNonzero("init --write exited zero despite existing AGENTS.md", initWrite);
 expectOutputIncludes(
   'init --write output did not include "write"',
   initWrite,
@@ -409,10 +413,15 @@ expectOutputIncludes(
   initWrite,
   "Errors count:",
 );
+expectOutputIncludes(
+  'init --write output did not report blocked AGENTS.md',
+  initWrite,
+  "blocked AGENTS.md",
+);
 
 const initWriteJson = runCli(["init", "--write", "--json"]);
 expectNonzero(
-  "init --write --json exited zero before writable artifacts are available",
+  "init --write --json exited zero despite existing AGENTS.md",
   initWriteJson,
 );
 const parsedInitWriteJson = parseJsonOnlyStdout(
@@ -425,18 +434,19 @@ expectInitWriteJsonShape(
 );
 if (
   parsedInitWriteJson.ok !== false ||
-  parsedInitWriteJson.generatedFiles.length !== 0 ||
-  parsedInitWriteJson.errors.length === 0
+  parsedInitWriteJson.status !== "blocked" ||
+  !parsedInitWriteJson.generatedFiles.some((file) => file.path === "AGENTS.md") ||
+  parsedInitWriteJson.conflicts.length === 0
 ) {
   fail(
-    "init --write --json did not report explicit no writable artifacts yet",
+    "init --write --json did not report existing AGENTS.md conflict",
     initWriteJson,
   );
 }
 expectIssueCode(
-  "init --write --json did not report no writable artifacts yet",
-  parsedInitWriteJson.errors,
-  "init_no_writable_artifacts",
+  "init --write --json did not report overwrite-disabled conflict",
+  parsedInitWriteJson.conflicts,
+  "generation_target_exists",
   initWriteJson,
 );
 
@@ -459,7 +469,6 @@ if (
 
 const initSafetyRoot = mkdtempSync(join(tmpdir(), "aeos-cli-init-safety-"));
 const initOutsideRoot = mkdtempSync(join(tmpdir(), "aeos-cli-init-outside-"));
-let discoveredInitWritePaths = [];
 
 try {
   const outsideSentinelPath = join(initOutsideRoot, "sentinel.txt");
@@ -467,7 +476,7 @@ try {
 
   const filesBeforeInit = listRelativeFiles(initSafetyRoot);
   const isolatedInit = runCliFrom(initSafetyRoot, ["init"]);
-  expectNonzero("isolated init exited zero before template selection is configured", isolatedInit);
+  expectExitCode("isolated init exited nonzero", isolatedInit, 0);
   expectOutputIncludes(
     'isolated init output did not include "AEOS Init"',
     isolatedInit,
@@ -480,14 +489,22 @@ try {
   );
 
   const isolatedInitJson = runCliFrom(initSafetyRoot, ["init", "--json"]);
-  expectNonzero(
-    "isolated init --json exited zero before template selection is configured",
+  expectExitCode("isolated init --json exited nonzero", isolatedInitJson, 0);
+  const parsedIsolatedInitJson = parseJsonOnlyStdout(
+    "isolated init --json output was not valid JSON",
     isolatedInitJson,
   );
   expectInitJsonShape(
     "isolated init --json output shape was invalid",
-    parseJsonOnlyStdout("isolated init --json output was not valid JSON", isolatedInitJson),
+    parsedIsolatedInitJson,
   );
+  if (
+    parsedIsolatedInitJson.mode !== "dry_run" ||
+    parsedIsolatedInitJson.writeEnabled !== false ||
+    !parsedIsolatedInitJson.generatedFiles.some((file) => file.path === "AGENTS.md")
+  ) {
+    fail("isolated init --json did not report planned AGENTS.md", isolatedInitJson);
+  }
   expectSameFiles(
     "isolated init --json changed files in dry-run mode",
     filesBeforeInit,
@@ -495,10 +512,7 @@ try {
   );
 
   const isolatedInitWrite = runCliFrom(initSafetyRoot, ["init", "--write"]);
-  expectNonzero(
-    "isolated init --write exited zero before writable artifacts are available",
-    isolatedInitWrite,
-  );
+  expectExitCode("isolated init --write exited nonzero", isolatedInitWrite, 0);
   expectOutputIncludes(
     'isolated init --write output did not include "Write enabled:"',
     isolatedInitWrite,
@@ -509,8 +523,27 @@ try {
     isolatedInitWrite,
     "true",
   );
+  expectOutputIncludes(
+    "isolated init --write output did not report created AGENTS.md",
+    isolatedInitWrite,
+    "created AGENTS.md",
+  );
+
+  const createdAgentsPath = join(initSafetyRoot, "AGENTS.md");
+  if (!existsSync(createdAgentsPath)) {
+    fail("isolated init --write did not create AGENTS.md", isolatedInitWrite);
+  }
+  if (!readFileSync(createdAgentsPath, "utf8").includes("AEOS")) {
+    fail("isolated init --write AGENTS.md did not include AEOS marker", isolatedInitWrite);
+  }
 
   const isolatedWriteFiles = listRelativeFiles(initSafetyRoot);
+  if (
+    isolatedWriteFiles.length !== 1 ||
+    isolatedWriteFiles[0] !== "AGENTS.md"
+  ) {
+    fail("isolated init --write created unexpected files", isolatedInitWrite);
+  }
   for (const path of isolatedWriteFiles) {
     if (path.startsWith("..") || path.length === 0) {
       fail(`isolated init --write reported an unsafe relative path: ${path}`, isolatedInitWrite);
@@ -526,10 +559,7 @@ try {
     "--write",
     "--json",
   ]);
-  expectNonzero(
-    "isolated init --write --json exited zero before writable artifacts are available",
-    isolatedInitWriteJson,
-  );
+  expectExitCode("isolated init --write --json exited nonzero", isolatedInitWriteJson, 0);
   const parsedIsolatedInitWriteJson = parseJsonOnlyStdout(
     "isolated init --write --json output was not valid JSON only",
     isolatedInitWriteJson,
@@ -542,49 +572,48 @@ try {
     fail("isolated init --write --json targetRoot did not match cwd", isolatedInitWriteJson);
   }
 
-  discoveredInitWritePaths = parsedIsolatedInitWriteJson.generatedFiles
-    .filter((file) => file.status === "created")
-    .map((file) => file.path);
-
   if (
-    parsedIsolatedInitWriteJson.ok !== false ||
-    discoveredInitWritePaths.length !== 0
+    parsedIsolatedInitWriteJson.ok !== true ||
+    parsedIsolatedInitWriteJson.mode !== "write" ||
+    parsedIsolatedInitWriteJson.writeEnabled !== true ||
+    !parsedIsolatedInitWriteJson.generatedFiles.some(
+      (file) => file.path === "AGENTS.md" && file.status === "created",
+    )
   ) {
     fail(
-      "isolated init --write --json did not report no writable artifacts yet",
+      "isolated init --write --json did not report created AGENTS.md",
       isolatedInitWriteJson,
     );
   }
-  expectIssueCode(
-    "isolated init --write --json did not report no writable artifacts yet",
-    parsedIsolatedInitWriteJson.errors,
-    "init_no_writable_artifacts",
-    isolatedInitWriteJson,
+
+  const initWriteJsonFiles = listRelativeFiles(initWriteJsonRoot);
+  if (
+    initWriteJsonFiles.length !== 1 ||
+    initWriteJsonFiles[0] !== "AGENTS.md"
+  ) {
+    fail("isolated init --write --json created unexpected files", isolatedInitWriteJson);
+  }
+
+  const conflictRoot = mkdtempSync(join(tmpdir(), "aeos-cli-init-conflict-"));
+  const conflictPath = join(conflictRoot, "AGENTS.md");
+
+  writeFileSync(conflictPath, "existing content\n");
+  const conflictResult = runCliFrom(conflictRoot, ["init", "--write"]);
+  expectNonzero("isolated init --write conflict exited zero", conflictResult);
+  if (readFileSync(conflictPath, "utf8") !== "existing content\n") {
+    fail("isolated init --write overwrote an existing file", conflictResult);
+  }
+  expectOutputIncludes(
+    "isolated init --write conflict did not report blocked AGENTS.md",
+    conflictResult,
+    "blocked AGENTS.md",
   );
-
-  if (listRelativeFiles(initWriteJsonRoot).length !== 0) {
-    fail("isolated init --write --json wrote files despite failed result", isolatedInitWriteJson);
-  }
-
-  // Overwrite smoke is intentionally gated until TASK-0142 adds a writable
-  // init artifact fixture; this milestone asserts the explicit no-artifact stop.
-  if (discoveredInitWritePaths.length > 0) {
-    const conflictRoot = mkdtempSync(join(tmpdir(), "aeos-cli-init-conflict-"));
-    const conflictPath = join(conflictRoot, discoveredInitWritePaths[0]);
-    const conflictParent = conflictPath.slice(0, conflictPath.lastIndexOf("/"));
-
-    if (conflictParent !== conflictPath) {
-      mkdirSync(conflictParent, { recursive: true });
-    }
-
-    writeFileSync(conflictPath, "existing content\n");
-    const conflictResult = runCliFrom(conflictRoot, ["init", "--write"]);
-    expectNonzero("isolated init --write conflict exited zero", conflictResult);
-    if (readFileSync(conflictPath, "utf8") !== "existing content\n") {
-      fail("isolated init --write overwrote an existing file", conflictResult);
-    }
-    rmSync(conflictRoot, { recursive: true, force: true });
-  }
+  expectOutputIncludes(
+    "isolated init --write conflict did not report conflict count",
+    conflictResult,
+    "Conflicts count:",
+  );
+  rmSync(conflictRoot, { recursive: true, force: true });
 
   rmSync(initWriteJsonRoot, { recursive: true, force: true });
 } finally {

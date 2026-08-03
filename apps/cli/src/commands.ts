@@ -636,6 +636,17 @@ function printInitResult(result: InitResult, output: InitOutputContext): void {
   console.log("Artifacts:");
   console.log(String(result.generatedFiles.length));
   console.log("");
+  console.log("Generated files:");
+
+  if (result.generatedFiles.length === 0) {
+    console.log("0");
+  } else {
+    for (const file of result.generatedFiles) {
+      console.log(`- ${file.status} ${file.path}`);
+    }
+  }
+
+  console.log("");
   console.log("Generated files count:");
   console.log(String(result.generatedFiles.length));
   console.log("");
@@ -704,11 +715,7 @@ function requireInitWriteArtifacts(
     return result;
   }
 
-  const createdFiles = result.generatedFiles.filter(
-    (file) => file.status === "created",
-  );
-
-  if (createdFiles.length > 0) {
+  if (result.generatedFiles.length > 0) {
     return result;
   }
 
