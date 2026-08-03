@@ -273,6 +273,18 @@
 13. TASK-0162: Add detector stack examples. Code. Effort: Medium. Verification: `pnpm --filter @aeos/projects check`.
 14. TASK-0163: Define project profile CLI integration. Docs. Effort: Low. Verification: `git status --short`.
 
+## Project Profile CLI Backlog
+
+1. TASK-0167: Implement aeos project profile command. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+2. TASK-0168: Add project profile help text. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+3. TASK-0169: Add project profile JSON shape tests. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+4. TASK-0170: Add project profile human smoke tests. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+5. TASK-0171: Review profile command scan defaults. Docs/code. Effort: Low. Verification: `git status --short`.
+6. TASK-0172: Add project profile issue rendering polish. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+7. TASK-0173: Add project profile invalid flag handling. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+8. TASK-0174: Review project profile MVP behavior. Docs. Effort: Medium. Verification: `git status --short`.
+9. TASK-0175: Design explicit hidden config handling. Docs. Effort: Medium. Verification: `git status --short`.
+
 ## Memory MVP Backlog
 
 1. TASK-0057: Implement memory package Markdown entry builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/memory check`.
