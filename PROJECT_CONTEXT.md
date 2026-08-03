@@ -23,6 +23,7 @@ condition.
 - Keep context loading small and intentional.
 - Keep generation planning dependency-free and side-effect free until file writes
   are explicitly implemented.
+- Keep `aeos init` filesystem writes behind explicit CLI intent.
 
 ## Recent Completed Tasks
 
@@ -43,6 +44,7 @@ condition.
 - TASK-0135: Add filesystem generation writer smoke tests.
 - TASK-0136: Integrate filesystem writer into init pipeline safe mode.
 - TASK-0137: Add init pipeline filesystem writer smoke tests.
+- TASK-0138: Design aeos init explicit write mode CLI flag.
 
 ## Do Not Load By Default
 
@@ -53,9 +55,10 @@ condition.
 
 ## Next Task
 
-TASK-0138 Enable aeos init write mode behind explicit CLI flag design.
+TASK-0139 Implement aeos init --write flag skeleton.
 
 ## Current Plans
 
 - docs/INIT_CLI_IMPLEMENTATION_PLAN.md
 - docs/INIT_GENERATION_IMPLEMENTATION_PLAN.md
+- docs/INIT_WRITE_MODE_CLI_DESIGN.md

@@ -243,6 +243,19 @@
 14. TASK-0138: Integrate generation with file writing stage. Code. Effort: High. Verification: `pnpm --filter @aeos/core check`.
 15. TASK-0139: Review generation MVP behavior. Docs. Effort: Medium. Verification: `git status --short`.
 
+## Init Write Mode CLI Backlog
+
+1. TASK-0139: Implement aeos init --write flag skeleton. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+2. TASK-0140: Add init mode output contract. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+3. TASK-0141: Add target root output contract. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+4. TASK-0142: Add init conflict output shape. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+5. TASK-0143: Wire write mode to pipeline options behind a safety block. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+6. TASK-0144: Add human write confirmation gate. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+7. TASK-0145: Add filesystem adapter construction for init write mode. Code. Effort: High. Verification: `pnpm --filter @aeos/cli check`.
+8. TASK-0146: Add write-mode conflict smoke tests. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+9. TASK-0147: Add write-mode success smoke tests. Code. Effort: High. Verification: `pnpm --filter @aeos/cli check`.
+10. TASK-0148: Review init write mode MVP behavior. Docs. Effort: Medium. Verification: `git status --short`.
+
 ## Memory MVP Backlog
 
 1. TASK-0057: Implement memory package Markdown entry builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/memory check`.
