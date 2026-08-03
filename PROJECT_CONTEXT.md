@@ -45,6 +45,7 @@ condition.
 - TASK-0136: Integrate filesystem writer into init pipeline safe mode.
 - TASK-0137: Add init pipeline filesystem writer smoke tests.
 - TASK-0138: Design aeos init explicit write mode CLI flag.
+- TASK-0139: Implement aeos init --write flag skeleton.
 
 ## Do Not Load By Default
 
@@ -55,7 +56,7 @@ condition.
 
 ## Next Task
 
-TASK-0139 Implement aeos init --write flag skeleton.
+TASK-0140 Wire aeos init --write to filesystem adapter.
 
 ## Current Plans
 

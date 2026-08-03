@@ -28,6 +28,8 @@ Commands:
   status --json
   init
   init --json
+  init --write (blocked skeleton)
+  init --write --json (blocked skeleton)
   remember --type <type> --title <title>
   remember --type <type> --title <title> --json
   search <query>
@@ -79,6 +81,13 @@ type InitJsonOutput =
   | {
       readonly ok: false;
       readonly status: "failure";
+      readonly errors: readonly InitIssue[];
+    }
+  | {
+      readonly ok: false;
+      readonly mode: "write-requested";
+      readonly writeEnabled: false;
+      readonly status: "blocked";
       readonly errors: readonly InitIssue[];
     };
 
@@ -567,6 +576,12 @@ function formatInitStatus(result: InitResult): "success" | "failure" {
 function printInitResult(result: InitResult): void {
   console.log("AEOS Init");
   console.log("");
+  console.log("Mode:");
+  console.log("dry_run");
+  console.log("");
+  console.log("Write enabled:");
+  console.log("false");
+  console.log("");
   console.log("Status:");
   console.log(formatInitStatus(result));
   console.log("");
@@ -615,7 +630,8 @@ function createInitJsonOutput(result: InitResult): InitJsonOutput {
 
 async function handleInit(args: readonly string[]): Promise<void> {
   const json = args.includes("--json");
-  const unknownArgs = args.filter((arg) => arg !== "--json");
+  const writeRequested = args.includes("--write");
+  const unknownArgs = args.filter((arg) => arg !== "--json" && arg !== "--write");
 
   if (unknownArgs.length > 0) {
     if (json) {
@@ -634,7 +650,47 @@ async function handleInit(args: readonly string[]): Promise<void> {
     }
 
     console.error("Error: unknown init option.");
-    console.error("Usage: aeos init [--json]");
+    console.error("Usage: aeos init [--json] [--write]");
+    setExitCode(1);
+    return;
+  }
+
+  if (writeRequested) {
+    const errors: readonly InitIssue[] = [
+      {
+        code: "init_write_mode_not_enabled",
+        message:
+          "Write mode is recognized but not enabled until filesystem adapter integration task.",
+      },
+    ];
+
+    if (json) {
+      writeInitJson({
+        ok: false,
+        mode: "write-requested",
+        writeEnabled: false,
+        status: "blocked",
+        errors,
+      });
+      setExitCode(1);
+      return;
+    }
+
+    console.log("AEOS Init");
+    console.log("");
+    console.log("Mode:");
+    console.log("write-requested");
+    console.log("");
+    console.log("Write enabled:");
+    console.log("false");
+    console.log("");
+    console.log("Status:");
+    console.log("blocked");
+    console.log("");
+    console.log("Reason:");
+    console.log(
+      "write mode is not enabled until filesystem adapter integration task",
+    );
     setExitCode(1);
     return;
   }

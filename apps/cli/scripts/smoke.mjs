@@ -77,6 +77,16 @@ function parseJsonStdout(message, result) {
   }
 }
 
+function parseJsonOnlyStdout(message, result) {
+  const trimmedStdout = result.stdout.trim();
+
+  if (trimmedStdout.length === 0 || trimmedStdout.split("\n").length !== 1) {
+    fail(`${message}: stdout was not exactly one JSON line`, result);
+  }
+
+  return parseJsonStdout(message, result);
+}
+
 function expectEmptyArray(message, value) {
   if (!Array.isArray(value) || value.length !== 0) {
     fail(message);
@@ -272,10 +282,31 @@ expectOutputIncludes(
   helpCommand,
   "init --json",
 );
+expectOutputIncludes(
+  'help output did not include "init --write"',
+  helpCommand,
+  "init --write",
+);
+expectOutputIncludes(
+  'help output did not include "init --write --json"',
+  helpCommand,
+  "init --write --json",
+);
 
 const init = runCli(["init"]);
 expectNonzero("init exited zero before template selection is configured", init);
 expectOutputIncludes('init output did not include "AEOS Init"', init, "AEOS Init");
+expectOutputIncludes('init output did not include dry-run mode', init, "dry_run");
+expectOutputIncludes(
+  'init output did not include disabled write state',
+  init,
+  "Write enabled:",
+);
+expectOutputIncludes(
+  'init output did not include "false" write state',
+  init,
+  "false",
+);
 expectOutputIncludes('init output did not include "Status:"', init, "Status:");
 expectOutputIncludes(
   'init output did not include failure status',
@@ -308,6 +339,46 @@ if (
   parsedInitJson.errors.length === 0
 ) {
   fail("init --json output did not match expected safe failure", initJson);
+}
+
+const initWrite = runCli(["init", "--write"]);
+expectNonzero("init --write exited zero while write mode is blocked", initWrite);
+expectOutputIncludes(
+  'init --write output did not include "write-requested"',
+  initWrite,
+  "write-requested",
+);
+expectOutputIncludes(
+  'init --write output did not include disabled write state',
+  initWrite,
+  "Write enabled:",
+);
+expectOutputIncludes(
+  'init --write output did not include "false" write state',
+  initWrite,
+  "false",
+);
+expectOutputIncludes(
+  "init --write output did not explain write mode is not enabled",
+  initWrite,
+  "write mode is not enabled",
+);
+
+const initWriteJson = runCli(["init", "--write", "--json"]);
+expectNonzero("init --write --json exited zero while write mode is blocked", initWriteJson);
+const parsedInitWriteJson = parseJsonOnlyStdout(
+  "init --write --json output was not valid JSON only",
+  initWriteJson,
+);
+if (
+  parsedInitWriteJson.ok !== false ||
+  parsedInitWriteJson.mode !== "write-requested" ||
+  parsedInitWriteJson.writeEnabled !== false ||
+  parsedInitWriteJson.status !== "blocked" ||
+  !Array.isArray(parsedInitWriteJson.errors) ||
+  parsedInitWriteJson.errors[0]?.code !== "init_write_mode_not_enabled"
+) {
+  fail("init --write --json output did not match expected blocked shape", initWriteJson);
 }
 
 const initUnknownJson = runCli(["init", "--unknown", "--json"]);
@@ -361,6 +432,41 @@ try {
   );
   expectSameFiles(
     "isolated init --json changed files before generation is implemented",
+    filesBeforeInit,
+    listRelativeFiles(initSafetyRoot),
+  );
+
+  const isolatedInitWrite = runCliFrom(initSafetyRoot, ["init", "--write"]);
+  expectNonzero(
+    "isolated init --write exited zero while write mode is blocked",
+    isolatedInitWrite,
+  );
+  expectOutputIncludes(
+    "isolated init --write did not explain write mode is not enabled",
+    isolatedInitWrite,
+    "write mode is not enabled",
+  );
+  expectSameFiles(
+    "isolated init --write changed files while write mode is blocked",
+    filesBeforeInit,
+    listRelativeFiles(initSafetyRoot),
+  );
+
+  const isolatedInitWriteJson = runCliFrom(initSafetyRoot, [
+    "init",
+    "--write",
+    "--json",
+  ]);
+  expectNonzero(
+    "isolated init --write --json exited zero while write mode is blocked",
+    isolatedInitWriteJson,
+  );
+  parseJsonOnlyStdout(
+    "isolated init --write --json output was not valid JSON only",
+    isolatedInitWriteJson,
+  );
+  expectSameFiles(
+    "isolated init --write --json changed files while write mode is blocked",
     filesBeforeInit,
     listRelativeFiles(initSafetyRoot),
   );
