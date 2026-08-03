@@ -58,6 +58,7 @@ condition.
 - TASK-0148: Add project intelligence contract examples.
 - TASK-0149: Implement project intelligence detector design.
 - TASK-0150: Implement intelligence detector input contracts.
+- TASK-0151: Add intelligence detector input examples.
 
 ## Do Not Load By Default
 
@@ -68,7 +69,7 @@ condition.
 
 ## Next Task
 
-TASK-0151 Add intelligence detector input examples.
+TASK-0152 Implement deterministic project scan entry collector.
 
 ## Current Plans
 
