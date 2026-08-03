@@ -711,28 +711,34 @@ function requireInitWriteArtifacts(
   result: InitResult,
   output: InitOutputContext,
 ): InitResult {
-  if (!output.writeEnabled) {
+  if (!output.writeEnabled || !result.ok) {
     return result;
   }
 
-  if (result.generatedFiles.length > 0) {
+  if (result.generatedFiles.some((file) => file.status === "created")) {
     return result;
   }
 
-  const noArtifactsIssue: InitIssue = {
-    code: "init_no_writable_artifacts",
-    message: "No writable init artifacts are available yet.",
-  };
-  const hasNoArtifactsIssue = result.errors.some(
-    (issue) => issue.code === noArtifactsIssue.code,
+  const noCreatedFilesIssue: InitIssue =
+    result.generatedFiles.length === 0
+      ? {
+          code: "init_no_writable_artifacts",
+          message: "No writable init artifacts are available yet.",
+        }
+      : {
+          code: "init_write_no_created_files",
+          message: "Write mode completed without creating generated files.",
+        };
+  const hasNoCreatedFilesIssue = result.errors.some(
+    (issue) => issue.code === noCreatedFilesIssue.code,
   );
 
   return {
     ...result,
     ok: false,
-    errors: hasNoArtifactsIssue
+    errors: hasNoCreatedFilesIssue
       ? result.errors
-      : [...result.errors, noArtifactsIssue],
+      : [...result.errors, noCreatedFilesIssue],
   };
 }
 

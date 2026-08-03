@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -468,13 +469,20 @@ if (
 }
 
 const initSafetyRoot = mkdtempSync(join(tmpdir(), "aeos-cli-init-safety-"));
+const initSafetyParentRoot = mkdtempSync(
+  join(tmpdir(), "aeos-cli-init-safety-parent-"),
+);
+const initSafetyChildRoot = join(initSafetyParentRoot, "cwd");
 const initOutsideRoot = mkdtempSync(join(tmpdir(), "aeos-cli-init-outside-"));
 
 try {
+  mkdirSync(initSafetyChildRoot);
+
   const outsideSentinelPath = join(initOutsideRoot, "sentinel.txt");
   writeFileSync(outsideSentinelPath, "outside sentinel\n");
 
   const filesBeforeInit = listRelativeFiles(initSafetyRoot);
+  const parentFilesBeforeInit = listRelativeFiles(initSafetyParentRoot);
   const isolatedInit = runCliFrom(initSafetyRoot, ["init"]);
   expectExitCode("isolated init exited nonzero", isolatedInit, 0);
   expectOutputIncludes(
@@ -487,6 +495,14 @@ try {
     filesBeforeInit,
     listRelativeFiles(initSafetyRoot),
   );
+  expectSameFiles(
+    "isolated init changed files in parent directory in dry-run mode",
+    parentFilesBeforeInit,
+    listRelativeFiles(initSafetyParentRoot),
+  );
+  if (existsSync(join(initSafetyRoot, "AGENTS.md"))) {
+    fail("isolated init created AGENTS.md in dry-run mode", isolatedInit);
+  }
 
   const isolatedInitJson = runCliFrom(initSafetyRoot, ["init", "--json"]);
   expectExitCode("isolated init --json exited nonzero", isolatedInitJson, 0);
@@ -501,7 +517,9 @@ try {
   if (
     parsedIsolatedInitJson.mode !== "dry_run" ||
     parsedIsolatedInitJson.writeEnabled !== false ||
-    !parsedIsolatedInitJson.generatedFiles.some((file) => file.path === "AGENTS.md")
+    !parsedIsolatedInitJson.generatedFiles.some(
+      (file) => file.path === "AGENTS.md" && file.status === "planned",
+    )
   ) {
     fail("isolated init --json did not report planned AGENTS.md", isolatedInitJson);
   }
@@ -510,8 +528,11 @@ try {
     filesBeforeInit,
     listRelativeFiles(initSafetyRoot),
   );
+  if (existsSync(join(initSafetyRoot, "AGENTS.md"))) {
+    fail("isolated init --json created AGENTS.md in dry-run mode", isolatedInitJson);
+  }
 
-  const isolatedInitWrite = runCliFrom(initSafetyRoot, ["init", "--write"]);
+  const isolatedInitWrite = runCliFrom(initSafetyChildRoot, ["init", "--write"]);
   expectExitCode("isolated init --write exited nonzero", isolatedInitWrite, 0);
   expectOutputIncludes(
     'isolated init --write output did not include "Write enabled:"',
@@ -529,7 +550,7 @@ try {
     "created AGENTS.md",
   );
 
-  const createdAgentsPath = join(initSafetyRoot, "AGENTS.md");
+  const createdAgentsPath = join(initSafetyChildRoot, "AGENTS.md");
   if (!existsSync(createdAgentsPath)) {
     fail("isolated init --write did not create AGENTS.md", isolatedInitWrite);
   }
@@ -537,7 +558,7 @@ try {
     fail("isolated init --write AGENTS.md did not include AEOS marker", isolatedInitWrite);
   }
 
-  const isolatedWriteFiles = listRelativeFiles(initSafetyRoot);
+  const isolatedWriteFiles = listRelativeFiles(initSafetyChildRoot);
   if (
     isolatedWriteFiles.length !== 1 ||
     isolatedWriteFiles[0] !== "AGENTS.md"
@@ -549,11 +570,22 @@ try {
       fail(`isolated init --write reported an unsafe relative path: ${path}`, isolatedInitWrite);
     }
   }
+  const isolatedWriteParentFiles = listRelativeFiles(initSafetyParentRoot);
+  if (
+    isolatedWriteParentFiles.length !== 1 ||
+    isolatedWriteParentFiles[0] !== "cwd/AGENTS.md"
+  ) {
+    fail("isolated init --write created a file outside cwd", isolatedInitWrite);
+  }
   if (readFileSync(outsideSentinelPath, "utf8") !== "outside sentinel\n") {
     fail("isolated init --write changed an outside sentinel file", isolatedInitWrite);
   }
 
-  const initWriteJsonRoot = mkdtempSync(join(tmpdir(), "aeos-cli-init-write-json-"));
+  const initWriteJsonParentRoot = mkdtempSync(
+    join(tmpdir(), "aeos-cli-init-write-json-parent-"),
+  );
+  const initWriteJsonRoot = join(initWriteJsonParentRoot, "cwd");
+  mkdirSync(initWriteJsonRoot);
   const isolatedInitWriteJson = runCliFrom(initWriteJsonRoot, [
     "init",
     "--write",
@@ -585,6 +617,14 @@ try {
       isolatedInitWriteJson,
     );
   }
+  expectEmptyArray(
+    "isolated init --write --json conflicts was not empty",
+    parsedIsolatedInitWriteJson.conflicts,
+  );
+  expectEmptyArray(
+    "isolated init --write --json errors was not empty",
+    parsedIsolatedInitWriteJson.errors,
+  );
 
   const initWriteJsonFiles = listRelativeFiles(initWriteJsonRoot);
   if (
@@ -592,6 +632,13 @@ try {
     initWriteJsonFiles[0] !== "AGENTS.md"
   ) {
     fail("isolated init --write --json created unexpected files", isolatedInitWriteJson);
+  }
+  const initWriteJsonParentFiles = listRelativeFiles(initWriteJsonParentRoot);
+  if (
+    initWriteJsonParentFiles.length !== 1 ||
+    initWriteJsonParentFiles[0] !== "cwd/AGENTS.md"
+  ) {
+    fail("isolated init --write --json created a file outside cwd", isolatedInitWriteJson);
   }
 
   const conflictRoot = mkdtempSync(join(tmpdir(), "aeos-cli-init-conflict-"));
@@ -613,11 +660,52 @@ try {
     conflictResult,
     "Conflicts count:",
   );
+  const conflictJsonResult = runCliFrom(conflictRoot, [
+    "init",
+    "--write",
+    "--json",
+  ]);
+  expectNonzero("isolated init --write --json conflict exited zero", conflictJsonResult);
+  const parsedConflictJson = parseJsonOnlyStdout(
+    "isolated init --write --json conflict output was not valid JSON only",
+    conflictJsonResult,
+  );
+  expectInitWriteJsonShape(
+    "isolated init --write --json conflict output shape was invalid",
+    parsedConflictJson,
+  );
+  if (
+    parsedConflictJson.ok !== false ||
+    parsedConflictJson.status !== "blocked" ||
+    parsedConflictJson.generatedFiles.length !== 1 ||
+    parsedConflictJson.generatedFiles[0]?.path !== "AGENTS.md" ||
+    parsedConflictJson.generatedFiles[0]?.status !== "blocked" ||
+    parsedConflictJson.conflicts.length === 0
+  ) {
+    fail(
+      "isolated init --write --json conflict did not report blocked AGENTS.md",
+      conflictJsonResult,
+    );
+  }
+  expectIssueCode(
+    "isolated init --write --json conflict did not report overwrite-disabled conflict",
+    parsedConflictJson.conflicts,
+    "generation_target_exists",
+    conflictJsonResult,
+  );
+  if (readFileSync(conflictPath, "utf8") !== "existing content\n") {
+    fail("isolated init --write --json overwrote an existing file", conflictJsonResult);
+  }
+  const conflictFiles = listRelativeFiles(conflictRoot);
+  if (conflictFiles.length !== 1 || conflictFiles[0] !== "AGENTS.md") {
+    fail("isolated init --write --json conflict created unexpected files", conflictJsonResult);
+  }
   rmSync(conflictRoot, { recursive: true, force: true });
 
-  rmSync(initWriteJsonRoot, { recursive: true, force: true });
+  rmSync(initWriteJsonParentRoot, { recursive: true, force: true });
 } finally {
   rmSync(initSafetyRoot, { recursive: true, force: true });
+  rmSync(initSafetyParentRoot, { recursive: true, force: true });
   rmSync(initOutsideRoot, { recursive: true, force: true });
 }
 
