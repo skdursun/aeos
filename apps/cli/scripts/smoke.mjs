@@ -62,6 +62,12 @@ function expectOutputIncludes(message, result, expectedText) {
   }
 }
 
+function expectOutputExcludes(message, result, unexpectedText) {
+  if (outputOf(result).includes(unexpectedText)) {
+    fail(message, result);
+  }
+}
+
 function expectBooleanProperty(message, value, propertyName) {
   if (typeof value[propertyName] !== "boolean") {
     fail(message);
@@ -319,6 +325,19 @@ expectOutputIncludes(
   helpCommand,
   "init --write --json",
 );
+for (const unsupportedInitHelpText of [
+  "--force",
+  "--target-root",
+  "rollback",
+  "template",
+  "project intelligence",
+]) {
+  expectOutputExcludes(
+    `help output overpromised unsupported init behavior: ${unsupportedInitHelpText}`,
+    helpCommand,
+    unsupportedInitHelpText,
+  );
+}
 
 const init = runCli(["init"]);
 expectExitCode("init exited nonzero", init, 0);
@@ -358,6 +377,11 @@ expectOutputIncludes(
   init,
   "planned AGENTS.md",
 );
+expectOutputExcludes(
+  'init output implied AGENTS.md was written in dry-run mode',
+  init,
+  "created AGENTS.md",
+);
 
 const initJson = runCli(["init", "--json"]);
 expectExitCode("init --json exited nonzero", initJson, 0);
@@ -371,7 +395,9 @@ if (
   parsedInitJson.mode !== "dry_run" ||
   parsedInitJson.writeEnabled !== false ||
   parsedInitJson.status !== "success" ||
-  !parsedInitJson.generatedFiles.some((file) => file.path === "AGENTS.md")
+  parsedInitJson.generatedFiles.length !== 1 ||
+  parsedInitJson.generatedFiles[0]?.path !== "AGENTS.md" ||
+  parsedInitJson.generatedFiles[0]?.status !== "planned"
 ) {
   fail("init --json output did not match expected dry-run plan", initJson);
 }
@@ -608,9 +634,9 @@ try {
     parsedIsolatedInitWriteJson.ok !== true ||
     parsedIsolatedInitWriteJson.mode !== "write" ||
     parsedIsolatedInitWriteJson.writeEnabled !== true ||
-    !parsedIsolatedInitWriteJson.generatedFiles.some(
-      (file) => file.path === "AGENTS.md" && file.status === "created",
-    )
+    parsedIsolatedInitWriteJson.generatedFiles.length !== 1 ||
+    parsedIsolatedInitWriteJson.generatedFiles[0]?.path !== "AGENTS.md" ||
+    parsedIsolatedInitWriteJson.generatedFiles[0]?.status !== "created"
   ) {
     fail(
       "isolated init --write --json did not report created AGENTS.md",

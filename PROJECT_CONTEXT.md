@@ -51,6 +51,7 @@ condition.
 - TASK-0142: Provide minimal writable init artifact fixture.
 - TASK-0143: Add init write mode safety review.
 - TASK-0144: Add init write mode documentation.
+- TASK-0145: Add init write mode final smoke review.
 
 ## Do Not Load By Default
 
@@ -61,7 +62,7 @@ condition.
 
 ## Next Task
 
-TASK-0145 Add init write mode final smoke review.
+TASK-0146 Define Project Intelligence Layer design.
 
 ## Current Plans
 
