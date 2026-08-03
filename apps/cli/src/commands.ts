@@ -32,8 +32,8 @@ Commands:
   status --json
   init
   init --json
-  init --write (blocked skeleton)
-  init --write --json (blocked skeleton)
+  init --write
+  init --write --json
   remember --type <type> --title <title>
   remember --type <type> --title <title> --json
   search <query>
@@ -696,6 +696,39 @@ function createInitJsonOutput(
   };
 }
 
+function requireInitWriteArtifacts(
+  result: InitResult,
+  output: InitOutputContext,
+): InitResult {
+  if (!output.writeEnabled) {
+    return result;
+  }
+
+  const createdFiles = result.generatedFiles.filter(
+    (file) => file.status === "created",
+  );
+
+  if (createdFiles.length > 0) {
+    return result;
+  }
+
+  const noArtifactsIssue: InitIssue = {
+    code: "init_no_writable_artifacts",
+    message: "No writable init artifacts are available yet.",
+  };
+  const hasNoArtifactsIssue = result.errors.some(
+    (issue) => issue.code === noArtifactsIssue.code,
+  );
+
+  return {
+    ...result,
+    ok: false,
+    errors: hasNoArtifactsIssue
+      ? result.errors
+      : [...result.errors, noArtifactsIssue],
+  };
+}
+
 async function handleInit(args: readonly string[]): Promise<void> {
   const json = args.includes("--json");
   const writeRequested = args.includes("--write");
@@ -734,7 +767,7 @@ async function handleInit(args: readonly string[]): Promise<void> {
     writeEnabled: writeRequested,
   };
 
-  const result = await runInitPipeline({
+  const result = requireInitWriteArtifacts(await runInitPipeline({
     projectRoot: targetRoot,
     template: {
       templateId: "default",
@@ -747,7 +780,7 @@ async function handleInit(args: readonly string[]): Promise<void> {
           fileSystemAdapter: createFilesystemGenerationAdapter({ targetRoot }),
         }
       : undefined,
-  });
+  }), output);
 
   if (json) {
     writeInitJson(createInitJsonOutput(result, output));

@@ -769,13 +769,43 @@ async function loadMemoryApi(): Promise<MemoryApi> {
 async function loadPackageModule(
   packageName: string,
 ): Promise<Readonly<Record<string, unknown>>> {
-  const loadedModule = await import(packageName);
+  const loadedModule = await importPackageModule(packageName);
 
   if (!isRecord(loadedModule)) {
     throw new Error(`Package module did not load an object: ${packageName}`);
   }
 
   return loadedModule;
+}
+
+async function importPackageModule(packageName: string): Promise<unknown> {
+  try {
+    return await import(packageName);
+  } catch (error) {
+    const fallbackPath = getLocalPackageFallbackPath(packageName);
+
+    if (fallbackPath === undefined) {
+      throw error;
+    }
+
+    return import(fallbackPath);
+  }
+}
+
+function getLocalPackageFallbackPath(packageName: string): string | undefined {
+  if (packageName === "@aeos/projects") {
+    return "../../projects/dist/index.js";
+  }
+
+  if (packageName === "@aeos/templates") {
+    return "../../templates/dist/index.js";
+  }
+
+  if (packageName === "@aeos/memory") {
+    return "../../memory/dist/index.js";
+  }
+
+  return undefined;
 }
 
 function readFunction(

@@ -47,6 +47,7 @@ condition.
 - TASK-0138: Design aeos init explicit write mode CLI flag.
 - TASK-0139: Implement aeos init --write flag skeleton.
 - TASK-0140: Wire aeos init --write to filesystem adapter.
+- TASK-0141: Add init write mode safety and artifact availability review.
 
 ## Do Not Load By Default
 
@@ -57,7 +58,7 @@ condition.
 
 ## Next Task
 
-TASK-0141 Add init write mode safety review.
+TASK-0142 Provide minimal writable init artifact fixture.
 
 ## Current Plans
 

@@ -96,6 +96,15 @@ function expectEmptyArray(message, value) {
   }
 }
 
+function expectIssueCode(message, issues, code, result) {
+  if (
+    !Array.isArray(issues) ||
+    !issues.some((issue) => issue.code === code)
+  ) {
+    fail(message, result);
+  }
+}
+
 function expectInitJsonShape(message, value) {
   if (
     typeof value !== "object" ||
@@ -402,6 +411,10 @@ expectOutputIncludes(
 );
 
 const initWriteJson = runCli(["init", "--write", "--json"]);
+expectNonzero(
+  "init --write --json exited zero before writable artifacts are available",
+  initWriteJson,
+);
 const parsedInitWriteJson = parseJsonOnlyStdout(
   "init --write --json output was not valid JSON only",
   initWriteJson,
@@ -411,11 +424,21 @@ expectInitWriteJsonShape(
   parsedInitWriteJson,
 );
 if (
-  parsedInitWriteJson.ok !== true &&
+  parsedInitWriteJson.ok !== false ||
+  parsedInitWriteJson.generatedFiles.length !== 0 ||
   parsedInitWriteJson.errors.length === 0
 ) {
-  fail("init --write --json failure did not include errors", initWriteJson);
+  fail(
+    "init --write --json did not report explicit no writable artifacts yet",
+    initWriteJson,
+  );
 }
+expectIssueCode(
+  "init --write --json did not report no writable artifacts yet",
+  parsedInitWriteJson.errors,
+  "init_no_writable_artifacts",
+  initWriteJson,
+);
 
 const initUnknownJson = runCli(["init", "--unknown", "--json"]);
 expectNonzero("init unknown option --json exited zero", initUnknownJson);
@@ -472,6 +495,10 @@ try {
   );
 
   const isolatedInitWrite = runCliFrom(initSafetyRoot, ["init", "--write"]);
+  expectNonzero(
+    "isolated init --write exited zero before writable artifacts are available",
+    isolatedInitWrite,
+  );
   expectOutputIncludes(
     'isolated init --write output did not include "Write enabled:"',
     isolatedInitWrite,
@@ -499,6 +526,10 @@ try {
     "--write",
     "--json",
   ]);
+  expectNonzero(
+    "isolated init --write --json exited zero before writable artifacts are available",
+    isolatedInitWriteJson,
+  );
   const parsedIsolatedInitWriteJson = parseJsonOnlyStdout(
     "isolated init --write --json output was not valid JSON only",
     isolatedInitWriteJson,
@@ -515,20 +546,28 @@ try {
     .filter((file) => file.status === "created")
     .map((file) => file.path);
 
-  if (parsedIsolatedInitWriteJson.ok) {
-    if (discoveredInitWritePaths.length === 0) {
-      fail("isolated init --write --json succeeded without created files", isolatedInitWriteJson);
-    }
+  if (
+    parsedIsolatedInitWriteJson.ok !== false ||
+    discoveredInitWritePaths.length !== 0
+  ) {
+    fail(
+      "isolated init --write --json did not report no writable artifacts yet",
+      isolatedInitWriteJson,
+    );
+  }
+  expectIssueCode(
+    "isolated init --write --json did not report no writable artifacts yet",
+    parsedIsolatedInitWriteJson.errors,
+    "init_no_writable_artifacts",
+    isolatedInitWriteJson,
+  );
 
-    for (const path of discoveredInitWritePaths) {
-      if (!existsSync(join(initWriteJsonRoot, path))) {
-        fail(`isolated init --write --json did not create expected file: ${path}`, isolatedInitWriteJson);
-      }
-    }
-  } else if (listRelativeFiles(initWriteJsonRoot).length !== 0) {
+  if (listRelativeFiles(initWriteJsonRoot).length !== 0) {
     fail("isolated init --write --json wrote files despite failed result", isolatedInitWriteJson);
   }
 
+  // Overwrite smoke is intentionally gated until TASK-0142 adds a writable
+  // init artifact fixture; this milestone asserts the explicit no-artifact stop.
   if (discoveredInitWritePaths.length > 0) {
     const conflictRoot = mkdtempSync(join(tmpdir(), "aeos-cli-init-conflict-"));
     const conflictPath = join(conflictRoot, discoveredInitWritePaths[0]);
