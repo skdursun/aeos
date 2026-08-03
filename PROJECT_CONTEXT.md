@@ -65,6 +65,7 @@ condition.
 - TASK-0155: Implement intelligence signal definitions.
 - TASK-0156: Add intelligence signal definition examples.
 - TASK-0157: Implement intelligence signal matcher.
+- TASK-0158: Add intelligence signal matcher examples.
 
 ## Do Not Load By Default
 
@@ -75,7 +76,7 @@ condition.
 
 ## Next Task
 
-TASK-0158 Add intelligence signal matcher examples.
+TASK-0159 Add intelligence signal matcher smoke tests.
 
 ## Current Plans
 
