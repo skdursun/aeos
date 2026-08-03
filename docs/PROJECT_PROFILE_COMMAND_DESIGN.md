@@ -54,7 +54,7 @@ Languages: typescript, javascript
 Frameworks: unknown
 Package managers: pnpm
 Runtimes: node
-Infrastructure: docker, github_actions
+Infrastructure: docker, terraform
 Monorepo: yes (pnpm_workspace)
 Evidence count: 12
 Issue count: 1
@@ -164,12 +164,16 @@ hidden config files. The CLI must not overstate hidden-file coverage.
 
 ## Infrastructure Signal Behavior
 The profile command should enable infrastructure signals so operators can see
-Docker, Docker Compose, GitHub Actions, and Terraform evidence already supported
-by the signal table.
+Docker, Docker Compose, and Terraform evidence already supported by the signal
+table.
 
 The command must not run Docker, Terraform, GitHub tooling, package managers, or
 cloud commands. Infrastructure output means local config evidence exists, not
 that the infrastructure is valid or deployable.
+
+GitHub Actions is defined in the signal table, but the current `.github/`
+workflow path is hidden and therefore skipped while `includeHiddenFiles` remains
+`false` in the MVP.
 
 ## Monorepo Signal Behavior
 The profile command should enable monorepo signals so workspace evidence appears
@@ -236,7 +240,7 @@ Rules:
   evidence.
 
 ## Smoke Test Requirements
-Future implementation should update `apps/cli/scripts/smoke.mjs` to verify:
+`apps/cli/scripts/smoke.mjs` verifies:
 
 - `aeos project profile` exits `0` in this repository.
 - Human output includes `Project Profile`.

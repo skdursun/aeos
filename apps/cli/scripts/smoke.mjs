@@ -305,6 +305,43 @@ function expectProjectProfileJsonShape(message, value) {
   }
 }
 
+function expectProjectProfileHumanShape(message, result) {
+  for (const expectedText of [
+    "Project Profile",
+    "Root:",
+    "Languages:",
+    "Frameworks:",
+    "Package managers:",
+    "Runtimes:",
+    "Infrastructure:",
+    "Monorepo:",
+    "Evidence count:",
+    "Issue count:",
+  ]) {
+    expectOutputIncludes(
+      `${message} did not include ${expectedText}`,
+      result,
+      expectedText,
+    );
+  }
+}
+
+function expectProjectProfileNoOverpromises(message, result) {
+  for (const unexpectedText of [
+    "package content parsing",
+    "dependency parsing exists",
+    "AI guessing",
+    "--root",
+    "--target-root",
+  ]) {
+    expectOutputExcludes(
+      `${message} overpromised unsupported behavior: ${unexpectedText}`,
+      result,
+      unexpectedText,
+    );
+  }
+}
+
 function expectProjectProfileFailureJsonShape(message, value) {
   const expectedKeys = [
     "issues",
@@ -467,6 +504,21 @@ expectOutputIncludes(
   helpCommand,
   "project profile --json",
 );
+for (const unsupportedProjectProfileHelpText of [
+  "--root",
+  "--target-root",
+  "dependency parsing",
+  "package content parsing",
+  "AI detection",
+  "AI guessing",
+  "smart inference",
+]) {
+  expectOutputExcludes(
+    `help output overpromised unsupported project profile behavior: ${unsupportedProjectProfileHelpText}`,
+    helpCommand,
+    unsupportedProjectProfileHelpText,
+  );
+}
 expectOutputIncludes(
   'help output did not include "init"',
   helpCommand,
@@ -1237,21 +1289,15 @@ try {
   const nextProfileFilesBefore = listRelativeFiles(nextProfileRoot);
   const nextProfile = runCliFrom(nextProfileRoot, ["project", "profile"]);
   expectExitCode("project profile Next-style fixture exited nonzero", nextProfile, 0);
+  expectProjectProfileHumanShape(
+    "project profile Next-style fixture human output",
+    nextProfile,
+  );
   for (const expectedText of [
-    "Project Profile",
-    "Root:",
-    "Languages:",
     "typescript",
     "javascript",
-    "Frameworks:",
     "nextjs",
-    "Package managers:",
     "pnpm",
-    "Runtimes:",
-    "Infrastructure:",
-    "Monorepo:",
-    "Evidence count:",
-    "Issue count:",
   ]) {
     expectOutputIncludes(
       `project profile Next-style fixture did not include ${expectedText}`,
@@ -1259,20 +1305,9 @@ try {
       expectedText,
     );
   }
-  expectOutputExcludes(
-    "project profile Next-style fixture overpromised dependency parsing",
+  expectProjectProfileNoOverpromises(
+    "project profile Next-style fixture",
     nextProfile,
-    "dependency parsing exists",
-  );
-  expectOutputExcludes(
-    "project profile Next-style fixture overpromised package content parsing",
-    nextProfile,
-    "package content parsing",
-  );
-  expectOutputExcludes(
-    "project profile Next-style fixture overpromised AI detection",
-    nextProfile,
-    "AI",
   );
   expectOutputExcludes(
     "project profile Next-style fixture printed confidence claims",
@@ -1342,6 +1377,35 @@ try {
 
   createWordPressStyleProject(wordpressProfileRoot);
 
+  const wordpressProfileFilesBefore = listRelativeFiles(wordpressProfileRoot);
+  const wordpressProfile = runCliFrom(wordpressProfileRoot, ["project", "profile"]);
+  expectExitCode(
+    "project profile WordPress-style fixture exited nonzero",
+    wordpressProfile,
+    0,
+  );
+  expectProjectProfileHumanShape(
+    "project profile WordPress-style fixture human output",
+    wordpressProfile,
+  );
+  for (const expectedText of ["php", "wordpress", "composer"]) {
+    expectOutputIncludes(
+      `project profile WordPress-style fixture did not include ${expectedText}`,
+      wordpressProfile,
+      expectedText,
+    );
+  }
+  expectProjectProfileNoOverpromises(
+    "project profile WordPress-style fixture",
+    wordpressProfile,
+  );
+  expectSameFiles(
+    "project profile WordPress-style fixture created unexpected files",
+    wordpressProfileFilesBefore,
+    listRelativeFiles(wordpressProfileRoot),
+  );
+
+  const wordpressProfileJsonFilesBefore = listRelativeFiles(wordpressProfileRoot);
   const wordpressProfileJson = runCliFrom(wordpressProfileRoot, [
     "project",
     "profile",
@@ -1359,6 +1423,11 @@ try {
   expectProjectProfileJsonShape(
     "project profile --json WordPress-style fixture shape was invalid",
     parsedWordPressProfileJson,
+  );
+  expectSameFiles(
+    "project profile --json WordPress-style fixture created unexpected files",
+    wordpressProfileJsonFilesBefore,
+    listRelativeFiles(wordpressProfileRoot),
   );
   for (const signal of [
     "language.php.wp_config",
@@ -1385,6 +1454,42 @@ try {
   createInfrastructureStyleProject(infrastructureProfileRoot);
 
   const infrastructureProfileFilesBefore = listRelativeFiles(infrastructureProfileRoot);
+  const infrastructureProfile = runCliFrom(infrastructureProfileRoot, [
+    "project",
+    "profile",
+  ]);
+  expectExitCode(
+    "project profile infrastructure fixture exited nonzero",
+    infrastructureProfile,
+    0,
+  );
+  expectProjectProfileHumanShape(
+    "project profile infrastructure fixture human output",
+    infrastructureProfile,
+  );
+  for (const expectedText of ["docker", "terraform"]) {
+    expectOutputIncludes(
+      `project profile infrastructure fixture did not include ${expectedText}`,
+      infrastructureProfile,
+      expectedText,
+    );
+  }
+  expectProjectProfileNoOverpromises(
+    "project profile infrastructure fixture",
+    infrastructureProfile,
+  );
+  expectOutputExcludes(
+    "project profile infrastructure fixture reported hidden GitHub Actions",
+    infrastructureProfile,
+    "github_actions",
+  );
+  expectSameFiles(
+    "project profile infrastructure fixture created unexpected files",
+    infrastructureProfileFilesBefore,
+    listRelativeFiles(infrastructureProfileRoot),
+  );
+
+  const infrastructureProfileJsonFilesBefore = listRelativeFiles(infrastructureProfileRoot);
   const infrastructureProfileJson = runCliFrom(infrastructureProfileRoot, [
     "project",
     "profile",
@@ -1405,7 +1510,7 @@ try {
   );
   expectSameFiles(
     "project profile --json infrastructure fixture created unexpected files",
-    infrastructureProfileFilesBefore,
+    infrastructureProfileJsonFilesBefore,
     listRelativeFiles(infrastructureProfileRoot),
   );
   expectProfileSignalValue(
@@ -1425,7 +1530,7 @@ try {
   expectProfileNoEvidenceSignal(
     "project profile --json infrastructure fixture scanned hidden GitHub Actions despite hidden files being disabled",
     parsedInfrastructureProfileJson.profile,
-    "infrastructure.github_actions.workflow",
+    "infrastructure.github_actions.workflows",
     infrastructureProfileJson,
   );
   if (
@@ -1440,6 +1545,37 @@ try {
   }
 
   const emptyProfileFilesBefore = listRelativeFiles(emptyProfileRoot);
+  const emptyProfile = runCliFrom(emptyProfileRoot, ["project", "profile"]);
+  expectExitCode("project profile empty fixture exited nonzero", emptyProfile, 0);
+  expectProjectProfileHumanShape(
+    "project profile empty fixture human output",
+    emptyProfile,
+  );
+  for (const expectedText of [
+    "Languages: unknown",
+    "Frameworks: unknown",
+    "Package managers: unknown",
+    "Runtimes: unknown",
+    "Infrastructure: unknown",
+    "Monorepo: no",
+  ]) {
+    expectOutputIncludes(
+      `project profile empty fixture did not include ${expectedText}`,
+      emptyProfile,
+      expectedText,
+    );
+  }
+  expectProjectProfileNoOverpromises(
+    "project profile empty fixture",
+    emptyProfile,
+  );
+  expectSameFiles(
+    "project profile empty fixture created unexpected files",
+    emptyProfileFilesBefore,
+    listRelativeFiles(emptyProfileRoot),
+  );
+
+  const emptyProfileJsonFilesBefore = listRelativeFiles(emptyProfileRoot);
   const emptyProfileJson = runCliFrom(emptyProfileRoot, [
     "project",
     "profile",
@@ -1460,7 +1596,7 @@ try {
   );
   expectSameFiles(
     "project profile --json empty fixture created unexpected files",
-    emptyProfileFilesBefore,
+    emptyProfileJsonFilesBefore,
     listRelativeFiles(emptyProfileRoot),
   );
   if (
