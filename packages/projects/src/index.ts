@@ -49,6 +49,17 @@ export {
 } from "./intelligence-profile-builder.js";
 
 export type {
+  ProjectIntelligenceDetectorOrchestratorResult,
+  ProjectIntelligenceDetectorOrchestratorSummary,
+} from "./intelligence-detector-orchestrator.js";
+
+export {
+  createProjectIntelligenceDetectorResult,
+  detectProjectIntelligence,
+  summarizeProjectIntelligenceDetectorResult,
+} from "./intelligence-detector-orchestrator.js";
+
+export type {
   ProjectIntelligenceDetectorInput,
   ProjectIntelligenceDetectorIssue,
   ProjectIntelligenceDetectorLimits,

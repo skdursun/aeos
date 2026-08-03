@@ -70,6 +70,7 @@ condition.
 - TASK-0160: Implement intelligence profile builder.
 - TASK-0161: Add intelligence profile builder examples.
 - TASK-0162: Add intelligence profile builder smoke tests.
+- TASK-0163: Implement project intelligence detector orchestration.
 
 ## Do Not Load By Default
 
@@ -80,7 +81,7 @@ condition.
 
 ## Next Task
 
-TASK-0163 Implement project intelligence detector orchestration.
+TASK-0164 Add project intelligence detector orchestration examples.
 
 ## Current Plans
 
