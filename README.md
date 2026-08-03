@@ -37,3 +37,17 @@ aeos project profile --json
 The MVP reports local evidence for languages, frameworks, package managers,
 runtimes, infrastructure, and monorepo/workspace signals. It does not parse
 package contents or dependencies, and it does not use AI guessing.
+
+## Template Recommend
+
+Inspect the current working directory and print a deterministic, read-only MVP
+template recommendation:
+
+```sh
+aeos template recommend
+aeos template recommend --json
+```
+
+The MVP scores only built-in local candidates, may fall back to
+`minimal_agents`, writes no files, does not run init, and does not use remote
+templates, a marketplace, package dependency parsing, or AI guessing.

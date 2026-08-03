@@ -58,6 +58,20 @@ adapters.
   not use AI guessing, and has no target-root flag.
 - Phase: MVP.
 
+### `aeos template recommend`
+- Purpose: Recommend a deterministic MVP smart template candidate for the
+  current working directory without writing files.
+- Example usage: `aeos template recommend`,
+  `aeos template recommend --json`
+- Expected behavior: Runs read-only Project Intelligence detection, scores only
+  the built-in allow-list candidates, and prints a compact recommendation or
+  fallback. `--json` emits one stable JSON object with `ok`, `projectRoot`,
+  `mode`, `recommendation`, `candidates`, `fallbackUsed`, `issues`, and
+  `summary`. The MVP does not run init, create templates, use a production
+  catalog, fetch remote templates, query a marketplace, parse package contents
+  or dependencies, use AI guessing, or accept a target-root flag.
+- Phase: MVP.
+
 ### `aeos context`
 - Purpose: Build the minimal context bundle for a task or session.
 - Example usage: `aeos context --task TASK-0005`
@@ -184,6 +198,7 @@ adapters.
 ## MVP Commands
 - `aeos init`
 - `aeos project profile`
+- `aeos template recommend`
 - `aeos status`
 - `aeos context`
 - `aeos task new`

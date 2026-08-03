@@ -51,6 +51,7 @@ condition.
 - TASK-0180: Add built-in smart template candidate smoke tests.
 - TASK-0181: Implement aeos template recommend command.
 - TASK-0182: Add template recommend JSON safety review.
+- TASK-0183: Add template recommend documentation.
 
 ## Do Not Load By Default
 
@@ -61,7 +62,7 @@ condition.
 
 ## Next Task
 
-TASK-0183 Add template recommend documentation.
+TASK-0184 Add template recommend final smoke review.
 
 ## Current Plans
 
