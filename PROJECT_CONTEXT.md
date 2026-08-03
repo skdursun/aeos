@@ -56,6 +56,7 @@ condition.
 - TASK-0183: Add template recommend documentation.
 - TASK-0184: Add template recommend final smoke review.
 - TASK-0185: Define agentic task lifecycle design.
+- TASK-0186: Implement agentic task lifecycle contracts.
 
 ## Do Not Load By Default
 
@@ -66,7 +67,7 @@ condition.
 
 ## Next Task
 
-TASK-0186 Implement agentic task lifecycle contracts.
+TASK-0187 Add agentic lifecycle contract examples.
 
 ## Current Plans
 

@@ -5,6 +5,7 @@ export type * from "./memory.js";
 export type * from "./policy.js";
 export type * from "./audit.js";
 export type * from "./verification.js";
+export type * from "./agentic-lifecycle.js";
 export type * from "./init.js";
 export type * from "./init-engine.js";
 export type * from "./init-adapters.js";
