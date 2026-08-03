@@ -301,6 +301,18 @@
 12. TASK-0183: Add template recommend CLI command. Code. Effort: High. Verification: `pnpm --filter @aeos/cli check`.
 13. TASK-0184: Add smart selection smoke tests. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
 
+## Template Recommend CLI Backlog
+
+1. TASK-0178: Implement built-in smart template candidates. Code. Effort: Low. Verification: `pnpm --filter @aeos/cli check`.
+2. TASK-0179: Add project profile adapter for template recommendation. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+3. TASK-0180: Add template recommend command routing. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+4. TASK-0181: Wire Project Intelligence to smart selector. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+5. TASK-0182: Add template recommend human output. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+6. TASK-0183: Add template recommend JSON output. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+7. TASK-0184: Add template recommend usage and failure handling. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+8. TASK-0185: Add template recommend smoke tests. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+9. TASK-0186: Review template recommend MVP behavior. Docs. Effort: Medium. Verification: `git status --short`.
+
 ## Memory MVP Backlog
 
 1. TASK-0057: Implement memory package Markdown entry builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/memory check`.

@@ -27,6 +27,7 @@ condition.
 - Keep project intelligence deterministic, evidence-based, and local-first.
 - Keep smart init/template selection deterministic, local-first, and fallback
   safe.
+- Keep template recommendation read-only, deterministic, and separate from init.
 
 ## Recent Completed Tasks
 
@@ -44,6 +45,7 @@ condition.
 - TASK-0174: Implement smart template selector.
 - TASK-0175: Add smart template selector examples.
 - TASK-0176: Add smart template selector smoke tests.
+- TASK-0177: Design smart template recommendation CLI.
 
 ## Do Not Load By Default
 
@@ -54,7 +56,7 @@ condition.
 
 ## Next Task
 
-TASK-0177 Design smart template recommendation CLI.
+TASK-0178 Implement built-in smart template candidates.
 
 ## Current Plans
 
@@ -65,3 +67,4 @@ TASK-0177 Design smart template recommendation CLI.
 - docs/PROJECT_INTELLIGENCE_DETECTOR_IMPLEMENTATION_PLAN.md
 - docs/PROJECT_PROFILE_COMMAND_DESIGN.md
 - docs/SMART_INIT_TEMPLATE_SELECTION_DESIGN.md
+- docs/TEMPLATE_RECOMMEND_COMMAND_DESIGN.md
