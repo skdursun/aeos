@@ -32,6 +32,7 @@ condition.
   Intelligence contracts, scan collection, signals, matching, profile building,
   detector orchestration, examples, and smoke tests.
 - TASK-0166: Design aeos project profile command.
+- TASK-0167: Implement aeos project profile command.
 
 ## Do Not Load By Default
 
@@ -42,7 +43,7 @@ condition.
 
 ## Next Task
 
-TASK-0167 Implement aeos project profile command.
+TASK-0168 Add project profile JSON safety review.
 
 ## Current Plans
 

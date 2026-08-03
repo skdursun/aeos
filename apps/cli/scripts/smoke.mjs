@@ -248,6 +248,52 @@ function expectProjectValidationCheckShape(message, check) {
   }
 }
 
+function expectProjectProfileJsonShape(message, value) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== true ||
+    typeof value.projectRoot !== "string" ||
+    value.projectRoot.length === 0 ||
+    typeof value.profile !== "object" ||
+    value.profile === null ||
+    !Array.isArray(value.scannedEntries) ||
+    !Array.isArray(value.issues) ||
+    typeof value.summary !== "object" ||
+    value.summary === null
+  ) {
+    fail(message);
+  }
+}
+
+function expectProfileEvidenceSignal(message, profile, signal, result) {
+  if (
+    typeof profile !== "object" ||
+    profile === null ||
+    !Array.isArray(profile.evidence) ||
+    !profile.evidence.some((item) => item.signal === signal)
+  ) {
+    fail(message, result);
+  }
+}
+
+function createNextStyleProject(rootPath) {
+  mkdirSync(join(rootPath, "app"), { recursive: true });
+  writeFileSync(join(rootPath, "package.json"), '{"name":"smoke-next"}\n');
+  writeFileSync(join(rootPath, "tsconfig.json"), "{}\n");
+  writeFileSync(join(rootPath, "next.config.js"), "module.exports = {};\n");
+  writeFileSync(join(rootPath, "app", "page.tsx"), "export default function Page() { return null; }\n");
+  writeFileSync(join(rootPath, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+}
+
+function createWordPressStyleProject(rootPath) {
+  mkdirSync(join(rootPath, "wp-content"), { recursive: true });
+  writeFileSync(join(rootPath, "composer.json"), '{"name":"smoke/wordpress"}\n');
+  writeFileSync(join(rootPath, "composer.lock"), "{}\n");
+  writeFileSync(join(rootPath, "wp-config.php"), "<?php\n");
+  writeFileSync(join(rootPath, "index.php"), "<?php\n");
+}
+
 const smokeRunId = String(Date.now());
 const createdMemoryPaths = new Set();
 
@@ -304,6 +350,16 @@ expectOutputIncludes(
   'help output did not include "project validate --json"',
   helpCommand,
   "project validate --json",
+);
+expectOutputIncludes(
+  'help output did not include "project profile"',
+  helpCommand,
+  "project profile",
+);
+expectOutputIncludes(
+  'help output did not include "project profile --json"',
+  helpCommand,
+  "project profile --json",
 );
 expectOutputIncludes(
   'help output did not include "init"',
@@ -1058,6 +1114,155 @@ try {
   }
 } finally {
   rmSync(missingProjectRoot, { recursive: true, force: true });
+}
+
+const nextProfileRoot = mkdtempSync(join(tmpdir(), "aeos-cli-project-profile-next-"));
+const wordpressProfileRoot = mkdtempSync(
+  join(tmpdir(), "aeos-cli-project-profile-wordpress-"),
+);
+const emptyProfileRoot = mkdtempSync(join(tmpdir(), "aeos-cli-project-profile-empty-"));
+
+try {
+  createNextStyleProject(nextProfileRoot);
+
+  const nextProfile = runCliFrom(nextProfileRoot, ["project", "profile"]);
+  expectExitCode("project profile Next-style fixture exited nonzero", nextProfile, 0);
+  for (const expectedText of [
+    "Project Profile",
+    "Project root:",
+    "Languages:",
+    "typescript",
+    "javascript",
+    "Frameworks:",
+    "nextjs",
+    "Package managers:",
+    "pnpm",
+    "Runtimes:",
+    "Infrastructure:",
+    "Monorepo:",
+    "Evidence count:",
+    "Issue count:",
+  ]) {
+    expectOutputIncludes(
+      `project profile Next-style fixture did not include ${expectedText}`,
+      nextProfile,
+      expectedText,
+    );
+  }
+
+  const nextProfileJson = runCliFrom(nextProfileRoot, [
+    "project",
+    "profile",
+    "--json",
+  ]);
+  expectExitCode(
+    "project profile --json Next-style fixture exited nonzero",
+    nextProfileJson,
+    0,
+  );
+  const parsedNextProfileJson = parseJsonOnlyStdout(
+    "project profile --json Next-style fixture output was not valid JSON only",
+    nextProfileJson,
+  );
+  expectProjectProfileJsonShape(
+    "project profile --json Next-style fixture shape was invalid",
+    parsedNextProfileJson,
+  );
+  if (parsedNextProfileJson.projectRoot !== realpathSync(nextProfileRoot)) {
+    fail(
+      "project profile --json Next-style fixture projectRoot did not match cwd",
+      nextProfileJson,
+    );
+  }
+  expectProfileEvidenceSignal(
+    "project profile --json Next-style fixture missed TypeScript evidence",
+    parsedNextProfileJson.profile,
+    "language.typescript.tsconfig",
+    nextProfileJson,
+  );
+  expectProfileEvidenceSignal(
+    "project profile --json Next-style fixture missed Next.js evidence",
+    parsedNextProfileJson.profile,
+    "framework.nextjs.config_js",
+    nextProfileJson,
+  );
+  expectProfileEvidenceSignal(
+    "project profile --json Next-style fixture missed pnpm evidence",
+    parsedNextProfileJson.profile,
+    "package_manager.pnpm.lockfile",
+    nextProfileJson,
+  );
+
+  createWordPressStyleProject(wordpressProfileRoot);
+
+  const wordpressProfileJson = runCliFrom(wordpressProfileRoot, [
+    "project",
+    "profile",
+    "--json",
+  ]);
+  expectExitCode(
+    "project profile --json WordPress-style fixture exited nonzero",
+    wordpressProfileJson,
+    0,
+  );
+  const parsedWordPressProfileJson = parseJsonOnlyStdout(
+    "project profile --json WordPress-style fixture output was not valid JSON only",
+    wordpressProfileJson,
+  );
+  expectProjectProfileJsonShape(
+    "project profile --json WordPress-style fixture shape was invalid",
+    parsedWordPressProfileJson,
+  );
+  for (const signal of [
+    "language.php.wp_config",
+    "language.php.php",
+    "framework.wordpress.wp_config",
+    "framework.wordpress.wp_content",
+    "package_manager.composer.lockfile",
+    "runtime.php.php",
+  ]) {
+    expectProfileEvidenceSignal(
+      `project profile --json WordPress-style fixture missed ${signal}`,
+      parsedWordPressProfileJson.profile,
+      signal,
+      wordpressProfileJson,
+    );
+  }
+
+  const emptyProfileJson = runCliFrom(emptyProfileRoot, [
+    "project",
+    "profile",
+    "--json",
+  ]);
+  expectExitCode(
+    "project profile --json empty fixture exited nonzero",
+    emptyProfileJson,
+    0,
+  );
+  const parsedEmptyProfileJson = parseJsonOnlyStdout(
+    "project profile --json empty fixture output was not valid JSON only",
+    emptyProfileJson,
+  );
+  expectProjectProfileJsonShape(
+    "project profile --json empty fixture shape was invalid",
+    parsedEmptyProfileJson,
+  );
+  if (
+    parsedEmptyProfileJson.projectRoot !== realpathSync(emptyProfileRoot) ||
+    !Array.isArray(parsedEmptyProfileJson.profile.evidence) ||
+    parsedEmptyProfileJson.profile.evidence.length !== 0 ||
+    parsedEmptyProfileJson.profile.summary.primaryLanguage !== "unknown" ||
+    parsedEmptyProfileJson.profile.summary.primaryFramework !== "unknown"
+  ) {
+    fail(
+      "project profile --json empty fixture did not return stable no-signal shape",
+      emptyProfileJson,
+    );
+  }
+} finally {
+  rmSync(nextProfileRoot, { recursive: true, force: true });
+  rmSync(wordpressProfileRoot, { recursive: true, force: true });
+  rmSync(emptyProfileRoot, { recursive: true, force: true });
 }
 
 const statusJson = runCli(["status", "--json"]);

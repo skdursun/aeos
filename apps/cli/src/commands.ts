@@ -14,7 +14,6 @@ import type {
   MemoryValidationIssue,
   TaskValidationIssue,
 } from "@aeos/core";
-
 import { handleContext } from "./context.js";
 import { getCwd, getFs, setExitCode, writeJsonLine } from "./output.js";
 import { handleStatus } from "./status.js";
@@ -44,6 +43,8 @@ Commands:
   project context --json
   project validate
   project validate --json
+  project profile
+  project profile --json
   task validate <path>
   task validate <path> --json
   version
@@ -215,6 +216,139 @@ type ProjectValidationJsonOutput =
       readonly checks: readonly [];
     };
 
+type ProjectIntelligenceDetectorInput = {
+  readonly projectRoot: string;
+  readonly mode: "profile" | "inventory" | "validate";
+  readonly scope: "root" | "known_paths" | "bounded_workspace";
+  readonly options: {
+    readonly includeHiddenFiles: boolean;
+    readonly followSymlinks: boolean;
+    readonly includeLockfiles: boolean;
+    readonly includeInfrastructure: boolean;
+    readonly includeMonorepoSignals: boolean;
+    readonly includeDependencySignals: boolean;
+  };
+  readonly limits: {
+    readonly maxDepth: number;
+    readonly maxFiles: number;
+    readonly maxFileSizeBytes: number;
+    readonly maxEvidenceEntries: number;
+    readonly timeoutMs: number;
+  };
+  readonly ignoreRules: readonly {
+    readonly path: string | undefined;
+    readonly directory: string | undefined;
+    readonly extension: string | undefined;
+    readonly pattern: string | undefined;
+  }[];
+};
+
+type ProjectIntelligenceDetectorIssue = {
+  readonly code: string;
+  readonly message: string;
+  readonly severity: "info" | "warning" | "error";
+  readonly path: string | undefined;
+};
+
+type ProjectIntelligenceScanEntry = {
+  readonly path: string;
+  readonly kind: "file" | "directory" | "symlink" | "unknown";
+  readonly sizeBytes: number | undefined;
+  readonly extension: string | undefined;
+  readonly basename: string;
+  readonly depth: number;
+};
+
+type ProjectIntelligenceProfileSignal<TName extends string, TValue extends string> =
+  Readonly<Record<TName, TValue>> & {
+    readonly confidence: string;
+    readonly evidence: readonly string[];
+  };
+
+type ProjectIntelligenceProfile = {
+  readonly projectRoot: string;
+  readonly languages: readonly ProjectIntelligenceProfileSignal<"language", string>[];
+  readonly frameworks: readonly ProjectIntelligenceProfileSignal<"framework", string>[];
+  readonly packageManagers: readonly ProjectIntelligenceProfileSignal<"packageManager", string>[];
+  readonly runtimes: readonly (ProjectIntelligenceProfileSignal<"runtime", string> & {
+    readonly versionConstraint: string | undefined;
+  })[];
+  readonly infrastructure: readonly ProjectIntelligenceProfileSignal<"infrastructure", string>[];
+  readonly monorepo: {
+    readonly isMonorepo: boolean;
+    readonly kind: string;
+    readonly workspacePaths: readonly string[];
+    readonly confidence: string;
+    readonly evidence: readonly string[];
+  };
+  readonly evidence: readonly {
+    readonly id: string;
+    readonly category: string;
+    readonly source: string;
+    readonly path: string;
+    readonly signal: string;
+    readonly reason: string;
+    readonly confidence: string;
+  }[];
+  readonly issues: readonly {
+    readonly code: string;
+    readonly message: string;
+    readonly severity: string;
+    readonly evidence: readonly string[];
+  }[];
+  readonly summary: {
+    readonly confidence: string;
+    readonly primaryLanguage: string;
+    readonly primaryFramework: string;
+    readonly primaryPackageManager: string;
+    readonly primaryRuntime: string;
+    readonly hasInfrastructure: boolean;
+    readonly isMonorepo: boolean;
+  };
+};
+
+type ProjectIntelligenceDetectorOrchestratorSummary = {
+  readonly mode: "profile" | "inventory" | "validate";
+  readonly scope: "root" | "known_paths" | "bounded_workspace";
+  readonly scannedEntryCount: number;
+  readonly scannedEntries: number;
+  readonly evidenceCount: number;
+  readonly issueCount: number;
+  readonly languageCount: number;
+  readonly frameworkCount: number;
+  readonly packageManagerCount: number;
+  readonly runtimeCount: number;
+  readonly infrastructureCount: number;
+  readonly truncated: boolean;
+  readonly timedOut: boolean;
+};
+
+type ProjectIntelligenceDetectorOrchestratorResult = {
+  readonly profile: ProjectIntelligenceProfile;
+  readonly scannedEntries: readonly ProjectIntelligenceScanEntry[];
+  readonly issues: readonly ProjectIntelligenceDetectorIssue[];
+  readonly summary: ProjectIntelligenceDetectorOrchestratorSummary;
+};
+
+type ProjectProfileJsonOutput =
+  | {
+      readonly ok: true;
+      readonly projectRoot: string;
+      readonly profile: ProjectIntelligenceProfile;
+      readonly scannedEntries: readonly ProjectIntelligenceScanEntry[];
+      readonly issues: readonly ProjectIntelligenceDetectorIssue[];
+      readonly summary: ProjectIntelligenceDetectorOrchestratorSummary;
+    }
+  | {
+      readonly ok: false;
+      readonly projectRoot: string;
+      readonly profile: null;
+      readonly scannedEntries: readonly [];
+      readonly issues: readonly [];
+      readonly summary: null;
+      readonly reason: "project_profile_failed";
+    };
+
 const projectValidationJsonCheckNames = new Set([
   "project_root",
   "package_metadata",
@@ -282,6 +416,12 @@ type ProjectRootDetectionResult =
 type ProjectsPackage = {
   readonly detectProjectRoot: (startPath: string) => ProjectRootDetectionResult;
   readonly readProjectMetadata: (projectRoot: string) => ProjectMetadata;
+  readonly createDefaultProjectIntelligenceDetectorInput: (
+    projectRoot: string,
+  ) => ProjectIntelligenceDetectorInput;
+  readonly detectProjectIntelligence: (
+    input: ProjectIntelligenceDetectorInput,
+  ) => Promise<ProjectIntelligenceDetectorOrchestratorResult>;
 };
 
 type MemoryPackage = {
@@ -397,6 +537,10 @@ function writeProjectContextJson(value: ProjectContextJsonOutput): void {
 }
 
 function writeProjectValidationJson(value: ProjectValidationJsonOutput): void {
+  writeJsonLine(value);
+}
+
+function writeProjectProfileJson(value: ProjectProfileJsonOutput): void {
   writeJsonLine(value);
 }
 
@@ -569,6 +713,69 @@ function formatPresence(present: boolean): "present" | "missing" {
 
 function formatValidationStatus(status: ProjectValidationStatus): string {
   return status.toUpperCase();
+}
+
+function formatSignalList<TSignal>(
+  signals: readonly TSignal[],
+  getValue: (signal: TSignal) => string,
+): string {
+  const values = [...new Set(signals.map(getValue))]
+    .sort((left, right) => left.localeCompare(right));
+
+  return values.length === 0 ? "unknown" : values.join(", ");
+}
+
+function formatProjectProfileIssue(
+  issue: ProjectIntelligenceDetectorIssue,
+): string {
+  const path = issue.path === undefined ? "" : `: ${issue.path}`;
+
+  return `- ${issue.severity} ${issue.code}${path}`;
+}
+
+function printProjectProfileResult(
+  result: ProjectIntelligenceDetectorOrchestratorResult,
+): void {
+  const profile = result.profile;
+  const monorepo = profile.monorepo.isMonorepo
+    ? `yes (${profile.monorepo.kind})`
+    : "no";
+
+  console.log("Project Profile");
+  console.log(`Project root: ${profile.projectRoot}`);
+  console.log(
+    `Languages: ${formatSignalList(profile.languages, (signal) => signal.language)}`,
+  );
+  console.log(
+    `Frameworks: ${formatSignalList(profile.frameworks, (signal) => signal.framework)}`,
+  );
+  console.log(
+    `Package managers: ${formatSignalList(
+      profile.packageManagers,
+      (signal) => signal.packageManager,
+    )}`,
+  );
+  console.log(
+    `Runtimes: ${formatSignalList(profile.runtimes, (signal) => signal.runtime)}`,
+  );
+  console.log(
+    `Infrastructure: ${formatSignalList(
+      profile.infrastructure,
+      (signal) => signal.infrastructure,
+    )}`,
+  );
+  console.log(`Monorepo: ${monorepo}`);
+  console.log(`Evidence count: ${result.summary.evidenceCount}`);
+  console.log(`Issue count: ${result.summary.issueCount}`);
+
+  if (result.issues.length === 0) {
+    return;
+  }
+
+  console.log("Issues:");
+  for (const issue of result.issues) {
+    console.log(formatProjectProfileIssue(issue));
+  }
 }
 
 type InitCliMode = "dry_run" | "write";
@@ -1180,6 +1387,94 @@ async function handleProjectValidate(args: readonly string[]): Promise<void> {
   }
 }
 
+function createProjectProfileDetectorInput(
+  projects: ProjectsPackage,
+  projectRoot: string,
+): ProjectIntelligenceDetectorInput {
+  const input = projects.createDefaultProjectIntelligenceDetectorInput(projectRoot);
+
+  return {
+    ...input,
+    mode: "profile",
+    scope: "bounded_workspace",
+    options: {
+      ...input.options,
+      includeHiddenFiles: false,
+      followSymlinks: false,
+      includeLockfiles: true,
+      includeInfrastructure: true,
+      includeMonorepoSignals: true,
+      includeDependencySignals: false,
+    },
+  };
+}
+
+async function handleProjectProfile(args: readonly string[]): Promise<void> {
+  const json = args.includes("--json");
+  const unknownArgs = args.filter((arg) => arg !== "--json");
+  const projectRoot = getCwd();
+
+  if (unknownArgs.length > 0) {
+    if (json) {
+      writeProjectProfileJson({
+        ok: false,
+        projectRoot,
+        profile: null,
+        scannedEntries: [],
+        issues: [],
+        summary: null,
+        reason: "project_profile_failed",
+      });
+      setExitCode(1);
+      return;
+    }
+
+    console.error("Error: unknown project profile option.");
+    console.error("Usage: aeos project profile [--json]");
+    setExitCode(1);
+    return;
+  }
+
+  try {
+    const projects = await loadProjectsPackage();
+    const result = await projects.detectProjectIntelligence(
+      createProjectProfileDetectorInput(projects, projectRoot),
+    );
+
+    if (json) {
+      writeProjectProfileJson({
+        ok: true,
+        projectRoot: result.profile.projectRoot,
+        profile: result.profile,
+        scannedEntries: result.scannedEntries,
+        issues: result.issues,
+        summary: result.summary,
+      });
+      return;
+    }
+
+    printProjectProfileResult(result);
+  } catch {
+    if (json) {
+      writeProjectProfileJson({
+        ok: false,
+        projectRoot,
+        profile: null,
+        scannedEntries: [],
+        issues: [],
+        summary: null,
+        reason: "project_profile_failed",
+      });
+      setExitCode(1);
+      return;
+    }
+
+    console.error("Project Profile");
+    console.error("Error: project profile detection failed.");
+    setExitCode(1);
+  }
+}
+
 function readFlagValue(args: readonly string[], flag: string): string | undefined {
   const index = args.indexOf(flag);
 
@@ -1606,10 +1901,16 @@ async function handleProject(args: readonly string[]): Promise<void> {
     return;
   }
 
+  if (args[0] === "profile") {
+    await handleProjectProfile(args.slice(1));
+    return;
+  }
+
   console.error("Error: unknown project command.");
   console.error("Usage: aeos project status");
   console.error("Usage: aeos project context");
   console.error("Usage: aeos project validate");
+  console.error("Usage: aeos project profile");
   setExitCode(1);
 }
 
