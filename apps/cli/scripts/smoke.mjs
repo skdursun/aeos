@@ -1,7 +1,10 @@
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
+  readFileSync,
+  realpathSync,
   readdirSync,
   rmSync,
   unlinkSync,
@@ -98,7 +101,14 @@ function expectInitJsonShape(message, value) {
     typeof value !== "object" ||
     value === null ||
     typeof value.ok !== "boolean" ||
-    !["success", "failure"].includes(value.status)
+    !["dry_run", "write"].includes(value.mode) ||
+    typeof value.writeEnabled !== "boolean" ||
+    !["success", "blocked", "failure"].includes(value.status) ||
+    typeof value.targetRoot !== "string" ||
+    value.targetRoot.length === 0 ||
+    !Array.isArray(value.generatedFiles) ||
+    !Array.isArray(value.conflicts) ||
+    !Array.isArray(value.errors)
   ) {
     fail(message);
   }
@@ -114,7 +124,15 @@ function expectInitJsonShape(message, value) {
     return;
   }
 
-  if (value.status !== "failure" || !Array.isArray(value.errors)) {
+  if (!["blocked", "failure"].includes(value.status)) {
+    fail(message);
+  }
+}
+
+function expectInitWriteJsonShape(message, value) {
+  expectInitJsonShape(message, value);
+
+  if (value.mode !== "write" || value.writeEnabled !== true) {
     fail(message);
   }
 }
@@ -307,6 +325,7 @@ expectOutputIncludes(
   init,
   "false",
 );
+expectOutputIncludes('init output did not include target root', init, "Target root:");
 expectOutputIncludes('init output did not include "Status:"', init, "Status:");
 expectOutputIncludes(
   'init output did not include failure status',
@@ -335,6 +354,8 @@ const parsedInitJson = parseJsonStdout(
 expectInitJsonShape("init --json output shape was invalid", parsedInitJson);
 if (
   parsedInitJson.ok !== false ||
+  parsedInitJson.mode !== "dry_run" ||
+  parsedInitJson.writeEnabled !== false ||
   parsedInitJson.status !== "failure" ||
   parsedInitJson.errors.length === 0
 ) {
@@ -342,43 +363,58 @@ if (
 }
 
 const initWrite = runCli(["init", "--write"]);
-expectNonzero("init --write exited zero while write mode is blocked", initWrite);
+expectNonzero("init --write exited zero before write artifacts are available", initWrite);
 expectOutputIncludes(
-  'init --write output did not include "write-requested"',
+  'init --write output did not include "write"',
   initWrite,
-  "write-requested",
+  "write",
 );
 expectOutputIncludes(
-  'init --write output did not include disabled write state',
+  'init --write output did not include enabled write state',
   initWrite,
   "Write enabled:",
 );
 expectOutputIncludes(
-  'init --write output did not include "false" write state',
+  'init --write output did not include "true" write state',
   initWrite,
-  "false",
+  "true",
 );
 expectOutputIncludes(
-  "init --write output did not explain write mode is not enabled",
+  'init --write output did not include target root',
   initWrite,
-  "write mode is not enabled",
+  "Target root:",
+);
+expectOutputIncludes('init --write output did not include status', initWrite, "Status:");
+expectOutputIncludes(
+  'init --write output did not include generated files count',
+  initWrite,
+  "Generated files count:",
+);
+expectOutputIncludes(
+  'init --write output did not include conflicts count',
+  initWrite,
+  "Conflicts count:",
+);
+expectOutputIncludes(
+  'init --write output did not include errors count',
+  initWrite,
+  "Errors count:",
 );
 
 const initWriteJson = runCli(["init", "--write", "--json"]);
-expectNonzero("init --write --json exited zero while write mode is blocked", initWriteJson);
 const parsedInitWriteJson = parseJsonOnlyStdout(
   "init --write --json output was not valid JSON only",
   initWriteJson,
 );
+expectInitWriteJsonShape(
+  "init --write --json output shape was invalid",
+  parsedInitWriteJson,
+);
 if (
-  parsedInitWriteJson.ok !== false ||
-  parsedInitWriteJson.mode !== "write-requested" ||
-  parsedInitWriteJson.writeEnabled !== false ||
-  parsedInitWriteJson.status !== "blocked" ||
-  !Array.isArray(parsedInitWriteJson.errors) ||
-  parsedInitWriteJson.errors[0]?.code !== "init_write_mode_not_enabled"
+  parsedInitWriteJson.ok !== true &&
+  parsedInitWriteJson.errors.length === 0
 ) {
-  fail("init --write --json output did not match expected blocked shape", initWriteJson);
+  fail("init --write --json failure did not include errors", initWriteJson);
 }
 
 const initUnknownJson = runCli(["init", "--unknown", "--json"]);
@@ -389,6 +425,8 @@ const parsedInitUnknownJson = parseJsonStdout(
 );
 if (
   parsedInitUnknownJson.ok !== false ||
+  parsedInitUnknownJson.mode !== "dry_run" ||
+  parsedInitUnknownJson.writeEnabled !== false ||
   parsedInitUnknownJson.status !== "failure" ||
   !Array.isArray(parsedInitUnknownJson.errors) ||
   parsedInitUnknownJson.errors[0]?.code !== "init_unknown_option"
@@ -397,15 +435,12 @@ if (
 }
 
 const initSafetyRoot = mkdtempSync(join(tmpdir(), "aeos-cli-init-safety-"));
+const initOutsideRoot = mkdtempSync(join(tmpdir(), "aeos-cli-init-outside-"));
+let discoveredInitWritePaths = [];
 
 try {
-  writeFileSync(join(initSafetyRoot, "package.json"), '{"name":"init-safety"}\n');
-  writeFileSync(
-    join(initSafetyRoot, "PROJECT_CONTEXT.md"),
-    "# Project Context\n\nProject: Init Safety\n",
-  );
-  writeFileSync(join(initSafetyRoot, "AGENTS.md"), "# Agents\n");
-  writeFileSync(join(initSafetyRoot, "pnpm-workspace.yaml"), "packages: []\n");
+  const outsideSentinelPath = join(initOutsideRoot, "sentinel.txt");
+  writeFileSync(outsideSentinelPath, "outside sentinel\n");
 
   const filesBeforeInit = listRelativeFiles(initSafetyRoot);
   const isolatedInit = runCliFrom(initSafetyRoot, ["init"]);
@@ -416,7 +451,7 @@ try {
     "AEOS Init",
   );
   expectSameFiles(
-    "isolated init changed files before generation is implemented",
+    "isolated init changed files in dry-run mode",
     filesBeforeInit,
     listRelativeFiles(initSafetyRoot),
   );
@@ -428,50 +463,94 @@ try {
   );
   expectInitJsonShape(
     "isolated init --json output shape was invalid",
-    parseJsonStdout("isolated init --json output was not valid JSON", isolatedInitJson),
+    parseJsonOnlyStdout("isolated init --json output was not valid JSON", isolatedInitJson),
   );
   expectSameFiles(
-    "isolated init --json changed files before generation is implemented",
+    "isolated init --json changed files in dry-run mode",
     filesBeforeInit,
     listRelativeFiles(initSafetyRoot),
   );
 
   const isolatedInitWrite = runCliFrom(initSafetyRoot, ["init", "--write"]);
-  expectNonzero(
-    "isolated init --write exited zero while write mode is blocked",
+  expectOutputIncludes(
+    'isolated init --write output did not include "Write enabled:"',
     isolatedInitWrite,
+    "Write enabled:",
   );
   expectOutputIncludes(
-    "isolated init --write did not explain write mode is not enabled",
+    'isolated init --write output did not include true write state',
     isolatedInitWrite,
-    "write mode is not enabled",
-  );
-  expectSameFiles(
-    "isolated init --write changed files while write mode is blocked",
-    filesBeforeInit,
-    listRelativeFiles(initSafetyRoot),
+    "true",
   );
 
-  const isolatedInitWriteJson = runCliFrom(initSafetyRoot, [
+  const isolatedWriteFiles = listRelativeFiles(initSafetyRoot);
+  for (const path of isolatedWriteFiles) {
+    if (path.startsWith("..") || path.length === 0) {
+      fail(`isolated init --write reported an unsafe relative path: ${path}`, isolatedInitWrite);
+    }
+  }
+  if (readFileSync(outsideSentinelPath, "utf8") !== "outside sentinel\n") {
+    fail("isolated init --write changed an outside sentinel file", isolatedInitWrite);
+  }
+
+  const initWriteJsonRoot = mkdtempSync(join(tmpdir(), "aeos-cli-init-write-json-"));
+  const isolatedInitWriteJson = runCliFrom(initWriteJsonRoot, [
     "init",
     "--write",
     "--json",
   ]);
-  expectNonzero(
-    "isolated init --write --json exited zero while write mode is blocked",
-    isolatedInitWriteJson,
-  );
-  parseJsonOnlyStdout(
+  const parsedIsolatedInitWriteJson = parseJsonOnlyStdout(
     "isolated init --write --json output was not valid JSON only",
     isolatedInitWriteJson,
   );
-  expectSameFiles(
-    "isolated init --write --json changed files while write mode is blocked",
-    filesBeforeInit,
-    listRelativeFiles(initSafetyRoot),
+  expectInitWriteJsonShape(
+    "isolated init --write --json output shape was invalid",
+    parsedIsolatedInitWriteJson,
   );
+  if (parsedIsolatedInitWriteJson.targetRoot !== realpathSync(initWriteJsonRoot)) {
+    fail("isolated init --write --json targetRoot did not match cwd", isolatedInitWriteJson);
+  }
+
+  discoveredInitWritePaths = parsedIsolatedInitWriteJson.generatedFiles
+    .filter((file) => file.status === "created")
+    .map((file) => file.path);
+
+  if (parsedIsolatedInitWriteJson.ok) {
+    if (discoveredInitWritePaths.length === 0) {
+      fail("isolated init --write --json succeeded without created files", isolatedInitWriteJson);
+    }
+
+    for (const path of discoveredInitWritePaths) {
+      if (!existsSync(join(initWriteJsonRoot, path))) {
+        fail(`isolated init --write --json did not create expected file: ${path}`, isolatedInitWriteJson);
+      }
+    }
+  } else if (listRelativeFiles(initWriteJsonRoot).length !== 0) {
+    fail("isolated init --write --json wrote files despite failed result", isolatedInitWriteJson);
+  }
+
+  if (discoveredInitWritePaths.length > 0) {
+    const conflictRoot = mkdtempSync(join(tmpdir(), "aeos-cli-init-conflict-"));
+    const conflictPath = join(conflictRoot, discoveredInitWritePaths[0]);
+    const conflictParent = conflictPath.slice(0, conflictPath.lastIndexOf("/"));
+
+    if (conflictParent !== conflictPath) {
+      mkdirSync(conflictParent, { recursive: true });
+    }
+
+    writeFileSync(conflictPath, "existing content\n");
+    const conflictResult = runCliFrom(conflictRoot, ["init", "--write"]);
+    expectNonzero("isolated init --write conflict exited zero", conflictResult);
+    if (readFileSync(conflictPath, "utf8") !== "existing content\n") {
+      fail("isolated init --write overwrote an existing file", conflictResult);
+    }
+    rmSync(conflictRoot, { recursive: true, force: true });
+  }
+
+  rmSync(initWriteJsonRoot, { recursive: true, force: true });
 } finally {
   rmSync(initSafetyRoot, { recursive: true, force: true });
+  rmSync(initOutsideRoot, { recursive: true, force: true });
 }
 
 const status = runCli(["status"]);

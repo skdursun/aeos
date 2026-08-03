@@ -1,4 +1,8 @@
-import { runInitPipeline, validateAeosTask } from "@aeos/core";
+import {
+  createFilesystemGenerationAdapter,
+  runInitPipeline,
+  validateAeosTask,
+} from "@aeos/core";
 import type {
   AeosTask,
   InitIssue,
@@ -66,30 +70,28 @@ const initStages = [
   "validation",
 ] as const satisfies readonly InitStage[];
 
-type InitJsonOutput =
-  | {
-      readonly ok: true;
-      readonly status: "success";
-      readonly stages: readonly InitStage[];
-      readonly artifacts: readonly {
-        readonly path: string;
-        readonly status: string;
-        readonly summary: string;
-        readonly sourcePath?: string;
-      }[];
-    }
-  | {
-      readonly ok: false;
-      readonly status: "failure";
-      readonly errors: readonly InitIssue[];
-    }
-  | {
-      readonly ok: false;
-      readonly mode: "write-requested";
-      readonly writeEnabled: false;
-      readonly status: "blocked";
-      readonly errors: readonly InitIssue[];
-    };
+type InitJsonOutput = {
+  readonly ok: boolean;
+  readonly mode: "dry_run" | "write";
+  readonly writeEnabled: boolean;
+  readonly status: "success" | "blocked" | "failure";
+  readonly targetRoot: string;
+  readonly generatedFiles: readonly {
+    readonly path: string;
+    readonly status: string;
+    readonly summary: string;
+    readonly sourcePath?: string;
+  }[];
+  readonly conflicts: readonly InitIssue[];
+  readonly errors: readonly InitIssue[];
+  readonly stages?: readonly InitStage[];
+  readonly artifacts?: readonly {
+    readonly path: string;
+    readonly status: string;
+    readonly summary: string;
+    readonly sourcePath?: string;
+  }[];
+};
 
 type TaskValidationJsonStatus = "pass" | "fail";
 
@@ -569,21 +571,60 @@ function formatValidationStatus(status: ProjectValidationStatus): string {
   return status.toUpperCase();
 }
 
-function formatInitStatus(result: InitResult): "success" | "failure" {
-  return result.ok ? "success" : "failure";
+type InitCliMode = "dry_run" | "write";
+
+type InitCliStatus = "success" | "blocked" | "failure";
+
+type InitOutputContext = {
+  readonly mode: InitCliMode;
+  readonly writeEnabled: boolean;
+};
+
+function getInitConflicts(result: InitResult): readonly InitIssue[] {
+  return result.errors.filter((issue) => isInitConflictIssue(issue));
 }
 
-function printInitResult(result: InitResult): void {
+function isInitConflictIssue(issue: InitIssue): boolean {
+  return (
+    issue.code.includes("conflict") ||
+    issue.code.includes("target_exists") ||
+    issue.code.includes("overwrite_disabled") ||
+    issue.code.includes("target_is_directory") ||
+    issue.code.includes("parent_is_file") ||
+    issue.code.includes("target_outside_root") ||
+    issue.code.includes("duplicate_target") ||
+    issue.code.includes("inspection_failed")
+  );
+}
+
+function formatInitStatus(
+  result: InitResult,
+  conflicts: readonly InitIssue[],
+): InitCliStatus {
+  if (result.ok) {
+    return "success";
+  }
+
+  return conflicts.length > 0 ? "blocked" : "failure";
+}
+
+function printInitResult(result: InitResult, output: InitOutputContext): void {
+  const conflicts = getInitConflicts(result);
+  const status = formatInitStatus(result, conflicts);
+
   console.log("AEOS Init");
   console.log("");
   console.log("Mode:");
-  console.log("dry_run");
+  console.log(output.mode);
   console.log("");
   console.log("Write enabled:");
-  console.log("false");
+  console.log(String(output.writeEnabled));
+  console.log("");
+  console.log("Target root:");
+  console.log(result.projectRoot);
   console.log("");
   console.log("Status:");
-  console.log(formatInitStatus(result));
+  console.log(status);
   console.log("");
   console.log("Stages:");
 
@@ -594,6 +635,15 @@ function printInitResult(result: InitResult): void {
   console.log("");
   console.log("Artifacts:");
   console.log(String(result.generatedFiles.length));
+  console.log("");
+  console.log("Generated files count:");
+  console.log(String(result.generatedFiles.length));
+  console.log("");
+  console.log("Conflicts count:");
+  console.log(String(conflicts.length));
+  console.log("");
+  console.log("Errors count:");
+  console.log(String(result.errors.length));
 
   if (result.errors.length > 0) {
     console.log("");
@@ -606,25 +656,43 @@ function printInitResult(result: InitResult): void {
   }
 }
 
-function createInitJsonOutput(result: InitResult): InitJsonOutput {
+function createInitJsonOutput(
+  result: InitResult,
+  output: InitOutputContext,
+): InitJsonOutput {
+  const generatedFiles = result.generatedFiles.map((file) => ({
+    path: file.path,
+    status: file.status,
+    summary: file.summary,
+    sourcePath: file.sourcePath,
+  }));
+  const conflicts = getInitConflicts(result);
+  const status = formatInitStatus(result, conflicts);
+
   if (!result.ok) {
     return {
       ok: false,
-      status: "failure",
+      mode: output.mode,
+      writeEnabled: output.writeEnabled,
+      status,
+      targetRoot: result.projectRoot,
+      generatedFiles,
+      conflicts,
       errors: result.errors,
     };
   }
 
   return {
     ok: true,
-    status: "success",
+    mode: output.mode,
+    writeEnabled: output.writeEnabled,
+    status,
+    targetRoot: result.projectRoot,
+    generatedFiles,
+    conflicts,
+    errors: result.errors,
     stages: initStages,
-    artifacts: result.generatedFiles.map((file) => ({
-      path: file.path,
-      status: file.status,
-      summary: file.summary,
-      sourcePath: file.sourcePath,
-    })),
+    artifacts: generatedFiles,
   };
 }
 
@@ -637,7 +705,12 @@ async function handleInit(args: readonly string[]): Promise<void> {
     if (json) {
       writeInitJson({
         ok: false,
+        mode: writeRequested ? "write" : "dry_run",
+        writeEnabled: writeRequested,
         status: "failure",
+        targetRoot: getCwd(),
+        generatedFiles: [],
+        conflicts: [],
         errors: [
           {
             code: "init_unknown_option",
@@ -655,58 +728,31 @@ async function handleInit(args: readonly string[]): Promise<void> {
     return;
   }
 
-  if (writeRequested) {
-    const errors: readonly InitIssue[] = [
-      {
-        code: "init_write_mode_not_enabled",
-        message:
-          "Write mode is recognized but not enabled until filesystem adapter integration task.",
-      },
-    ];
-
-    if (json) {
-      writeInitJson({
-        ok: false,
-        mode: "write-requested",
-        writeEnabled: false,
-        status: "blocked",
-        errors,
-      });
-      setExitCode(1);
-      return;
-    }
-
-    console.log("AEOS Init");
-    console.log("");
-    console.log("Mode:");
-    console.log("write-requested");
-    console.log("");
-    console.log("Write enabled:");
-    console.log("false");
-    console.log("");
-    console.log("Status:");
-    console.log("blocked");
-    console.log("");
-    console.log("Reason:");
-    console.log(
-      "write mode is not enabled until filesystem adapter integration task",
-    );
-    setExitCode(1);
-    return;
-  }
+  const targetRoot = getCwd();
+  const output: InitOutputContext = {
+    mode: writeRequested ? "write" : "dry_run",
+    writeEnabled: writeRequested,
+  };
 
   const result = await runInitPipeline({
-    projectRoot: getCwd(),
+    projectRoot: targetRoot,
     template: {
       templateId: "default",
     },
     variables: {},
+  }, undefined, {
+    generation: writeRequested
+      ? {
+          writeMode: "write",
+          fileSystemAdapter: createFilesystemGenerationAdapter({ targetRoot }),
+        }
+      : undefined,
   });
 
   if (json) {
-    writeInitJson(createInitJsonOutput(result));
+    writeInitJson(createInitJsonOutput(result, output));
   } else {
-    printInitResult(result);
+    printInitResult(result, output);
   }
 
   if (!result.ok) {
