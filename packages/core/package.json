@@ -11,6 +11,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json --pretty false",
-    "check": "tsc -p tsconfig.json --pretty false"
+    "check": "tsc -p tsconfig.json --pretty false",
+    "smoke": "node scripts/smoke.mjs",
+    "verify": "pnpm run check && pnpm run smoke"
   }
 }
