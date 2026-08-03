@@ -1,6 +1,29 @@
 export const packageName = "@aeos/projects";
 
 export type {
+  ProjectConfidence,
+  ProjectEvidence,
+  ProjectEvidenceSource,
+  ProjectFramework,
+  ProjectFrameworkSignal,
+  ProjectInfrastructure,
+  ProjectInfrastructureSignal,
+  ProjectIntelligenceCategory,
+  ProjectIntelligenceIssue,
+  ProjectIntelligenceIssueSeverity,
+  ProjectIntelligenceProfile,
+  ProjectIntelligenceSummary,
+  ProjectLanguage,
+  ProjectLanguageSignal,
+  ProjectMonorepoKind,
+  ProjectMonorepoSignal,
+  ProjectPackageManager,
+  ProjectPackageManagerSignal,
+  ProjectRuntime,
+  ProjectRuntimeSignal,
+} from "./intelligence.js";
+
+export type {
   AgentsMetadata,
   ContextMetadata,
   PackageMetadata,

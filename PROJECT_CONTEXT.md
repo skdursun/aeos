@@ -54,6 +54,7 @@ condition.
 - TASK-0144: Add init write mode documentation.
 - TASK-0145: Add init write mode final smoke review.
 - TASK-0146: Define Project Intelligence Layer design.
+- TASK-0147: Implement project intelligence contracts.
 
 ## Do Not Load By Default
 
@@ -64,7 +65,7 @@ condition.
 
 ## Next Task
 
-TASK-0147 Implement project intelligence contracts.
+TASK-0148 Add project intelligence contract examples.
 
 ## Current Plans
 
