@@ -39,6 +39,7 @@ condition.
 - TASK-0131: Implement filesystem generation adapter design.
 - TASK-0132: Add filesystem generation adapter examples.
 - TASK-0133: Implement safe filesystem generation writer.
+- TASK-0134: Add safe filesystem generation writer examples.
 
 ## Do Not Load By Default
 
@@ -49,7 +50,7 @@ condition.
 
 ## Next Task
 
-TASK-0134 Add safe filesystem generation writer examples.
+TASK-0135 Add filesystem generation writer smoke tests.
 
 ## Current Plans
 
