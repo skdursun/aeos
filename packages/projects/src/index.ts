@@ -25,6 +25,17 @@ export {
 } from "./intelligence-signals.js";
 
 export type {
+  ProjectIntelligenceSignalMatch,
+  ProjectIntelligenceSignalMatcherResult,
+} from "./intelligence-signal-matcher.js";
+
+export {
+  createProjectEvidenceFromSignalMatch,
+  matchProjectIntelligenceSignals,
+  matchProjectScanEntrySignals,
+} from "./intelligence-signal-matcher.js";
+
+export type {
   ProjectIntelligenceDetectorInput,
   ProjectIntelligenceDetectorIssue,
   ProjectIntelligenceDetectorLimits,
