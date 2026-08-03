@@ -58,6 +58,7 @@ condition.
 - TASK-0185: Define agentic task lifecycle design.
 - TASK-0186: Implement agentic task lifecycle contracts.
 - TASK-0187: Add agentic lifecycle contract examples.
+- TASK-0188: Add agentic lifecycle contract smoke tests.
 
 ## Do Not Load By Default
 
@@ -68,7 +69,7 @@ condition.
 
 ## Next Task
 
-TASK-0188 Add agentic lifecycle contract smoke tests.
+TASK-0189 Design agentic coverage verifier.
 
 ## Current Plans
 

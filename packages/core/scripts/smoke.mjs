@@ -12,6 +12,15 @@ import { join, resolve } from "node:path";
 
 import { createFilesystemGenerationAdapter } from "../dist/filesystem-generation-writer.js";
 import { runInitPipeline } from "../dist/init-pipeline.js";
+import {
+  fileGenerationLifecycle,
+  incompleteSitemapLifecycle,
+  incompleteSitemapResult,
+  lifecycleResultFromExample,
+  plannedSitemapLifecycle,
+  resumeCursorExample,
+  verifiedCompleteLifecycle,
+} from "../dist/agentic-lifecycle.example.js";
 
 async function pathExists(path) {
   try {
@@ -94,6 +103,251 @@ async function runRenderedInitPipeline(targetRoot, artifacts, generation) {
 function generatedFileFor(result, path) {
   return result.generatedFiles.find((file) => file.path === path);
 }
+
+function assertLifecycleSummaryMatchesShape(lifecycle, expected) {
+  assert.deepEqual(
+    lifecycle.summary,
+    expected,
+    `${lifecycle.taskId} summary fields should remain stable`,
+  );
+  assert.equal(
+    lifecycle.summary.issueCount,
+    lifecycle.issues.length,
+    `${lifecycle.taskId} issue count should match issues array length`,
+  );
+}
+
+function assertIssueCountMatches(result) {
+  assert.equal(
+    result.summary.issueCount,
+    result.issues.length,
+    `${result.taskId} result issue count should match issues array length`,
+  );
+}
+
+const plannedResult = lifecycleResultFromExample(plannedSitemapLifecycle);
+
+assert.equal(
+  plannedSitemapLifecycle.inventory.expectedItemCount,
+  400,
+  "planned sitemap inventory should represent 400 expected items",
+);
+assert.equal(
+  plannedSitemapLifecycle.inventory.discoveredItemCount,
+  400,
+  "planned sitemap inventory should represent 400 discovered items",
+);
+assert.equal(
+  plannedSitemapLifecycle.state,
+  "planned",
+  "planned sitemap lifecycle should remain planned",
+);
+assert.equal(
+  plannedResult.state,
+  "planned",
+  "planned sitemap result should preserve planned state",
+);
+assert.ok(
+  plannedSitemapLifecycle.batches.length > 0,
+  "planned sitemap batches should be represented",
+);
+assert.ok(
+  plannedSitemapLifecycle.workItems.some((workItem) => workItem.id === "url-001"),
+  "planned sitemap work item representation should exist",
+);
+assertLifecycleSummaryMatchesShape(plannedSitemapLifecycle, {
+  totalWorkItemCount: 400,
+  completedWorkItemCount: 0,
+  verifiedWorkItemCount: 0,
+  failedWorkItemCount: 0,
+  skippedWorkItemCount: 0,
+  retryableWorkItemCount: 0,
+  pendingWorkItemCount: 400,
+  batchCount: 4,
+  issueCount: 0,
+  artifactCoverageStatus: "unknown",
+  verificationStatus: "skipped",
+});
+
+assert.equal(
+  incompleteSitemapLifecycle.coverage.expectedItemCount,
+  400,
+  "incomplete sitemap coverage should represent 400 expected items",
+);
+assert.equal(
+  incompleteSitemapLifecycle.coverage.completedItemCount,
+  20,
+  "incomplete sitemap coverage should represent only 20 completed items",
+);
+assert.equal(
+  incompleteSitemapLifecycle.coverage.pendingItemCount,
+  380,
+  "incomplete sitemap coverage should represent remaining pending items",
+);
+assert.notEqual(
+  incompleteSitemapLifecycle.state,
+  "completed",
+  "incomplete sitemap lifecycle must not be completed",
+);
+assert.notEqual(
+  incompleteSitemapResult.ok,
+  true,
+  "incomplete sitemap result must not report ok",
+);
+assert.equal(
+  incompleteSitemapLifecycle.coverage.status,
+  "incomplete",
+  "incomplete sitemap coverage should report incomplete status",
+);
+assert.ok(
+  incompleteSitemapLifecycle.coverage.rules.some(
+    (rule) => rule.status === "incomplete",
+  ),
+  "incomplete sitemap coverage should include an incomplete rule",
+);
+assert.ok(
+  incompleteSitemapLifecycle.coverage.issues.some(
+    (issue) => issue.category === "coverage_failure",
+  ),
+  "incomplete sitemap coverage should include a coverage failure issue",
+);
+assert.notEqual(
+  incompleteSitemapLifecycle.coverage.completedItemCount,
+  incompleteSitemapLifecycle.coverage.expectedItemCount,
+  "20 of 400 completed items must not satisfy item coverage",
+);
+assertIssueCountMatches(incompleteSitemapResult);
+
+const verifiedCompleteResult =
+  lifecycleResultFromExample(verifiedCompleteLifecycle);
+const verifiedAccountedItems =
+  verifiedCompleteLifecycle.coverage.completedItemCount +
+  verifiedCompleteLifecycle.coverage.explicitlyFailedItemCount +
+  verifiedCompleteLifecycle.coverage.explicitlySkippedItemCount;
+
+assert.equal(
+  verifiedCompleteLifecycle.coverage.expectedItemCount,
+  verifiedAccountedItems,
+  "verified complete lifecycle should account for completed, failed, and skipped items",
+);
+assert.equal(
+  verifiedCompleteLifecycle.verification?.status,
+  "pass",
+  "verified complete lifecycle should have passing verification",
+);
+assert.equal(
+  verifiedCompleteLifecycle.verification?.coverageStatus,
+  "satisfied",
+  "verified complete lifecycle verification should satisfy coverage",
+);
+assert.equal(
+  verifiedCompleteResult.ok,
+  true,
+  "verified complete result should report ok",
+);
+assert.equal(
+  verifiedCompleteResult.state,
+  verifiedCompleteLifecycle.state,
+  "verified complete result should preserve lifecycle state",
+);
+assert.equal(
+  verifiedCompleteResult.summary.verificationStatus,
+  verifiedCompleteLifecycle.verification?.status,
+  "verified complete result summary should match verification status",
+);
+assert.equal(
+  verifiedCompleteResult.summary.artifactCoverageStatus,
+  verifiedCompleteResult.coverage.status,
+  "verified complete result summary should match coverage status",
+);
+assertIssueCountMatches(verifiedCompleteResult);
+
+assert.deepEqual(
+  fileGenerationLifecycle.coverage.artifacts.expectedArtifacts,
+  ["README.generated.md", "dist/report.json", "dist/summary.json"],
+  "file-generation lifecycle should represent expected artifacts",
+);
+assert.deepEqual(
+  fileGenerationLifecycle.coverage.artifacts.verifiedArtifacts,
+  ["README.generated.md", "dist/summary.json"],
+  "file-generation lifecycle should represent verified artifacts",
+);
+assert.deepEqual(
+  fileGenerationLifecycle.coverage.artifacts.missingArtifacts,
+  ["dist/report.json"],
+  "file-generation lifecycle should represent missing artifacts",
+);
+assert.equal(
+  fileGenerationLifecycle.coverage.status,
+  "failed",
+  "missing artifacts should prevent satisfied artifact coverage",
+);
+assert.notEqual(
+  fileGenerationLifecycle.summary.artifactCoverageStatus,
+  "satisfied",
+  "missing artifacts should prevent summary from pretending full artifact completion",
+);
+
+assert.equal(
+  resumeCursorExample.nextPendingBatchId,
+  "batch-002",
+  "resume cursor should represent next pending batch id",
+);
+assert.deepEqual(
+  resumeCursorExample.remainingWorkItemIds,
+  ["url-021", "url-022", "url-023"],
+  "resume cursor should represent remaining work item ids",
+);
+assert.deepEqual(
+  resumeCursorExample.retryableWorkItemIds,
+  ["url-018"],
+  "resume cursor should represent retryable work item ids",
+);
+assert.equal(
+  resumeCursorExample.updatedAt,
+  "2026-08-03T10:05:00.000Z",
+  "resume cursor should expose updatedAt",
+);
+
+assertLifecycleSummaryMatchesShape(incompleteSitemapLifecycle, {
+  totalWorkItemCount: 400,
+  completedWorkItemCount: 20,
+  verifiedWorkItemCount: 20,
+  failedWorkItemCount: 0,
+  skippedWorkItemCount: 0,
+  retryableWorkItemCount: 0,
+  pendingWorkItemCount: 380,
+  batchCount: 4,
+  issueCount: 1,
+  artifactCoverageStatus: "unknown",
+  verificationStatus: "skipped",
+});
+assertLifecycleSummaryMatchesShape(verifiedCompleteLifecycle, {
+  totalWorkItemCount: 4,
+  completedWorkItemCount: 2,
+  verifiedWorkItemCount: 1,
+  failedWorkItemCount: 1,
+  skippedWorkItemCount: 1,
+  retryableWorkItemCount: 0,
+  pendingWorkItemCount: 0,
+  batchCount: 1,
+  issueCount: 0,
+  artifactCoverageStatus: "satisfied",
+  verificationStatus: "pass",
+});
+assertLifecycleSummaryMatchesShape(fileGenerationLifecycle, {
+  totalWorkItemCount: 3,
+  completedWorkItemCount: 2,
+  verifiedWorkItemCount: 2,
+  failedWorkItemCount: 0,
+  skippedWorkItemCount: 0,
+  retryableWorkItemCount: 1,
+  pendingWorkItemCount: 0,
+  batchCount: 1,
+  issueCount: 1,
+  artifactCoverageStatus: "failed",
+  verificationStatus: "fail",
+});
 
 const tempRoot = await mkdtemp(join(tmpdir(), "aeos-core-smoke-"));
 
