@@ -11,6 +11,20 @@ export {
 } from "./intelligence-scan-collector.js";
 
 export type {
+  ProjectIntelligenceSignalCategory,
+  ProjectIntelligenceSignalDefinition,
+  ProjectIntelligenceSignalMatchKind,
+  ProjectIntelligenceSignalSource,
+  ProjectIntelligenceSignalTarget,
+} from "./intelligence-signals.js";
+
+export {
+  getProjectIntelligenceSignalsByCategory,
+  listProjectIntelligenceSignalDefinitions,
+  PROJECT_INTELLIGENCE_SIGNAL_DEFINITIONS,
+} from "./intelligence-signals.js";
+
+export type {
   ProjectIntelligenceDetectorInput,
   ProjectIntelligenceDetectorIssue,
   ProjectIntelligenceDetectorLimits,

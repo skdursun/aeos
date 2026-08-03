@@ -62,6 +62,7 @@ condition.
 - TASK-0152: Implement deterministic project scan entry collector.
 - TASK-0153: Add project scan collector examples.
 - TASK-0154: Add project scan collector smoke tests.
+- TASK-0155: Implement intelligence signal definitions.
 
 ## Do Not Load By Default
 
@@ -72,7 +73,7 @@ condition.
 
 ## Next Task
 
-TASK-0155 Implement intelligence signal definitions.
+TASK-0156 Add intelligence signal definition examples.
 
 ## Current Plans
 
