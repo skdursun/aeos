@@ -34,6 +34,7 @@ condition.
 - TASK-0166: Design aeos project profile command.
 - TASK-0167: Implement aeos project profile command.
 - TASK-0168: Add project profile JSON safety review.
+- TASK-0169: Add project profile documentation.
 
 ## Do Not Load By Default
 
@@ -44,7 +45,7 @@ condition.
 
 ## Next Task
 
-TASK-0169 Add project profile documentation.
+TASK-0170 Add project profile final smoke review.
 
 ## Current Plans
 

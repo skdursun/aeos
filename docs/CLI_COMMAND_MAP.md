@@ -46,6 +46,18 @@ adapters.
   concise status report without modifying files.
 - Phase: MVP.
 
+### `aeos project profile`
+- Purpose: Print the deterministic local Project Intelligence profile for the
+  current working directory.
+- Example usage: `aeos project profile`, `aeos project profile --json`
+- Expected behavior: Runs read-only, bounded, evidence-based detection for
+  languages, frameworks, package managers, runtimes, infrastructure, and
+  monorepo/workspace signals. Human output is compact; `--json` emits one stable
+  JSON object with `ok`, `projectRoot`, `profile`, `scannedEntries`, `issues`,
+  and `summary`. The MVP does not parse package contents or dependencies, does
+  not use AI guessing, and has no target-root flag.
+- Phase: MVP.
+
 ### `aeos context`
 - Purpose: Build the minimal context bundle for a task or session.
 - Example usage: `aeos context --task TASK-0005`
@@ -171,6 +183,7 @@ adapters.
 
 ## MVP Commands
 - `aeos init`
+- `aeos project profile`
 - `aeos status`
 - `aeos context`
 - `aeos task new`

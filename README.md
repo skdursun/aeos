@@ -23,3 +23,17 @@ aeos init --write --json
 ```
 
 Write mode does not overwrite an existing `AGENTS.md`.
+
+## Project Profile
+
+Inspect the current working directory with deterministic, read-only project
+intelligence:
+
+```sh
+aeos project profile
+aeos project profile --json
+```
+
+The MVP reports local evidence for languages, frameworks, package managers,
+runtimes, infrastructure, and monorepo/workspace signals. It does not parse
+package contents or dependencies, and it does not use AI guessing.
