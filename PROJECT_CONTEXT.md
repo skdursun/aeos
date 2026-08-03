@@ -63,6 +63,7 @@ condition.
 - TASK-0153: Add project scan collector examples.
 - TASK-0154: Add project scan collector smoke tests.
 - TASK-0155: Implement intelligence signal definitions.
+- TASK-0156: Add intelligence signal definition examples.
 
 ## Do Not Load By Default
 
@@ -73,7 +74,7 @@ condition.
 
 ## Next Task
 
-TASK-0156 Add intelligence signal definition examples.
+TASK-0157 Implement intelligence signal matcher.
 
 ## Current Plans
 
