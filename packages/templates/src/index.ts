@@ -30,6 +30,28 @@ export {
 } from "./selection.js";
 
 export type {
+  SmartTemplateAvailableTemplate,
+  SmartTemplateCandidate,
+  SmartTemplateCandidateEvidence,
+  SmartTemplateCandidateScore,
+  SmartTemplateRecommendation,
+  SmartTemplateSelectionConfidence,
+  SmartTemplateSelectionFallback,
+  SmartTemplateSelectionInput,
+  SmartTemplateSelectionIssue,
+  SmartTemplateSelectionIssueCode,
+  SmartTemplateSelectionIssueSeverity,
+  SmartTemplateSelectionMode,
+  SmartTemplateSelectionOptions,
+  SmartTemplateSelectionProfile,
+  SmartTemplateSelectionProfileSummary,
+  SmartTemplateSelectionResult,
+  SmartTemplateSelectionSummary,
+  SmartTemplateSource,
+  SmartTemplateType,
+} from "./smart-selection.js";
+
+export type {
   TemplateMetadata,
   TemplateMetadataReadError,
   TemplateMetadataReadErrorCode,

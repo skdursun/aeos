@@ -39,6 +39,7 @@ condition.
 - TASK-0169: Add project profile documentation.
 - TASK-0170: Add project profile final smoke review.
 - TASK-0171: Design smart init/template selection.
+- TASK-0172: Implement smart template selection contracts.
 
 ## Do Not Load By Default
 
@@ -49,7 +50,7 @@ condition.
 
 ## Next Task
 
-TASK-0172 Implement smart template selection contracts.
+TASK-0173 Add smart template selection contract examples.
 
 ## Current Plans
 
