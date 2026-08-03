@@ -33,6 +33,7 @@ condition.
 - TASK-0125: Implement generation contracts.
 - TASK-0126: Add generation contract examples.
 - TASK-0127: Implement generation engine design.
+- TASK-0128: Add generation engine examples.
 
 ## Do Not Load By Default
 
@@ -43,7 +44,7 @@ condition.
 
 ## Next Task
 
-TASK-0128 Add generation engine examples.
+TASK-0129 Integrate generation engine into init pipeline.
 
 ## Current Plans
 
