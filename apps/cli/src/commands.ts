@@ -45,6 +45,8 @@ Commands:
   project validate --json
   project profile
   project profile --json
+  template recommend
+  template recommend --json
   task validate <path>
   task validate <path> --json
   version
@@ -349,6 +351,141 @@ type ProjectProfileJsonOutput =
       readonly reason: "project_profile_failed";
     };
 
+type SmartTemplateSelectionConfidence =
+  | "high"
+  | "medium"
+  | "low"
+  | "unknown";
+
+type SmartTemplateSelectionFallback =
+  | "generic"
+  | "none"
+  | "minimal_agents"
+  | "unknown";
+
+type SmartTemplateCandidateEvidence = {
+  readonly profileEvidenceIds: readonly string[];
+  readonly matchedProfileFields: readonly string[];
+  readonly matchedTemplateFields: readonly string[];
+  readonly ruleIds: readonly string[];
+  readonly confidence: SmartTemplateSelectionConfidence;
+  readonly reducedByIssueCodes: readonly string[];
+};
+
+type SmartTemplateSelectionIssue = {
+  readonly code: string;
+  readonly message: string;
+  readonly severity: "info" | "warning" | "error";
+  readonly templateId?: string;
+  readonly evidenceIds?: readonly string[];
+};
+
+type SmartTemplateCandidate = {
+  readonly templateId: string;
+  readonly templateName: string;
+  readonly source: string;
+  readonly type: string;
+  readonly supportedLanguages: readonly string[];
+  readonly supportedFrameworks: readonly string[];
+  readonly supportedPackageManagers: readonly string[];
+  readonly supportedRuntimes: readonly string[];
+  readonly supportedInfrastructure: readonly string[];
+  readonly score: string;
+  readonly confidence: SmartTemplateSelectionConfidence;
+  readonly evidence: SmartTemplateCandidateEvidence;
+  readonly issues: readonly SmartTemplateSelectionIssue[];
+};
+
+type SmartTemplateRecommendation = {
+  readonly selectedCandidate?: SmartTemplateCandidate;
+  readonly fallbackUsed: boolean;
+  readonly fallback: SmartTemplateSelectionFallback;
+  readonly fallbackReason?: string;
+  readonly confidence: SmartTemplateSelectionConfidence;
+  readonly evidence: SmartTemplateCandidateEvidence;
+  readonly issues: readonly SmartTemplateSelectionIssue[];
+};
+
+type SmartTemplateSelectionProfile = {
+  readonly projectRoot: string;
+  readonly summary: {
+    readonly confidence: SmartTemplateSelectionConfidence;
+    readonly primaryLanguage: string;
+    readonly primaryFramework: string;
+    readonly primaryPackageManager: string;
+    readonly primaryRuntime: string;
+    readonly hasInfrastructure: boolean;
+    readonly isMonorepo: boolean;
+  };
+  readonly evidenceIds: readonly string[];
+  readonly issueCodes: readonly string[];
+};
+
+type SmartTemplateSelectionResult = {
+  readonly ok: boolean;
+  readonly mode: "recommend" | "init" | "unknown";
+  readonly projectRoot: string;
+  readonly recommendation: SmartTemplateRecommendation;
+  readonly candidates: readonly SmartTemplateCandidate[];
+  readonly fallbackUsed: boolean;
+  readonly issues: readonly SmartTemplateSelectionIssue[];
+  readonly summary: {
+    readonly candidateCount: number;
+    readonly issueCount: number;
+    readonly selectedTemplateId?: string;
+    readonly fallback: SmartTemplateSelectionFallback;
+    readonly confidence: SmartTemplateSelectionConfidence;
+    readonly evidenceCount?: number;
+    readonly fallbackUsed?: boolean;
+  };
+};
+
+type TemplatesPackage = {
+  readonly listBuiltInSmartTemplateCandidates: () => readonly SmartTemplateCandidate[];
+  readonly selectSmartTemplate: (input: {
+    readonly projectRoot: string;
+    readonly profile: SmartTemplateSelectionProfile;
+    readonly candidates: readonly SmartTemplateCandidate[];
+    readonly mode: "recommend";
+    readonly fallback: "minimal_agents";
+    readonly options: {
+      readonly includeCandidates: true;
+      readonly includeEvidence: true;
+    };
+  }) => SmartTemplateSelectionResult;
+};
+
+type TemplateRecommendJsonOutput =
+  | {
+      readonly ok: true;
+      readonly projectRoot: string;
+      readonly mode: "recommend";
+      readonly recommendation: SmartTemplateRecommendation;
+      readonly candidates: readonly SmartTemplateCandidate[];
+      readonly fallbackUsed: boolean;
+      readonly issues: readonly SmartTemplateSelectionIssue[];
+      readonly summary: {
+        readonly candidateCount: number;
+        readonly evidenceCount: number;
+        readonly issueCount: number;
+        readonly selectedTemplateId?: string;
+        readonly fallback: SmartTemplateSelectionFallback;
+        readonly fallbackUsed: boolean;
+        readonly confidence: SmartTemplateSelectionConfidence;
+      };
+    }
+  | {
+      readonly ok: false;
+      readonly projectRoot: string;
+      readonly mode: "recommend";
+      readonly recommendation: null;
+      readonly candidates: readonly [];
+      readonly fallbackUsed: true;
+      readonly issues: readonly [];
+      readonly summary: null;
+      readonly reason: "template_recommend_failed";
+    };
+
 const projectValidationJsonCheckNames = new Set([
   "project_root",
   "package_metadata",
@@ -484,6 +621,11 @@ async function loadProjectsPackage(): Promise<ProjectsPackage> {
   return import("../../../packages/projects/dist/index.js") as Promise<ProjectsPackage>;
 }
 
+async function loadTemplatesPackage(): Promise<TemplatesPackage> {
+  // @ts-ignore @aeos/cli loads the existing templates package artifact without metadata changes.
+  return import("../../../packages/templates/dist/index.js") as Promise<TemplatesPackage>;
+}
+
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -541,6 +683,10 @@ function writeProjectValidationJson(value: ProjectValidationJsonOutput): void {
 }
 
 function writeProjectProfileJson(value: ProjectProfileJsonOutput): void {
+  writeJsonLine(value);
+}
+
+function writeTemplateRecommendJson(value: TemplateRecommendJsonOutput): void {
   writeJsonLine(value);
 }
 
@@ -775,6 +921,190 @@ function printProjectProfileResult(
   console.log("Issues:");
   for (const issue of result.issues) {
     console.log(formatProjectProfileIssue(issue));
+  }
+}
+
+function toSmartSelectionConfidence(
+  value: string,
+): SmartTemplateSelectionConfidence {
+  return value === "high" ||
+    value === "medium" ||
+    value === "low" ||
+    value === "unknown"
+    ? value
+    : "unknown";
+}
+
+function createTemplateRecommendProfile(
+  profile: ProjectIntelligenceProfile,
+): SmartTemplateSelectionProfile {
+  return {
+    projectRoot: profile.projectRoot,
+    summary: {
+      confidence: toSmartSelectionConfidence(profile.summary.confidence),
+      primaryLanguage: profile.summary.primaryLanguage,
+      primaryFramework: profile.summary.primaryFramework,
+      primaryPackageManager: profile.summary.primaryPackageManager,
+      primaryRuntime: profile.summary.primaryRuntime,
+      hasInfrastructure: profile.summary.hasInfrastructure,
+      isMonorepo: profile.summary.isMonorepo,
+    },
+    evidenceIds: profile.evidence.map((item) => item.id),
+    issueCodes: profile.issues.map((issue) => issue.code),
+  };
+}
+
+function createTemplateRecommendJsonOutput(
+  result: SmartTemplateSelectionResult,
+): TemplateRecommendJsonOutput {
+  const evidenceCount =
+    result.summary.evidenceCount ??
+    result.candidates.reduce(
+      (total, candidate) => total + candidate.evidence.ruleIds.length,
+      result.recommendation.evidence.ruleIds.length,
+    );
+
+  return {
+    ok: true,
+    projectRoot: result.projectRoot,
+    mode: "recommend",
+    recommendation: result.recommendation,
+    candidates: result.candidates,
+    fallbackUsed: result.fallbackUsed,
+    issues: result.issues,
+    summary: {
+      candidateCount: result.summary.candidateCount,
+      evidenceCount,
+      issueCount: result.summary.issueCount,
+      selectedTemplateId: result.summary.selectedTemplateId,
+      fallback: result.summary.fallback,
+      fallbackUsed: result.fallbackUsed,
+      confidence: result.summary.confidence,
+    },
+  };
+}
+
+function getTemplateRecommendReasonLines(
+  result: SmartTemplateSelectionResult,
+): readonly string[] {
+  const lines = [
+    ...result.recommendation.evidence.ruleIds,
+    ...result.recommendation.evidence.reducedByIssueCodes,
+    ...result.recommendation.issues.map((issue) => issue.code),
+  ];
+
+  return [...new Set(lines)].filter((line) => line.trim().length > 0).slice(0, 6);
+}
+
+function printTemplateRecommendResult(result: SmartTemplateSelectionResult): void {
+  const selected = result.recommendation.fallbackUsed
+    ? `fallback ${result.recommendation.fallback}`
+    : result.recommendation.selectedCandidate?.templateId ?? "unknown";
+  const evidenceCount =
+    result.summary.evidenceCount ??
+    result.candidates.reduce(
+      (total, candidate) => total + candidate.evidence.ruleIds.length,
+      result.recommendation.evidence.ruleIds.length,
+    );
+
+  console.log("Template Recommendation");
+  console.log(`Project root: ${result.projectRoot}`);
+  console.log(`Selected template: ${selected}`);
+  console.log(`Confidence: ${result.recommendation.confidence}`);
+  console.log(`Fallback used: ${String(result.recommendation.fallbackUsed)}`);
+  console.log(`Candidate count: ${result.candidates.length}`);
+  console.log(`Evidence count: ${evidenceCount}`);
+  console.log(`Issue count: ${result.issues.length}`);
+
+  const reasons = getTemplateRecommendReasonLines(result);
+
+  if (reasons.length > 0) {
+    console.log("Reasons:");
+    for (const reason of reasons) {
+      console.log(`- ${reason}`);
+    }
+  }
+
+  if (result.issues.length > 0) {
+    console.log("Issues:");
+    for (const issue of result.issues.slice(0, 6)) {
+      console.log(`- ${issue.severity} ${issue.code}`);
+    }
+  }
+}
+
+async function handleTemplateRecommend(args: readonly string[]): Promise<void> {
+  const json = args.includes("--json");
+  const unknownArgs = args.filter((arg) => arg !== "--json");
+  const projectRoot = getCwd();
+
+  if (unknownArgs.length > 0) {
+    if (json) {
+      writeTemplateRecommendJson({
+        ok: false,
+        projectRoot,
+        mode: "recommend",
+        recommendation: null,
+        candidates: [],
+        fallbackUsed: true,
+        issues: [],
+        summary: null,
+        reason: "template_recommend_failed",
+      });
+      setExitCode(1);
+      return;
+    }
+
+    console.error("Error: unknown template recommend option.");
+    console.error("Usage: aeos template recommend [--json]");
+    setExitCode(1);
+    return;
+  }
+
+  try {
+    const projects = await loadProjectsPackage();
+    const templates = await loadTemplatesPackage();
+    const detectorResult = await projects.detectProjectIntelligence(
+      createProjectProfileDetectorInput(projects, projectRoot),
+    );
+    const selectionResult = templates.selectSmartTemplate({
+      projectRoot: detectorResult.profile.projectRoot,
+      profile: createTemplateRecommendProfile(detectorResult.profile),
+      candidates: templates.listBuiltInSmartTemplateCandidates(),
+      mode: "recommend",
+      fallback: "minimal_agents",
+      options: {
+        includeCandidates: true,
+        includeEvidence: true,
+      },
+    });
+
+    if (json) {
+      writeTemplateRecommendJson(createTemplateRecommendJsonOutput(selectionResult));
+      return;
+    }
+
+    printTemplateRecommendResult(selectionResult);
+  } catch {
+    if (json) {
+      writeTemplateRecommendJson({
+        ok: false,
+        projectRoot,
+        mode: "recommend",
+        recommendation: null,
+        candidates: [],
+        fallbackUsed: true,
+        issues: [],
+        summary: null,
+        reason: "template_recommend_failed",
+      });
+      setExitCode(1);
+      return;
+    }
+
+    console.error("Template Recommendation");
+    console.error("Error: template recommendation failed.");
+    setExitCode(1);
   }
 }
 
@@ -1914,6 +2244,18 @@ async function handleProject(args: readonly string[]): Promise<void> {
   setExitCode(1);
 }
 
+async function handleTemplate(args: readonly string[]): Promise<void> {
+  if (args[0] === "recommend") {
+    await handleTemplateRecommend(args.slice(1));
+    return;
+  }
+
+  console.error("Error: unknown template command.");
+  console.error("Usage: aeos template recommend");
+  console.error("Usage: aeos template recommend --json");
+  setExitCode(1);
+}
+
 function handleUnknownCommand(command: string): void {
   console.error(`Error: unknown command '${command}'`);
   console.error("Run 'aeos help' for usage.");
@@ -1947,6 +2289,10 @@ export function main(argv: readonly string[]): void {
 
     case "project":
       void handleProject(args);
+      break;
+
+    case "template":
+      void handleTemplate(args);
       break;
 
     case "task":
