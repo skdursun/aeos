@@ -155,6 +155,17 @@ artifact change, state transition, verification run, resume update, or
 completion decision. Such plans must set `verifierRequired: true`, include a
 verifier step, and block completion unless the verifier handoff is verified.
 
+## Implemented MVP Notes
+The implemented MVP planner is a deterministic, side-effect-free helper. It
+plans and validates represented state only; it does not execute runner work,
+call adapters, append audit events, run the verifier, or mark tasks completed.
+
+Safety hardening now treats executable work without represented work items as
+invalid. Empty batches are planning issues. Missing batch work item ids and
+batch references to missing work items are planning issues. Verifier-gated
+planning is required for executable plans, and disabling the verifier or the
+completion gate produces planning issues.
+
 ## Task Contract Interpretation
 The planner interprets the task contract as the authority for scope.
 
