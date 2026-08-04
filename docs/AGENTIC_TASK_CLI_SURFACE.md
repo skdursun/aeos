@@ -1,0 +1,604 @@
+# Agentic Task CLI Surface
+
+## Purpose
+Design the AEOS agentic task CLI surface for safe task planning, dry-run
+execution preview, status, verification, resume, and later agent run flows.
+
+This document is design-only. It does not implement CLI commands, runner
+execution, adapter calls, persistence, audit runtime, verifier runtime, or
+autonomous agent orchestration.
+
+## Current Foundation Status
+AEOS already has deterministic core contracts and helpers for agentic task
+lifecycle state, coverage verification, runner planning, execution lifecycle
+contracts, and dry-run previews.
+
+Current foundation:
+
+- `aeos task validate <path>` exists as task contract validation.
+- Runner planning logic is side-effect-free and creates planning results from
+  represented input.
+- Dry-run runner logic is side-effect-free and creates execution-shaped previews
+  without adapter calls, audit writes, verifier runs, lifecycle mutation, or
+  completion.
+- Coverage verifier logic is deterministic and rejects incomplete work coverage.
+- Policy, audit, and verification documents define required safety boundaries.
+- No agentic task CLI runtime exists yet for `plan`, `run --dry-run`, `status`,
+  `verify`, or `resume`.
+- No command currently performs real agentic runner execution.
+
+## CLI Design Principles
+- Keep the CLI a thin operator surface over core contracts.
+- Prefer explicit task commands over hidden autonomous modes.
+- Require explicit local task input; do not infer from model output.
+- Keep MVP deterministic, local-first, and read-only by default.
+- Preserve human and JSON output shapes as stable contracts.
+- Make partial, blocked, denied, approval-required, and verifier-required states
+  visible.
+- Keep help text honest about what is implemented.
+
+## Safety Principles
+- Critical MVP rule: no command may perform real model or tool execution in the
+  first CLI MVP.
+- Planning and dry-run previews are allowed; real execution is blocked until an
+  execution safety review is complete.
+- Model and agent self-reporting are claims only, never completion proof.
+- No command may broaden task scope, scan the repository implicitly, read hidden
+  context, or write outside explicit task scope.
+- Risky actions remain policy-gated and approval-gated.
+- Completion remains verifier-gated and audit-aware.
+
+## Command Groups
+MVP agentic task command group:
+
+- `aeos task plan`
+- `aeos task run --dry-run`
+- `aeos task status`
+- `aeos task verify`
+- `aeos task resume`
+
+Later command groups:
+
+- real task execution: `aeos task run`
+- task cancellation: `aeos task cancel`
+- future agent runs: `aeos agent run`
+- audit inspection: `aeos audit`
+
+## MVP Command Surface
+### `aeos task plan`
+Reads a local task contract/input, validates it, creates a runner planning
+result, and prints a human task plan.
+
+It must not execute work, call model adapters, call agent adapters, call tool
+adapters, write audit events, run verifier logic, mutate lifecycle state, create
+completed state, or infer missing scope from repository scans.
+
+Verifier requirement must be visible even though the verifier is not run.
+
+### `aeos task plan --json`
+Same behavior as `aeos task plan`, but stdout is exactly one JSON object and no
+human text. Unknown flags and validation errors must also be JSON-only.
+
+### `aeos task run --dry-run`
+Creates an execution preview from a represented plan or planning result.
+
+It must not call model/tool adapters, write audit events, run verifier logic,
+mutate lifecycle state, persist resume state, or mark the task completed.
+
+### `aeos task run --dry-run --json`
+Same behavior as `aeos task run --dry-run`, but stdout is exactly one JSON
+object and no human text. Adapter calls must be represented as not executed.
+
+### `aeos task status`
+Shows persisted or planned task state if a state store exists later.
+
+MVP may report `unavailable` or `not_implemented` until persistence exists. It
+must not infer status from model output, recent CLI text, or unstored files.
+
+### `aeos task status --json`
+Same status behavior as human mode, but stdout is JSON-only. When persistence is
+not implemented, it should return an explicit unavailable shape rather than
+guessing.
+
+### `aeos task verify`
+Future verifier command that uses the coverage verifier against structured
+lifecycle evidence. Model self-reporting is not accepted as verification.
+
+MVP may report unavailable until verifier CLI wiring and persistence/evidence
+loading exist.
+
+### `aeos task verify --json`
+Same verifier behavior as human mode, with JSON-only output.
+
+### `aeos task resume`
+Uses persisted lifecycle state and a resume cursor. It must not ask a model what
+remains, duplicate prior completion, rerun verified work by default, or complete
+without verifier success.
+
+MVP resume should present a dry-run resume preview first and may report
+unavailable until persistence exists.
+
+### `aeos task resume --dry-run`
+Shows where resume would continue from known pending and retryable work without
+adapter calls, audit writes, verifier runs, lifecycle mutation, or cursor
+persistence.
+
+### `aeos task resume --json`
+JSON-only resume output. In the first MVP this should either emit the dry-run
+resume preview or a JSON-only unavailable result.
+
+## Later Command Surface
+Later commands require a separate safety review and implementation plan:
+
+- `aeos task run`
+- `aeos task run --json`
+- `aeos task cancel`
+- `aeos agent run`
+- `aeos agent run --dry-run`
+- `aeos audit`
+- `aeos audit --json`
+
+Real `aeos task run` and `aeos agent run` must remain unavailable until policy,
+approval, audit, verifier, adapter, persistence, and resume behavior are
+implemented and reviewed.
+
+## Human Output Principles
+Human output should be compact, stable, and explicit about non-execution.
+
+Task plan output should include:
+
+```text
+Task Plan
+Task id: sitemap-audit
+Mode: plan
+Work items: 400
+Batches: 4
+Policy: allowed|blocked|requires_approval|not_evaluated
+Approval required: false
+Verifier required: true
+Audit expected: true
+Issues: 0
+```
+
+Dry-run output should include:
+
+```text
+Task Dry Run
+Task id: sitemap-audit
+State: verification_required
+Planned steps: 7
+Planned batches: 4
+Planned work items: 400
+Adapter calls: not executed
+Audit writes: false
+Verifier run: false
+Completed: false
+Issues: 0
+```
+
+Human output must not imply real execution, autonomous progress, emitted audit
+events, verifier success, persisted status, or completed state unless those are
+actually implemented and evidenced.
+
+## JSON Output Principles
+JSON mode must emit only JSON on stdout. No banners, warnings, stack traces,
+progress text, or mixed human output may appear.
+
+JSON must be deterministic, compact, and safe to serialize. It must not contain
+raw prompts, full model outputs, raw command logs, secrets, broad file contents,
+private reasoning traces, provider SDK objects, or hidden tool arguments.
+
+Task plan JSON concept:
+
+```json
+{
+  "ok": true,
+  "taskId": "...",
+  "mode": "plan",
+  "plan": {},
+  "policy": {},
+  "verifier": {},
+  "audit": {},
+  "resume": {},
+  "issues": [],
+  "summary": {}
+}
+```
+
+Dry-run JSON concept:
+
+```json
+{
+  "ok": true,
+  "taskId": "...",
+  "mode": "dry_run",
+  "state": "...",
+  "steps": [],
+  "batches": [],
+  "workItems": [],
+  "adapterCalls": [],
+  "audit": {},
+  "verifier": {},
+  "resume": {},
+  "issues": [],
+  "summary": {}
+}
+```
+
+## Exit Code Principles
+- Successful plan or dry-run preview: `0`.
+- Invalid task contract/input: non-zero.
+- Unknown command or flag: non-zero.
+- Blocked policy: non-zero when it prevents the requested command from
+  producing an executable preview; otherwise `ok: false` with explicit blocked
+  state according to the command design.
+- Approval required: non-zero when execution would be blocked; human output must
+  say approval is required.
+- JSON mode must still emit JSON-only output for errors, unknown flags, invalid
+  input, blocked policy, and unavailable persistence/runtime features.
+
+## State Persistence Expectations
+MVP planning and dry-run commands should not write state by default.
+
+Future persistence should store task contract reference, planning result,
+lifecycle state, work item state, batch state, attempts, verifier evidence, audit
+references, and resume cursor. Status, verify, and resume commands must read
+from this persisted evidence rather than model output or terminal history.
+
+Until persistence exists, `status`, `verify`, and non-dry-run `resume` must be
+honest about unavailable state.
+
+## No-Write / Default Behavior
+The first MVP is read-only by default:
+
+- no source writes;
+- no lifecycle writes;
+- no audit writes;
+- no resume cursor writes;
+- no memory writes;
+- no package or dependency changes;
+- no Git writes;
+- no deployments;
+- no network side effects.
+
+Any future write mode must be explicit, scoped, policy-checked, approval-aware,
+audited, and tested separately.
+
+## Policy / Approval Behavior
+Plan and dry-run commands represent policy and approval requirements from input.
+They do not call a policy adapter or grant approval.
+
+Denied or blocked policy must prevent runnable execution steps. Approval-required
+actions must show the required action and scope and stop before adapter calls.
+Approval does not broaden the task contract.
+
+## Audit Behavior
+Plan and dry-run commands may show expected audit event ids and required event
+kinds, but they must not append audit events.
+
+Audit status in MVP output is planned, missing, partial from input, or
+not-required. It is never evidence of emitted runtime audit events unless the
+input already contains explicit persisted evidence.
+
+## Verifier Behavior
+Planning must make verifier requirements visible for executable plans. Dry-run
+must show the verifier as required but not run.
+
+`aeos task verify` is later runtime wiring over the coverage verifier. It must
+verify structured evidence and must reject model self-reporting as completion
+proof.
+
+## Resume / Retry Behavior
+Resume is state-driven:
+
+- use persisted lifecycle state and resume cursor;
+- derive remaining work from pending and retryable work item ids;
+- do not ask the model what remains;
+- do not count duplicate completions;
+- do not rerun verified items by default;
+- create dry-run resume preview before real resume execution;
+- keep non-retryable failures failed until scope, input, policy, or environment
+  changes.
+
+## Dry-Run Behavior
+Dry-run previews later execution without side effects.
+
+Dry-run must report:
+
+- planned steps, batches, and work items;
+- planned adapter calls as not executed;
+- `audit.wouldWriteAudit: false`;
+- `verifier.wouldRunVerifier: false`;
+- `completionGateSatisfied: false`;
+- `Completed: false`;
+- pending or verification-required state, unless blocked or failed by explicit
+  input issues.
+
+Dry-run must never return `completed`.
+
+## Input Strategy
+MVP should accept a local task contract file path later, for example:
+
+```text
+aeos task plan <path>
+aeos task run <path> --dry-run
+```
+
+Input constraints:
+
+- no remote task source in MVP;
+- no arbitrary shell execution from task input;
+- no implicit repo scan;
+- no hidden autonomous mode;
+- no broad unlisted context loading;
+- no model-generated task scope expansion.
+
+## Help Behavior
+Help must list only implemented or explicitly unavailable commands.
+
+Help must not overpromise:
+
+- real execution;
+- autonomous agent runs;
+- model, agent, tool, or MCP adapter calls;
+- audit runtime writes;
+- verifier CLI behavior if not implemented;
+- persistence if not implemented;
+- production orchestration;
+- remote task sources;
+- arbitrary shell execution.
+
+Unimplemented commands should be absent from help or marked as unavailable with
+clear non-execution language.
+
+## MVP Scope
+- Design and implement command parsing for the MVP surface.
+- Render safe human and JSON output for plan and dry-run.
+- Wire plan and dry-run to existing side-effect-free core helpers.
+- Return explicit unavailable results for status, verify, and resume until
+  persistence/evidence loading exists.
+- Add smoke tests for no-write behavior, JSON-only output, unknown flags, and
+  no overpromised help text.
+
+## Later Scope
+- Real `aeos task run` after execution safety review.
+- Persistent state store and status loading.
+- Runtime policy adapter evaluation.
+- Runtime audit event append.
+- Runtime coverage verifier command.
+- Resume from persisted cursor.
+- Cancellation.
+- Agent run and agent dry-run flows.
+- Audit inspection and JSON audit output.
+- Richer schemas and report artifacts.
+
+## Non-Goals
+- Implement CLI commands in this design task.
+- Implement runner execution in this design task.
+- Add package dependencies.
+- Modify package files.
+- Deploy, push, migrate, or write Git state.
+- Trust model self-reporting.
+- Support hidden autonomous execution.
+- Support remote task sources in MVP.
+
+## Sitemap Example
+Command sequence:
+
+```text
+aeos task plan sitemap-audit
+```
+
+Expected human summary:
+
+```text
+Task Plan
+Task id: sitemap-audit
+Mode: plan
+Work items: 400
+Batches: 4
+Policy: allowed
+Approval required: false
+Verifier required: true
+Audit expected: true
+Issues: 0
+```
+
+Dry-run:
+
+```text
+aeos task run sitemap-audit --dry-run
+```
+
+Expected dry-run summary:
+
+```text
+Task Dry Run
+Task id: sitemap-audit
+State: verification_required
+Planned steps: 7
+Planned batches: 4
+Planned work items: 400
+Adapter calls: not executed
+Audit writes: false
+Verifier run: false
+Completed: false
+Issues: 0
+```
+
+If only 20 of 400 items are later processed, verifier accounting remains:
+
+```text
+400 != 20 + 0 + 0
+```
+
+The remaining 380 work items stay pending or retryable. Completion remains
+false until structured evidence passes the verifier.
+
+## Smoke Test Requirements
+Future CLI smoke tests should prove:
+
+- `aeos task plan` prints `Task Plan`.
+- `aeos task plan --json` emits exactly one JSON object.
+- invalid task contract exits non-zero.
+- unknown flags exit non-zero.
+- unknown flags in JSON mode emit JSON-only errors.
+- `aeos task plan` does not call adapters.
+- `aeos task plan` does not write audit events.
+- `aeos task plan` shows verifier required for executable plans.
+- `aeos task run --dry-run` prints `Task Dry Run`.
+- `aeos task run --dry-run --json` emits exactly one JSON object.
+- dry-run reports adapter calls not executed.
+- dry-run reports audit writes false.
+- dry-run reports verifier run false.
+- dry-run reports completed false.
+- dry-run creates no lifecycle or resume persistence.
+- status reports unavailable instead of guessing when persistence is absent.
+- verify reports unavailable until evidence loading exists.
+- resume defaults to dry-run preview and does not duplicate completion.
+- help does not overpromise real execution, autonomous agent runs, audit runtime,
+  verifier runtime, persistence, remote sources, or production orchestration.
+
+## Implementation Sequence
+Do not start these tasks from this design task.
+
+1. TASK-0228: Implement agentic task CLI contract/output design.
+   Purpose: add CLI-local output contracts and render helpers for plan,
+   dry-run, unavailable, and JSON error shapes.
+   Likely files: `apps/cli/src/commands.ts`, `apps/cli/src/output.ts`.
+   Verification command: `pnpm --filter @aeos/cli check`.
+   Recommended model effort: Medium.
+   Classification: Code.
+
+2. TASK-0229: Add agentic task CLI help guardrails.
+   Purpose: update CLI help so MVP commands are listed only with no-execution
+   language and unsupported runtime behavior is not promised.
+   Likely files: `apps/cli/src/commands.ts`, `apps/cli/scripts/smoke.mjs`.
+   Verification command: `pnpm --filter @aeos/cli check`.
+   Recommended model effort: Low.
+   Classification: Code.
+
+3. TASK-0230: Add agentic task plan command parser shell.
+   Purpose: parse `aeos task plan [path] [--json]`, reject unknown flags, and
+   keep output JSON-only in JSON mode.
+   Likely files: `apps/cli/src/commands.ts`.
+   Verification command: `pnpm --filter @aeos/cli check`.
+   Recommended model effort: Medium.
+   Classification: Code.
+
+4. TASK-0231: Add local task contract input loader for plan.
+   Purpose: load one explicit local task contract path without remote sources,
+   arbitrary shell execution, or implicit repository scans.
+   Likely files: `apps/cli/src/commands.ts`.
+   Verification command: `pnpm --filter @aeos/cli check`.
+   Recommended model effort: Medium.
+   Classification: Code.
+
+5. TASK-0232: Wire task plan to core planning helper.
+   Purpose: convert validated task input into represented planning input and
+   call the side-effect-free runner planner.
+   Likely files: `apps/cli/src/commands.ts`, `packages/core/src/agentic-runner-planning.ts`.
+   Verification command: `pnpm --filter @aeos/cli check`.
+   Recommended model effort: High.
+   Classification: Code.
+
+6. TASK-0233: Render human task plan output.
+   Purpose: print Task Plan, task id, mode, work items, batches, policy,
+   approval required, verifier required, audit expected, and issues.
+   Likely files: `apps/cli/src/commands.ts`, `apps/cli/src/output.ts`.
+   Verification command: `pnpm --filter @aeos/cli check`.
+   Recommended model effort: Medium.
+   Classification: Code.
+
+7. TASK-0234: Render JSON task plan output.
+   Purpose: emit stable JSON-only plan output with `ok`, `taskId`, `mode`,
+   `plan`, `policy`, `verifier`, `audit`, `resume`, `issues`, and `summary`.
+   Likely files: `apps/cli/src/commands.ts`, `apps/cli/src/output.ts`.
+   Verification command: `pnpm --filter @aeos/cli check`.
+   Recommended model effort: Medium.
+   Classification: Code.
+
+8. TASK-0235: Add task dry-run command parser shell.
+   Purpose: parse `aeos task run [path] --dry-run [--json]` and reject real
+   `aeos task run` in MVP.
+   Likely files: `apps/cli/src/commands.ts`.
+   Verification command: `pnpm --filter @aeos/cli check`.
+   Recommended model effort: Medium.
+   Classification: Code.
+
+9. TASK-0236: Convert planning output to dry-run preview input.
+   Purpose: map planner steps, batches, work items, audit expectations,
+   verifier requirements, policy, and resume fields to dry-run input.
+   Likely files: `apps/cli/src/commands.ts`, `packages/core/src/agentic-runner-dry-run.ts`.
+   Verification command: `pnpm --filter @aeos/cli check`.
+   Recommended model effort: High.
+   Classification: Code.
+
+10. TASK-0237: Wire dry-run command to core dry-run helper.
+    Purpose: call the side-effect-free dry-run helper and preserve no adapter,
+    no audit, no verifier, and no lifecycle mutation guarantees.
+    Likely files: `apps/cli/src/commands.ts`.
+    Verification command: `pnpm --filter @aeos/cli check`.
+    Recommended model effort: High.
+    Classification: Code.
+
+11. TASK-0238: Render human dry-run output.
+    Purpose: print Task Dry Run, state, planned steps, planned batches, planned
+    work items, adapter calls not executed, audit writes false, verifier run
+    false, completed false, and issues.
+    Likely files: `apps/cli/src/commands.ts`, `apps/cli/src/output.ts`.
+    Verification command: `pnpm --filter @aeos/cli check`.
+    Recommended model effort: Medium.
+    Classification: Code.
+
+12. TASK-0239: Render JSON dry-run output.
+    Purpose: emit stable JSON-only dry-run output with `ok`, `taskId`, `mode`,
+    `state`, `steps`, `batches`, `workItems`, `adapterCalls`, `audit`,
+    `verifier`, `resume`, `issues`, and `summary`.
+    Likely files: `apps/cli/src/commands.ts`, `apps/cli/src/output.ts`.
+    Verification command: `pnpm --filter @aeos/cli check`.
+    Recommended model effort: Medium.
+    Classification: Code.
+
+13. TASK-0240: Add unavailable status command behavior.
+    Purpose: implement `aeos task status [--json]` as explicit unavailable or
+    not-implemented output until persisted state exists.
+    Likely files: `apps/cli/src/commands.ts`, `apps/cli/src/output.ts`.
+    Verification command: `pnpm --filter @aeos/cli check`.
+    Recommended model effort: Low.
+    Classification: Code.
+
+14. TASK-0241: Add unavailable verify command behavior.
+    Purpose: implement `aeos task verify [--json]` as explicit unavailable
+    output until evidence loading and verifier CLI wiring exist.
+    Likely files: `apps/cli/src/commands.ts`, `apps/cli/src/output.ts`.
+    Verification command: `pnpm --filter @aeos/cli check`.
+    Recommended model effort: Low.
+    Classification: Code.
+
+15. TASK-0242: Add resume dry-run/unavailable behavior.
+    Purpose: implement `aeos task resume`, `aeos task resume --dry-run`, and
+    `aeos task resume --json` as dry-run-first or unavailable output without
+    duplicate completion or cursor writes.
+    Likely files: `apps/cli/src/commands.ts`, `apps/cli/src/output.ts`.
+    Verification command: `pnpm --filter @aeos/cli check`.
+    Recommended model effort: Medium.
+    Classification: Code.
+
+16. TASK-0243: Add agentic task CLI smoke tests.
+    Purpose: prove JSON-only output, no-write behavior, no adapter calls, no
+    audit writes, verifier not run, completed false, unavailable persistence,
+    unknown flag handling, and help guardrails.
+    Likely files: `apps/cli/scripts/smoke.mjs`.
+    Verification command: `pnpm --filter @aeos/cli smoke`.
+    Recommended model effort: High.
+    Classification: Code.
+
+17. TASK-0244: Review agentic task CLI MVP safety.
+    Purpose: confirm the implemented MVP remains deterministic, local-first,
+    read-only by default, dry-run first, policy-aware, audit-visible, and
+    verifier-gated.
+    Likely files: `docs/AGENTIC_TASK_CLI_SURFACE.md`, `TASKS/backlog.md`.
+    Verification command: `git status --short`.
+    Recommended model effort: Medium.
+    Classification: Docs.
