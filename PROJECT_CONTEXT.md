@@ -63,6 +63,7 @@ condition.
 - TASK-0228: Implement agentic task CLI contract/output design.
 - TASK-0229: Implement aeos task plan command skeleton.
 - TASK-0230: Add task plan skeleton JSON safety review.
+- TASK-0231: Implement task plan input contract file parsing design.
 
 ## Do Not Load By Default
 
@@ -73,7 +74,7 @@ condition.
 
 ## Next Task
 
-TASK-0231 Implement task plan input contract file parsing design.
+TASK-0232 Implement task plan input file parser contracts.
 
 ## Current Plans
 
@@ -84,3 +85,4 @@ TASK-0231 Implement task plan input contract file parsing design.
 - docs/AGENTIC_RUNNER_PLANNING_USAGE.md
 - docs/AGENTIC_RUNNER_EXECUTION_LIFECYCLE.md
 - docs/AGENTIC_RUNNER_DRY_RUN_EXECUTION_LOGIC.md
+- docs/TASK_PLAN_INPUT_FILE_DESIGN.md
