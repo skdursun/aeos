@@ -54,6 +54,20 @@ import {
   verifiedCompleteExecutionResultExample,
   waitingForApprovalExecutionResultExample,
 } from "../dist/agentic-runner-execution.example.js";
+import {
+  approvalDryRunResult,
+  auditDryRunPreview,
+  blockedDryRunResult,
+  modelAdapterCallPreview,
+  resumeDryRunPreview,
+  safeAuditPreview,
+  safeDryRunResult,
+  safeResumePreview,
+  safeVerifierPreview,
+  sitemapDryRunResult,
+  toolAdapterCallPreview,
+  verifierDryRunPreview,
+} from "../dist/agentic-runner-dry-run.example.js";
 import { planAgenticRunner, verifyAgenticCoverage } from "../dist/index.js";
 
 async function pathExists(path) {
@@ -470,6 +484,196 @@ function assertExecutionVerifierGateHonest(result) {
       `${result.taskId} execution completion must satisfy verifier completion gate`,
     );
   }
+}
+
+function assertDryRunResultShape(result) {
+  for (const field of [
+    "ok",
+    "taskId",
+    "mode",
+    "state",
+    "steps",
+    "batches",
+    "workItems",
+    "adapterCalls",
+    "audit",
+    "verifier",
+    "issues",
+    "summary",
+  ]) {
+    assert.ok(
+      Object.hasOwn(result, field),
+      `${result.taskId} dry-run result should expose stable field ${field}`,
+    );
+  }
+
+  for (const optionalField of ["plan", "planningResult", "lifecycle", "resume"]) {
+    assert.ok(
+      !Object.hasOwn(result, optionalField) ||
+        result[optionalField] === undefined ||
+        typeof result[optionalField] === "object",
+      `${result.taskId} dry-run result ${optionalField} field should remain optional object shape`,
+    );
+  }
+
+  assert.ok(
+    Array.isArray(result.steps),
+    `${result.taskId} dry-run result should expose steps array`,
+  );
+  assert.ok(
+    Array.isArray(result.batches),
+    `${result.taskId} dry-run result should expose batches array`,
+  );
+  assert.ok(
+    Array.isArray(result.workItems),
+    `${result.taskId} dry-run result should expose work items array`,
+  );
+  assert.ok(
+    Array.isArray(result.adapterCalls),
+    `${result.taskId} dry-run result should expose adapter previews array`,
+  );
+  assert.ok(
+    Array.isArray(result.issues),
+    `${result.taskId} dry-run result should expose issues array`,
+  );
+}
+
+function assertDryRunSummaryConsistent(result) {
+  const runnableSteps = result.steps.filter((step) => step.wouldRun).length;
+  const blockedSteps = result.steps.filter(
+    (step) => step.previewState === "blocked",
+  ).length;
+  const runnableBatches = result.batches.filter((batch) => batch.wouldRun).length;
+  const processableWorkItems = result.workItems.filter(
+    (workItem) => workItem.wouldProcess,
+  ).length;
+  const wouldCallAdapters = result.adapterCalls.filter(
+    (call) => call.wouldCall,
+  ).length;
+
+  assert.equal(
+    result.summary.plannedSteps,
+    result.steps.length,
+    `${result.taskId} dry-run summary planned steps should match steps array`,
+  );
+  assert.equal(
+    result.summary.runnableSteps,
+    runnableSteps,
+    `${result.taskId} dry-run summary runnable steps should match step previews`,
+  );
+  assert.equal(
+    result.summary.blockedSteps,
+    blockedSteps,
+    `${result.taskId} dry-run summary blocked steps should match step previews`,
+  );
+  assert.equal(
+    result.summary.plannedBatches,
+    result.batches.length,
+    `${result.taskId} dry-run summary planned batches should match batches array`,
+  );
+  assert.equal(
+    result.summary.runnableBatches,
+    runnableBatches,
+    `${result.taskId} dry-run summary runnable batches should match batch previews`,
+  );
+  assert.equal(
+    result.summary.plannedWorkItems,
+    result.workItems.length,
+    `${result.taskId} dry-run summary planned work items should match work item previews`,
+  );
+  assert.equal(
+    result.summary.processableWorkItems,
+    processableWorkItems,
+    `${result.taskId} dry-run summary processable work items should match previews`,
+  );
+  assert.equal(
+    result.summary.plannedAdapterCalls,
+    result.adapterCalls.length,
+    `${result.taskId} dry-run summary adapter call count should match previews`,
+  );
+  assert.equal(
+    result.summary.wouldCallAdapters,
+    wouldCallAdapters,
+    `${result.taskId} dry-run summary wouldCallAdapters should match previews`,
+  );
+  assert.equal(
+    result.summary.expectedAuditEvents,
+    result.audit.expectedAuditEventIds.length,
+    `${result.taskId} dry-run summary expected audit events should match audit preview`,
+  );
+  assert.equal(
+    result.summary.wouldWriteAudit,
+    result.audit.wouldWriteAudit,
+    `${result.taskId} dry-run summary audit write flag should match audit preview`,
+  );
+  assert.equal(
+    result.summary.verifierRequired,
+    result.verifier.verifierRequired,
+    `${result.taskId} dry-run summary verifierRequired should match verifier preview`,
+  );
+  assert.equal(
+    result.summary.wouldRunVerifier,
+    result.verifier.wouldRunVerifier,
+    `${result.taskId} dry-run summary verifier run flag should match verifier preview`,
+  );
+  assert.equal(
+    result.summary.issueCount,
+    result.issues.length,
+    `${result.taskId} dry-run summary issue count should match issues array`,
+  );
+}
+
+function assertDryRunSideEffectFree(result) {
+  assert.equal(
+    result.mode,
+    "dry_run",
+    `${result.taskId} dry-run result should preserve dry_run mode`,
+  );
+  assert.notEqual(
+    result.state,
+    "completed",
+    `${result.taskId} dry-run preview must not represent real execution completion`,
+  );
+  assert.equal(
+    result.steps.some((step) => step.previewState === "completed"),
+    false,
+    `${result.taskId} dry-run steps must not represent completed execution`,
+  );
+  assert.equal(
+    result.batches.some((batch) => batch.previewState === "completed"),
+    false,
+    `${result.taskId} dry-run batches must not represent completed execution`,
+  );
+  assert.equal(
+    result.workItems.some((workItem) => workItem.previewState === "completed"),
+    false,
+    `${result.taskId} dry-run work items must not represent completed execution`,
+  );
+  assert.equal(
+    result.adapterCalls.some((call) => call.wouldCall),
+    false,
+    `${result.taskId} dry-run adapter previews must not execute adapters`,
+  );
+  assert.equal(
+    result.adapterCalls.some((call) => call.completionAuthority),
+    false,
+    `${result.taskId} dry-run adapter previews must not be completion authority`,
+  );
+  assert.equal(
+    result.audit.wouldWriteAudit,
+    false,
+    `${result.taskId} dry-run audit preview must not write audit events`,
+  );
+  assert.equal(
+    result.verifier.wouldRunVerifier,
+    false,
+    `${result.taskId} dry-run verifier preview must not run verifier`,
+  );
+  assert.equal(
+    result.verifier.completionGateSatisfied,
+    false,
+    `${result.taskId} dry-run preview must not satisfy verifier completion gate`,
+  );
 }
 
 function planningIssueCount(result) {
@@ -2875,6 +3079,275 @@ assert.equal(
   "verified",
   "execution smoke J verified complete example should have verified verifier status",
 );
+
+const dryRunResults = [
+  safeDryRunResult,
+  approvalDryRunResult,
+  blockedDryRunResult,
+  sitemapDryRunResult,
+];
+
+for (const dryRunResult of dryRunResults) {
+  assertDryRunResultShape(dryRunResult);
+  assertDryRunSummaryConsistent(dryRunResult);
+  assertDryRunSideEffectFree(dryRunResult);
+}
+
+assert.equal(
+  safeDryRunResult.mode,
+  "dry_run",
+  "dry-run smoke A should represent dry-run mode",
+);
+assert.equal(
+  safeDryRunResult.state,
+  "preview_ready",
+  "dry-run smoke A should represent preview-ready state",
+);
+assert.ok(
+  safeDryRunResult.steps.length > 0,
+  "dry-run smoke A should represent planned steps",
+);
+assert.ok(
+  safeDryRunResult.batches.length > 0,
+  "dry-run smoke A should represent planned batches",
+);
+assert.ok(
+  safeDryRunResult.workItems.length > 0,
+  "dry-run smoke A should represent planned work items",
+);
+assert.equal(
+  safeDryRunResult.adapterCalls.some((call) => call.wouldCall),
+  false,
+  "dry-run smoke A should not execute adapter calls",
+);
+assert.equal(
+  safeDryRunResult.audit.wouldWriteAudit,
+  false,
+  "dry-run smoke A should not represent audit writes",
+);
+assert.equal(
+  safeDryRunResult.verifier.verifierRequired,
+  true,
+  "dry-run smoke A should represent verifier requirement",
+);
+assert.equal(
+  safeDryRunResult.verifier.wouldRunVerifier,
+  false,
+  "dry-run smoke A should not run verifier",
+);
+assert.notEqual(
+  safeDryRunResult.state,
+  "completed",
+  "dry-run smoke A should not represent completed state",
+);
+
+assert.equal(
+  approvalDryRunResult.state,
+  "waiting_for_approval",
+  "dry-run smoke B should wait for approval",
+);
+assert.ok(
+  approvalDryRunResult.steps.some((step) => step.approvalRequired),
+  "dry-run smoke B should represent approval requirement",
+);
+assert.ok(
+  approvalDryRunResult.adapterCalls.every((call) => call.wouldCall === false),
+  "dry-run smoke B adapter previews should not call adapters",
+);
+assert.equal(
+  approvalDryRunResult.steps.some((step) => step.wouldRun),
+  false,
+  "dry-run smoke B should not imply execution while approval is pending",
+);
+assert.ok(
+  approvalDryRunResult.issues.some(
+    (issue) => issue.code === "APPROVAL_REQUIRED",
+  ),
+  "dry-run smoke B should represent approval status as an issue",
+);
+assert.equal(
+  approvalDryRunResult.summary.processableWorkItems,
+  0,
+  "dry-run smoke B should not represent processable work before approval",
+);
+
+assert.equal(
+  blockedDryRunResult.state,
+  "blocked",
+  "dry-run smoke C should represent blocked state",
+);
+assert.ok(
+  blockedDryRunResult.issues.some(
+    (issue) => issue.metadata?.deniedOperation === "write_outside_workspace",
+  ),
+  "dry-run smoke C should represent denied operation",
+);
+assert.ok(
+  blockedDryRunResult.issues.length > 0,
+  "dry-run smoke C should include issues",
+);
+assert.equal(
+  blockedDryRunResult.summary.wouldCallAdapters,
+  0,
+  "dry-run smoke C should not expose executable adapter calls",
+);
+assert.equal(
+  blockedDryRunResult.audit.wouldWriteAudit,
+  false,
+  "dry-run smoke C should not write audit events",
+);
+assert.equal(
+  blockedDryRunResult.verifier.wouldRunVerifier,
+  false,
+  "dry-run smoke C should not run verifier",
+);
+
+assert.equal(
+  sitemapDryRunResult.taskId,
+  "sitemap-audit",
+  "dry-run smoke D should preserve sitemap audit task id",
+);
+assert.equal(
+  sitemapDryRunResult.workItems.length,
+  400,
+  "dry-run smoke D should represent 400 planned work items",
+);
+assert.ok(
+  sitemapDryRunResult.batches.length > 0,
+  "dry-run smoke D should preview batches",
+);
+assert.equal(
+  sitemapDryRunResult.workItems.some(
+    (workItem) => workItem.previewState === "completed",
+  ),
+  false,
+  "dry-run smoke D should keep completed work item count at zero",
+);
+assert.equal(
+  sitemapDryRunResult.verifier.verifierRequired,
+  true,
+  "dry-run smoke D should require verifier",
+);
+assert.equal(
+  sitemapDryRunResult.verifier.wouldRunVerifier,
+  false,
+  "dry-run smoke D should not run verifier",
+);
+assert.notEqual(
+  sitemapDryRunResult.state,
+  "completed",
+  "dry-run smoke D final state should not be completed",
+);
+
+assert.equal(
+  modelAdapterCallPreview.kind,
+  "model",
+  "dry-run smoke E should include a model adapter preview",
+);
+assert.equal(
+  toolAdapterCallPreview.kind,
+  "tool",
+  "dry-run smoke E should include a tool adapter preview",
+);
+for (const adapterPreview of [modelAdapterCallPreview, toolAdapterCallPreview]) {
+  assert.equal(
+    adapterPreview.wouldCall,
+    false,
+    "dry-run smoke E adapter preview should not call adapters",
+  );
+  assert.equal(
+    adapterPreview.observationOnly,
+    true,
+    "dry-run smoke E adapter preview should be observation-only",
+  );
+  assert.equal(
+    adapterPreview.completionAuthority,
+    false,
+    "dry-run smoke E adapter preview must not be completion authority",
+  );
+  assert.equal(
+    adapterPreview.outputReference === undefined ||
+      adapterPreview.outputReference === null ||
+      adapterPreview.metadata?.previewOnly === true,
+    true,
+    "dry-run smoke E adapter output should be absent, null, or preview-only",
+  );
+}
+
+for (const auditPreview of [safeAuditPreview, auditDryRunPreview]) {
+  assert.ok(
+    auditPreview.expectedAuditEventIds.length > 0,
+    "dry-run smoke F should represent expected audit event ids",
+  );
+  assert.equal(
+    auditPreview.wouldWriteAudit,
+    false,
+    "dry-run smoke F should not write audit events",
+  );
+  assert.ok(
+    auditPreview.missingAuditEventIds.length > 0,
+    "dry-run smoke F should represent missing audit event ids",
+  );
+  assert.equal(
+    auditPreview.emittedAuditEventIds.length === 0 ||
+      auditPreview.auditReference?.metadata?.inputDerivedOnly === true,
+    true,
+    "dry-run smoke F emitted audit ids should be empty or input-derived only",
+  );
+}
+
+for (const verifierPreview of [safeVerifierPreview, verifierDryRunPreview]) {
+  assert.equal(
+    verifierPreview.verifierRequired,
+    true,
+    "dry-run smoke G should require verifier",
+  );
+  assert.equal(
+    verifierPreview.wouldRunVerifier,
+    false,
+    "dry-run smoke G should not run verifier",
+  );
+  assert.notEqual(
+    verifierPreview.verifierStatus,
+    "verified",
+    "dry-run smoke G verifier status should not be verified",
+  );
+  assert.equal(
+    verifierPreview.verifierResultReference === undefined ||
+      verifierPreview.verifierResultReference === null ||
+      verifierPreview.verifierResultReference.metadata?.inputDerivedOnly === true,
+    true,
+    "dry-run smoke G verifier result reference should be absent unless input-derived",
+  );
+}
+
+for (const resumePreview of [safeResumePreview, resumeDryRunPreview]) {
+  assert.equal(
+    resumePreview.wouldUpdateResume,
+    false,
+    "dry-run smoke H should not update resume state",
+  );
+  assert.ok(
+    resumePreview.nextStepId,
+    "dry-run smoke H should represent next step id",
+  );
+  assert.ok(
+    resumePreview.nextBatchId,
+    "dry-run smoke H should represent next batch id",
+  );
+  assert.ok(
+    resumePreview.pendingWorkItemIds.length > 0,
+    "dry-run smoke H should represent pending work item ids",
+  );
+  assert.ok(
+    Array.isArray(resumePreview.retryableWorkItemIds),
+    "dry-run smoke H should represent retryable work item ids",
+  );
+  assert.ok(
+    resumePreview.updatedAt,
+    "dry-run smoke H should expose updatedAt",
+  );
+}
 
 const planningResults = [
   sitemapAuditPlanningResult,
