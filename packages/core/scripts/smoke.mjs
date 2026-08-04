@@ -95,6 +95,22 @@ import {
   runAgenticRunnerDryRun,
   verifyAgenticCoverage,
 } from "../dist/index.js";
+import {
+  directoryInsteadOfFilePathCheck,
+  directoryInsteadOfFileResult,
+  fullTaskPlanInputResultShape,
+  invalidJsonParseResult,
+  invalidJsonResult,
+  missingFilePathCheck,
+  missingFileResult,
+  outsideWorkingDirectoryPathCheck,
+  successfulPathCheck,
+  unsupportedMappingHandoff,
+  unsafeOutsideWorkingDirectoryResult,
+  validJsonParseResult,
+  validLocalJsonTaskFileRequest,
+  validationHandoffRequested,
+} from "../dist/task-plan-input.example.js";
 
 async function pathExists(path) {
   try {
@@ -878,6 +894,191 @@ function assertDirectPlanningSummaryHonest(result) {
   );
 }
 
+function assertTaskPlanInputIssueRepresented(issue, message) {
+  assert.equal(typeof issue.code, "string", `${message} should expose issue code`);
+  assert.ok(issue.code.length > 0, `${message} issue code should not be empty`);
+  assert.equal(
+    typeof issue.message,
+    "string",
+    `${message} should expose issue message`,
+  );
+  assert.ok(
+    issue.message.length > 0,
+    `${message} issue message should not be empty`,
+  );
+  assert.ok(
+    ["error", "warning", "info"].includes(issue.severity),
+    `${message} should expose known issue severity`,
+  );
+  assert.ok(
+    [
+      "request",
+      "path",
+      "format",
+      "parse",
+      "validation",
+      "mapping",
+      "safety",
+      "unknown",
+    ].includes(issue.phase),
+    `${message} should expose known issue phase`,
+  );
+}
+
+function assertTaskPlanInputResultShape(result, message) {
+  for (const field of [
+    "ok",
+    "mode",
+    "sourceFile",
+    "pathCheck",
+    "parse",
+    "validation",
+    "mapping",
+    "issues",
+    "summary",
+  ]) {
+    assert.ok(
+      Object.hasOwn(result, field),
+      `${message} should expose stable field ${field}`,
+    );
+  }
+
+  assert.ok(Array.isArray(result.issues), `${message} should expose issues array`);
+  assert.ok(
+    Array.isArray(result.pathCheck.issues),
+    `${message} should expose path check issues array`,
+  );
+  assert.ok(
+    Array.isArray(result.parse.issues),
+    `${message} should expose parse issues array`,
+  );
+  assert.ok(
+    Array.isArray(result.validation.issues),
+    `${message} should expose validation issues array`,
+  );
+  assert.ok(
+    Array.isArray(result.mapping.issues),
+    `${message} should expose mapping issues array`,
+  );
+}
+
+function assertTaskPlanInputSummaryConsistent(result, message) {
+  assert.equal(
+    result.summary.hasSourceFile,
+    Boolean(result.sourceFile),
+    `${message} summary hasSourceFile should match represented source file`,
+  );
+  assert.equal(
+    result.summary.pathOk,
+    result.pathCheck.status === "ok",
+    `${message} summary pathOk should match path check status`,
+  );
+  assert.equal(
+    result.summary.parseOk,
+    result.parse.ok,
+    `${message} summary parseOk should match parse result`,
+  );
+  assert.equal(
+    result.summary.validationRequested,
+    result.validation.requested,
+    `${message} summary validationRequested should match validation handoff`,
+  );
+  assert.equal(
+    result.summary.validationOk,
+    result.validation.status === "pass",
+    `${message} summary validationOk should match validation status`,
+  );
+  assert.equal(
+    result.summary.mappingRequested,
+    result.mapping.requested,
+    `${message} summary mappingRequested should match mapping handoff`,
+  );
+  assert.equal(
+    result.summary.mappingOk,
+    result.mapping.status === "ready",
+    `${message} summary mappingOk should match mapping status`,
+  );
+  assert.equal(
+    result.summary.issueCount,
+    result.issues.length,
+    `${message} summary issue count should match issues array length`,
+  );
+  assert.equal(
+    result.summary.noExecution,
+    true,
+    `${message} summary should preserve noExecution`,
+  );
+  assert.equal(
+    result.summary.noWrites,
+    true,
+    `${message} summary should preserve noWrites`,
+  );
+}
+
+function assertTaskPlanInputSafety(result, message) {
+  assert.equal(
+    result.mapping.runnerPlanningExecuted,
+    false,
+    `${message} mapping handoff must not execute runner planning`,
+  );
+  assert.equal(
+    result.summary.runnerPlanningExecuted,
+    false,
+    `${message} summary must not imply runner planning execution`,
+  );
+  assert.equal(
+    result.summary.taskPersistenceWritten,
+    false,
+    `${message} summary must not imply task persistence writes`,
+  );
+  assert.equal(
+    result.summary.noExecution,
+    true,
+    `${message} summary must keep no-execution flag explicit`,
+  );
+  assert.equal(
+    result.summary.noWrites,
+    true,
+    `${message} summary must keep no-write flag explicit`,
+  );
+  assert.equal(
+    result.summary.trustsModelSelfReporting,
+    false,
+    `${message} summary must not trust model self-reporting`,
+  );
+
+  const forbiddenTruthFields = new Set([
+    "auditWritten",
+    "verifierExecuted",
+    "adapterCallHappened",
+    "filesystemMutationHappened",
+    "taskPersistenceExists",
+  ]);
+  const visit = (value) => {
+    if (value === null || typeof value !== "object") {
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        visit(item);
+      }
+      return;
+    }
+
+    for (const [key, nestedValue] of Object.entries(value)) {
+      assert.equal(
+        !(forbiddenTruthFields.has(key) && nestedValue === true),
+        true,
+        `${message} must not imply ${key}`,
+      );
+      visit(nestedValue);
+    }
+  };
+
+  visit(result);
+}
+
 function assertDirectPlanningResultShape(result) {
   assert.deepEqual(
     Object.keys(result),
@@ -1130,6 +1331,236 @@ function assertVerifiedVerifierResult(result, message) {
   assert.equal(result.ok, true, `${message} should be ok`);
   assert.equal(result.status, "verified", `${message} should be verified`);
   assert.equal(result.issues.length, 0, `${message} should not expose issues`);
+}
+
+assert.equal(
+  validLocalJsonTaskFileRequest.inputPath,
+  "tasks/sitemap-audit.json",
+  "task plan smoke A should represent input path",
+);
+assert.equal(
+  validLocalJsonTaskFileRequest.currentWorkingDirectory,
+  "/workspace/pro-performans",
+  "task plan smoke A should represent current working directory",
+);
+assert.equal(
+  validLocalJsonTaskFileRequest.mode,
+  "plan",
+  "task plan smoke A should represent plan mode",
+);
+assert.equal(
+  validLocalJsonTaskFileRequest.expectedFormat,
+  "json",
+  "task plan smoke A should expect json format",
+);
+assert.equal(
+  validLocalJsonTaskFileRequest.noExecution,
+  true,
+  "task plan smoke A request should preserve noExecution",
+);
+assert.equal(
+  validLocalJsonTaskFileRequest.noWrites,
+  true,
+  "task plan smoke A request should preserve noWrites",
+);
+assert.equal(
+  validLocalJsonTaskFileRequest.options.noExecution,
+  true,
+  "task plan smoke A options should preserve noExecution",
+);
+assert.equal(
+  validLocalJsonTaskFileRequest.options.noWrites,
+  true,
+  "task plan smoke A options should preserve noWrites",
+);
+
+assert.equal(
+  successfulPathCheck.status,
+  "ok",
+  "task plan smoke B successful path check should be ok",
+);
+assert.equal(
+  successfulPathCheck.exists,
+  true,
+  "task plan smoke B successful path check should exist",
+);
+assert.equal(
+  successfulPathCheck.isFile,
+  true,
+  "task plan smoke B successful path check should be a file",
+);
+assert.equal(
+  successfulPathCheck.isDirectory,
+  false,
+  "task plan smoke B successful path check should not be a directory",
+);
+assert.equal(
+  successfulPathCheck.withinWorkingDirectory,
+  true,
+  "task plan smoke B successful path check should stay within working directory",
+);
+assert.equal(
+  successfulPathCheck.issues.some((issue) => issue.severity === "error"),
+  false,
+  "task plan smoke B successful path check should have no error issues",
+);
+
+assert.equal(
+  missingFilePathCheck.status,
+  "missing",
+  "task plan smoke C missing path check should be missing",
+);
+assert.equal(
+  missingFileResult.ok,
+  false,
+  "task plan smoke C missing file result should not be ok",
+);
+assert.ok(
+  missingFilePathCheck.issues.length > 0,
+  "task plan smoke C missing file path check should expose an issue",
+);
+assertTaskPlanInputIssueRepresented(
+  missingFilePathCheck.issues[0],
+  "task plan smoke C missing file path issue",
+);
+assertTaskPlanInputSafety(missingFileResult, "task plan smoke C missing file result");
+
+assert.ok(
+  ["directory", "not_file"].includes(directoryInsteadOfFilePathCheck.status),
+  "task plan smoke D directory path check should report directory or not_file",
+);
+assert.ok(
+  directoryInsteadOfFilePathCheck.issues.length > 0,
+  "task plan smoke D directory path check should expose an issue",
+);
+assert.equal(
+  directoryInsteadOfFileResult.ok,
+  false,
+  "task plan smoke D directory result should not be ok",
+);
+assertTaskPlanInputIssueRepresented(
+  directoryInsteadOfFilePathCheck.issues[0],
+  "task plan smoke D directory path issue",
+);
+
+assert.ok(
+  ["outside_working_directory", "unsafe_path"].includes(
+    outsideWorkingDirectoryPathCheck.status,
+  ),
+  "task plan smoke E unsafe path check should report outside or unsafe path",
+);
+assert.ok(
+  outsideWorkingDirectoryPathCheck.issues.length > 0,
+  "task plan smoke E unsafe path check should expose an issue",
+);
+assertTaskPlanInputIssueRepresented(
+  outsideWorkingDirectoryPathCheck.issues[0],
+  "task plan smoke E unsafe path issue",
+);
+assertTaskPlanInputSafety(
+  unsafeOutsideWorkingDirectoryResult,
+  "task plan smoke E unsafe path result",
+);
+
+assert.equal(
+  invalidJsonParseResult.ok,
+  false,
+  "task plan smoke F invalid json parse should not be ok",
+);
+assert.equal(
+  invalidJsonParseResult.format,
+  "json",
+  "task plan smoke F invalid json parse should represent json format",
+);
+assert.equal(
+  typeof invalidJsonParseResult.parseErrorMessage,
+  "string",
+  "task plan smoke F invalid json parse should represent error message",
+);
+assert.ok(
+  invalidJsonParseResult.parseErrorMessage.length > 0,
+  "task plan smoke F invalid json parse error message should not be empty",
+);
+assert.ok(
+  invalidJsonParseResult.issues.length > 0,
+  "task plan smoke F invalid json parse should expose an issue",
+);
+assertTaskPlanInputIssueRepresented(
+  invalidJsonParseResult.issues[0],
+  "task plan smoke F invalid json parse issue",
+);
+
+assert.equal(
+  validJsonParseResult.ok,
+  true,
+  "task plan smoke G valid json parse should be ok",
+);
+assert.equal(
+  validationHandoffRequested.requested,
+  true,
+  "task plan smoke G validation should be requested",
+);
+assert.equal(
+  typeof validationHandoffRequested.status,
+  "string",
+  "task plan smoke G validation status should be represented",
+);
+assert.equal(
+  validationHandoffRequested.taskId,
+  "TASK-0233",
+  "task plan smoke G validation task id should be represented",
+);
+
+assert.equal(
+  unsupportedMappingHandoff.requested,
+  true,
+  "task plan smoke H mapping should be requested",
+);
+assert.ok(
+  ["unsupported", "blocked"].includes(unsupportedMappingHandoff.status),
+  "task plan smoke H mapping should represent unsupported or failed status",
+);
+assert.equal(
+  typeof unsupportedMappingHandoff.unsupportedReason,
+  "string",
+  "task plan smoke H unsupported mapping reason should be represented",
+);
+assert.equal(
+  unsupportedMappingHandoff.runnerPlanningExecuted,
+  false,
+  "task plan smoke H unsupported mapping must not imply runner planning execution",
+);
+
+assert.deepEqual(
+  Object.keys(fullTaskPlanInputResultShape),
+  [
+    "ok",
+    "mode",
+    "sourceFile",
+    "pathCheck",
+    "parse",
+    "validation",
+    "mapping",
+    "issues",
+    "summary",
+  ],
+  "task plan smoke I full result should expose stable top-level fields",
+);
+assertTaskPlanInputResultShape(
+  fullTaskPlanInputResultShape,
+  "task plan smoke I full result",
+);
+
+for (const [message, result] of [
+  ["task plan smoke I full result", fullTaskPlanInputResultShape],
+  ["task plan smoke J missing file result", missingFileResult],
+  ["task plan smoke J directory result", directoryInsteadOfFileResult],
+  ["task plan smoke J unsafe path result", unsafeOutsideWorkingDirectoryResult],
+  ["task plan smoke J invalid json result", invalidJsonResult],
+]) {
+  assertTaskPlanInputResultShape(result, message);
+  assertTaskPlanInputSummaryConsistent(result, message);
+  assertTaskPlanInputSafety(result, message);
 }
 
 const verifierResults = [

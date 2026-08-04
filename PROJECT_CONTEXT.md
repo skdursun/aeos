@@ -66,6 +66,7 @@ condition.
 - TASK-0231: Implement task plan input contract file parsing design.
 - TASK-0232: Implement task plan input file parser contracts.
 - TASK-0233: Add task plan input parser contract examples.
+- TASK-0234: Add task plan input parser contract smoke tests.
 
 ## Do Not Load By Default
 
@@ -76,7 +77,7 @@ condition.
 
 ## Next Task
 
-TASK-0234 Add task plan input parser contract smoke tests.
+TASK-0235 Implement task plan input parser logic.
 
 ## Current Plans
 
