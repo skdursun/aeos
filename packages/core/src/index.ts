@@ -10,6 +10,7 @@ export type * from "./agentic-coverage-verifier.js";
 export type * from "./agentic-runner.js";
 export type * from "./agentic-runner-planning.js";
 export type * from "./agentic-runner-execution.js";
+export type * from "./agentic-runner-dry-run.js";
 export * from "./agentic-coverage-verifier-logic.js";
 export * from "./agentic-runner-planning-logic.js";
 export type * from "./init.js";
