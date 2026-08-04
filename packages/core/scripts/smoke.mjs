@@ -541,9 +541,14 @@ function assertPlanningVerifierGateHonest(result) {
 
   if (result.ok && executableOperations) {
     assert.equal(
-      result.verifier.verifierRequired || result.verifier.completionGatedByVerifier,
+      result.verifier.verifierRequired,
       true,
-      `${result.taskId} planning result must gate executable planning with verifier requirements`,
+      `${result.taskId} executable planning result must require verifier`,
+    );
+    assert.equal(
+      result.verifier.completionGatedByVerifier,
+      true,
+      `${result.taskId} executable planning result must gate completion by verifier`,
     );
     assert.notEqual(
       result.steps.some((step) => step.state === "completed"),
@@ -3167,6 +3172,88 @@ assert.equal(
   "planning logic smoke J should still require verifier for executable planning modes",
 );
 
+const directExplicitZeroWorkItemsResult = planAgenticRunner({
+  taskId: "explicit-zero-work-items-plan",
+  taskContract: createPlanningTaskContract("explicit-zero-work-items-plan"),
+  workItems: [],
+  mode: "dry_run",
+  options: {
+    requireAudit: true,
+    requireVerifier: true,
+  },
+  verifierRequirements: createVerifierRequirement(
+    "coverage-verifier-explicit-zero-work",
+  ),
+  metadata: {
+    allowedOperations: ["batch.execute"],
+  },
+});
+
+assertDirectPlanningResultShape(directExplicitZeroWorkItemsResult);
+assertDirectPlanningSummaryHonest(directExplicitZeroWorkItemsResult);
+assertPlanningVerifierGateHonest(directExplicitZeroWorkItemsResult);
+assert.equal(
+  directExplicitZeroWorkItemsResult.ok,
+  false,
+  "planning logic smoke J2 should reject explicit zero executable work items",
+);
+assert.deepEqual(
+  directExplicitZeroWorkItemsResult.issues.map((issue) => issue.code),
+  ["EXECUTABLE_WORK_ITEMS_MISSING"],
+  "planning logic smoke J2 should report explicit zero work items deterministically",
+);
+assert.equal(
+  directExplicitZeroWorkItemsResult.steps.some(
+    (step) => step.kind === "batch_execution",
+  ),
+  false,
+  "planning logic smoke J2 should not create execution steps for explicit zero work items",
+);
+
+const directExplicitEmptyBatchesResult = planAgenticRunner({
+  taskId: "explicit-empty-batches-plan",
+  taskContract: createPlanningTaskContract("explicit-empty-batches-plan"),
+  workItems: [createPlanningWorkItem("explicit-empty-batches-item")],
+  batches: [],
+  mode: "dry_run",
+  options: {
+    requireAudit: true,
+    requireVerifier: true,
+  },
+  verifierRequirements: createVerifierRequirement(
+    "coverage-verifier-explicit-empty-batches",
+  ),
+  metadata: {
+    allowedOperations: ["batch.execute"],
+  },
+});
+
+assertDirectPlanningResultShape(directExplicitEmptyBatchesResult);
+assertDirectPlanningSummaryHonest(directExplicitEmptyBatchesResult);
+assertPlanningVerifierGateHonest(directExplicitEmptyBatchesResult);
+assert.equal(
+  directExplicitEmptyBatchesResult.ok,
+  false,
+  "planning logic smoke J3 should reject explicit empty executable batches",
+);
+assert.deepEqual(
+  directExplicitEmptyBatchesResult.issues.map((issue) => issue.code),
+  ["EXECUTABLE_BATCHES_EMPTY"],
+  "planning logic smoke J3 should report explicit empty batches deterministically",
+);
+assert.equal(
+  directExplicitEmptyBatchesResult.batches.length,
+  0,
+  "planning logic smoke J3 should not synthesize a batch from explicit empty batches",
+);
+assert.equal(
+  directExplicitEmptyBatchesResult.steps.some(
+    (step) => step.kind === "batch_execution",
+  ),
+  false,
+  "planning logic smoke J3 should not create execution steps for explicit empty batches",
+);
+
 const directEmptyBatchPlanningResult = planAgenticRunner({
   taskId: "empty-batch-plan",
   taskContract: createPlanningTaskContract("empty-batch-plan"),
@@ -3298,6 +3385,8 @@ for (const directPlanningResult of [
   directMissingBatchReferenceResult,
   directDuplicateAcrossBatchesResult,
   directEmptyExecutableWorkResult,
+  directExplicitZeroWorkItemsResult,
+  directExplicitEmptyBatchesResult,
   directEmptyBatchPlanningResult,
   directMissingBatchWorkItemIdResult,
   directOrderingPlanningResult,

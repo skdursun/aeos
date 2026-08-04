@@ -19,7 +19,8 @@ Current behavior includes:
 - stable work item planning and duplicate id detection;
 - deterministic batch planning from represented work items and batches;
 - batch issue detection for empty batches, missing item ids, missing referenced
-  work items, count mismatches, and duplicate membership;
+  work items, explicit empty batch lists, count mismatches, and duplicate
+  membership;
 - ordered runner step planning;
 - approval-required and policy-denied planning states;
 - adapter boundary planning without adapter calls;
@@ -128,7 +129,8 @@ Rules:
 - batch ids must be stable;
 - batch order is deterministic;
 - `expectedItemCount` must match `workItemIds.length`;
-- empty batches are planning issues;
+- empty represented batches are planning issues;
+- explicitly supplied empty batch lists for executable work are planning issues;
 - missing batch work item ids are planning issues;
 - references to missing work items are planning issues;
 - duplicate work item membership across batches is a planning issue unless a
@@ -136,6 +138,8 @@ Rules:
 
 If work items are provided without batches, the MVP planner may create a
 deterministic `batch-all` plan. It still does not execute that batch.
+If batches are explicitly provided as an empty list for executable work, the
+planner reports an issue instead of creating `batch-all`.
 
 ## Step Planning
 Step planning creates ordered pending or blocked runner steps.
@@ -215,6 +219,7 @@ adapter reference id, audit event ids, retryability, and metadata.
 Examples of important planning issue codes:
 
 - `EXECUTABLE_WORK_ITEMS_MISSING`;
+- `EXECUTABLE_BATCHES_EMPTY`;
 - `BATCH_WORK_ITEMS_EMPTY`;
 - `BATCH_WORK_ITEM_ID_MISSING`;
 - `BATCH_REFERENCES_MISSING_WORK_ITEM`;
@@ -248,7 +253,8 @@ The MVP planner guarantees:
 - planning does not trust model self-reporting;
 - executable plans must be verifier-gated;
 - executable work requires represented work items;
-- empty batches and missing batch item references are planning issues;
+- empty batches, explicit empty batch lists, and missing batch item references
+  are planning issues;
 - no completed state is implied by planning alone;
 - no filesystem IO is performed by the planner.
 

@@ -222,7 +222,7 @@ export function createAgenticRunnerPrerequisites(
         context.batches.length > 0 && context.workItems.length === 0
           ? "Batch planning references require represented work items."
           : missingExecutableWorkIssues.length > 0
-            ? "Executable work planning requires represented work items."
+            ? "Executable work planning requires represented work items and non-empty explicit batches."
           : undefined,
       issues:
         context.batches.length > 0 && context.workItems.length === 0
@@ -243,7 +243,8 @@ export function createAgenticRunnerPrerequisites(
       kind: "work_items",
       status: "missing",
       required: true,
-      reason: "Executable work planning requires represented work items.",
+      reason:
+        "Executable work planning requires represented work items and non-empty explicit batches.",
       issues: missingExecutableWorkIssues,
     });
   }
@@ -375,9 +376,15 @@ export function createAgenticRunnerBatchPlans(
 ): readonly AgenticRunnerBatchPlan[] {
   const lifecycle = getReferencedData(input.lifecycle);
   const sourceBatches = input.batches ?? lifecycle?.batches ?? [];
+  const batchesExplicitlyRepresented =
+    input.batches !== undefined || lifecycle?.batches !== undefined;
   const workItemIds = new Set(workItemPlans.map((item) => item.id));
 
-  if (sourceBatches.length === 0 && workItemPlans.length > 0) {
+  if (
+    sourceBatches.length === 0 &&
+    workItemPlans.length > 0 &&
+    !batchesExplicitlyRepresented
+  ) {
     const generatedWorkItemIds = stableUnique(workItemPlans.map((item) => item.id));
     return [
       {
@@ -1171,9 +1178,13 @@ function createWorkItemStateIssues(
 function createMissingExecutableWorkIssues(
   context: PlanningContext,
 ): readonly AgenticRunnerPlanningIssue[] {
+  const batchesExplicitlyRepresented =
+    context.input.batches !== undefined || context.lifecycle?.batches !== undefined;
   const hasWorkExecutionIntent =
     context.input.mode === "dry_run" ||
     context.input.mode === "resume" ||
+    context.input.workItems?.length === 0 ||
+    context.input.batches?.length === 0 ||
     context.batches.length > 0 ||
     context.adapterBoundary.modelAdapterReferences.length > 0 ||
     context.adapterBoundary.toolAdapterReferences.length > 0 ||
@@ -1184,9 +1195,26 @@ function createMissingExecutableWorkIssues(
     !hasWorkExecutionIntent ||
     context.policyBlocked ||
     context.approvalRequired ||
-    context.resume !== undefined ||
-    context.workItems.length > 0
+    context.resume !== undefined
   ) {
+    return [];
+  }
+
+  if (batchesExplicitlyRepresented && context.batches.length === 0) {
+    return [
+      createIssue({
+        code: "EXECUTABLE_BATCHES_EMPTY",
+        message:
+          "Executable work planning requires non-empty represented batches when batches are explicitly provided.",
+        severity: "error",
+        category: "inventory_failure",
+        prerequisiteId: "prereq-work-items",
+        retryable: true,
+      }),
+    ];
+  }
+
+  if (context.workItems.length > 0) {
     return [];
   }
 

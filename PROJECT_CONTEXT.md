@@ -44,6 +44,7 @@ condition.
 - TASK-0209: Add agentic runner planning logic smoke tests.
 - TASK-0210: Add agentic runner planning safety review.
 - TASK-0211: Add agentic runner planning documentation.
+- TASK-0212: Add agentic runner planning final safety review.
 
 ## Do Not Load By Default
 
@@ -54,7 +55,7 @@ condition.
 
 ## Next Task
 
-TASK-0212 Add agentic runner planning final safety review.
+TASK-0213 Design agentic runner execution lifecycle.
 
 ## Current Plans
 

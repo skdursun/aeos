@@ -1,14 +1,15 @@
 # Agentic Runner Planning Logic
 
 ## Purpose
-Design the AEOS agentic runner planning logic.
+Document the AEOS agentic runner planning logic.
 
 Planning logic converts task contracts, lifecycle inventory, work items, policy
 requirements, adapter boundaries, audit expectations, and verifier requirements
 into an `AgenticRunnerPlan`.
 
-This is a design-only document. It does not implement planning code, CLI
-commands, runner execution, adapters, storage, or package changes.
+This document describes the current side-effect-free planning MVP and its safety
+constraints. It does not describe CLI commands, runner execution, adapters,
+storage, or package changes as implemented behavior.
 
 ## Why Runner Planning Is Needed
 Agentic execution must be planned before it is run because model output is not
@@ -43,7 +44,9 @@ The current foundation is contract-first and conservative:
   approval-required, incomplete sitemap, verified, resume, and audit-gap
   examples.
 
-There is no planning implementation yet.
+The current planning implementation lives in
+`packages/core/src/agentic-runner-planning-logic.ts` and is exported from
+`packages/core/src/index.ts`.
 
 ## Planning Responsibilities
 Runner planning should:
@@ -74,7 +77,7 @@ Runner planning must not:
 - approve risky actions;
 - create hidden side effects;
 - repair lifecycle state by guessing;
-- implement CLI commands in this design task.
+- implement CLI commands.
 
 ## Inputs
 Planning inputs should be serializable and task-scoped:
@@ -160,11 +163,12 @@ The implemented MVP planner is a deterministic, side-effect-free helper. It
 plans and validates represented state only; it does not execute runner work,
 call adapters, append audit events, run the verifier, or mark tasks completed.
 
-Safety hardening now treats executable work without represented work items as
-invalid. Empty batches are planning issues. Missing batch work item ids and
-batch references to missing work items are planning issues. Verifier-gated
-planning is required for executable plans, and disabling the verifier or the
-completion gate produces planning issues.
+Safety hardening treats executable work without represented work items as
+invalid. Represented empty batches and explicitly supplied empty batch lists for
+executable work are planning issues. Missing batch work item ids and batch
+references to missing work items are planning issues. Verifier-gated planning is
+required for executable plans, and disabling the verifier or the completion gate
+produces planning issues.
 
 ## Task Contract Interpretation
 The planner interprets the task contract as the authority for scope.
@@ -223,9 +227,10 @@ Rules:
 - retries create new attempts, not rewritten batch history.
 
 For MVP, if batches already exist, planning validates and uses them. If batches
-are absent but work items are explicit, planning may create one deterministic
-batch per existing lifecycle grouping or a single bounded batch concept without
-executing it.
+are omitted but work items are explicit, planning may create a deterministic
+`batch-all` concept without executing it. If batches are explicitly represented
+as an empty list for executable work, planning reports an issue instead of
+silently synthesizing executable batches.
 
 ## Step Planning
 Runner steps should be deterministic and explicit.
@@ -496,22 +501,22 @@ Later scope may include:
 - cross-repository plan graphs.
 
 ## Non-Goals
-- Implement planning code in this task.
 - Implement runner execution.
 - Implement CLI commands.
 - Add package dependencies.
-- Modify package files.
 - Deploy or push.
 - Trust model self-reporting.
 - Support unbounded autonomous execution.
 - Replace task, lifecycle, policy, audit, adapter, or verifier contracts.
 
 ## Smoke Test Requirements
-Future implementation smoke tests should prove:
+Current smoke tests should prove:
 
 - planning rejects duplicate work item ids;
 - planning rejects duplicate work item ids across batches unless later policy
   allows it;
+- executable planning rejects zero represented work items;
+- executable planning rejects explicitly empty batch lists;
 - pending work remains pending until observed completion;
 - failed and skipped work without explicit reasons cannot count as terminal;
 - model completion claims do not create completed work;
@@ -525,122 +530,7 @@ Future implementation smoke tests should prove:
   completed or failed, verifier completed, and resume cursor updated;
 - JSON output contains stable top-level fields.
 
-## Implementation Sequence
-Do not start these tasks from this design task.
-
-1. TASK-0204: Implement agentic runner planning contracts.
-   Purpose: Add explicit planner input, output, step kind, issue, and JSON plan
-   contracts that extend the existing runner contracts without execution logic.
-   Likely files: `packages/core/src/agentic-runner.ts`,
-   `packages/core/src/index.ts`.
-   Verification command: `pnpm --filter @aeos/core check`.
-   Recommended model effort: Medium.
-   Classification: Code.
-
-2. TASK-0205: Add agentic runner planning examples.
-   Purpose: Provide deterministic examples for valid plan, blocked policy plan,
-   waiting-for-approval plan, incomplete sitemap plan, and resume plan.
-   Likely files: `packages/core/src/agentic-runner.example.ts`.
-   Verification command: `pnpm --filter @aeos/core check`.
-   Recommended model effort: Low.
-   Classification: Code.
-
-3. TASK-0206: Implement planning prerequisite validator.
-   Purpose: Validate task id, contract reference, lifecycle consistency, mode,
-   required verifier flags, and explicit scope before any plan is built.
-   Likely files: `packages/core/src/agentic-runner.ts`.
-   Verification command: `pnpm --filter @aeos/core check`.
-   Recommended model effort: Medium.
-   Classification: Code.
-
-4. TASK-0207: Implement work item planning validator.
-   Purpose: Validate stable work item ids, duplicate ids, pending state
-   preservation, explicit failed or skipped reasons, and observed completion
-   requirements.
-   Likely files: `packages/core/src/agentic-runner.ts`.
-   Verification command: `pnpm --filter @aeos/core check`.
-   Recommended model effort: Medium.
-   Classification: Code.
-
-5. TASK-0208: Implement deterministic batch plan builder.
-   Purpose: Use existing lifecycle batches or explicit work item groupings to
-   build deterministic batch plans and reject invalid counts or duplicate batch
-   membership.
-   Likely files: `packages/core/src/agentic-runner.ts`.
-   Verification command: `pnpm --filter @aeos/core check`.
-   Recommended model effort: Medium.
-   Classification: Code.
-
-6. TASK-0209: Implement runner step plan builder.
-   Purpose: Build ordered preflight, approval, batch execution, audit append,
-   verifier, and resume cursor update steps from validated planning inputs.
-   Likely files: `packages/core/src/agentic-runner.ts`.
-   Verification command: `pnpm --filter @aeos/core check`.
-   Recommended model effort: High.
-   Classification: Code.
-
-7. TASK-0210: Implement policy gate planning mapper.
-   Purpose: Map policy decisions into executable, blocked, and
-   waiting-for-approval runner plan states without executing denied actions.
-   Likely files: `packages/core/src/agentic-runner.ts`.
-   Verification command: `pnpm --filter @aeos/core check`.
-   Recommended model effort: Medium.
-   Classification: Code.
-
-8. TASK-0211: Implement adapter boundary planner.
-   Purpose: Convert adapter references into allowed and denied operation
-   boundaries for model and tool workers without invoking adapters.
-   Likely files: `packages/core/src/agentic-runner.ts`.
-   Verification command: `pnpm --filter @aeos/core check`.
-   Recommended model effort: Medium.
-   Classification: Code.
-
-9. TASK-0212: Implement audit expectation planner.
-   Purpose: Generate deterministic expected audit event ids for planning,
-   policy, batch, verifier, and resume cursor events.
-   Likely files: `packages/core/src/agentic-runner.ts`.
-   Verification command: `pnpm --filter @aeos/core check`.
-   Recommended model effort: Medium.
-   Classification: Code.
-
-10. TASK-0213: Implement verifier requirement planner.
-    Purpose: Require verifier handoff for executable plans and map lifecycle,
-    work item, batch, artifact, audit, and verification references into verifier
-    input shape.
-    Likely files: `packages/core/src/agentic-runner.ts`.
-    Verification command: `pnpm --filter @aeos/core check`.
-    Recommended model effort: High.
-    Classification: Code.
-
-11. TASK-0214: Implement resume planning helper.
-    Purpose: Build deterministic resume cursor state from pending and retryable
-    item ids while preserving verified and terminal work.
-    Likely files: `packages/core/src/agentic-runner.ts`.
-    Verification command: `pnpm --filter @aeos/core check`.
-    Recommended model effort: Medium.
-    Classification: Code.
-
-12. TASK-0215: Add planning JSON renderer.
-    Purpose: Render stable JSON with `ok`, `taskId`, `mode`, `plan`, `policy`,
-    `executionBoundary`, `audit`, `verifier`, `resume`, `issues`, and `summary`.
-    Likely files: `packages/core/src/agentic-runner.ts`.
-    Verification command: `pnpm --filter @aeos/core check`.
-    Recommended model effort: Medium.
-    Classification: Code.
-
-13. TASK-0216: Add runner planning smoke tests.
-    Purpose: Prove duplicate ids, policy denial, approval waiting, verifier
-    required, incomplete sitemap, audit expectations, and JSON stability.
-    Likely files: core runner test or smoke example files.
-    Verification command: `pnpm --filter @aeos/core check`.
-    Recommended model effort: High.
-    Classification: Code.
-
-14. TASK-0217: Design task planning CLI behavior.
-    Purpose: Document future `aeos task plan`, `aeos task plan --json`,
-    `aeos task run --dry-run`, and `aeos task status` behavior without
-    implementing commands.
-    Likely files: docs CLI planning document and backlog.
-    Verification command: `git status --short`.
-    Recommended model effort: Medium.
-    Classification: Docs.
+## Current Review Status
+The planning MVP now includes contracts, examples, deterministic planning logic,
+smoke coverage, and usage documentation. The current review scope is safety and
+alignment only; runner execution lifecycle design remains later work.
