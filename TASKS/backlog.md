@@ -1,5 +1,28 @@
 # Backlog
 
+## Agentic Runner Backlog
+
+1. TASK-0200: Implement agentic runner contracts. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+2. TASK-0201: Add agentic runner contract examples. Code. Effort: Low. Verification: `pnpm --filter @aeos/core check`.
+3. TASK-0202: Implement runner input validation helper. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+4. TASK-0203: Add policy preflight planner. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+5. TASK-0204: Implement work item inventory planner. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+6. TASK-0205: Implement batch planner. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+7. TASK-0206: Implement adapter execution result mapper. Code. Effort: High. Verification: `pnpm --filter @aeos/core check`.
+8. TASK-0207: Add per-batch policy gate helper. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+9. TASK-0208: Implement runner audit event builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+10. TASK-0209: Integrate coverage verifier with runner result builder. Code. Effort: High. Verification: `pnpm --filter @aeos/core check`.
+11. TASK-0210: Implement deterministic resume cursor builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+12. TASK-0211: Add runner JSON result renderer. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+13. TASK-0212: Add runner incomplete coverage smoke examples. Code. Effort: Low. Verification: `pnpm --filter @aeos/core check`.
+14. TASK-0213: Add runner smoke tests. Code. Effort: High. Verification: `pnpm --filter @aeos/core check`.
+15. TASK-0214: Design agentic task CLI runner behavior. Docs. Effort: Medium. Verification: `git status --short`.
+16. TASK-0215: Implement `aeos task run` command shell. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+17. TASK-0216: Implement `aeos task status` command. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+18. TASK-0217: Implement `aeos task resume` command shell. Code. Effort: High. Verification: `pnpm --filter @aeos/cli check`.
+19. TASK-0218: Implement `aeos task verify` command. Code. Effort: Medium. Verification: `pnpm --filter @aeos/cli check`.
+20. TASK-0219: Review agentic runner MVP safety. Docs. Effort: Medium. Verification: `git status --short`.
+
 ## Agentic Coverage Verifier Backlog
 
 1. TASK-0190: Implement agentic coverage verifier contracts. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.

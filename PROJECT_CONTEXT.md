@@ -21,54 +21,18 @@ condition.
 ## Current Priorities
 
 - Keep context loading small and intentional.
-- Keep generation planning dependency-free and side-effect free until file writes
-  are explicitly implemented.
-- Keep `aeos init` filesystem writes behind explicit CLI intent.
-- Keep project intelligence deterministic, evidence-based, and local-first.
-- Keep smart init/template selection deterministic, local-first, and fallback
-  safe.
-- Keep template recommendation read-only, deterministic, and separate from init.
-- Keep agentic task execution externally verified, coverage-aware, auditable, and
-  resumable without trusting model self-reporting.
+- Keep project intelligence and template recommendation deterministic,
+  evidence-based, local-first, and fallback safe.
+- Keep agentic task execution externally verified, coverage-aware, policy-gated,
+  auditable, and resumable without trusting model self-reporting.
+- Keep the agentic runner deterministic, local-first, auditable, resumable, and
+  verifier-gated.
 
 ## Recent Completed Tasks
 
-- TASK-0146 through TASK-0165: Defined and implemented deterministic Project
-  Intelligence contracts, scan collection, signals, matching, profile building,
-  detector orchestration, examples, and smoke tests.
-- TASK-0166: Design aeos project profile command.
-- TASK-0167: Implement aeos project profile command.
-- TASK-0168: Add project profile JSON safety review.
-- TASK-0169: Add project profile documentation.
-- TASK-0170: Add project profile final smoke review.
-- TASK-0171: Design smart init/template selection.
-- TASK-0172: Implement smart template selection contracts.
-- TASK-0173: Add smart template selection contract examples.
-- TASK-0174: Implement smart template selector.
-- TASK-0175: Add smart template selector examples.
-- TASK-0176: Add smart template selector smoke tests.
-- TASK-0177: Design smart template recommendation CLI.
-- TASK-0178: Implement built-in smart template candidates.
-- TASK-0179: Add built-in smart template candidate examples.
-- TASK-0180: Add built-in smart template candidate smoke tests.
-- TASK-0181: Implement aeos template recommend command.
-- TASK-0182: Add template recommend JSON safety review.
-- TASK-0183: Add template recommend documentation.
-- TASK-0184: Add template recommend final smoke review.
-- TASK-0185: Define agentic task lifecycle design.
-- TASK-0186: Implement agentic task lifecycle contracts.
-- TASK-0187: Add agentic lifecycle contract examples.
-- TASK-0188: Add agentic lifecycle contract smoke tests.
-- TASK-0189: Design agentic coverage verifier.
-- TASK-0190: Implement agentic coverage verifier contracts.
-- TASK-0191: Add agentic coverage verifier contract examples.
-- TASK-0192: Add agentic coverage verifier contract smoke tests.
-- TASK-0193: Implement agentic coverage verifier logic.
-- TASK-0194: Add agentic coverage verifier logic examples.
-- TASK-0195: Add agentic coverage verifier logic smoke tests.
-- TASK-0196: Add agentic coverage verifier safety review.
 - TASK-0197: Add agentic coverage verifier documentation.
 - TASK-0198: Add agentic coverage verifier final safety review.
+- TASK-0199: Design agentic runner architecture.
 
 ## Do Not Load By Default
 
@@ -79,17 +43,10 @@ condition.
 
 ## Next Task
 
-TASK-0199 Design agentic runner architecture.
+TASK-0200 Implement agentic runner contracts.
 
 ## Current Plans
 
-- docs/INIT_CLI_IMPLEMENTATION_PLAN.md
-- docs/INIT_GENERATION_IMPLEMENTATION_PLAN.md
-- docs/INIT_WRITE_MODE_CLI_DESIGN.md
-- docs/PROJECT_INTELLIGENCE_LAYER_DESIGN.md
-- docs/PROJECT_INTELLIGENCE_DETECTOR_IMPLEMENTATION_PLAN.md
-- docs/PROJECT_PROFILE_COMMAND_DESIGN.md
-- docs/SMART_INIT_TEMPLATE_SELECTION_DESIGN.md
 - docs/AGENTIC_TASK_LIFECYCLE_DESIGN.md
 - docs/AGENTIC_COVERAGE_VERIFIER_DESIGN.md
-- docs/TEMPLATE_RECOMMEND_COMMAND_DESIGN.md
+- docs/AGENTIC_RUNNER_ARCHITECTURE.md
