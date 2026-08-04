@@ -67,6 +67,7 @@ condition.
 - TASK-0194: Add agentic coverage verifier logic examples.
 - TASK-0195: Add agentic coverage verifier logic smoke tests.
 - TASK-0196: Add agentic coverage verifier safety review.
+- TASK-0197: Add agentic coverage verifier documentation.
 
 ## Do Not Load By Default
 
@@ -77,7 +78,7 @@ condition.
 
 ## Next Task
 
-TASK-0197 Add agentic coverage verifier documentation.
+TASK-0198 Add agentic coverage verifier final safety review.
 
 ## Current Plans
 

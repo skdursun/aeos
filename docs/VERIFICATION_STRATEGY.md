@@ -117,6 +117,20 @@ logged, memory writes and rejected writes are logged, tool outcomes are logged
 when relevant, and evidence uses safe summaries instead of raw secrets, prompts,
 file contents, or full tool output.
 
+## Agentic Coverage Verification
+Agentic task verification must treat model and lifecycle self-reporting as
+claims, not completion proof. Coverage verification compares expected inventory,
+terminal work item accounting, verified artifacts, batch counts, and required
+audit evidence before agentic work can be considered verified.
+
+The core item rule is:
+
+```text
+expected_items == completed_items + explicitly_failed_items + explicitly_skipped_items
+```
+
+Pending, retryable, missing, or partially proven work prevents verified status.
+
 ## Pre-Execution Checks
 Before work begins, AEOS should verify task id, task scope, allowed context
 files, modifiable files, excluded paths, planned policy classifications, planned
