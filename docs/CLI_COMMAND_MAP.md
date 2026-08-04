@@ -80,6 +80,35 @@ adapters.
 - Phase: MVP.
 
 ## Task Commands
+### Planned Agentic Task Commands
+These commands are planned for the agentic task CLI surface but are not
+implemented until actual CLI task work is added. The first MVP command set must
+not perform real model, agent, tool, MCP, adapter, audit, verifier, persistence,
+or autonomous execution.
+
+- `aeos task plan`: planned; will print a deterministic task plan only.
+- `aeos task plan --json`: planned; will emit JSON-only task plan output.
+- `aeos task run --dry-run`: planned; will print execution-shaped preview
+  output only.
+- `aeos task run --dry-run --json`: planned; will emit JSON-only dry-run
+  preview output only.
+- `aeos task status`: planned; may report unavailable until task persistence
+  exists.
+- `aeos task status --json`: planned; may emit JSON-only unavailable status
+  until task persistence exists.
+- `aeos task verify`: planned; may report unavailable until persisted state or
+  explicit coverage evidence loading exists.
+- `aeos task verify --json`: planned; may emit JSON-only verifier placeholder
+  output until evidence loading exists.
+- `aeos task resume`: planned; must not resume real execution in the first MVP.
+- `aeos task resume --dry-run`: planned; may later preview resume from explicit
+  persisted or provided state only.
+- `aeos task resume --json`: planned; may emit JSON-only unavailable output
+  until persistence and resume safety exist.
+
+See `docs/AGENTIC_TASK_CLI_OUTPUT_CONTRACT.md` for the stable human and JSON
+output contracts.
+
 ### `aeos task new`
 - Purpose: Create a new micro-task from the task contract template.
 - Example usage: `aeos task new "Define package architecture"`

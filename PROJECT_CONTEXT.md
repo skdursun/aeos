@@ -60,6 +60,7 @@ condition.
 - TASK-0225: Add agentic runner dry-run documentation.
 - TASK-0226: Add agentic runner dry-run final safety review.
 - TASK-0227: Design agentic task CLI surface.
+- TASK-0228: Implement agentic task CLI contract/output design.
 
 ## Do Not Load By Default
 
@@ -70,7 +71,7 @@ condition.
 
 ## Next Task
 
-TASK-0228 Implement agentic task CLI contract/output design.
+TASK-0229 Implement aeos task plan command skeleton.
 
 ## Current Plans
 
