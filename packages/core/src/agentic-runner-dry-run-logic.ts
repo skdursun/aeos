@@ -149,7 +149,10 @@ export function createAgenticDryRunStepPreviews(
       return {
         ...step,
         previewState,
-        wouldRun: step.wouldRun && previewState === "preview_ready",
+        wouldRun:
+          step.wouldRun &&
+          previewState === "preview_ready" &&
+          !hasErrorsOrCriticalIssues(issues),
         approvalRequired: step.approvalRequired ?? context.approvalRequired,
         plannedAdapterCallIds: stableUnique(step.plannedAdapterCallIds),
         expectedAuditEventIds: stableUnique(step.expectedAuditEventIds),
@@ -254,7 +257,10 @@ export function createAgenticDryRunBatchPreviews(
         ...batch,
         workItemIds: uniqueWorkItemIds,
         previewState,
-        wouldRun: batch.wouldRun && previewState === "preview_ready",
+        wouldRun:
+          batch.wouldRun &&
+          previewState === "preview_ready" &&
+          !hasErrorsOrCriticalIssues(issues),
         issues,
       };
     })
@@ -293,11 +299,14 @@ export function createAgenticDryRunWorkItemPreviews(
       return {
         ...workItem,
         previewState,
-        wouldProcess: workItem.wouldProcess && previewState === "preview_ready",
         expectedArtifactIds:
           workItem.expectedArtifactIds === undefined
             ? undefined
             : stableUnique(workItem.expectedArtifactIds),
+        wouldProcess:
+          workItem.wouldProcess &&
+          previewState === "preview_ready" &&
+          !hasErrorsOrCriticalIssues(issues),
         issues,
       };
     })
@@ -848,7 +857,7 @@ function determineDryRunState(
 }
 
 function isFailedShapeIssue(issue: AgenticRunnerDryRunIssue): boolean {
-  if (issue.severity !== "error" && issue.severity !== "critical") {
+  if (!isErrorOrCriticalIssue(issue)) {
     return false;
   }
   if (issue.retryable === true) {
@@ -872,6 +881,16 @@ function isFailedShapeIssue(issue: AgenticRunnerDryRunIssue): boolean {
     issue.code === "DUPLICATE_ADAPTER_CALL_ID" ||
     issue.code === "VERIFIER_COMPLETION_GATE_FALSE"
   );
+}
+
+function hasErrorsOrCriticalIssues(
+  issues: readonly AgenticRunnerDryRunIssue[],
+): boolean {
+  return issues.some(isErrorOrCriticalIssue);
+}
+
+function isErrorOrCriticalIssue(issue: AgenticRunnerDryRunIssue): boolean {
+  return issue.severity === "error" || issue.severity === "critical";
 }
 
 function blockedPreviewState(

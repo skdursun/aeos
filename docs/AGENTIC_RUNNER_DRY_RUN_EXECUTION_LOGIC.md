@@ -1,16 +1,15 @@
 # Agentic Runner Dry-Run Execution Logic
 
 ## Purpose
-Design the AEOS agentic runner dry-run execution logic.
+Document the AEOS agentic runner dry-run execution logic.
 
-Dry-run execution evaluates an `AgenticRunnerPlan` and produces an
-execution-shaped `AgenticRunnerExecutionResult` without calling model adapters,
+Dry-run execution evaluates represented runner plan input and produces an
+execution-shaped `AgenticRunnerDryRunResult` without calling model adapters,
 tool adapters, audit adapters, policy adapters, verifier logic, or mutating
 lifecycle state.
 
-This is a design-only document. It does not implement dry-run execution code,
-CLI commands, storage, adapters, audit writes, verifier runs, or package
-changes.
+This document describes the current MVP core behavior. It does not describe CLI
+commands, storage, adapters, audit writes, verifier runs, or package changes.
 
 ## Why Dry-Run Execution Is Needed
 Dry-run execution is the preflight bridge between planning and real execution.
@@ -53,16 +52,20 @@ The current foundation is contract-first and conservative:
   batch execution, work item outcome, adapter call record, policy execution,
   approval execution, audit handoff, verifier handoff, resume update, states,
   issues, and summary contracts.
-- `packages/core/src/agentic-runner-execution.example.ts` already includes a
-  dry-run-shaped input example and runtime execution result examples.
+- `packages/core/src/agentic-runner-dry-run.ts` defines the dry-run preview
+  contracts.
+- `packages/core/src/agentic-runner-dry-run-logic.ts` implements the
+  side-effect-free dry-run preview helper.
+- `packages/core/src/agentic-runner-dry-run.example.ts` and
+  `packages/core/src/agentic-runner-dry-run-logic.example.ts` provide examples.
 
-There is not yet dry-run execution logic. There is no task runner CLI runtime
-yet.
+There is no task runner CLI runtime yet.
 
 ## Dry-Run Responsibilities
 Dry-run execution should:
 
-- accept one represented `AgenticRunnerPlan` through execution input;
+- accept one represented runner plan or planning result reference through
+  `AgenticRunnerDryRunInput`;
 - validate plan shape and execution prerequisites deterministically;
 - evaluate represented policy and approval requirements without enforcement or
   external policy calls;
@@ -73,7 +76,7 @@ Dry-run execution should:
 - create an audit handoff preview without writing audit events;
 - create a verifier handoff marked required/not-run when required;
 - create a resume update preview from pending and retryable planned work;
-- return a JSON-safe `AgenticRunnerExecutionResult`;
+- return a JSON-safe `AgenticRunnerDryRunResult`;
 - preserve stable ordering for every result array and id list.
 
 ## Dry-Run Non-Responsibilities
@@ -90,10 +93,10 @@ Dry-run execution must not:
 - produce `completed`, `verified`, or observed terminal completion state;
 - approve risky actions;
 - broaden task scope;
-- implement CLI commands in this design task.
+- implement CLI commands in the current MVP.
 
 ## Input Model
-MVP dry-run input should reuse `AgenticRunnerExecutionInput` and require:
+MVP dry-run input uses `AgenticRunnerDryRunInput` and requires:
 
 - `taskId`;
 - `mode: "dry_run"`;
@@ -104,12 +107,12 @@ MVP dry-run input should reuse `AgenticRunnerExecutionInput` and require:
 - options such as `requirePolicy`, `requireApproval`, `requireAudit`,
   `requireVerifier`, `completionGatedByVerifier`, `maxWorkItems`,
   `maxBatchSize`, and `outputMode`;
-- optional represented `policy`;
-- optional represented `approval`;
+- optional represented `policyPreview`;
+- optional represented `adapterBoundaryPreview`;
 - optional represented `adapterCalls`;
-- optional represented `audit`;
-- optional represented `verifier`;
-- optional represented `resume`;
+- optional represented `auditPreviewInput`;
+- optional represented `verifierPreviewInput`;
+- optional represented `resumePreviewInput`;
 - optional lifecycle reference for preview-only resume derivation.
 
 Inputs must not include raw secrets, provider SDK objects, raw prompts, full
@@ -117,7 +120,7 @@ model outputs, raw command logs, broad repository snapshots, or unlisted
 context.
 
 ## Output Model
-Dry-run output should reuse `AgenticRunnerExecutionResult`:
+Dry-run output uses `AgenticRunnerDryRunResult`:
 
 - `ok`;
 - `taskId`;
@@ -126,7 +129,7 @@ Dry-run output should reuse `AgenticRunnerExecutionResult`:
 - optional plan reference;
 - `steps`;
 - `batches`;
-- `workItemOutcomes`;
+- `workItems`;
 - optional `policy`;
 - optional `approval`;
 - `adapterCalls`;
@@ -198,11 +201,11 @@ Create verifier handoff as required/not-run
 Create resume update preview
    |
    v
-AgenticRunnerExecutionResult
+AgenticRunnerDryRunResult
 ```
 
 ## Step Dry-Run Behavior
-Dry-run step records should mirror execution steps without claiming execution.
+Dry-run step records mirror execution-shaped steps without claiming execution.
 
 Rules:
 
@@ -221,10 +224,9 @@ Rules:
 - `auditEventIds` may reference expected or pre-existing emitted events, but
   dry-run must not add newly emitted ids.
 
-Dry-run must not mark a step `completed` or `verified` unless the input already
-represents a prior observed execution result and dry-run is explicitly previewing
-that persisted evidence. New dry-run records should use planned, blocked,
-waiting, or incomplete preview states.
+Dry-run must not mark a step `completed` or `verified`. Runtime or hostile
+preview claims using those states are normalized to failed preview records and
+reported as deterministic dry-run safety issues.
 
 ## Batch Dry-Run Behavior
 Batch dry-run records preview batch execution without observed completion.
@@ -245,8 +247,8 @@ Rules:
 - dry-run must not claim observed completion.
 
 Expected counts may be represented. Pending and retryable previews may be
-represented. Completed batch state cannot be produced by dry-run-created
-records.
+represented. Completed or verified batch preview states are rejected and cannot
+inflate runnable batch counts.
 
 ## Work Item Dry-Run Outcome Representation
 Dry-run work item outcomes are previews, not observed outcomes.
@@ -258,6 +260,8 @@ Rules:
 - represented in-progress interrupted work should preview as `retryable` or
   `pending` based on existing resume policy, not completed;
 - dry-run-created outcomes cannot be `completed` or `verified`;
+- completed or verified work item preview states are rejected and cannot inflate
+  processable work item counts;
 - failed or skipped states may be carried forward only when input already
   represents them with explicit reasons or issues;
 - output artifact ids should be absent unless already represented input evidence
@@ -381,8 +385,7 @@ Rules:
 - `nextBatchId` points to the first eligible pending or retryable batch;
 - `nextStepId` points to the first eligible step after policy and approval
   preview gates;
-- `updatedAt` may use a deterministic input timestamp when provided, or a
-  runtime-created preview timestamp in later implementation;
+- `updatedAt` is input-derived only when represented;
 - dry-run must not persist the resume cursor;
 - dry-run must not rewrite existing resume state.
 
@@ -448,7 +451,7 @@ The JSON result should be compact, deterministic, and safe to serialize:
   "state": "verification_required",
   "steps": [],
   "batches": [],
-  "workItemOutcomes": [],
+  "workItems": [],
   "adapterCalls": [],
   "audit": {},
   "verifier": {},
@@ -476,8 +479,8 @@ adapter semantics, audit writes, verifier authority, or completion rules.
 ## MVP Scope
 MVP dry-run execution should support:
 
-- validating represented `AgenticRunnerExecutionInput` in `dry_run` mode;
-- validating represented `AgenticRunnerPlan` shape;
+- validating represented `AgenticRunnerDryRunInput` in `dry_run` mode;
+- validating represented runner plan or planning result references;
 - converting planned steps into dry-run step execution records;
 - converting planned batches into dry-run batch execution records;
 - converting represented work items into non-completed preview outcomes;
@@ -503,7 +506,6 @@ Later work may add:
 - organization policy simulation.
 
 ## Non-goals
-- Implement dry-run execution code in this task.
 - Implement runtime execution.
 - Implement CLI commands.
 - Implement concrete adapters.
@@ -580,123 +582,24 @@ For a safe executable sitemap plan with no approval or policy blocker, the
 preferred preview state is `verification_required` because execution-shaped
 records can be built but the verifier is required and not run.
 
-## Smoke Test Requirements
-Future implementation should include smoke tests for:
+## Smoke Coverage
+Current smoke coverage checks:
 
-- dry-run result uses `mode: "dry_run"`;
-- missing plan returns `blocked` or `failed`;
-- invalid duplicate step ids fail closed;
-- invalid duplicate work item ids fail closed;
-- batch item references to missing work items fail closed;
-- safe executable plan returns a non-completed preview state;
-- approval-required plan returns `waiting_for_approval`;
-- blocked policy returns `blocked`;
-- denied policy creates no adapter calls with completed status;
-- dry-run never calls model adapters;
-- dry-run never calls tool adapters;
+- dry-run results use `mode: "dry_run"`;
+- missing, invalid, blocked, or denied input creates issues and never completes;
+- dry-run never calls model or tool adapters;
 - dry-run never writes audit events;
-- emitted audit events remain empty for new dry-run previews;
-- verifier required remains required but not run;
-- completion gate remains unsatisfied;
-- work item outcomes are not marked completed by dry-run;
-- batch records do not claim observed completion;
-- sitemap 400-item dry-run keeps completed count `0`;
-- adapter call records are planned/not-started and non-authoritative;
-- resume preview includes deterministic pending and retryable ids;
-- JSON result includes steps, batches, workItemOutcomes, adapterCalls, audit,
-  verifier, resume, issues, and summary.
+- emitted audit events are empty or input-derived only;
+- verifier remains required/not-run and the completion gate remains unsatisfied;
+- resume preview never mutates resume state;
+- sitemap dry-run represents 400 planned work items and zero completed work;
+- adapter previews are observation-only and non-authoritative;
+- repeated dry-run calls with the same input return equivalent results;
+- completed and verified preview claims for steps, batches, and work items are
+  rejected, normalized to failed previews, and excluded from runnable or
+  processable summary counts.
 
-## Implementation Sequence
-1. TASK-0218: Implement agentic runner dry-run execution contracts. Purpose: add
-   any missing dry-run-specific contract aliases, issue codes, and result
-   examples while preserving existing execution contracts. Likely files:
-   `packages/core/src/agentic-runner-execution.ts`,
-   `packages/core/src/agentic-runner-execution.example.ts`. Verification
-   command: `pnpm --filter @aeos/core check`. Recommended model effort:
-   Medium. Classification: Code.
-2. TASK-0219: Add dry-run plan shape validator. Purpose: reject missing plan,
-   duplicate ids, invalid batch references, and impossible verifier/audit gates.
-   Likely files: `packages/core/src/agentic-runner-execution-logic.ts`.
-   Verification command: `pnpm --filter @aeos/core check`. Recommended model
-   effort: Medium. Classification: Code.
-3. TASK-0220: Add dry-run policy preview mapper. Purpose: map represented policy
-   states to dry-run allowed, blocked, denied, and approval-required previews
-   without policy adapter calls. Likely files:
-   `packages/core/src/agentic-runner-execution-logic.ts`,
-   `packages/core/src/policy.ts`. Verification command:
-   `pnpm --filter @aeos/core check`. Recommended model effort: Medium.
-   Classification: Code.
-4. TASK-0221: Add dry-run approval preview mapper. Purpose: represent approval
-   required, pending, requested, denied, expired, and revoked states without
-   approval side effects. Likely files:
-   `packages/core/src/agentic-runner-execution-logic.ts`.
-   Verification command: `pnpm --filter @aeos/core check`. Recommended model
-   effort: Medium. Classification: Code.
-5. TASK-0222: Add dry-run step execution record builder. Purpose: convert
-   planned steps into pending, blocked, retryable, or verification-required
-   execution records without completed states. Likely files:
-   `packages/core/src/agentic-runner-execution-logic.ts`. Verification command:
-   `pnpm --filter @aeos/core check`. Recommended model effort: Medium.
-   Classification: Code.
-6. TASK-0223: Add dry-run batch execution record builder. Purpose: convert
-   planned batches into deterministic batch records with expected counts and no
-   observed completion claims. Likely files:
-   `packages/core/src/agentic-runner-execution-logic.ts`. Verification command:
-   `pnpm --filter @aeos/core check`. Recommended model effort: Medium.
-   Classification: Code.
-7. TASK-0224: Add dry-run work item outcome preview builder. Purpose: represent
-   pending and retryable work item previews while forbidding dry-run-created
-   completed or verified outcomes. Likely files:
-   `packages/core/src/agentic-runner-execution-logic.ts`. Verification command:
-   `pnpm --filter @aeos/core check`. Recommended model effort: Medium.
-   Classification: Code.
-8. TASK-0225: Add dry-run adapter call planner. Purpose: create planned
-   not-started model/tool adapter call records without invoking adapters and
-   without output references that imply completion. Likely files:
-   `packages/core/src/agentic-runner-execution-logic.ts`,
-   `packages/core/src/adapters.ts`. Verification command:
-   `pnpm --filter @aeos/core check`. Recommended model effort: Medium.
-   Classification: Code.
-9. TASK-0226: Add dry-run audit handoff preview builder. Purpose: compute
-   expected, emitted, and missing audit ids without audit writes. Likely files:
-   `packages/core/src/agentic-runner-execution-logic.ts`,
-   `packages/core/src/audit.ts`. Verification command:
-   `pnpm --filter @aeos/core check`. Recommended model effort: Medium.
-   Classification: Code.
-10. TASK-0227: Add dry-run verifier handoff preview builder. Purpose: mark
-    verifier required, pending/not-run, coverage unknown or incomplete, and
-    completion gate unsatisfied without running verifier logic. Likely files:
-    `packages/core/src/agentic-runner-execution-logic.ts`,
-    `packages/core/src/agentic-coverage-verifier.ts`. Verification command:
-    `pnpm --filter @aeos/core check`. Recommended model effort: Medium.
-    Classification: Code.
-11. TASK-0228: Add dry-run resume preview builder. Purpose: derive next step,
-    next batch, pending ids, and retryable ids from represented plan/lifecycle
-    state without persisting cursor updates. Likely files:
-    `packages/core/src/agentic-runner-execution-logic.ts`. Verification
-    command: `pnpm --filter @aeos/core check`. Recommended model effort:
-    Medium. Classification: Code.
-12. TASK-0229: Add dry-run execution result builder. Purpose: assemble the
-    deterministic `AgenticRunnerExecutionResult`, state, issues, and summary
-    from all dry-run preview records. Likely files:
-    `packages/core/src/agentic-runner-execution-logic.ts`. Verification
-    command: `pnpm --filter @aeos/core check`. Recommended model effort: High.
-    Classification: Code.
-13. TASK-0230: Add dry-run execution examples. Purpose: document safe
-    executable, approval-required, policy-blocked, invalid-plan, and sitemap
-    dry-run results. Likely files:
-    `packages/core/src/agentic-runner-execution.example.ts`. Verification
-    command: `pnpm --filter @aeos/core check`. Recommended model effort: Low.
-    Classification: Code.
-14. TASK-0231: Add dry-run smoke tests. Purpose: test no adapter calls, no audit
-    writes, verifier not run, no completed work items, no completed state,
-    deterministic ordering, and sitemap 400-item behavior. Likely files:
-    `packages/core/src/agentic-runner-execution-logic.test.ts`. Verification
-    command: `pnpm --filter @aeos/core check`. Recommended model effort: High.
-    Classification: Code.
-15. TASK-0232: Document dry-run CLI behavior. Purpose: define future operator
-    behavior for `aeos task run --dry-run`, `aeos task run --dry-run --json`,
-    `aeos agent run --dry-run`, and `aeos task plan` without implementing
-    commands. Likely files: `docs/AGENTIC_TASK_RUNNER_CLI.md`. Verification
-    command: `git status --short`. Recommended model effort: Medium.
-    Classification: Docs.
+## Next Scope
+Future work may design CLI surfaces for dry-run previews, but CLI commands,
+runtime execution, adapters, audit runtime, verifier execution, filesystem IO,
+and autonomous execution remain outside the current MVP.

@@ -58,6 +58,7 @@ condition.
 - TASK-0223: Add agentic runner dry-run logic smoke tests.
 - TASK-0224: Add agentic runner dry-run safety review.
 - TASK-0225: Add agentic runner dry-run documentation.
+- TASK-0226: Add agentic runner dry-run final safety review.
 
 ## Do Not Load By Default
 
@@ -68,7 +69,7 @@ condition.
 
 ## Next Task
 
-TASK-0226 Add agentic runner dry-run final safety review.
+TASK-0227 Design agentic task CLI surface.
 
 ## Current Plans
 
