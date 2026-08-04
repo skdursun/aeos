@@ -115,12 +115,6 @@ type TaskValidationJsonOutput = {
   reason: TaskValidationJsonReason;
 };
 
-type TaskPlanSkeletonIssue = {
-  readonly code: "task_contract_input_not_implemented";
-  readonly message: string;
-  readonly severity: "info";
-};
-
 type TaskPlanSkeletonJsonOutput = {
   readonly ok: false;
   readonly status: "skeleton";
@@ -130,7 +124,16 @@ type TaskPlanSkeletonJsonOutput = {
   readonly auditWrites: false;
   readonly verifierRun: false;
   readonly persistence: false;
-  readonly issues: readonly TaskPlanSkeletonIssue[];
+  readonly issues: readonly [];
+};
+
+type TaskPlanJsonErrorOutput = {
+  readonly ok: false;
+  readonly error: {
+    readonly code: "task_plan_unknown_option";
+    readonly message: string;
+  };
+  readonly issues: readonly [];
 };
 
 type RememberJsonFailureReason =
@@ -678,7 +681,9 @@ function writeTaskValidationJson(
   writeJsonLine(value);
 }
 
-function writeTaskPlanSkeletonJson(value: TaskPlanSkeletonJsonOutput): void {
+function writeTaskPlanSkeletonJson(
+  value: TaskPlanSkeletonJsonOutput | TaskPlanJsonErrorOutput,
+): void {
   writeJsonLine(value);
 }
 
@@ -859,14 +864,7 @@ function createTaskPlanSkeletonOutput(): TaskPlanSkeletonJsonOutput {
     auditWrites: false,
     verifierRun: false,
     persistence: false,
-    issues: [
-      {
-        code: "task_contract_input_not_implemented",
-        message:
-          "Task contract input support is not implemented yet; task plan command skeleton is available.",
-        severity: "info",
-      },
-    ],
+    issues: [],
   };
 }
 
@@ -882,7 +880,7 @@ function printTaskPlanSkeleton(output: TaskPlanSkeletonJsonOutput): void {
   console.log(`Persistence: ${String(output.persistence)}`);
   console.log("");
   console.log(
-    "Reason: task plan command skeleton is available; task contract input support will be added in a later task.",
+    "Reason: task contract input support is not implemented yet; this command is a safe skeleton only.",
   );
 }
 
@@ -2270,7 +2268,14 @@ function handleTask(args: readonly string[]): void {
 
     if (unknownArgs.length > 0) {
       if (json) {
-        writeTaskPlanSkeletonJson(output);
+        writeTaskPlanSkeletonJson({
+          ok: false,
+          error: {
+            code: "task_plan_unknown_option",
+            message: "Unknown task plan option.",
+          },
+          issues: [],
+        });
         setExitCode(1);
         return;
       }

@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 
 const cliPath = fileURLToPath(new URL("../dist/index.js", import.meta.url));
 const projectRoot = fileURLToPath(new URL("../../..", import.meta.url));
+const commandsSourcePath = fileURLToPath(new URL("../src/commands.ts", import.meta.url));
 
 function runCli(args) {
   return runCliFrom(projectRoot, args);
@@ -538,7 +539,36 @@ function expectTaskPlanSkeletonJsonShape(message, value, result) {
     value.auditWrites !== false ||
     value.verifierRun !== false ||
     value.persistence !== false ||
-    !Array.isArray(value.issues)
+    !Array.isArray(value.issues) ||
+    value.issues.length !== 0
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectTaskPlanErrorJsonShape(message, value, result) {
+  const expectedKeys = ["error", "issues", "ok"];
+
+  if (
+    typeof value !== "object" ||
+    value === null
+  ) {
+    fail(message, result);
+  }
+
+  const keys = Object.keys(value).sort();
+
+  if (
+    keys.length !== expectedKeys.length ||
+    keys.some((key, index) => key !== expectedKeys[index]) ||
+    value.ok !== false ||
+    typeof value.error !== "object" ||
+    value.error === null ||
+    value.error.code !== "task_plan_unknown_option" ||
+    typeof value.error.message !== "string" ||
+    value.error.message.length === 0 ||
+    !Array.isArray(value.issues) ||
+    value.issues.length !== 0
   ) {
     fail(message, result);
   }
@@ -546,18 +576,40 @@ function expectTaskPlanSkeletonJsonShape(message, value, result) {
 
 function expectTaskPlanHelpNoOverpromises(message, result) {
   for (const unexpectedText of [
+    "real planning",
     "real execution",
+    "task file parsing",
+    "runner execution",
     "autonomous agent run",
     "adapter calls",
     "audit runtime",
     "verifier execution",
     "task persistence",
+    "persistence",
+    "production orchestration",
   ]) {
     expectOutputExcludes(
       `${message} overpromised unsupported task plan behavior: ${unexpectedText}`,
       result,
       unexpectedText,
     );
+  }
+}
+
+function expectTaskPlanSourceSafety() {
+  const commandsSource = readFileSync(commandsSourcePath, "utf8");
+
+  for (const forbiddenText of [
+    "planAgenticRunner",
+    "runAgenticRunner",
+    "AgenticRunnerPlanning",
+    "AgenticRunnerDryRun",
+    "agentic-runner-planning",
+    "agentic-runner-dry-run",
+  ]) {
+    if (commandsSource.includes(forbiddenText)) {
+      fail(`task plan skeleton source referenced runner logic: ${forbiddenText}`);
+    }
   }
 }
 
@@ -744,6 +796,7 @@ expectOutputIncludes(
   "task plan --json",
 );
 expectTaskPlanHelpNoOverpromises("help output", helpCommand);
+expectTaskPlanSourceSafety();
 for (const unsupportedProjectProfileHelpText of [
   "--root",
   "--target-root",
@@ -2657,11 +2710,14 @@ const taskPlan = runCli(["task", "plan"]);
 expectNonzero("task plan exited zero", taskPlan);
 for (const expectedText of [
   "Task Plan",
-  "skeleton",
+  "Status: skeleton",
+  "Mode: plan",
   "Real execution: false",
   "Adapter calls: false",
   "Audit writes: false",
   "Verifier run: false",
+  "Persistence: false",
+  "task contract input support is not implemented yet",
 ]) {
   expectOutputIncludes(
     `task plan output did not include ${expectedText}`,
@@ -2681,23 +2737,72 @@ expectTaskPlanSkeletonJsonShape(
   parsedTaskPlanJson,
   taskPlanJson,
 );
-if (
-  !parsedTaskPlanJson.issues.some(
-    (issue) => issue.code === "task_contract_input_not_implemented",
-  )
-) {
-  fail("task plan --json did not include skeleton input-support issue", taskPlanJson);
-}
+
+const taskPlanUnknown = runCli(["task", "plan", "--unknown"]);
+expectNonzero("task plan unknown option exited zero", taskPlanUnknown);
+expectOutputIncludes(
+  "task plan unknown option did not report unknown task plan option",
+  taskPlanUnknown,
+  "unknown task plan option",
+);
+expectOutputIncludes(
+  "task plan unknown option did not include task plan usage",
+  taskPlanUnknown,
+  "Usage: aeos task plan [--json]",
+);
+
+const taskPlanUnknownJson = runCli(["task", "plan", "--unknown", "--json"]);
+expectNonzero("task plan unknown option --json exited zero", taskPlanUnknownJson);
+const parsedTaskPlanUnknownJson = parseJsonOnlyStdout(
+  "task plan unknown option --json output was not valid JSON only",
+  taskPlanUnknownJson,
+);
+expectTaskPlanErrorJsonShape(
+  "task plan unknown option --json shape was invalid",
+  parsedTaskPlanUnknownJson,
+  taskPlanUnknownJson,
+);
 
 const taskPlanNoWriteRoot = mkdtempSync(join(tmpdir(), "aeos-cli-task-plan-no-write-"));
 
 try {
+  const unparsedTaskPath = join(taskPlanNoWriteRoot, "unparsed-task.json");
+  writeFileSync(unparsedTaskPath, "{ invalid json");
+
   const taskPlanNoWriteFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
   const taskPlanNoWrite = runCliFrom(taskPlanNoWriteRoot, ["task", "plan"]);
   expectNonzero("task plan no-write fixture exited zero", taskPlanNoWrite);
   expectSameFiles(
     "task plan created files in no-write fixture",
     taskPlanNoWriteFilesBefore,
+    listRelativeFiles(taskPlanNoWriteRoot),
+  );
+
+  const taskPlanWithPathFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
+  const taskPlanWithPath = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "plan",
+    unparsedTaskPath,
+  ]);
+  expectNonzero("task plan with path exited zero", taskPlanWithPath);
+  expectOutputIncludes(
+    "task plan with path did not reject positional task input as an unknown option",
+    taskPlanWithPath,
+    "unknown task plan option",
+  );
+  expectOutputExcludes(
+    "task plan with path parsed task file despite skeleton contract",
+    taskPlanWithPath,
+    "invalid JSON",
+  );
+  expectOutputExcludes(
+    "task plan with path ran task validation despite skeleton contract",
+    taskPlanWithPath,
+    "Task validation",
+  );
+  expectSameFiles(
+    "task plan with path created files in no-write fixture",
+    taskPlanWithPathFilesBefore,
     listRelativeFiles(taskPlanNoWriteRoot),
   );
 
@@ -2718,6 +2823,29 @@ try {
   expectSameFiles(
     "task plan --json created files in no-write fixture",
     taskPlanJsonNoWriteFilesBefore,
+    listRelativeFiles(taskPlanNoWriteRoot),
+  );
+
+  const taskPlanJsonWithPathFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
+  const taskPlanJsonWithPath = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "plan",
+    unparsedTaskPath,
+    "--json",
+  ]);
+  expectNonzero("task plan --json with path exited zero", taskPlanJsonWithPath);
+  const parsedTaskPlanJsonWithPath = parseJsonOnlyStdout(
+    "task plan --json with path output was not valid JSON only",
+    taskPlanJsonWithPath,
+  );
+  expectTaskPlanErrorJsonShape(
+    "task plan --json with path shape was invalid",
+    parsedTaskPlanJsonWithPath,
+    taskPlanJsonWithPath,
+  );
+  expectSameFiles(
+    "task plan --json with path created files in no-write fixture",
+    taskPlanJsonWithPathFilesBefore,
     listRelativeFiles(taskPlanNoWriteRoot),
   );
 } finally {
