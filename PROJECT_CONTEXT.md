@@ -65,6 +65,7 @@ condition.
 - TASK-0230: Add task plan skeleton JSON safety review.
 - TASK-0231: Implement task plan input contract file parsing design.
 - TASK-0232: Implement task plan input file parser contracts.
+- TASK-0233: Add task plan input parser contract examples.
 
 ## Do Not Load By Default
 
@@ -75,7 +76,7 @@ condition.
 
 ## Next Task
 
-TASK-0233 Add task plan input parser contract examples.
+TASK-0234 Add task plan input parser contract smoke tests.
 
 ## Current Plans
 
