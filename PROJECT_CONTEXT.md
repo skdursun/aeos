@@ -42,6 +42,7 @@ condition.
 - TASK-0207: Implement agentic runner planning logic.
 - TASK-0208: Add agentic runner planning logic examples.
 - TASK-0209: Add agentic runner planning logic smoke tests.
+- TASK-0210: Add agentic runner planning safety review.
 
 ## Do Not Load By Default
 
@@ -52,7 +53,7 @@ condition.
 
 ## Next Task
 
-TASK-0210 Add agentic runner planning safety review.
+TASK-0211 Add agentic runner planning documentation.
 
 ## Current Plans
 

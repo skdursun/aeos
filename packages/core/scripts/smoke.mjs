@@ -3127,6 +3127,107 @@ assert.deepEqual(
   "planning logic smoke I issue ordering should be stable",
 );
 
+const directEmptyExecutableWorkResult = planAgenticRunner({
+  taskId: "empty-executable-work-plan",
+  taskContract: createPlanningTaskContract("empty-executable-work-plan"),
+  mode: "dry_run",
+  options: {
+    requireAudit: true,
+    requireVerifier: true,
+  },
+  verifierRequirements: createVerifierRequirement("coverage-verifier-empty-work"),
+  metadata: {
+    allowedOperations: ["batch.execute"],
+  },
+});
+
+assertDirectPlanningResultShape(directEmptyExecutableWorkResult);
+assertDirectPlanningSummaryHonest(directEmptyExecutableWorkResult);
+assertPlanningVerifierGateHonest(directEmptyExecutableWorkResult);
+assert.equal(
+  directEmptyExecutableWorkResult.ok,
+  false,
+  "planning logic smoke J should reject executable work planning without work items",
+);
+assert.deepEqual(
+  directEmptyExecutableWorkResult.issues.map((issue) => issue.code),
+  ["EXECUTABLE_WORK_ITEMS_MISSING"],
+  "planning logic smoke J should report missing executable work deterministically",
+);
+assert.equal(
+  directEmptyExecutableWorkResult.steps.some(
+    (step) => step.kind === "batch_execution",
+  ),
+  false,
+  "planning logic smoke J should not create batch execution steps for empty work",
+);
+assert.equal(
+  directEmptyExecutableWorkResult.verifier.verifierRequired,
+  true,
+  "planning logic smoke J should still require verifier for executable planning modes",
+);
+
+const directEmptyBatchPlanningResult = planAgenticRunner({
+  taskId: "empty-batch-plan",
+  taskContract: createPlanningTaskContract("empty-batch-plan"),
+  workItems: [createPlanningWorkItem("empty-batch-work-item")],
+  batches: [createPlanningBatch("empty-batch", [])],
+  mode: "plan",
+  options: {
+    requireAudit: true,
+    requireVerifier: true,
+  },
+  verifierRequirements: createVerifierRequirement("coverage-verifier-empty-batch"),
+});
+
+assertDirectPlanningResultShape(directEmptyBatchPlanningResult);
+assertDirectPlanningSummaryHonest(directEmptyBatchPlanningResult);
+assertPlanningVerifierGateHonest(directEmptyBatchPlanningResult);
+assert.equal(
+  directEmptyBatchPlanningResult.ok,
+  false,
+  "planning logic smoke K should reject empty represented batches",
+);
+assert.deepEqual(
+  directEmptyBatchPlanningResult.issues.map((issue) => issue.code),
+  ["BATCH_WORK_ITEMS_EMPTY"],
+  "planning logic smoke K should report empty batch issue deterministically",
+);
+assert.equal(
+  directEmptyBatchPlanningResult.issues[0]?.batchId,
+  "empty-batch",
+  "planning logic smoke K should preserve empty batch id on issue",
+);
+
+const directMissingBatchWorkItemIdResult = planAgenticRunner({
+  taskId: "missing-batch-work-item-id-plan",
+  taskContract: createPlanningTaskContract("missing-batch-work-item-id-plan"),
+  workItems: [createPlanningWorkItem("known-batch-work-item")],
+  batches: [createPlanningBatch("batch-missing-item-id", [""])],
+  mode: "plan",
+  options: {
+    requireAudit: true,
+    requireVerifier: true,
+  },
+  verifierRequirements: createVerifierRequirement(
+    "coverage-verifier-missing-batch-item-id",
+  ),
+});
+
+assertDirectPlanningResultShape(directMissingBatchWorkItemIdResult);
+assertDirectPlanningSummaryHonest(directMissingBatchWorkItemIdResult);
+assertPlanningVerifierGateHonest(directMissingBatchWorkItemIdResult);
+assert.equal(
+  directMissingBatchWorkItemIdResult.ok,
+  false,
+  "planning logic smoke L should reject missing work item ids inside batches",
+);
+assert.deepEqual(
+  directMissingBatchWorkItemIdResult.issues.map((issue) => issue.code),
+  ["BATCH_REFERENCES_MISSING_WORK_ITEM", "BATCH_WORK_ITEM_ID_MISSING"],
+  "planning logic smoke L should report missing batch work item id deterministically",
+);
+
 const directOrderingPlanningInput = {
   taskId: "deterministic-ordering-plan",
   taskContract: createPlanningTaskContract("deterministic-ordering-plan"),
@@ -3196,6 +3297,9 @@ for (const directPlanningResult of [
   directDuplicateWorkItemResult,
   directMissingBatchReferenceResult,
   directDuplicateAcrossBatchesResult,
+  directEmptyExecutableWorkResult,
+  directEmptyBatchPlanningResult,
+  directMissingBatchWorkItemIdResult,
   directOrderingPlanningResult,
 ]) {
   assertDirectPlanningSummaryHonest(directPlanningResult);

@@ -157,6 +157,7 @@ export function createAgenticRunnerPrerequisites(
   const taskContractPresent =
     context.input.taskContract !== undefined ||
     context.input.taskMetadata !== undefined;
+  const missingExecutableWorkIssues = createMissingExecutableWorkIssues(context);
   const taskContractIssues = taskContractPresent
     ? []
     : [
@@ -212,11 +213,16 @@ export function createAgenticRunnerPrerequisites(
     prerequisites.push({
       id: "prereq-work-items",
       kind: "work_items",
-      status: context.workItems.length > 0 ? "satisfied" : "missing",
-      required: context.batches.length > 0,
+      status:
+        context.workItems.length > 0 && missingExecutableWorkIssues.length === 0
+          ? "satisfied"
+          : "missing",
+      required: context.batches.length > 0 || missingExecutableWorkIssues.length > 0,
       reason:
         context.batches.length > 0 && context.workItems.length === 0
           ? "Batch planning references require represented work items."
+          : missingExecutableWorkIssues.length > 0
+            ? "Executable work planning requires represented work items."
           : undefined,
       issues:
         context.batches.length > 0 && context.workItems.length === 0
@@ -229,7 +235,16 @@ export function createAgenticRunnerPrerequisites(
                 prerequisiteId: "prereq-work-items",
               }),
             ]
-          : [],
+          : missingExecutableWorkIssues,
+    });
+  } else if (missingExecutableWorkIssues.length > 0) {
+    prerequisites.push({
+      id: "prereq-work-items",
+      kind: "work_items",
+      status: "missing",
+      required: true,
+      reason: "Executable work planning requires represented work items.",
+      issues: missingExecutableWorkIssues,
     });
   }
 
@@ -421,8 +436,32 @@ export function createAgenticRunnerBatchPlans(
         );
       }
 
+      if (batch.workItemIds.length === 0) {
+        issues.push(
+          createIssue({
+            code: "BATCH_WORK_ITEMS_EMPTY",
+            message: `Batch '${batch.id}' has no represented work item ids.`,
+            severity: "error",
+            category: "inventory_failure",
+            batchId: batch.id,
+          }),
+        );
+      }
+
       const localCounts = countBy(batch.workItemIds);
       for (const workItemId of stableUnique(batch.workItemIds)) {
+        if (workItemId.length === 0) {
+          issues.push(
+            createIssue({
+              code: "BATCH_WORK_ITEM_ID_MISSING",
+              message: `Batch '${batch.id}' contains a missing work item id.`,
+              severity: "error",
+              category: "inventory_failure",
+              batchId: batch.id,
+            }),
+          );
+        }
+
         if ((localCounts.get(workItemId) ?? 0) > 1) {
           issues.push(
             createIssue({
@@ -1127,6 +1166,41 @@ function createWorkItemStateIssues(
   }
 
   return [];
+}
+
+function createMissingExecutableWorkIssues(
+  context: PlanningContext,
+): readonly AgenticRunnerPlanningIssue[] {
+  const hasWorkExecutionIntent =
+    context.input.mode === "dry_run" ||
+    context.input.mode === "resume" ||
+    context.batches.length > 0 ||
+    context.adapterBoundary.modelAdapterReferences.length > 0 ||
+    context.adapterBoundary.toolAdapterReferences.length > 0 ||
+    context.adapterBoundary.allowedOperations.includes("batch.execute") ||
+    context.adapterBoundary.allowedOperations.includes("batch.resume");
+
+  if (
+    !hasWorkExecutionIntent ||
+    context.policyBlocked ||
+    context.approvalRequired ||
+    context.resume !== undefined ||
+    context.workItems.length > 0
+  ) {
+    return [];
+  }
+
+  return [
+    createIssue({
+      code: "EXECUTABLE_WORK_ITEMS_MISSING",
+      message:
+        "Executable work planning requires represented work items and must not imply execution for empty work.",
+      severity: "error",
+      category: "inventory_failure",
+      prerequisiteId: "prereq-work-items",
+      retryable: true,
+    }),
+  ];
 }
 
 function convertLifecycleIssues(
