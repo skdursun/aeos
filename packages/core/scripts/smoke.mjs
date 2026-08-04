@@ -27,6 +27,15 @@ import {
   completeItemCoverageResult,
   incompleteSitemapCoverageResult,
 } from "../dist/agentic-coverage-verifier.example.js";
+import {
+  auditHandoffGap,
+  auditHandoffGapIssue,
+  incompleteSitemapResult as incompleteSitemapRunnerResult,
+  plannedRunnerResult,
+  resumeRunnerState,
+  verifiedCompleteResult as verifiedCompleteRunnerResult,
+  waitingForApprovalResult,
+} from "../dist/agentic-runner.example.js";
 import { verifyAgenticCoverage } from "../dist/index.js";
 
 async function pathExists(path) {
@@ -181,6 +190,81 @@ function assertVerifierResultShape(result) {
     Object.hasOwn(result, "summary"),
     `${result.taskId} verifier result should expose summary`,
   );
+}
+
+function assertRunnerResultShape(result) {
+  for (const field of [
+    "ok",
+    "taskId",
+    "state",
+    "mode",
+    "plan",
+    "policy",
+    "executionBoundary",
+    "audit",
+    "verifier",
+    "issues",
+    "summary",
+  ]) {
+    assert.ok(
+      Object.hasOwn(result, field),
+      `${result.taskId} runner result should expose stable field ${field}`,
+    );
+  }
+
+  for (const field of ["lifecycle", "resume"]) {
+    assert.ok(
+      !Object.hasOwn(result, field) || typeof result[field] === "object",
+      `${result.taskId} runner result ${field} field should remain optional object shape`,
+    );
+  }
+
+  assert.ok(
+    Array.isArray(result.plan.steps),
+    `${result.taskId} runner result should expose planned steps`,
+  );
+  assert.ok(
+    Array.isArray(result.issues),
+    `${result.taskId} runner result should expose issues array`,
+  );
+}
+
+function assertRunnerSummaryConsistent(result) {
+  assert.equal(
+    result.summary.plannedSteps,
+    result.plan.steps.length,
+    `${result.taskId} runner summary planned step count should match plan`,
+  );
+  assert.equal(
+    result.summary.expectedWorkItems,
+    result.plan.expectedWorkItemCount,
+    `${result.taskId} runner summary expected work items should match plan`,
+  );
+  assert.equal(
+    result.summary.auditEventsEmitted,
+    result.audit.emittedAuditEventIds.length,
+    `${result.taskId} runner summary emitted audit count should match handoff`,
+  );
+  assert.equal(
+    result.summary.verifierIssueCount,
+    result.verifier.verifierIssues.length,
+    `${result.taskId} runner summary verifier issue count should match verifier handoff`,
+  );
+  assert.equal(
+    result.summary.issueCount,
+    result.issues.length,
+    `${result.taskId} runner summary issue count should match issues`,
+  );
+}
+
+function assertVerifierGateHonest(result) {
+  if (result.ok || result.state === "completed") {
+    assert.equal(
+      result.verifier.verifierStatus,
+      "verified",
+      `${result.taskId} runner result must not complete without verified handoff`,
+    );
+  }
 }
 
 function emptyArtifactCoverage() {
@@ -1671,6 +1755,277 @@ assertLifecycleSummaryMatchesShape(fileGenerationLifecycle, {
   artifactCoverageStatus: "failed",
   verificationStatus: "fail",
 });
+
+const runnerResults = [
+  plannedRunnerResult,
+  waitingForApprovalResult,
+  incompleteSitemapRunnerResult,
+  verifiedCompleteRunnerResult,
+];
+
+for (const runnerResult of runnerResults) {
+  assertRunnerResultShape(runnerResult);
+  assertRunnerSummaryConsistent(runnerResult);
+  assertVerifierGateHonest(runnerResult);
+}
+
+assert.equal(
+  plannedRunnerResult.mode,
+  "plan",
+  "runner smoke A should represent planning mode",
+);
+assert.equal(
+  plannedRunnerResult.state,
+  "planned",
+  "runner smoke A should represent planned state",
+);
+assert.equal(
+  plannedRunnerResult.verifier.verifierRequired,
+  true,
+  "runner smoke A should require verifier handoff",
+);
+assert.equal(
+  plannedRunnerResult.plan.verifierRequired,
+  true,
+  "runner smoke A plan should require verifier",
+);
+assert.equal(
+  plannedRunnerResult.policy.status,
+  "evaluated",
+  "runner smoke A should represent policy preflight",
+);
+assert.equal(
+  plannedRunnerResult.policy.result,
+  "allowed",
+  "runner smoke A should represent allowed policy gate",
+);
+assert.ok(
+  plannedRunnerResult.plan.requiredPolicyChecks.length > 0,
+  "runner smoke A should represent required policy checks",
+);
+assert.ok(
+  plannedRunnerResult.plan.steps.length > 0,
+  "runner smoke A should represent planned steps",
+);
+assert.equal(
+  plannedRunnerResult.summary.completedSteps,
+  0,
+  "runner smoke A should not imply execution completion",
+);
+assert.equal(
+  plannedRunnerResult.summary.completedWorkItems,
+  0,
+  "runner smoke A should not imply completed work",
+);
+assert.notEqual(
+  plannedRunnerResult.ok,
+  true,
+  "runner smoke A should not report ok before execution and verification",
+);
+
+assert.equal(
+  waitingForApprovalResult.state,
+  "waiting_for_approval",
+  "runner smoke B should represent approval wait state",
+);
+assert.equal(
+  waitingForApprovalResult.executionBoundary.humanApprovalRequired,
+  true,
+  "runner smoke B should require human approval in execution boundary",
+);
+assert.equal(
+  waitingForApprovalResult.policy.status,
+  "waiting_for_approval",
+  "runner smoke B policy gate should wait for approval",
+);
+assert.equal(
+  waitingForApprovalResult.policy.result,
+  "needs_approval",
+  "runner smoke B policy gate should need approval",
+);
+assert.ok(
+  waitingForApprovalResult.plan.requiredApprovals.length > 0,
+  "runner smoke B should represent required approvals",
+);
+assert.notEqual(
+  waitingForApprovalResult.ok,
+  true,
+  "runner smoke B should not report completed result",
+);
+assert.notEqual(
+  waitingForApprovalResult.state,
+  "completed",
+  "runner smoke B should not be completed",
+);
+
+assert.equal(
+  incompleteSitemapRunnerResult.taskId,
+  "sitemap-audit",
+  "runner smoke C should preserve sitemap audit task id",
+);
+assert.equal(
+  incompleteSitemapRunnerResult.summary.expectedWorkItems,
+  400,
+  "runner smoke C should represent 400 expected work items",
+);
+assert.equal(
+  incompleteSitemapRunnerResult.summary.completedWorkItems,
+  20,
+  "runner smoke C should represent only 20 completed work items",
+);
+assert.equal(
+  incompleteSitemapRunnerResult.summary.pendingWorkItems,
+  380,
+  "runner smoke C should represent 380 pending work items",
+);
+assert.equal(
+  incompleteSitemapRunnerResult.verifier.coverageStatus,
+  "incomplete",
+  "runner smoke C verifier handoff should be incomplete",
+);
+assert.equal(
+  incompleteSitemapRunnerResult.state,
+  "incomplete",
+  "runner smoke C should represent incomplete runner state",
+);
+assert.equal(
+  incompleteSitemapRunnerResult.ok,
+  false,
+  "runner smoke C should not report ok",
+);
+assert.notEqual(
+  incompleteSitemapRunnerResult.state,
+  "completed",
+  "runner smoke C should not be completed",
+);
+assert.notEqual(
+  incompleteSitemapRunnerResult.verifier.verifierStatus,
+  "verified",
+  "runner smoke C should not let adapter references imply verified completion",
+);
+assert.ok(
+  incompleteSitemapRunnerResult.executionBoundary.modelAdapter,
+  "runner smoke C may reference a model adapter",
+);
+assert.notEqual(
+  incompleteSitemapRunnerResult.executionBoundary.modelAdapter.status,
+  "completed",
+  "runner smoke C model adapter reference must not make the result completed",
+);
+
+assert.equal(
+  verifiedCompleteRunnerResult.verifier.verifierStatus,
+  "verified",
+  "runner smoke D verifier handoff should be verified",
+);
+assert.ok(
+  ["verified", "completed"].includes(verifiedCompleteRunnerResult.state),
+  "runner smoke D should be verified or completed by current contract",
+);
+assert.equal(
+  verifiedCompleteRunnerResult.ok,
+  true,
+  "runner smoke D should report ok after verified handoff",
+);
+assert.equal(
+  verifiedCompleteRunnerResult.summary.pendingWorkItems,
+  0,
+  "runner smoke D should have no pending work items",
+);
+assert.equal(
+  verifiedCompleteRunnerResult.summary.retryableWorkItems,
+  0,
+  "runner smoke D should have no retryable work items",
+);
+assert.equal(
+  verifiedCompleteRunnerResult.summary.completedWorkItems,
+  verifiedCompleteRunnerResult.summary.expectedWorkItems,
+  "runner smoke D summary should account for expected work items",
+);
+
+assert.ok(
+  resumeRunnerState.nextStepId,
+  "runner smoke E should represent next step id",
+);
+assert.ok(
+  resumeRunnerState.nextBatchId,
+  "runner smoke E should represent next batch id",
+);
+assert.ok(
+  resumeRunnerState.pendingWorkItemIds.length > 0,
+  "runner smoke E should represent pending work item ids",
+);
+assert.ok(
+  resumeRunnerState.retryableWorkItemIds.length > 0,
+  "runner smoke E should represent retryable work item ids",
+);
+assert.ok(
+  resumeRunnerState.updatedAt,
+  "runner smoke E should expose updatedAt",
+);
+assert.deepEqual(
+  incompleteSitemapRunnerResult.resume?.pendingWorkItemIds,
+  ["url:021", "url:022"],
+  "runner smoke E incomplete sitemap result should include resume pending work ids",
+);
+assert.ok(
+  incompleteSitemapRunnerResult.resume?.nextStepId,
+  "runner smoke E incomplete sitemap result should include resume next step id",
+);
+
+assert.ok(
+  auditHandoffGap.plannedAuditEventIds.length > 0,
+  "runner smoke F should represent planned audit event ids",
+);
+assert.ok(
+  auditHandoffGap.emittedAuditEventIds.length > 0,
+  "runner smoke F should represent emitted audit event ids",
+);
+assert.deepEqual(
+  auditHandoffGap.missingAuditEventIds,
+  ["audit:gap:missing"],
+  "runner smoke F should represent missing audit event ids",
+);
+assert.ok(
+  !["complete", "verified"].includes(auditHandoffGap.auditStatus),
+  "runner smoke F audit handoff gap should not be complete or verified",
+);
+assert.equal(
+  auditHandoffGapIssue.code,
+  "RUNNER_AUDIT_HANDOFF_GAP",
+  "runner smoke F should expose an audit handoff issue",
+);
+assert.equal(
+  auditHandoffGapIssue.category,
+  "audit_failure",
+  "runner smoke F issue should be categorized as audit failure",
+);
+
+assert.equal(
+  verifiedCompleteRunnerResult.verifier.coverageStatus,
+  "satisfied",
+  "runner smoke H verified example should expose satisfied coverage",
+);
+assert.equal(
+  incompleteSitemapRunnerResult.verifier.coverageStatus,
+  "incomplete",
+  "runner smoke H incomplete example should expose incomplete coverage",
+);
+assert.equal(
+  verifiedCompleteRunnerResult.ok,
+  verifiedCompleteRunnerResult.verifier.verifierStatus === "verified",
+  "runner smoke H ok true should be gated by verified verifier handoff",
+);
+assert.equal(
+  incompleteSitemapRunnerResult.ok,
+  false,
+  "runner smoke H incomplete example should remain not ok",
+);
+assert.notEqual(
+  incompleteSitemapRunnerResult.verifier.verifierStatus,
+  "verified",
+  "runner smoke H incomplete example should not have verified handoff",
+);
 
 const tempRoot = await mkdtemp(join(tmpdir(), "aeos-core-smoke-"));
 
