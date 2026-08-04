@@ -1,5 +1,22 @@
 # Backlog
 
+## Agentic Runner Planning Backlog
+
+1. TASK-0204: Implement agentic runner planning contracts. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+2. TASK-0205: Add agentic runner planning examples. Code. Effort: Low. Verification: `pnpm --filter @aeos/core check`.
+3. TASK-0206: Implement planning prerequisite validator. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+4. TASK-0207: Implement work item planning validator. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+5. TASK-0208: Implement deterministic batch plan builder. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+6. TASK-0209: Implement runner step plan builder. Code. Effort: High. Verification: `pnpm --filter @aeos/core check`.
+7. TASK-0210: Implement policy gate planning mapper. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+8. TASK-0211: Implement adapter boundary planner. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+9. TASK-0212: Implement audit expectation planner. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+10. TASK-0213: Implement verifier requirement planner. Code. Effort: High. Verification: `pnpm --filter @aeos/core check`.
+11. TASK-0214: Implement resume planning helper. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+12. TASK-0215: Add planning JSON renderer. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.
+13. TASK-0216: Add runner planning smoke tests. Code. Effort: High. Verification: `pnpm --filter @aeos/core check`.
+14. TASK-0217: Design task planning CLI behavior. Docs. Effort: Medium. Verification: `git status --short`.
+
 ## Agentic Runner Backlog
 
 1. TASK-0200: Implement agentic runner contracts. Code. Effort: Medium. Verification: `pnpm --filter @aeos/core check`.

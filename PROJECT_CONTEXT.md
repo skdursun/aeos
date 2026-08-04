@@ -35,6 +35,7 @@ condition.
 - TASK-0200: Implement agentic runner contracts.
 - TASK-0201: Add agentic runner contract examples.
 - TASK-0202: Add agentic runner contract smoke tests.
+- TASK-0203: Design agentic runner planning logic.
 
 ## Do Not Load By Default
 
@@ -45,10 +46,11 @@ condition.
 
 ## Next Task
 
-TASK-0203 Design agentic runner planning logic.
+TASK-0204 Implement agentic runner planning contracts.
 
 ## Current Plans
 
 - docs/AGENTIC_TASK_LIFECYCLE_DESIGN.md
 - docs/AGENTIC_COVERAGE_VERIFIER_DESIGN.md
 - docs/AGENTIC_RUNNER_ARCHITECTURE.md
+- docs/AGENTIC_RUNNER_PLANNING_LOGIC.md
