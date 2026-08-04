@@ -505,6 +505,62 @@ function expectProjectProfileNoOverpromises(message, result) {
   }
 }
 
+function expectTaskPlanSkeletonJsonShape(message, value, result) {
+  const expectedKeys = [
+    "adapterCalls",
+    "auditWrites",
+    "executionEnabled",
+    "issues",
+    "mode",
+    "ok",
+    "persistence",
+    "status",
+    "verifierRun",
+  ];
+
+  if (
+    typeof value !== "object" ||
+    value === null
+  ) {
+    fail(message, result);
+  }
+
+  const keys = Object.keys(value).sort();
+
+  if (
+    keys.length !== expectedKeys.length ||
+    keys.some((key, index) => key !== expectedKeys[index]) ||
+    value.ok !== false ||
+    value.status !== "skeleton" ||
+    value.mode !== "plan" ||
+    value.executionEnabled !== false ||
+    value.adapterCalls !== false ||
+    value.auditWrites !== false ||
+    value.verifierRun !== false ||
+    value.persistence !== false ||
+    !Array.isArray(value.issues)
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectTaskPlanHelpNoOverpromises(message, result) {
+  for (const unexpectedText of [
+    "real execution",
+    "autonomous agent run",
+    "adapter calls",
+    "audit runtime",
+    "verifier execution",
+    "task persistence",
+  ]) {
+    expectOutputExcludes(
+      `${message} overpromised unsupported task plan behavior: ${unexpectedText}`,
+      result,
+      unexpectedText,
+    );
+  }
+}
+
 function expectProjectProfileFailureJsonShape(message, value) {
   const expectedKeys = [
     "issues",
@@ -677,6 +733,17 @@ expectOutputIncludes(
   helpCommand,
   "template recommend --json",
 );
+expectOutputIncludes(
+  'help output did not include "task plan"',
+  helpCommand,
+  "task plan",
+);
+expectOutputIncludes(
+  'help output did not include "task plan --json"',
+  helpCommand,
+  "task plan --json",
+);
+expectTaskPlanHelpNoOverpromises("help output", helpCommand);
 for (const unsupportedProjectProfileHelpText of [
   "--root",
   "--target-root",
@@ -2585,6 +2652,77 @@ expectEmptyArray(
   "remember invalid type --json issues was not empty",
   parsedRememberInvalidType.issues,
 );
+
+const taskPlan = runCli(["task", "plan"]);
+expectNonzero("task plan exited zero", taskPlan);
+for (const expectedText of [
+  "Task Plan",
+  "skeleton",
+  "Real execution: false",
+  "Adapter calls: false",
+  "Audit writes: false",
+  "Verifier run: false",
+]) {
+  expectOutputIncludes(
+    `task plan output did not include ${expectedText}`,
+    taskPlan,
+    expectedText,
+  );
+}
+
+const taskPlanJson = runCli(["task", "plan", "--json"]);
+expectNonzero("task plan --json exited zero", taskPlanJson);
+const parsedTaskPlanJson = parseJsonOnlyStdout(
+  "task plan --json output was not valid JSON only",
+  taskPlanJson,
+);
+expectTaskPlanSkeletonJsonShape(
+  "task plan --json output shape was invalid",
+  parsedTaskPlanJson,
+  taskPlanJson,
+);
+if (
+  !parsedTaskPlanJson.issues.some(
+    (issue) => issue.code === "task_contract_input_not_implemented",
+  )
+) {
+  fail("task plan --json did not include skeleton input-support issue", taskPlanJson);
+}
+
+const taskPlanNoWriteRoot = mkdtempSync(join(tmpdir(), "aeos-cli-task-plan-no-write-"));
+
+try {
+  const taskPlanNoWriteFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
+  const taskPlanNoWrite = runCliFrom(taskPlanNoWriteRoot, ["task", "plan"]);
+  expectNonzero("task plan no-write fixture exited zero", taskPlanNoWrite);
+  expectSameFiles(
+    "task plan created files in no-write fixture",
+    taskPlanNoWriteFilesBefore,
+    listRelativeFiles(taskPlanNoWriteRoot),
+  );
+
+  const taskPlanJsonNoWriteFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
+  const taskPlanJsonNoWrite = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "plan",
+    "--json",
+  ]);
+  expectNonzero(
+    "task plan --json no-write fixture exited zero",
+    taskPlanJsonNoWrite,
+  );
+  parseJsonOnlyStdout(
+    "task plan --json no-write fixture output was not valid JSON only",
+    taskPlanJsonNoWrite,
+  );
+  expectSameFiles(
+    "task plan --json created files in no-write fixture",
+    taskPlanJsonNoWriteFilesBefore,
+    listRelativeFiles(taskPlanNoWriteRoot),
+  );
+} finally {
+  rmSync(taskPlanNoWriteRoot, { recursive: true, force: true });
+}
 
 const validTaskPath = fileURLToPath(
   new URL("../fixtures/tasks/valid-task.json", import.meta.url),

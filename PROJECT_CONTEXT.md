@@ -61,6 +61,7 @@ condition.
 - TASK-0226: Add agentic runner dry-run final safety review.
 - TASK-0227: Design agentic task CLI surface.
 - TASK-0228: Implement agentic task CLI contract/output design.
+- TASK-0229: Implement aeos task plan command skeleton.
 
 ## Do Not Load By Default
 
@@ -71,7 +72,7 @@ condition.
 
 ## Next Task
 
-TASK-0229 Implement aeos task plan command skeleton.
+TASK-0230 Add task plan skeleton JSON safety review.
 
 ## Current Plans
 

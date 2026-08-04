@@ -49,6 +49,8 @@ Commands:
   template recommend --json
   task validate <path>
   task validate <path> --json
+  task plan (skeleton)
+  task plan --json (skeleton)
   version
   help`;
 
@@ -111,6 +113,24 @@ type TaskValidationJsonOutput = {
   status: TaskValidationJsonStatus;
   issues: readonly TaskValidationIssue[];
   reason: TaskValidationJsonReason;
+};
+
+type TaskPlanSkeletonIssue = {
+  readonly code: "task_contract_input_not_implemented";
+  readonly message: string;
+  readonly severity: "info";
+};
+
+type TaskPlanSkeletonJsonOutput = {
+  readonly ok: false;
+  readonly status: "skeleton";
+  readonly mode: "plan";
+  readonly executionEnabled: false;
+  readonly adapterCalls: false;
+  readonly auditWrites: false;
+  readonly verifierRun: false;
+  readonly persistence: false;
+  readonly issues: readonly TaskPlanSkeletonIssue[];
 };
 
 type RememberJsonFailureReason =
@@ -658,6 +678,10 @@ function writeTaskValidationJson(
   writeJsonLine(value);
 }
 
+function writeTaskPlanSkeletonJson(value: TaskPlanSkeletonJsonOutput): void {
+  writeJsonLine(value);
+}
+
 function writeRememberJson(value: RememberJsonOutput): void {
   writeJsonLine(value);
 }
@@ -823,6 +847,43 @@ function validateTaskFile(filePath: string | undefined, json: boolean): void {
   }
 
   setExitCode(1);
+}
+
+function createTaskPlanSkeletonOutput(): TaskPlanSkeletonJsonOutput {
+  return {
+    ok: false,
+    status: "skeleton",
+    mode: "plan",
+    executionEnabled: false,
+    adapterCalls: false,
+    auditWrites: false,
+    verifierRun: false,
+    persistence: false,
+    issues: [
+      {
+        code: "task_contract_input_not_implemented",
+        message:
+          "Task contract input support is not implemented yet; task plan command skeleton is available.",
+        severity: "info",
+      },
+    ],
+  };
+}
+
+function printTaskPlanSkeleton(output: TaskPlanSkeletonJsonOutput): void {
+  console.log("Task Plan");
+  console.log("");
+  console.log(`Status: ${output.status}`);
+  console.log(`Mode: ${output.mode}`);
+  console.log(`Real execution: ${String(output.executionEnabled)}`);
+  console.log(`Adapter calls: ${String(output.adapterCalls)}`);
+  console.log(`Audit writes: ${String(output.auditWrites)}`);
+  console.log(`Verifier run: ${String(output.verifierRun)}`);
+  console.log(`Persistence: ${String(output.persistence)}`);
+  console.log("");
+  console.log(
+    "Reason: task plan command skeleton is available; task contract input support will be added in a later task.",
+  );
 }
 
 function printVersion(): void {
@@ -2201,9 +2262,39 @@ async function handleSearch(args: readonly string[]): Promise<void> {
 }
 
 function handleTask(args: readonly string[]): void {
+  if (args[0] === "plan") {
+    const planArgs = args.slice(1);
+    const json = planArgs.includes("--json");
+    const unknownArgs = planArgs.filter((arg) => arg !== "--json");
+    const output = createTaskPlanSkeletonOutput();
+
+    if (unknownArgs.length > 0) {
+      if (json) {
+        writeTaskPlanSkeletonJson(output);
+        setExitCode(1);
+        return;
+      }
+
+      console.error("Error: unknown task plan option.");
+      console.error("Usage: aeos task plan [--json]");
+      setExitCode(1);
+      return;
+    }
+
+    if (json) {
+      writeTaskPlanSkeletonJson(output);
+    } else {
+      printTaskPlanSkeleton(output);
+    }
+
+    setExitCode(1);
+    return;
+  }
+
   if (args[0] !== "validate") {
     console.error("Error: unknown task command.");
     console.error("Usage: aeos task validate <path>");
+    console.error("Usage: aeos task plan [--json]");
     setExitCode(1);
     return;
   }
