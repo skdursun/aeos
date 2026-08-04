@@ -33,6 +33,7 @@ condition.
 - TASK-0198: Add agentic coverage verifier final safety review.
 - TASK-0199: Design agentic runner architecture.
 - TASK-0200: Implement agentic runner contracts.
+- TASK-0201: Add agentic runner contract examples.
 
 ## Do Not Load By Default
 
@@ -43,7 +44,7 @@ condition.
 
 ## Next Task
 
-TASK-0201 Add agentic runner contract examples.
+TASK-0202 Add agentic runner contract smoke tests.
 
 ## Current Plans
 
