@@ -47,6 +47,7 @@ condition.
 - TASK-0212: Add agentic runner planning final safety review.
 - TASK-0213: Design agentic runner execution lifecycle.
 - TASK-0214: Implement agentic runner execution contracts.
+- TASK-0215: Add agentic runner execution contract examples.
 
 ## Do Not Load By Default
 
@@ -57,7 +58,7 @@ condition.
 
 ## Next Task
 
-TASK-0215 Add agentic runner execution contract examples.
+TASK-0216 Add agentic runner execution contract smoke tests.
 
 ## Current Plans
 
