@@ -36,6 +36,15 @@ import {
   verifiedCompleteResult as verifiedCompleteRunnerResult,
   waitingForApprovalResult,
 } from "../dist/agentic-runner.example.js";
+import {
+  auditExpectationGapPlanningResult,
+  blockedPolicyPlanningResult,
+  resumePlanningResult,
+  sitemapAuditPlanningInput,
+  sitemapAuditPlanningResult,
+  verifierGatedCompletionPlanningResult,
+  waitingForApprovalPlanningResult,
+} from "../dist/agentic-runner-planning.example.js";
 import { verifyAgenticCoverage } from "../dist/index.js";
 
 async function pathExists(path) {
@@ -263,6 +272,175 @@ function assertVerifierGateHonest(result) {
       result.verifier.verifierStatus,
       "verified",
       `${result.taskId} runner result must not complete without verified handoff`,
+    );
+  }
+}
+
+function planningIssueCount(result) {
+  return (
+    result.issues.length +
+    result.prerequisites.reduce(
+      (count, prerequisite) => count + prerequisite.issues.length,
+      0,
+    ) +
+    result.workItems.reduce((count, workItem) => count + workItem.issues.length, 0) +
+    result.batches.reduce((count, batch) => count + batch.issues.length, 0) +
+    result.steps.reduce((count, step) => count + step.issues.length, 0) +
+    result.policy.reduce((count, policy) => count + policy.issues.length, 0) +
+    result.adapterBoundary.issues.length +
+    result.audit.issues.length +
+    result.verifier.issues.length
+  );
+}
+
+function assertPlanningResultShape(result) {
+  for (const field of [
+    "ok",
+    "taskId",
+    "mode",
+    "prerequisites",
+    "workItems",
+    "batches",
+    "steps",
+    "policy",
+    "adapterBoundary",
+    "audit",
+    "verifier",
+    "issues",
+    "summary",
+  ]) {
+    assert.ok(
+      Object.hasOwn(result, field),
+      `${result.taskId} planning result should expose stable field ${field}`,
+    );
+  }
+
+  assert.ok(
+    !Object.hasOwn(result, "resume") || typeof result.resume === "object",
+    `${result.taskId} planning result resume field should remain optional object shape`,
+  );
+  assert.ok(
+    Array.isArray(result.prerequisites),
+    `${result.taskId} planning result should expose prerequisites array`,
+  );
+  assert.ok(
+    Array.isArray(result.workItems),
+    `${result.taskId} planning result should expose work item plan array`,
+  );
+  assert.ok(
+    Array.isArray(result.batches),
+    `${result.taskId} planning result should expose batch plan array`,
+  );
+  assert.ok(
+    Array.isArray(result.steps),
+    `${result.taskId} planning result should expose step plan array`,
+  );
+  assert.ok(
+    Array.isArray(result.policy),
+    `${result.taskId} planning result should expose policy plan array`,
+  );
+  assert.ok(
+    Array.isArray(result.issues),
+    `${result.taskId} planning result should expose issues array`,
+  );
+}
+
+function assertPlanningSummaryConsistent(result) {
+  const adapterReferenceCount =
+    result.adapterBoundary.modelAdapterReferences.length +
+    result.adapterBoundary.toolAdapterReferences.length;
+
+  assert.equal(
+    result.summary.prerequisiteCount,
+    result.prerequisites.length,
+    `${result.taskId} planning summary prerequisite count should match prerequisites`,
+  );
+  assert.ok(
+    result.summary.workItemCount >= result.workItems.length,
+    `${result.taskId} planning summary work item count should cover represented work item plans`,
+  );
+  assert.ok(
+    result.summary.batchCount >= result.batches.length,
+    `${result.taskId} planning summary batch count should cover represented batches`,
+  );
+  assert.equal(
+    result.summary.stepCount,
+    result.steps.length,
+    `${result.taskId} planning summary step count should match steps`,
+  );
+  assert.equal(
+    result.summary.policyGateCount,
+    result.policy.length,
+    `${result.taskId} planning summary policy gate count should match policy plans`,
+  );
+  assert.equal(
+    result.summary.adapterReferenceCount,
+    adapterReferenceCount,
+    `${result.taskId} planning summary adapter reference count should match adapter boundary`,
+  );
+  assert.equal(
+    result.summary.expectedAuditEventCount,
+    result.audit.expectedAuditEventIds.length,
+    `${result.taskId} planning summary expected audit event count should match audit expectations`,
+  );
+  assert.equal(
+    result.summary.verifierRequired,
+    result.verifier.verifierRequired,
+    `${result.taskId} planning summary verifierRequired should match verifier plan`,
+  );
+  assert.equal(
+    result.summary.approvalRequired,
+    result.adapterBoundary.approvalRequired ||
+      result.policy.some((policy) => policy.approvalRequired),
+    `${result.taskId} planning summary approvalRequired should match approval gates`,
+  );
+  assert.equal(
+    result.summary.issueCount,
+    result.issues.length,
+    `${result.taskId} planning summary issue count should match top-level issues`,
+  );
+  assert.ok(
+    planningIssueCount(result) >= result.summary.issueCount,
+    `${result.taskId} planning nested issues should include summary issues where represented`,
+  );
+}
+
+function assertPlanningVerifierGateHonest(result) {
+  const executableOperations = result.adapterBoundary.allowedOperations.some(
+    (operation) =>
+      operation === "batch.execute" ||
+      operation === "runner.complete" ||
+      operation === "verifier.handoff",
+  );
+  const explicitException =
+    result.ok === false &&
+    (result.prerequisites.some((prerequisite) =>
+      ["blocked", "failed", "incomplete", "missing"].includes(
+        prerequisite.status,
+      ),
+    ) ||
+      result.policy.some((policy) =>
+        ["denied", "requires_approval", "blocked"].includes(policy.status),
+      ) ||
+      result.issues.length > 0 ||
+      result.adapterBoundary.approvalRequired);
+
+  if (result.ok && executableOperations) {
+    assert.equal(
+      result.verifier.verifierRequired || result.verifier.completionGatedByVerifier,
+      true,
+      `${result.taskId} planning result must gate executable planning with verifier requirements`,
+    );
+    assert.notEqual(
+      result.steps.some((step) => step.state === "completed"),
+      true,
+      `${result.taskId} planning result must not represent completed steps before verifier handoff`,
+    );
+  } else {
+    assert.equal(
+      explicitException || !executableOperations,
+      true,
+      `${result.taskId} non-verifier-gated planning result should expose an explicit non-executable exception`,
     );
   }
 }
@@ -2025,6 +2203,247 @@ assert.notEqual(
   incompleteSitemapRunnerResult.verifier.verifierStatus,
   "verified",
   "runner smoke H incomplete example should not have verified handoff",
+);
+
+const planningResults = [
+  sitemapAuditPlanningResult,
+  waitingForApprovalPlanningResult,
+  blockedPolicyPlanningResult,
+  resumePlanningResult,
+  verifierGatedCompletionPlanningResult,
+  auditExpectationGapPlanningResult,
+];
+
+for (const planningResult of planningResults) {
+  assertPlanningResultShape(planningResult);
+  assertPlanningSummaryConsistent(planningResult);
+  assertPlanningVerifierGateHonest(planningResult);
+}
+
+assert.equal(
+  sitemapAuditPlanningResult.taskId,
+  "sitemap-audit",
+  "planning smoke A should preserve sitemap audit task id",
+);
+assert.equal(
+  sitemapAuditPlanningInput.metadata?.expectedWorkItems,
+  400,
+  "planning smoke A input metadata should represent 400 expected work items",
+);
+assert.equal(
+  sitemapAuditPlanningResult.summary.workItemCount,
+  400,
+  "planning smoke A summary should represent 400 expected work items",
+);
+assert.ok(
+  sitemapAuditPlanningResult.workItems.length > 0,
+  "planning smoke A should include represented work item plans",
+);
+assert.ok(
+  sitemapAuditPlanningResult.batches.length > 0,
+  "planning smoke A should represent batches",
+);
+assert.ok(
+  sitemapAuditPlanningResult.steps.some(
+    (step) => step.kind === "policy_preflight",
+  ),
+  "planning smoke A should represent a policy preflight step",
+);
+assert.equal(
+  sitemapAuditPlanningResult.verifier.verifierRequired,
+  true,
+  "planning smoke A should represent verifier requirement",
+);
+assert.ok(
+  sitemapAuditPlanningResult.steps.some(
+    (step) => step.kind === "verification" && step.verifierRequired,
+  ),
+  "planning smoke A should include a verifier handoff step",
+);
+assert.ok(
+  sitemapAuditPlanningResult.audit.expectedAuditEventIds.length > 0,
+  "planning smoke A should represent audit expectations",
+);
+assert.equal(
+  sitemapAuditPlanningInput.metadata?.executionPerformed,
+  false,
+  "planning smoke A input should not imply execution was performed",
+);
+assert.notEqual(
+  sitemapAuditPlanningResult.steps.some((step) => step.state === "completed"),
+  true,
+  "planning smoke A result should not imply execution was performed",
+);
+
+assert.ok(
+  waitingForApprovalPlanningResult.prerequisites.some(
+    (prerequisite) =>
+      prerequisite.kind === "approval" &&
+      prerequisite.required &&
+      prerequisite.status === "blocked",
+  ),
+  "planning smoke B should represent approval prerequisite",
+);
+assert.ok(
+  waitingForApprovalPlanningResult.policy.some(
+    (policy) =>
+      policy.status === "requires_approval" && policy.approvalRequired,
+  ),
+  "planning smoke B should represent approval-required policy plan",
+);
+assert.equal(
+  waitingForApprovalPlanningResult.adapterBoundary.approvalRequired,
+  true,
+  "planning smoke B adapter boundary should require approval",
+);
+assert.equal(
+  waitingForApprovalPlanningResult.adapterBoundary.metadata
+    ?.humanApprovalRequired,
+  true,
+  "planning smoke B adapter boundary should represent human approval requirement",
+);
+assert.equal(
+  waitingForApprovalPlanningResult.ok,
+  false,
+  "planning smoke B should not imply execution can proceed without approval",
+);
+assert.ok(
+  waitingForApprovalPlanningResult.adapterBoundary.deniedOperations.includes(
+    "batch.execute",
+  ),
+  "planning smoke B should deny batch execution while waiting for approval",
+);
+assert.ok(
+  waitingForApprovalPlanningResult.prerequisites.some(
+    (prerequisite) => prerequisite.status === "blocked",
+  ),
+  "planning smoke B should represent blocked or waiting state",
+);
+
+assert.ok(
+  blockedPolicyPlanningResult.prerequisites.some(
+    (prerequisite) =>
+      prerequisite.kind === "policy" &&
+      ["blocked", "failed"].includes(prerequisite.status),
+  ),
+  "planning smoke C should represent failed or blocked policy prerequisite",
+);
+assert.ok(
+  blockedPolicyPlanningResult.policy.some(
+    (policy) => policy.status === "denied",
+  ),
+  "planning smoke C should represent denied policy plan",
+);
+assert.ok(
+  blockedPolicyPlanningResult.adapterBoundary.deniedOperations.includes(
+    "filesystem.write",
+  ),
+  "planning smoke C should represent denied operation",
+);
+assert.ok(
+  blockedPolicyPlanningResult.issues.length > 0,
+  "planning smoke C should include issues",
+);
+assert.equal(
+  blockedPolicyPlanningResult.ok,
+  false,
+  "planning smoke C should not imply executable batch execution",
+);
+assert.ok(
+  blockedPolicyPlanningResult.steps.every(
+    (step) => step.kind !== "batch_execution" || step.state === "blocked",
+  ),
+  "planning smoke C should not represent executable batch execution",
+);
+
+assert.ok(
+  resumePlanningResult.resume?.resumeCursorReference,
+  "planning smoke D should represent resume cursor reference",
+);
+assert.equal(
+  resumePlanningResult.resume?.nextStepId,
+  "step-batch-003",
+  "planning smoke D should represent next step id",
+);
+assert.equal(
+  resumePlanningResult.resume?.nextBatchId,
+  "batch-003",
+  "planning smoke D should represent next batch id",
+);
+assert.deepEqual(
+  resumePlanningResult.resume?.pendingWorkItemIds,
+  ["sitemap-url-201", "sitemap-url-202"],
+  "planning smoke D should represent pending work item ids",
+);
+assert.deepEqual(
+  resumePlanningResult.resume?.retryableWorkItemIds,
+  ["sitemap-url-118"],
+  "planning smoke D should represent retryable work item ids",
+);
+assert.ok(
+  resumePlanningResult.resume?.updatedAt,
+  "planning smoke D should expose updatedAt",
+);
+
+assert.equal(
+  verifierGatedCompletionPlanningResult.verifier.verifierRequired,
+  true,
+  "planning smoke E should require verifier",
+);
+assert.equal(
+  verifierGatedCompletionPlanningResult.verifier.completionGatedByVerifier,
+  true,
+  "planning smoke E should gate completion by verifier",
+);
+assert.equal(
+  verifierGatedCompletionPlanningResult.verifier.expectedCoverageRule,
+  "expected_items == completed_items + explicitly_failed_items + explicitly_skipped_items",
+  "planning smoke E should represent expected coverage rule",
+);
+assert.ok(
+  verifierGatedCompletionPlanningResult.adapterBoundary.deniedOperations.includes(
+    "runner.complete",
+  ),
+  "planning smoke E should deny completed state without verifier handoff",
+);
+assert.notEqual(
+  verifierGatedCompletionPlanningResult.steps.some(
+    (step) => step.state === "completed",
+  ),
+  true,
+  "planning smoke E should not represent completed state before verifier handoff",
+);
+assert.equal(
+  verifierGatedCompletionPlanningResult.verifier.metadata
+    ?.verifierHandoffRequired,
+  true,
+  "planning smoke E should make verifier handoff requirement explicit",
+);
+
+assert.deepEqual(
+  auditExpectationGapPlanningResult.audit.expectedAuditEventIds,
+  [
+    "audit-policy-preflight-planned",
+    "audit-batch-001-planned",
+    "audit-batch-002-planned",
+  ],
+  "planning smoke F should represent expected audit event ids",
+);
+assert.deepEqual(
+  auditExpectationGapPlanningResult.audit.requiredEventKinds,
+  ["policy.preflight.planned", "batch.execution.planned"],
+  "planning smoke F should represent required event kinds",
+);
+assert.deepEqual(
+  auditExpectationGapPlanningResult.audit.missingAuditEventIds,
+  ["audit-batch-002-planned"],
+  "planning smoke F should represent missing event ids",
+);
+assert.ok(
+  auditExpectationGapPlanningResult.issues.some(
+    (issue) => issue.code === "AUDIT_EXPECTATION_GAP",
+  ),
+  "planning smoke F should include audit expectation gap issue",
 );
 
 const tempRoot = await mkdtemp(join(tmpdir(), "aeos-core-smoke-"));
