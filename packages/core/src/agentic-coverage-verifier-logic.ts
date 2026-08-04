@@ -174,6 +174,7 @@ export function verifyAgenticItemCoverage(
   issues.push(
     ...coverageCountMismatchIssues(normalized, derivedCounts, expectedItems),
   );
+  issues.push(...workItemInventoryCountIssues(normalized.workItems, expectedItems));
   issues.push(...duplicateWorkItemIssues(normalized.workItems));
 
   const status = statusFromIssues(issues, expectedItems === terminalItems);
@@ -686,6 +687,26 @@ function coverageCountMismatchIssues(
         false,
       ),
     );
+}
+
+function workItemInventoryCountIssues(
+  workItems: readonly AgenticWorkItem[],
+  expectedItems: number,
+): readonly AgenticCoverageVerifierIssue[] {
+  if (workItems.length === 0 || workItems.length === expectedItems) {
+    return [];
+  }
+
+  return [
+    issue(
+      "work_item_inventory_count_mismatch",
+      `Expected ${expectedItems} work item ids but verifier input includes ${workItems.length}.`,
+      "error",
+      "inventory_failure",
+      "item-coverage",
+      true,
+    ),
+  ];
 }
 
 function duplicateWorkItemIssues(
