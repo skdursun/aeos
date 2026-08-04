@@ -68,7 +68,33 @@ import {
   toolAdapterCallPreview,
   verifierDryRunPreview,
 } from "../dist/agentic-runner-dry-run.example.js";
-import { planAgenticRunner, verifyAgenticCoverage } from "../dist/index.js";
+import {
+  adapterCallPreviews as logicAdapterCallPreviews,
+  adapterPreviewChecks as logicAdapterPreviewChecks,
+  approvalRequiredDryRunChecks as logicApprovalRequiredDryRunChecks,
+  approvalRequiredDryRunResult as logicApprovalRequiredDryRunResult,
+  auditPreview as logicAuditPreview,
+  auditPreviewChecks as logicAuditPreviewChecks,
+  blockedDryRunChecks as logicBlockedDryRunChecks,
+  blockedDryRunResult as logicBlockedDryRunResult,
+  deterministicDryRunOutput,
+  individualPreviewHelpers,
+  resumePreview as logicResumePreview,
+  resumePreviewChecks as logicResumePreviewChecks,
+  safeDryRunPreviewChecks as logicSafeDryRunPreviewChecks,
+  safeDryRunPreviewResult as logicSafeDryRunPreviewResult,
+  sitemapDryRunPreviewCounts as logicSitemapDryRunPreviewCounts,
+  sitemapDryRunResult as logicSitemapDryRunResult,
+  summaryBehavior,
+  summaryBehaviorChecks,
+  verifierPreview as logicVerifierPreview,
+  verifierPreviewChecks as logicVerifierPreviewChecks,
+} from "../dist/agentic-runner-dry-run-logic.example.js";
+import {
+  planAgenticRunner,
+  runAgenticRunnerDryRun,
+  verifyAgenticCoverage,
+} from "../dist/index.js";
 
 async function pathExists(path) {
   try {
@@ -3348,6 +3374,645 @@ for (const resumePreview of [safeResumePreview, resumeDryRunPreview]) {
     "dry-run smoke H should expose updatedAt",
   );
 }
+
+const dryRunLogicResults = [
+  logicSafeDryRunPreviewResult,
+  logicApprovalRequiredDryRunResult,
+  logicBlockedDryRunResult,
+  logicSitemapDryRunResult,
+];
+
+for (const dryRunLogicResult of dryRunLogicResults) {
+  assertDryRunResultShape(dryRunLogicResult);
+  assertDryRunSummaryConsistent(dryRunLogicResult);
+  assertDryRunSideEffectFree(dryRunLogicResult);
+}
+
+assert.equal(
+  logicSafeDryRunPreviewResult.mode,
+  "dry_run",
+  "dry-run logic smoke A should represent dry-run mode",
+);
+assert.ok(
+  ["preview_ready", "verification_required"].includes(
+    logicSafeDryRunPreviewResult.state,
+  ),
+  "dry-run logic smoke A should be preview-ready or verification-required",
+);
+assert.ok(
+  logicSafeDryRunPreviewResult.steps.length > 0,
+  "dry-run logic smoke A should represent planned steps",
+);
+assert.ok(
+  logicSafeDryRunPreviewResult.batches.length > 0,
+  "dry-run logic smoke A should represent planned batches",
+);
+assert.ok(
+  logicSafeDryRunPreviewResult.workItems.length > 0,
+  "dry-run logic smoke A should represent planned work items",
+);
+assert.equal(
+  logicSafeDryRunPreviewResult.steps.some(
+    (step) => step.previewState === "completed",
+  ),
+  false,
+  "dry-run logic smoke A should not produce completed step state",
+);
+assert.equal(
+  logicSafeDryRunPreviewResult.workItems.some(
+    (workItem) => workItem.previewState === "completed",
+  ),
+  false,
+  "dry-run logic smoke A should not complete work items",
+);
+assert.equal(
+  logicSafeDryRunPreviewResult.ok &&
+    logicSafeDryRunPreviewResult.state === "completed",
+  false,
+  "dry-run logic smoke A ok/state must not imply real execution completion",
+);
+assert.deepEqual(
+  logicSafeDryRunPreviewChecks,
+  {
+    state: logicSafeDryRunPreviewResult.state,
+    stateRequiresVerification:
+      logicSafeDryRunPreviewResult.state === "verification_required",
+    adapterCallsWouldExecute: false,
+    wouldWriteAudit: false,
+    wouldRunVerifier: false,
+    finalStateNotCompleted: true,
+  },
+  "dry-run logic smoke A exported checks should summarize safe preview behavior",
+);
+
+assert.equal(
+  logicApprovalRequiredDryRunResult.state,
+  "waiting_for_approval",
+  "dry-run logic smoke B should wait for approval",
+);
+assert.ok(
+  logicApprovalRequiredDryRunResult.steps.some(
+    (step) => step.approvalRequired === true,
+  ),
+  "dry-run logic smoke B should represent approval requirement",
+);
+assert.ok(
+  logicApprovalRequiredDryRunResult.adapterCalls.every(
+    (adapterCall) => adapterCall.wouldCall === false,
+  ),
+  "dry-run logic smoke B adapter previews should have wouldCall false",
+);
+assert.equal(
+  logicApprovalRequiredDryRunResult.audit.wouldWriteAudit,
+  false,
+  "dry-run logic smoke B should not write audit events",
+);
+assert.equal(
+  logicApprovalRequiredDryRunResult.verifier.wouldRunVerifier,
+  false,
+  "dry-run logic smoke B should not run verifier",
+);
+assert.equal(
+  logicApprovalRequiredDryRunResult.summary.processableWorkItems,
+  0,
+  "dry-run logic smoke B should not imply execution while approval is pending",
+);
+assert.deepEqual(
+  logicApprovalRequiredDryRunChecks,
+  {
+    state: "waiting_for_approval",
+    approvalRequiredRepresented: true,
+    adapterCallsWouldExecute: false,
+    verifierWouldRun: false,
+  },
+  "dry-run logic smoke B exported checks should summarize approval wait behavior",
+);
+
+assert.ok(
+  ["blocked", "failed"].includes(logicBlockedDryRunResult.state),
+  "dry-run logic smoke C should report blocked or failed state",
+);
+assert.ok(
+  logicBlockedDryRunResult.issues.length > 0,
+  "dry-run logic smoke C should include denied or blocked issues",
+);
+assert.ok(
+  logicBlockedDryRunResult.issues.some(
+    (issue) =>
+      issue.code === "OPERATION_DENIED" ||
+      issue.category === "policy_failure" ||
+      issue.category === "dry_run_safety",
+  ),
+  "dry-run logic smoke C should represent denied or blocked condition",
+);
+assert.equal(
+  logicBlockedDryRunResult.adapterCalls.some((adapterCall) => adapterCall.wouldCall),
+  false,
+  "dry-run logic smoke C should keep wouldCallAdapters false",
+);
+assert.equal(
+  logicBlockedDryRunResult.audit.wouldWriteAudit,
+  false,
+  "dry-run logic smoke C should not write audit events",
+);
+assert.equal(
+  logicBlockedDryRunResult.verifier.wouldRunVerifier,
+  false,
+  "dry-run logic smoke C should not run verifier",
+);
+assert.deepEqual(
+  logicBlockedDryRunChecks,
+  {
+    state: logicBlockedDryRunResult.state,
+    stateBlockedOrFailed: true,
+    issueCount: logicBlockedDryRunResult.issues.length,
+    adapterCallsWouldExecute: false,
+    wouldWriteAudit: false,
+    wouldRunVerifier: false,
+  },
+  "dry-run logic smoke C exported checks should summarize blocked behavior",
+);
+
+assert.equal(
+  logicSitemapDryRunResult.taskId,
+  "sitemap-audit",
+  "dry-run logic smoke D should preserve sitemap task id",
+);
+assert.equal(
+  logicSitemapDryRunResult.workItems.length,
+  400,
+  "dry-run logic smoke D should represent 400 planned work items",
+);
+assert.equal(
+  logicSitemapDryRunResult.workItems.some(
+    (workItem) => workItem.previewState === "completed",
+  ),
+  false,
+  "dry-run logic smoke D completed work item count should remain zero",
+);
+assert.ok(
+  logicSitemapDryRunResult.batches.length > 0,
+  "dry-run logic smoke D should preview batches",
+);
+assert.equal(
+  logicSitemapDryRunResult.verifier.verifierRequired,
+  true,
+  "dry-run logic smoke D should require verifier",
+);
+assert.equal(
+  logicSitemapDryRunResult.verifier.wouldRunVerifier,
+  false,
+  "dry-run logic smoke D should not run verifier",
+);
+assert.notEqual(
+  logicSitemapDryRunResult.state,
+  "completed",
+  "dry-run logic smoke D final state should not be completed",
+);
+assert.deepEqual(
+  logicSitemapDryRunPreviewCounts,
+  {
+    plannedWorkItems: 400,
+    completedWorkItems: 0,
+    plannedBatches: logicSitemapDryRunResult.batches.length,
+    verifierRequired: true,
+    wouldRunVerifier: false,
+    finalStateNotCompleted: true,
+  },
+  "dry-run logic smoke D exported counts should summarize sitemap preview behavior",
+);
+
+assert.ok(
+  logicAdapterPreviewChecks.modelAdapterPreview,
+  "dry-run logic smoke E should include a model adapter preview",
+);
+assert.ok(
+  logicAdapterPreviewChecks.toolAdapterPreview,
+  "dry-run logic smoke E should include a tool adapter preview",
+);
+assert.equal(
+  logicAdapterPreviewChecks.wouldCallAdapters,
+  false,
+  "dry-run logic smoke E should not call adapters",
+);
+assert.equal(
+  logicAdapterPreviewChecks.outputReferencesArePreviewOnly,
+  true,
+  "dry-run logic smoke E output references should be absent, null, or preview-only",
+);
+assert.equal(
+  logicAdapterPreviewChecks.adaptersAreNotCompletionAuthority,
+  true,
+  "dry-run logic smoke E adapters should not be completion authority",
+);
+for (const adapterPreview of logicAdapterCallPreviews) {
+  assert.equal(
+    adapterPreview.wouldCall,
+    false,
+    "dry-run logic smoke E every adapter preview should have wouldCall false",
+  );
+  assert.equal(
+    adapterPreview.outputReference === undefined ||
+      adapterPreview.outputReference === null ||
+      adapterPreview.metadata?.previewOnly === true,
+    true,
+    "dry-run logic smoke E adapter output should be absent, null, or preview-only",
+  );
+  assert.equal(
+    adapterPreview.completionAuthority,
+    false,
+    "dry-run logic smoke E adapter previews are not completion authority",
+  );
+  assert.equal(
+    adapterPreview.status === undefined || adapterPreview.status !== "completed",
+    true,
+    "dry-run logic smoke E adapter call status must not imply real completed task",
+  );
+}
+
+assert.deepEqual(
+  logicAuditPreviewChecks.expectedAuditEventIds,
+  logicAuditPreview.expectedAuditEventIds,
+  "dry-run logic smoke F expected audit ids should be represented",
+);
+assert.ok(
+  logicAuditPreview.expectedAuditEventIds.includes("audit.input.accepted"),
+  "dry-run logic smoke F should preserve expected audit event ids",
+);
+assert.equal(
+  logicAuditPreview.emittedAuditEventIds.length === 0 ||
+    logicAuditPreview.auditReference?.metadata?.inputDerivedOnly === true,
+  true,
+  "dry-run logic smoke F emitted audit ids should be empty or input-derived only",
+);
+assert.equal(
+  logicAuditPreview.wouldWriteAudit,
+  false,
+  "dry-run logic smoke F should not write audit events",
+);
+assert.equal(
+  logicAuditPreview.auditStatus !== "complete_from_input" ||
+    logicAuditPreview.auditReference?.metadata?.inputDerivedOnly === true,
+  true,
+  "dry-run logic smoke F audit status must not imply runtime completion unless input-derived",
+);
+assert.equal(
+  logicAuditPreviewChecks.wouldWriteAudit,
+  false,
+  "dry-run logic smoke F exported checks should keep audit writes disabled",
+);
+
+assert.equal(
+  logicVerifierPreview.verifierRequired,
+  true,
+  "dry-run logic smoke G should represent verifier requirement",
+);
+assert.equal(
+  logicVerifierPreview.wouldRunVerifier,
+  false,
+  "dry-run logic smoke G should not run verifier",
+);
+assert.notEqual(
+  logicVerifierPreview.verifierStatus,
+  "verified",
+  "dry-run logic smoke G verifier status should not be verified",
+);
+assert.equal(
+  logicVerifierPreview.verifierResultReference === undefined ||
+    logicVerifierPreview.verifierResultReference === null ||
+    logicVerifierPreview.verifierResultReference.metadata?.inputDerivedOnly === true,
+  true,
+  "dry-run logic smoke G verifier result reference should be absent unless input-derived",
+);
+assert.equal(
+  logicVerifierPreview.completionGateSatisfied,
+  false,
+  "dry-run logic smoke G verifier preview cannot complete the dry-run",
+);
+assert.deepEqual(
+  logicVerifierPreviewChecks,
+  {
+    verifierRequired: true,
+    wouldRunVerifier: false,
+    verifierStatusNotVerified: true,
+    verifierResultReference: logicVerifierPreview.verifierResultReference,
+  },
+  "dry-run logic smoke G exported checks should summarize verifier preview behavior",
+);
+
+assert.ok(
+  logicResumePreview,
+  "dry-run logic smoke H should expose resume preview data",
+);
+assert.equal(
+  logicResumePreviewChecks.nextStepId,
+  "step-resume-002",
+  "dry-run logic smoke H should represent deterministic next step id",
+);
+assert.equal(
+  logicResumePreviewChecks.nextBatchId,
+  "batch-resume-002",
+  "dry-run logic smoke H should represent deterministic next batch id",
+);
+assert.deepEqual(
+  logicResumePreviewChecks.pendingWorkItemIds,
+  ["work-resume-002", "work-resume-003"],
+  "dry-run logic smoke H pending work item ids should be deterministic",
+);
+assert.deepEqual(
+  logicResumePreviewChecks.retryableWorkItemIds,
+  ["work-resume-001"],
+  "dry-run logic smoke H retryable work item ids should be deterministic",
+);
+assert.equal(
+  logicResumePreviewChecks.wouldUpdateResume,
+  false,
+  "dry-run logic smoke H should not update resume state",
+);
+
+assert.equal(
+  deterministicDryRunOutput.equivalent,
+  true,
+  "dry-run logic smoke I repeated dry-run output should be equivalent",
+);
+assert.deepEqual(
+  deterministicDryRunOutput.first,
+  deterministicDryRunOutput.second,
+  "dry-run logic smoke I repeated dry-run output should deep-equal",
+);
+assert.deepEqual(
+  deterministicDryRunOutput.first.steps.map((step) => step.stepId),
+  deterministicDryRunOutput.second.steps.map((step) => step.stepId),
+  "dry-run logic smoke I step ordering should be stable",
+);
+assert.deepEqual(
+  deterministicDryRunOutput.first.batches.map((batch) => batch.batchId),
+  deterministicDryRunOutput.second.batches.map((batch) => batch.batchId),
+  "dry-run logic smoke I batch ordering should be stable",
+);
+assert.deepEqual(
+  deterministicDryRunOutput.first.workItems.map((workItem) => workItem.workItemId),
+  deterministicDryRunOutput.second.workItems.map((workItem) => workItem.workItemId),
+  "dry-run logic smoke I work item ordering should be stable",
+);
+assert.deepEqual(
+  deterministicDryRunOutput.first.adapterCalls.map(
+    (adapterCall) => adapterCall.callId,
+  ),
+  deterministicDryRunOutput.second.adapterCalls.map(
+    (adapterCall) => adapterCall.callId,
+  ),
+  "dry-run logic smoke I adapter call ordering should be stable",
+);
+assert.deepEqual(
+  deterministicDryRunOutput.first.issues.map((issue) => issue.code),
+  deterministicDryRunOutput.second.issues.map((issue) => issue.code),
+  "dry-run logic smoke I issue ordering should be stable",
+);
+assert.deepEqual(
+  deterministicDryRunOutput.first.summary,
+  deterministicDryRunOutput.second.summary,
+  "dry-run logic smoke I summary should be stable",
+);
+
+assertDryRunSummaryConsistent(logicSafeDryRunPreviewResult);
+assertDryRunSummaryConsistent(logicApprovalRequiredDryRunResult);
+assertDryRunSummaryConsistent(logicBlockedDryRunResult);
+assertDryRunSummaryConsistent(logicSitemapDryRunResult);
+assert.equal(
+  summaryBehavior.plannedSteps,
+  logicAdapterCallPreviews.length > 0 ? 1 : 0,
+  "dry-run logic smoke J summary should represent planned steps",
+);
+assert.deepEqual(
+  summaryBehaviorChecks,
+  {
+    plannedStepsMatchesArray: true,
+    plannedBatchesMatchesArray: true,
+    plannedWorkItemsMatchesArray: true,
+    wouldCallAdapters: 0,
+    wouldWriteAudit: false,
+    wouldRunVerifier: false,
+  },
+  "dry-run logic smoke J exported summary checks should be honest",
+);
+
+assert.deepEqual(
+  individualPreviewHelpers.steps,
+  logicSafeDryRunPreviewResult.steps,
+  "dry-run logic smoke K direct step helper should match result steps",
+);
+assert.deepEqual(
+  individualPreviewHelpers.batches,
+  logicSafeDryRunPreviewResult.batches,
+  "dry-run logic smoke K direct batch helper should match result batches",
+);
+assert.deepEqual(
+  individualPreviewHelpers.workItems,
+  logicSafeDryRunPreviewResult.workItems,
+  "dry-run logic smoke K direct work item helper should match result work items",
+);
+assert.deepEqual(
+  individualPreviewHelpers.adapterCalls,
+  logicSafeDryRunPreviewResult.adapterCalls,
+  "dry-run logic smoke K direct adapter helper should match result adapter previews",
+);
+assert.deepEqual(
+  individualPreviewHelpers.audit,
+  logicSafeDryRunPreviewResult.audit,
+  "dry-run logic smoke K direct audit helper should match result audit preview",
+);
+assert.deepEqual(
+  individualPreviewHelpers.verifier,
+  logicSafeDryRunPreviewResult.verifier,
+  "dry-run logic smoke K direct verifier helper should match result verifier preview",
+);
+assert.deepEqual(
+  individualPreviewHelpers.resume,
+  logicSafeDryRunPreviewResult.resume,
+  "dry-run logic smoke K direct resume helper should match result resume preview",
+);
+for (const dryRunLogicResult of dryRunLogicResults) {
+  assert.equal(
+    dryRunLogicResult.adapterCalls.some((adapterCall) => adapterCall.wouldCall),
+    false,
+    "dry-run logic smoke K should never represent actual adapter execution",
+  );
+  assert.equal(
+    dryRunLogicResult.audit.wouldWriteAudit,
+    false,
+    "dry-run logic smoke K should never represent actual audit writes",
+  );
+  assert.equal(
+    dryRunLogicResult.verifier.wouldRunVerifier,
+    false,
+    "dry-run logic smoke K should never represent actual verifier execution",
+  );
+  assert.equal(
+    dryRunLogicResult.resume?.wouldUpdateResume ?? false,
+    false,
+    "dry-run logic smoke K should never represent lifecycle or resume mutation",
+  );
+  assert.equal(
+    dryRunLogicResult.workItems.some(
+      (workItem) => workItem.previewState === "completed",
+    ),
+    false,
+    "dry-run logic smoke K should never complete work items",
+  );
+  assert.notEqual(
+    dryRunLogicResult.state,
+    "completed",
+    "dry-run logic smoke K should never represent real completed state",
+  );
+}
+
+const invalidBlockedDryRunResult = runAgenticRunnerDryRun({
+  taskId: "invalid-blocked-preview",
+  mode: "dry_run",
+  runnerPlan: {
+    kind: "data",
+    data: {
+      previewOnly: true,
+    },
+  },
+  options: {
+    requireAudit: true,
+    requireVerifier: true,
+    completionGatedByVerifier: true,
+    maxWorkItems: 1,
+  },
+  policyPreview: {
+    kind: "data",
+    data: {
+      status: "denied",
+      decision: "denied",
+    },
+  },
+  plannedSteps: [
+    {
+      stepId: "",
+      stepKind: "batch_execution",
+      previewState: "blocked",
+      wouldRun: true,
+      approvalRequired: false,
+      plannedAdapterCallIds: ["missing-adapter-call"],
+      expectedAuditEventIds: ["audit.invalid.expected"],
+      verifierRequired: true,
+      issues: [],
+    },
+  ],
+  plannedBatches: [
+    {
+      batchId: "batch-invalid",
+      workItemIds: ["work-invalid-002"],
+      expectedItemCount: 2,
+      previewState: "preview_ready",
+      wouldRun: true,
+      issues: [],
+    },
+  ],
+  plannedWorkItems: [
+    {
+      workItemId: "work-invalid-001",
+      batchId: "batch-invalid",
+      previewState: "preview_ready",
+      wouldProcess: true,
+      issues: [],
+    },
+    {
+      workItemId: "work-invalid-001",
+      batchId: "batch-invalid",
+      previewState: "preview_ready",
+      wouldProcess: true,
+      issues: [],
+    },
+  ],
+  adapterCalls: [
+    {
+      callId: "adapter-invalid",
+      kind: "tool",
+      adapterId: "tool-adapter-preview",
+      operation: "preview_tool_invocation",
+      wouldCall: true,
+      approvalRequired: false,
+      issues: [],
+      observationOnly: true,
+      completionAuthority: false,
+    },
+  ],
+  auditPreviewInput: {
+    kind: "data",
+    data: {
+      expectedAuditEventIds: ["audit.invalid.expected"],
+      wouldWriteAudit: true,
+    },
+  },
+  verifierPreviewInput: {
+    kind: "data",
+    data: {
+      verifierRequired: true,
+      wouldRunVerifier: true,
+      verifierStatus: "verified",
+    },
+  },
+  resumePreviewInput: {
+    kind: "data",
+    data: {
+      pendingWorkItemIds: ["work-invalid-001"],
+      retryableWorkItemIds: ["work-invalid-002"],
+      wouldUpdateResume: true,
+    },
+  },
+});
+
+assertDryRunResultShape(invalidBlockedDryRunResult);
+assertDryRunSummaryConsistent(invalidBlockedDryRunResult);
+assertDryRunSideEffectFree(invalidBlockedDryRunResult);
+assert.notEqual(
+  invalidBlockedDryRunResult.state,
+  "completed",
+  "dry-run logic smoke L invalid input should not complete",
+);
+assert.ok(
+  invalidBlockedDryRunResult.issues.length > 0,
+  "dry-run logic smoke L invalid input should expose issues",
+);
+assert.equal(
+  invalidBlockedDryRunResult.summary.runnableSteps,
+  0,
+  "dry-run logic smoke L invalid input should not invent runnable steps",
+);
+assert.equal(
+  invalidBlockedDryRunResult.summary.runnableBatches,
+  0,
+  "dry-run logic smoke L invalid input should not invent runnable batches",
+);
+assert.equal(
+  invalidBlockedDryRunResult.summary.processableWorkItems,
+  0,
+  "dry-run logic smoke L invalid input should not invent processable work",
+);
+assert.equal(
+  invalidBlockedDryRunResult.adapterCalls.some((adapterCall) => adapterCall.wouldCall),
+  false,
+  "dry-run logic smoke L invalid input should not call adapters",
+);
+assert.equal(
+  invalidBlockedDryRunResult.audit.wouldWriteAudit,
+  false,
+  "dry-run logic smoke L invalid input should not write audit events",
+);
+assert.equal(
+  invalidBlockedDryRunResult.verifier.wouldRunVerifier,
+  false,
+  "dry-run logic smoke L invalid input should not run verifier",
+);
+assert.equal(
+  invalidBlockedDryRunResult.resume?.wouldUpdateResume,
+  false,
+  "dry-run logic smoke L invalid input should not mutate resume state",
+);
 
 const planningResults = [
   sitemapAuditPlanningResult,
