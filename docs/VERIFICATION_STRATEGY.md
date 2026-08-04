@@ -246,7 +246,7 @@ cross-repository verification, performance checks, reliability checks, and
 organization-specific verification profiles.
 
 ## Non-goals
-- Implement verifier package source code.
+- Implement agent runner behavior or autonomous execution.
 - Choose a test runner, runtime, framework, or package manager.
 - Define concrete CLI commands that do not exist yet.
 - Replace policy, audit, task, adapter, or memory contracts.

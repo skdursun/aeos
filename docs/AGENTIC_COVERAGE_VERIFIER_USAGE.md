@@ -119,8 +119,9 @@ Tracked fields:
 
 When work item ids are available, batch counters must match referenced work item
 states. Unknown batch items, duplicate batch membership, counter mismatches,
-over-accounting, and under-accounting produce issues. A batch mismatch prevents
-verified status.
+over-accounting, under-accounting, and referenced pending or retryable items
+produce issues. Pending or retryable batch items use `batch_unfinished_items`
+and prevent verified status.
 
 ## Inventory Coverage
 Inventory coverage compares expected and discovered item counts.

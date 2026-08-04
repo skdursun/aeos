@@ -1026,6 +1026,12 @@ assertRejectedVerifierResult(
   ["incomplete", "failed", "blocked"],
   "logic smoke Q retryable batch work",
 );
+assert.ok(
+  smokeBatchRetryablePreventsVerification.batchCoverage.some((check) =>
+    check.issues.some((issue) => issue.code === "batch_unfinished_items"),
+  ),
+  "logic smoke Q should expose unfinished batch item coverage",
+);
 
 const smokeBatchOrderingInput = {
   taskId: "smoke-batch-issue-ordering",

@@ -351,6 +351,20 @@ export function verifyAgenticBatchCoverage(
         );
       }
 
+      if (counts.pending > 0 || retryableItems > 0) {
+        issues.push(
+          issue(
+            "batch_unfinished_items",
+            `Batch ${batch.id} has ${counts.pending} pending items and ${retryableItems} retryable items.`,
+            "error",
+            "coverage_failure",
+            `batch-coverage:${batch.id}`,
+            true,
+            { batchId: batch.id },
+          ),
+        );
+      }
+
       if (accountedItems > batch.expectedItemCount) {
         issues.push(
           issue(
