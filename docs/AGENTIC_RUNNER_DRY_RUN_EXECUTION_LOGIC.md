@@ -538,6 +538,23 @@ Dry-run state behavior:
 - verifier required: verifier handoff required but not executed;
 - completed state: forbidden for dry-run-created results.
 
+## Implemented MVP Notes
+The current MVP dry-run logic is implemented as a side-effect-free core helper.
+It builds preview records from represented input and returns deterministic
+summary counts and issues without executing the runner.
+
+Safety hardening rules now enforced by implementation:
+
+- adapter, audit, verifier, and resume side effects are forced false;
+- dry-run never produces real completed state;
+- adapter previews remain observation-only and are not completion authority;
+- verifier preview remains required/not-run and is not verification execution;
+- hostile or runtime-sourced `completed` or `verified` step, batch, and work
+  item preview state claims are rejected or normalized;
+- forbidden terminal preview states produce deterministic dry-run safety issues;
+- summary counts do not treat rejected terminal previews as runnable or
+  processable work.
+
 ## Sitemap Example
 A sitemap task has 400 work items.
 
