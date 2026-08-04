@@ -51,6 +51,7 @@ condition.
 - TASK-0216: Add agentic runner execution contract smoke tests.
 - TASK-0217: Design agentic runner dry-run execution logic.
 - TASK-0218: Implement agentic runner dry-run execution contracts.
+- TASK-0219: Add agentic runner dry-run contract examples.
 
 ## Do Not Load By Default
 
@@ -61,7 +62,7 @@ condition.
 
 ## Next Task
 
-TASK-0219 Add agentic runner dry-run contract examples.
+TASK-0220 Add agentic runner dry-run contract smoke tests.
 
 ## Current Plans
 
