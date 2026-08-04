@@ -45,6 +45,15 @@ import {
   verifierGatedCompletionPlanningResult,
   waitingForApprovalPlanningResult,
 } from "../dist/agentic-runner-planning.example.js";
+import {
+  auditHandoffGapExample,
+  dryRunExecutionInputExample,
+  executionExampleAdapterCalls,
+  failedBlockedExecutionResultExample,
+  partialSitemapExecutionResultExample,
+  verifiedCompleteExecutionResultExample,
+  waitingForApprovalExecutionResultExample,
+} from "../dist/agentic-runner-execution.example.js";
 import { planAgenticRunner, verifyAgenticCoverage } from "../dist/index.js";
 
 async function pathExists(path) {
@@ -272,6 +281,193 @@ function assertVerifierGateHonest(result) {
       result.verifier.verifierStatus,
       "verified",
       `${result.taskId} runner result must not complete without verified handoff`,
+    );
+  }
+}
+
+function assertExecutionResultShape(result) {
+  for (const field of [
+    "ok",
+    "taskId",
+    "mode",
+    "state",
+    "steps",
+    "batches",
+    "workItemOutcomes",
+    "adapterCalls",
+    "audit",
+    "verifier",
+    "issues",
+    "summary",
+  ]) {
+    assert.ok(
+      Object.hasOwn(result, field),
+      `${result.taskId} execution result should expose stable field ${field}`,
+    );
+  }
+
+  for (const optionalField of ["plan", "policy", "approval", "resume"]) {
+    assert.ok(
+      !Object.hasOwn(result, optionalField) ||
+        result[optionalField] === undefined ||
+        typeof result[optionalField] === "object",
+      `${result.taskId} execution result ${optionalField} field should remain optional object shape`,
+    );
+  }
+
+  assert.ok(
+    Array.isArray(result.steps),
+    `${result.taskId} execution result should expose steps array`,
+  );
+  assert.ok(
+    Array.isArray(result.batches),
+    `${result.taskId} execution result should expose batches array`,
+  );
+  assert.ok(
+    Array.isArray(result.workItemOutcomes),
+    `${result.taskId} execution result should expose work item outcomes array`,
+  );
+  assert.ok(
+    Array.isArray(result.adapterCalls),
+    `${result.taskId} execution result should expose adapter calls array`,
+  );
+  assert.ok(
+    Array.isArray(result.issues),
+    `${result.taskId} execution result should expose issues array`,
+  );
+}
+
+function assertExecutionSummaryConsistent(result) {
+  const executedSteps = result.steps.filter((step) => step.startedAt).length;
+  const completedSteps = result.steps.filter(
+    (step) => step.state === "completed",
+  ).length;
+  const failedSteps = result.steps.filter((step) => step.state === "failed").length;
+  const blockedSteps = result.steps.filter(
+    (step) => step.state === "blocked",
+  ).length;
+  const retryableSteps = result.steps.filter(
+    (step) => step.state === "retryable",
+  ).length;
+  const completedBatches = result.batches.filter(
+    (batch) => batch.state === "completed",
+  ).length;
+  const failedBatches = result.batches.filter(
+    (batch) => batch.state === "failed",
+  ).length;
+
+  assert.equal(
+    result.summary.plannedSteps,
+    result.steps.length,
+    `${result.taskId} execution summary planned steps should match steps array`,
+  );
+  assert.equal(
+    result.summary.executedSteps,
+    executedSteps,
+    `${result.taskId} execution summary executed steps should match started steps`,
+  );
+  assert.equal(
+    result.summary.completedSteps,
+    completedSteps,
+    `${result.taskId} execution summary completed steps should match completed step states`,
+  );
+  assert.equal(
+    result.summary.failedSteps,
+    failedSteps,
+    `${result.taskId} execution summary failed steps should match failed step states`,
+  );
+  assert.equal(
+    result.summary.blockedSteps,
+    blockedSteps,
+    `${result.taskId} execution summary blocked steps should match blocked step states`,
+  );
+  assert.equal(
+    result.summary.retryableSteps,
+    retryableSteps,
+    `${result.taskId} execution summary retryable steps should match retryable step states`,
+  );
+  assert.equal(
+    result.summary.plannedBatches,
+    result.batches.length,
+    `${result.taskId} execution summary planned batches should match batches array`,
+  );
+  assert.equal(
+    result.summary.completedBatches,
+    completedBatches,
+    `${result.taskId} execution summary completed batches should match completed batch states`,
+  );
+  assert.equal(
+    result.summary.failedBatches,
+    failedBatches,
+    `${result.taskId} execution summary failed batches should match failed batch states`,
+  );
+  assert.equal(
+    result.summary.expectedWorkItems,
+    result.batches.reduce((count, batch) => count + batch.expectedItemCount, 0),
+    `${result.taskId} execution summary expected work items should match batches`,
+  );
+  assert.equal(
+    result.summary.completedWorkItems,
+    result.batches.reduce(
+      (count, batch) => count + batch.observedCompletedCount,
+      0,
+    ),
+    `${result.taskId} execution summary completed work items should match batches`,
+  );
+  assert.equal(
+    result.summary.failedWorkItems,
+    result.batches.reduce((count, batch) => count + batch.observedFailedCount, 0),
+    `${result.taskId} execution summary failed work items should match batches`,
+  );
+  assert.equal(
+    result.summary.skippedWorkItems,
+    result.batches.reduce(
+      (count, batch) => count + batch.observedSkippedCount,
+      0,
+    ),
+    `${result.taskId} execution summary skipped work items should match batches`,
+  );
+  assert.equal(
+    result.summary.retryableWorkItems,
+    result.batches.reduce(
+      (count, batch) => count + batch.observedRetryableCount,
+      0,
+    ),
+    `${result.taskId} execution summary retryable work items should match batches`,
+  );
+  assert.equal(
+    result.summary.adapterCallCount,
+    result.adapterCalls.length,
+    `${result.taskId} execution summary adapter call count should match adapter calls`,
+  );
+  assert.equal(
+    result.summary.auditEventsEmitted,
+    result.audit.emittedAuditEventIds.length,
+    `${result.taskId} execution summary audit count should match emitted audit events`,
+  );
+  assert.equal(
+    result.summary.verifierIssueCount,
+    result.verifier.issues.length,
+    `${result.taskId} execution summary verifier issue count should match verifier issues`,
+  );
+  assert.equal(
+    result.summary.issueCount,
+    result.issues.length,
+    `${result.taskId} execution summary issue count should match issues array`,
+  );
+}
+
+function assertExecutionVerifierGateHonest(result) {
+  if (result.ok || result.state === "completed" || result.state === "verified") {
+    assert.equal(
+      result.verifier.verifierStatus,
+      "verified",
+      `${result.taskId} execution completion must be gated by verified verifier handoff`,
+    );
+    assert.equal(
+      result.verifier.completionGateSatisfied,
+      true,
+      `${result.taskId} execution completion must satisfy verifier completion gate`,
     );
   }
 }
@@ -2322,6 +2518,362 @@ assert.notEqual(
   incompleteSitemapRunnerResult.verifier.verifierStatus,
   "verified",
   "runner smoke H incomplete example should not have verified handoff",
+);
+
+assert.equal(
+  dryRunExecutionInputExample.mode,
+  "dry_run",
+  "execution smoke A dry-run input should preserve dry_run mode",
+);
+assert.equal(
+  dryRunExecutionInputExample.metadata?.expectedExecutionState,
+  "preflight",
+  "execution smoke A dry-run input should represent preflight state expectation",
+);
+assert.ok(
+  dryRunExecutionInputExample.plannedSteps.every(
+    (step) => step.state === "pending",
+  ),
+  "execution smoke A dry-run input should not imply completed steps",
+);
+assert.ok(
+  dryRunExecutionInputExample.plannedBatches.every(
+    (batch) =>
+      batch.state === "pending" &&
+      batch.observedCompletedCount === 0 &&
+      batch.observedFailedCount === 0 &&
+      batch.observedSkippedCount === 0 &&
+      batch.observedRetryableCount === 0,
+  ),
+  "execution smoke A dry-run input should not imply batch execution",
+);
+assert.ok(
+  dryRunExecutionInputExample.plannedWorkItems.every(
+    (workItem) => workItem.state === "pending",
+  ),
+  "execution smoke A dry-run input should not imply completed work items",
+);
+assert.equal(
+  dryRunExecutionInputExample.adapterCalls?.length,
+  0,
+  "execution smoke A dry-run input should not record adapter calls",
+);
+assert.equal(
+  dryRunExecutionInputExample.audit?.emittedAuditEventIds.length,
+  0,
+  "execution smoke A dry-run input should not emit audit events",
+);
+assert.equal(
+  dryRunExecutionInputExample.verifier?.verifierRequired,
+  true,
+  "execution smoke A dry-run input should represent verifier requirement",
+);
+assert.equal(
+  dryRunExecutionInputExample.verifier?.verifierStatus,
+  "pending",
+  "execution smoke A dry-run input should not falsely complete verifier handoff",
+);
+assert.equal(
+  dryRunExecutionInputExample.verifier?.completionGateSatisfied,
+  false,
+  "execution smoke A dry-run input should not satisfy completion gate",
+);
+
+const executionResults = [
+  waitingForApprovalExecutionResultExample,
+  partialSitemapExecutionResultExample,
+  verifiedCompleteExecutionResultExample,
+  failedBlockedExecutionResultExample,
+];
+
+for (const executionResult of executionResults) {
+  assertExecutionResultShape(executionResult);
+  assertExecutionSummaryConsistent(executionResult);
+  assertExecutionVerifierGateHonest(executionResult);
+}
+
+assert.equal(
+  waitingForApprovalExecutionResultExample.approval?.approvalRequired,
+  true,
+  "execution smoke B should require approval",
+);
+assert.equal(
+  waitingForApprovalExecutionResultExample.approval?.approvalStatus,
+  "pending",
+  "execution smoke B should represent pending approval",
+);
+assert.equal(
+  waitingForApprovalExecutionResultExample.state,
+  "waiting_for_approval",
+  "execution smoke B should wait for approval",
+);
+assert.equal(
+  waitingForApprovalExecutionResultExample.policy?.decision,
+  "needs_approval",
+  "execution smoke B policy execution should need approval",
+);
+assert.equal(
+  waitingForApprovalExecutionResultExample.adapterCalls.length,
+  0,
+  "execution smoke B should not execute model or tool adapter calls",
+);
+assert.equal(
+  waitingForApprovalExecutionResultExample.ok,
+  false,
+  "execution smoke B should not be ok while approval is pending",
+);
+assert.notEqual(
+  waitingForApprovalExecutionResultExample.state,
+  "completed",
+  "execution smoke B should not be completed",
+);
+
+assert.equal(
+  partialSitemapExecutionResultExample.taskId,
+  "sitemap-audit",
+  "execution smoke C should preserve sitemap audit task id",
+);
+assert.equal(
+  partialSitemapExecutionResultExample.summary.expectedWorkItems,
+  400,
+  "execution smoke C should represent 400 expected work items",
+);
+assert.equal(
+  partialSitemapExecutionResultExample.summary.completedWorkItems,
+  20,
+  "execution smoke C should represent only 20 completed work items",
+);
+assert.equal(
+  partialSitemapExecutionResultExample.summary.retryableWorkItems,
+  380,
+  "execution smoke C should represent 380 retryable remaining work items",
+);
+assert.ok(
+  ["partially_completed", "retryable"].includes(
+    partialSitemapExecutionResultExample.batches[0]?.state,
+  ),
+  "execution smoke C batch should be partially completed or retryable",
+);
+assert.equal(
+  partialSitemapExecutionResultExample.verifier.verifierStatus,
+  "incomplete",
+  "execution smoke C verifier handoff should be incomplete",
+);
+assert.ok(
+  ["partially_completed", "retryable"].includes(
+    partialSitemapExecutionResultExample.state,
+  ),
+  "execution smoke C state should remain incomplete or retryable",
+);
+assert.equal(
+  partialSitemapExecutionResultExample.ok,
+  false,
+  "execution smoke C should not report ok",
+);
+assert.notEqual(
+  partialSitemapExecutionResultExample.state,
+  "completed",
+  "execution smoke C should not be completed",
+);
+assert.ok(
+  partialSitemapExecutionResultExample.adapterCalls.some(
+    (call) => call.metadata?.proposedDone === true,
+  ),
+  "execution smoke C should represent adapter proposed done",
+);
+assert.equal(
+  partialSitemapExecutionResultExample.verifier.completionGateSatisfied,
+  false,
+  "execution smoke C adapter proposed done must not satisfy verifier gate",
+);
+
+const completeExecutionAccountedItems =
+  verifiedCompleteExecutionResultExample.summary.completedWorkItems +
+  verifiedCompleteExecutionResultExample.summary.failedWorkItems +
+  verifiedCompleteExecutionResultExample.summary.skippedWorkItems;
+
+assert.equal(
+  verifiedCompleteExecutionResultExample.verifier.verifierStatus,
+  "verified",
+  "execution smoke D verifier handoff should be verified",
+);
+assert.ok(
+  ["verified", "completed"].includes(verifiedCompleteExecutionResultExample.state),
+  "execution smoke D should be verified or completed by current contract",
+);
+assert.equal(
+  verifiedCompleteExecutionResultExample.ok,
+  true,
+  "execution smoke D should report ok after verified handoff",
+);
+assert.equal(
+  verifiedCompleteExecutionResultExample.summary.expectedWorkItems,
+  completeExecutionAccountedItems,
+  "execution smoke D summary should account for terminal work item outcomes",
+);
+assert.equal(
+  verifiedCompleteExecutionResultExample.verifier.completionGatedByVerifier,
+  true,
+  "execution smoke D should make verifier-gated completion explicit",
+);
+assert.equal(
+  verifiedCompleteExecutionResultExample.verifier.completionGateSatisfied,
+  true,
+  "execution smoke D completed state should be verifier-gated",
+);
+
+const modelAdapterCall = executionExampleAdapterCalls.find(
+  (call) => call.kind === "model",
+);
+const toolAdapterCall = executionExampleAdapterCalls.find(
+  (call) => call.kind === "tool",
+);
+
+assert.ok(
+  modelAdapterCall,
+  "execution smoke E should include a model adapter call record",
+);
+assert.ok(
+  toolAdapterCall,
+  "execution smoke E should include a tool adapter call record",
+);
+for (const adapterCall of executionExampleAdapterCalls) {
+  assert.ok(
+    ["model", "tool"].includes(adapterCall.kind),
+    "execution smoke E adapter records should expose model or tool kind",
+  );
+  assert.ok(
+    adapterCall.adapterId,
+    "execution smoke E adapter records should expose adapter id",
+  );
+  assert.ok(
+    adapterCall.operation,
+    "execution smoke E adapter records should expose operation",
+  );
+  assert.equal(
+    adapterCall.observationOnly,
+    true,
+    "execution smoke E adapter records should be observations only",
+  );
+  assert.equal(
+    adapterCall.completionAuthority,
+    false,
+    "execution smoke E adapter records must not be task completion authority",
+  );
+}
+assert.equal(
+  partialSitemapExecutionResultExample.adapterCalls[0]?.completionAuthority,
+  false,
+  "execution smoke E adapter output must not be treated as completion proof",
+);
+assert.notEqual(
+  partialSitemapExecutionResultExample.verifier.verifierStatus,
+  "verified",
+  "execution smoke E adapter output must not replace verifier proof",
+);
+
+assert.ok(
+  auditHandoffGapExample.expectedAuditEventIds.length > 0,
+  "execution smoke F should represent expected audit event ids",
+);
+assert.ok(
+  auditHandoffGapExample.emittedAuditEventIds.length > 0,
+  "execution smoke F should represent emitted audit event ids",
+);
+assert.deepEqual(
+  auditHandoffGapExample.missingAuditEventIds,
+  ["audit:handoff-finished"],
+  "execution smoke F should represent missing audit event ids",
+);
+assert.ok(
+  !["complete", "verified"].includes(auditHandoffGapExample.auditStatus),
+  "execution smoke F audit status should not be complete or verified",
+);
+assert.ok(
+  auditHandoffGapExample.issues.some(
+    (issue) => issue.code === "audit_event_missing",
+  ),
+  "execution smoke F should expose an audit handoff issue",
+);
+
+assert.ok(
+  partialSitemapExecutionResultExample.resume?.nextStepId,
+  "execution smoke G should represent next step id",
+);
+assert.ok(
+  partialSitemapExecutionResultExample.resume?.nextBatchId,
+  "execution smoke G should represent next batch id",
+);
+assert.ok(
+  partialSitemapExecutionResultExample.resume?.pendingWorkItemIds.length > 0,
+  "execution smoke G should represent pending work item ids",
+);
+assert.ok(
+  partialSitemapExecutionResultExample.resume?.retryableWorkItemIds.length > 0,
+  "execution smoke G should represent retryable work item ids",
+);
+assert.ok(
+  partialSitemapExecutionResultExample.resume?.updatedAt,
+  "execution smoke G should expose updatedAt",
+);
+
+assert.equal(
+  failedBlockedExecutionResultExample.policy?.decision,
+  "denied",
+  "execution smoke H should represent denied policy",
+);
+assert.equal(
+  failedBlockedExecutionResultExample.approval?.approvalStatus,
+  "denied",
+  "execution smoke H should represent blocked approval",
+);
+assert.ok(
+  ["blocked", "failed"].includes(failedBlockedExecutionResultExample.state),
+  "execution smoke H should be blocked or failed",
+);
+assert.ok(
+  failedBlockedExecutionResultExample.issues.length > 0,
+  "execution smoke H should include issues",
+);
+assert.equal(
+  failedBlockedExecutionResultExample.adapterCalls.length,
+  0,
+  "execution smoke H should not execute adapters after policy denial",
+);
+assert.notEqual(
+  failedBlockedExecutionResultExample.state,
+  "completed",
+  "execution smoke H should not imply completed state",
+);
+assert.equal(
+  failedBlockedExecutionResultExample.ok,
+  false,
+  "execution smoke H should not report ok",
+);
+
+for (const executionResult of executionResults) {
+  if (executionResult.ok || executionResult.state === "completed") {
+    assert.equal(
+      executionResult.verifier.verifierStatus,
+      "verified",
+      "execution smoke J should not allow ok/completed without verified verifier status",
+    );
+  }
+}
+assert.equal(
+  partialSitemapExecutionResultExample.ok,
+  false,
+  "execution smoke J partial sitemap should remain ok false",
+);
+assert.notEqual(
+  partialSitemapExecutionResultExample.verifier.verifierStatus,
+  "verified",
+  "execution smoke J partial sitemap should remain incomplete",
+);
+assert.equal(
+  verifiedCompleteExecutionResultExample.verifier.verifierStatus,
+  "verified",
+  "execution smoke J verified complete example should have verified verifier status",
 );
 
 const planningResults = [

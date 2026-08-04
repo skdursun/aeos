@@ -48,6 +48,7 @@ condition.
 - TASK-0213: Design agentic runner execution lifecycle.
 - TASK-0214: Implement agentic runner execution contracts.
 - TASK-0215: Add agentic runner execution contract examples.
+- TASK-0216: Add agentic runner execution contract smoke tests.
 
 ## Do Not Load By Default
 
@@ -58,7 +59,7 @@ condition.
 
 ## Next Task
 
-TASK-0216 Add agentic runner execution contract smoke tests.
+TASK-0217 Design agentic runner dry-run execution logic.
 
 ## Current Plans
 
