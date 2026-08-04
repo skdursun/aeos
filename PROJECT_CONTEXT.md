@@ -39,6 +39,7 @@ condition.
 - TASK-0204: Implement agentic runner planning contracts.
 - TASK-0205: Add agentic runner planning contract examples.
 - TASK-0206: Add agentic runner planning contract smoke tests.
+- TASK-0207: Implement agentic runner planning logic.
 
 ## Do Not Load By Default
 
@@ -49,7 +50,7 @@ condition.
 
 ## Next Task
 
-TASK-0207 Implement agentic runner planning logic.
+TASK-0208 Add agentic runner planning logic examples.
 
 ## Current Plans
 
