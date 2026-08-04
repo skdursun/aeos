@@ -49,6 +49,7 @@ condition.
 - TASK-0214: Implement agentic runner execution contracts.
 - TASK-0215: Add agentic runner execution contract examples.
 - TASK-0216: Add agentic runner execution contract smoke tests.
+- TASK-0217: Design agentic runner dry-run execution logic.
 
 ## Do Not Load By Default
 
@@ -59,7 +60,7 @@ condition.
 
 ## Next Task
 
-TASK-0217 Design agentic runner dry-run execution logic.
+TASK-0218 Implement agentic runner dry-run execution contracts.
 
 ## Current Plans
 
@@ -69,3 +70,4 @@ TASK-0217 Design agentic runner dry-run execution logic.
 - docs/AGENTIC_RUNNER_PLANNING_LOGIC.md
 - docs/AGENTIC_RUNNER_PLANNING_USAGE.md
 - docs/AGENTIC_RUNNER_EXECUTION_LIFECYCLE.md
+- docs/AGENTIC_RUNNER_DRY_RUN_EXECUTION_LOGIC.md
