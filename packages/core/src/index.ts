@@ -13,6 +13,7 @@ export type * from "./agentic-runner-execution.js";
 export type * from "./agentic-runner-dry-run.js";
 export * from "./agentic-coverage-verifier-logic.js";
 export * from "./agentic-runner-planning-logic.js";
+export * from "./agentic-runner-dry-run-logic.js";
 export type * from "./init.js";
 export type * from "./init-engine.js";
 export type * from "./init-adapters.js";
