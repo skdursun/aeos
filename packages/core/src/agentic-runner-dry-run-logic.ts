@@ -45,6 +45,11 @@ const ISSUE_SEVERITY_RANK: Record<AgenticRunnerDryRunIssueSeverity, number> = {
   info: 3,
 };
 
+const FORBIDDEN_COMPLETION_PREVIEW_STATES = new Set<string>([
+  "completed",
+  "verified",
+]);
+
 export function runAgenticRunnerDryRun(
   input: AgenticRunnerDryRunInput,
 ): AgenticRunnerDryRunResult {
@@ -116,6 +121,15 @@ export function createAgenticDryRunStepPreviews(
       const issues = sortIssues([
         ...step.issues,
         ...createStepIdentityIssues(step, stepIdCounts.get(step.stepId) ?? 0, index),
+        ...createForbiddenPreviewStateIssues(
+          step.previewState,
+          "DRY_RUN_STEP_COMPLETION_STATE_FORBIDDEN",
+          `Step '${step.stepId}' cannot preview completed or verified execution during dry-run.`,
+          {
+            category: "dry_run_safety",
+            stepId: step.stepId,
+          },
+        ),
         ...step.plannedAdapterCallIds
           .filter((adapterCallId) => !adapterCallIds.has(adapterCallId))
           .map((adapterCallId) =>
@@ -223,6 +237,15 @@ export function createAgenticDryRunBatchPreviews(
         ...batch.issues,
         ...createBatchIdentityIssues(batch, batchIdCounts.get(batch.batchId) ?? 0, index),
         ...createBatchAccountingIssues(batch),
+        ...createForbiddenPreviewStateIssues(
+          batch.previewState,
+          "DRY_RUN_BATCH_COMPLETION_STATE_FORBIDDEN",
+          `Batch '${batch.batchId}' cannot preview completed or verified execution during dry-run.`,
+          {
+            category: "dry_run_safety",
+            batchId: batch.batchId,
+          },
+        ),
         ...membershipIssues,
       ]);
       const previewState = blockedPreviewState(context, batch.previewState);
@@ -254,6 +277,15 @@ export function createAgenticDryRunWorkItemPreviews(
           workItem,
           workItemIdCounts.get(workItem.workItemId) ?? 0,
           index,
+        ),
+        ...createForbiddenPreviewStateIssues(
+          workItem.previewState,
+          "DRY_RUN_WORK_ITEM_COMPLETION_STATE_FORBIDDEN",
+          `Work item '${workItem.workItemId}' cannot preview completed or verified work during dry-run.`,
+          {
+            category: "dry_run_safety",
+            workItemId: workItem.workItemId,
+          },
         ),
       ]);
       const previewState = blockedPreviewState(context, workItem.previewState);
@@ -846,6 +878,9 @@ function blockedPreviewState(
   context: DryRunContext,
   fallback: AgenticRunnerDryRunState,
 ): AgenticRunnerDryRunState {
+  if (FORBIDDEN_COMPLETION_PREVIEW_STATES.has(String(fallback))) {
+    return "failed";
+  }
   if (context.failedShape) {
     return "failed";
   }
@@ -858,6 +893,32 @@ function blockedPreviewState(
   return fallback === "unknown" || fallback === "not_started" || fallback === "preflight"
     ? "preview_ready"
     : fallback;
+}
+
+function createForbiddenPreviewStateIssues(
+  previewState: AgenticRunnerDryRunState,
+  code: string,
+  message: string,
+  issue: Pick<
+    AgenticRunnerDryRunIssue,
+    "category" | "stepId" | "batchId" | "workItemId"
+  >,
+): readonly AgenticRunnerDryRunIssue[] {
+  if (!FORBIDDEN_COMPLETION_PREVIEW_STATES.has(String(previewState))) {
+    return [];
+  }
+
+  return [
+    createIssue({
+      code,
+      message,
+      severity: "error",
+      category: issue.category,
+      stepId: issue.stepId,
+      batchId: issue.batchId,
+      workItemId: issue.workItemId,
+    }),
+  ];
 }
 
 function inferAuditStatus(

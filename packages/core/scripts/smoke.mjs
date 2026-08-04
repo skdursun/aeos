@@ -660,10 +660,20 @@ function assertDryRunSideEffectFree(result) {
     "completed",
     `${result.taskId} dry-run preview must not represent real execution completion`,
   );
+  assert.notEqual(
+    result.state,
+    "verified",
+    `${result.taskId} dry-run preview must not represent verified completion`,
+  );
   assert.equal(
     result.steps.some((step) => step.previewState === "completed"),
     false,
     `${result.taskId} dry-run steps must not represent completed execution`,
+  );
+  assert.equal(
+    result.steps.some((step) => step.previewState === "verified"),
+    false,
+    `${result.taskId} dry-run steps must not represent verified execution`,
   );
   assert.equal(
     result.batches.some((batch) => batch.previewState === "completed"),
@@ -671,9 +681,19 @@ function assertDryRunSideEffectFree(result) {
     `${result.taskId} dry-run batches must not represent completed execution`,
   );
   assert.equal(
+    result.batches.some((batch) => batch.previewState === "verified"),
+    false,
+    `${result.taskId} dry-run batches must not represent verified execution`,
+  );
+  assert.equal(
     result.workItems.some((workItem) => workItem.previewState === "completed"),
     false,
     `${result.taskId} dry-run work items must not represent completed execution`,
+  );
+  assert.equal(
+    result.workItems.some((workItem) => workItem.previewState === "verified"),
+    false,
+    `${result.taskId} dry-run work items must not represent verified execution`,
   );
   assert.equal(
     result.adapterCalls.some((call) => call.wouldCall),
@@ -4012,6 +4032,150 @@ assert.equal(
   invalidBlockedDryRunResult.resume?.wouldUpdateResume,
   false,
   "dry-run logic smoke L invalid input should not mutate resume state",
+);
+
+const terminalPreviewDryRunResult = runAgenticRunnerDryRun({
+  taskId: "terminal-preview-claims",
+  mode: "dry_run",
+  runnerPlan: {
+    kind: "data",
+    data: {
+      previewOnly: true,
+    },
+  },
+  options: {
+    requireAudit: true,
+    requireVerifier: true,
+    completionGatedByVerifier: true,
+  },
+  plannedSteps: [
+    {
+      stepId: "step-terminal-claim",
+      stepKind: "batch_execution",
+      previewState: "completed",
+      wouldRun: true,
+      approvalRequired: false,
+      plannedAdapterCallIds: ["adapter-terminal-claim"],
+      expectedAuditEventIds: ["audit.terminal.expected"],
+      verifierRequired: true,
+      issues: [],
+    },
+  ],
+  plannedBatches: [
+    {
+      batchId: "batch-terminal-claim",
+      workItemIds: ["work-terminal-claim"],
+      expectedItemCount: 1,
+      previewState: "verified",
+      wouldRun: true,
+      issues: [],
+    },
+  ],
+  plannedWorkItems: [
+    {
+      workItemId: "work-terminal-claim",
+      batchId: "batch-terminal-claim",
+      previewState: "completed",
+      wouldProcess: true,
+      expectedArtifactIds: ["work-terminal-claim.preview.json"],
+      issues: [],
+    },
+  ],
+  adapterCalls: [
+    {
+      callId: "adapter-terminal-claim",
+      kind: "model",
+      adapterId: "model-adapter-preview",
+      operation: "preview_terminal_claim",
+      wouldCall: false,
+      approvalRequired: false,
+      outputReference: {
+        id: "adapter-terminal-output-preview",
+        metadata: {
+          previewOnly: true,
+        },
+      },
+      issues: [],
+      observationOnly: true,
+      completionAuthority: false,
+    },
+  ],
+  auditPreviewInput: {
+    kind: "data",
+    data: {
+      expectedAuditEventIds: ["audit.terminal.expected"],
+      wouldWriteAudit: false,
+    },
+  },
+  verifierPreviewInput: {
+    kind: "data",
+    data: {
+      verifierRequired: true,
+      wouldRunVerifier: false,
+    },
+  },
+});
+
+assertDryRunResultShape(terminalPreviewDryRunResult);
+assertDryRunSummaryConsistent(terminalPreviewDryRunResult);
+assertDryRunSideEffectFree(terminalPreviewDryRunResult);
+assert.equal(
+  terminalPreviewDryRunResult.ok,
+  false,
+  "dry-run logic smoke M terminal preview claims should fail closed",
+);
+assert.equal(
+  terminalPreviewDryRunResult.state,
+  "failed",
+  "dry-run logic smoke M terminal preview claims should produce failed state",
+);
+assert.deepEqual(
+  terminalPreviewDryRunResult.steps.map((step) => step.previewState),
+  ["failed"],
+  "dry-run logic smoke M completed step preview should be sanitized",
+);
+assert.deepEqual(
+  terminalPreviewDryRunResult.batches.map((batch) => batch.previewState),
+  ["failed"],
+  "dry-run logic smoke M verified batch preview should be sanitized",
+);
+assert.deepEqual(
+  terminalPreviewDryRunResult.workItems.map((workItem) => workItem.previewState),
+  ["failed"],
+  "dry-run logic smoke M completed work item preview should be sanitized",
+);
+assert.equal(
+  terminalPreviewDryRunResult.summary.runnableSteps,
+  0,
+  "dry-run logic smoke M terminal preview claims should not be runnable",
+);
+assert.equal(
+  terminalPreviewDryRunResult.summary.runnableBatches,
+  0,
+  "dry-run logic smoke M terminal preview claims should not run batches",
+);
+assert.equal(
+  terminalPreviewDryRunResult.summary.processableWorkItems,
+  0,
+  "dry-run logic smoke M terminal preview claims should not process work items",
+);
+assert.ok(
+  terminalPreviewDryRunResult.issues.some(
+    (issue) => issue.code === "DRY_RUN_STEP_COMPLETION_STATE_FORBIDDEN",
+  ),
+  "dry-run logic smoke M should report forbidden completed step preview",
+);
+assert.ok(
+  terminalPreviewDryRunResult.issues.some(
+    (issue) => issue.code === "DRY_RUN_BATCH_COMPLETION_STATE_FORBIDDEN",
+  ),
+  "dry-run logic smoke M should report forbidden verified batch preview",
+);
+assert.ok(
+  terminalPreviewDryRunResult.issues.some(
+    (issue) => issue.code === "DRY_RUN_WORK_ITEM_COMPLETION_STATE_FORBIDDEN",
+  ),
+  "dry-run logic smoke M should report forbidden completed work item preview",
 );
 
 const planningResults = [
