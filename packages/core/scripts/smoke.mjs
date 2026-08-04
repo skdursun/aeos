@@ -45,7 +45,7 @@ import {
   verifierGatedCompletionPlanningResult,
   waitingForApprovalPlanningResult,
 } from "../dist/agentic-runner-planning.example.js";
-import { verifyAgenticCoverage } from "../dist/index.js";
+import { planAgenticRunner, verifyAgenticCoverage } from "../dist/index.js";
 
 async function pathExists(path) {
   try {
@@ -316,7 +316,9 @@ function assertPlanningResultShape(result) {
   }
 
   assert.ok(
-    !Object.hasOwn(result, "resume") || typeof result.resume === "object",
+    !Object.hasOwn(result, "resume") ||
+      result.resume === undefined ||
+      typeof result.resume === "object",
     `${result.taskId} planning result resume field should remain optional object shape`,
   );
   assert.ok(
@@ -403,6 +405,118 @@ function assertPlanningSummaryConsistent(result) {
     planningIssueCount(result) >= result.summary.issueCount,
     `${result.taskId} planning nested issues should include summary issues where represented`,
   );
+}
+
+function assertDirectPlanningSummaryHonest(result) {
+  const adapterReferenceCount =
+    result.adapterBoundary.modelAdapterReferences.length +
+    result.adapterBoundary.toolAdapterReferences.length;
+
+  assert.deepEqual(
+    result.summary,
+    {
+      prerequisiteCount: result.prerequisites.length,
+      workItemCount: result.workItems.length,
+      batchCount: result.batches.length,
+      stepCount: result.steps.length,
+      policyGateCount: result.policy.length,
+      adapterReferenceCount,
+      expectedAuditEventCount: result.audit.expectedAuditEventIds.length,
+      verifierRequired: result.verifier.verifierRequired,
+      approvalRequired:
+        result.adapterBoundary.approvalRequired ||
+        result.policy.some((policy) => policy.approvalRequired),
+      issueCount: result.issues.length,
+    },
+    `${result.taskId} direct planning summary should match represented result shape`,
+  );
+}
+
+function assertDirectPlanningResultShape(result) {
+  assert.deepEqual(
+    Object.keys(result),
+    [
+      "ok",
+      "taskId",
+      "mode",
+      "prerequisites",
+      "workItems",
+      "batches",
+      "steps",
+      "policy",
+      "adapterBoundary",
+      "audit",
+      "verifier",
+      "resume",
+      "issues",
+      "summary",
+    ],
+    `${result.taskId} direct planning result should expose stable top-level fields`,
+  );
+  assertPlanningResultShape(result);
+}
+
+function assertPlanningStepsNotCompleted(result, message) {
+  assert.equal(
+    result.steps.some((step) => step.state === "completed"),
+    false,
+    message,
+  );
+}
+
+function planningIssueSummaries(result) {
+  return result.issues.map((issue) => ({
+    code: issue.code,
+    message: issue.message,
+    workItemId: issue.workItemId,
+    batchId: issue.batchId,
+    policyGateId: issue.policyGateId,
+    auditEventIds: issue.auditEventIds,
+  }));
+}
+
+function createPlanningTaskContract(taskId) {
+  return {
+    kind: "reference",
+    reference: {
+      id: `task-contract-${taskId}`,
+    },
+  };
+}
+
+function createPlanningWorkItem(id, batchId, state = "pending", issues = []) {
+  return {
+    id,
+    state,
+    batchId,
+    issues,
+  };
+}
+
+function createPlanningBatch(id, workItemIds) {
+  return {
+    id,
+    workItemIds,
+    expectedItemCount: workItemIds.length,
+    completedCount: 0,
+    failedCount: 0,
+    skippedCount: 0,
+    retryableCount: 0,
+  };
+}
+
+function createVerifierRequirement(verifierId) {
+  return {
+    verifierRequired: true,
+    verifierId,
+    expectedCoverageRule:
+      "expected_items == completed_items + explicitly_failed_items + explicitly_skipped_items",
+    completionGatedByVerifier: true,
+    issues: [],
+    metadata: {
+      verifierHandoffRequired: true,
+    },
+  };
 }
 
 function assertPlanningVerifierGateHonest(result) {
@@ -2445,6 +2559,648 @@ assert.ok(
   ),
   "planning smoke F should include audit expectation gap issue",
 );
+
+const directSitemapWorkItems = Array.from({ length: 400 }, (_, index) => {
+  const itemNumber = index + 1;
+  const batchNumber = Math.floor(index / 100) + 1;
+  const id = `sitemap-url-${String(itemNumber).padStart(3, "0")}`;
+
+  return createPlanningWorkItem(
+    id,
+    `batch-${String(batchNumber).padStart(3, "0")}`,
+  );
+});
+const directSitemapBatches = Array.from({ length: 4 }, (_, index) => {
+  const firstIndex = index * 100;
+  const ids = directSitemapWorkItems
+    .slice(firstIndex, firstIndex + 100)
+    .map((workItem) => workItem.id);
+
+  return createPlanningBatch(`batch-${String(index + 1).padStart(3, "0")}`, ids);
+});
+const directSitemapPlanningInput = {
+  taskId: "sitemap-audit",
+  taskContract: createPlanningTaskContract("sitemap-audit"),
+  workItems: directSitemapWorkItems,
+  batches: directSitemapBatches,
+  mode: "plan",
+  options: {
+    requireAudit: true,
+    requireVerifier: true,
+    maxWorkItems: 400,
+    maxBatchSize: 100,
+  },
+  policyRequirements: [
+    {
+      policyGateId: "policy-sitemap-audit",
+      status: "allowed",
+      approvalRequired: false,
+      reasons: ["Read-only sitemap planning is allowed."],
+      issues: [],
+      metadata: {
+        allowedOperations: ["batch.execute"],
+        deniedOperations: ["filesystem.write"],
+      },
+    },
+  ],
+  verifierRequirements: createVerifierRequirement("coverage-verifier-sitemap"),
+  metadata: {
+    executionPerformed: false,
+  },
+};
+const directSitemapPlanningResult = planAgenticRunner(directSitemapPlanningInput);
+
+assertDirectPlanningResultShape(directSitemapPlanningResult);
+assertDirectPlanningSummaryHonest(directSitemapPlanningResult);
+assertPlanningVerifierGateHonest(directSitemapPlanningResult);
+assert.equal(
+  directSitemapPlanningResult.taskId,
+  "sitemap-audit",
+  "planning logic smoke A should preserve sitemap task id",
+);
+assert.equal(
+  directSitemapPlanningResult.workItems.length,
+  400,
+  "planning logic smoke A should represent 400 work items",
+);
+assert.deepEqual(
+  directSitemapPlanningResult.batches.map((batch) => batch.id),
+  ["batch-001", "batch-002", "batch-003", "batch-004"],
+  "planning logic smoke A should produce deterministic batch order",
+);
+assert.deepEqual(
+  directSitemapPlanningResult.batches.map((batch) => batch.expectedItemCount),
+  [100, 100, 100, 100],
+  "planning logic smoke A should preserve deterministic batch sizes",
+);
+assert.deepEqual(
+  directSitemapPlanningResult.batches[0]?.deterministicOrder.slice(0, 3),
+  ["sitemap-url-001", "sitemap-url-002", "sitemap-url-003"],
+  "planning logic smoke A should preserve deterministic work item ordering",
+);
+assert.ok(
+  directSitemapPlanningResult.steps.some(
+    (step) => step.kind === "policy_preflight",
+  ),
+  "planning logic smoke A should include policy preflight",
+);
+assert.equal(
+  directSitemapPlanningResult.steps.filter(
+    (step) => step.kind === "batch_execution",
+  ).length,
+  4,
+  "planning logic smoke A should include one execution step per batch",
+);
+assert.ok(
+  directSitemapPlanningResult.steps.some(
+    (step) => step.kind === "verification" && step.verifierRequired,
+  ),
+  "planning logic smoke A should include verifier handoff step",
+);
+assert.equal(
+  directSitemapPlanningResult.verifier.verifierRequired,
+  true,
+  "planning logic smoke A should require verifier",
+);
+assert.equal(
+  directSitemapPlanningResult.verifier.completionGatedByVerifier,
+  true,
+  "planning logic smoke A should gate completion by verifier",
+);
+assertPlanningStepsNotCompleted(
+  directSitemapPlanningResult,
+  "planning logic smoke A should not imply execution completion",
+);
+
+const directApprovalPlanningResult = planAgenticRunner({
+  taskId: "approval-gated-plan",
+  taskContract: createPlanningTaskContract("approval-gated-plan"),
+  workItems: [
+    createPlanningWorkItem("approval-work-item-001", "approval-batch-001"),
+  ],
+  batches: [
+    createPlanningBatch("approval-batch-001", ["approval-work-item-001"]),
+  ],
+  mode: "plan",
+  options: {
+    requireAudit: true,
+    requireApproval: true,
+  },
+  policyRequirements: [
+    {
+      policyGateId: "policy-approval-required",
+      status: "requires_approval",
+      approvalRequired: true,
+      approvalState: "required",
+      reasons: ["Human approval is required before execution."],
+      issues: [],
+      metadata: {
+        allowedOperations: ["approval.request"],
+        deniedOperations: ["batch.execute"],
+      },
+    },
+  ],
+  adapterReferences: [
+    {
+      adapterId: "tool-approval-gate",
+      kind: "tool",
+      status: "blocked",
+      metadata: {
+        allowedOperations: ["approval.request"],
+        deniedOperations: ["batch.execute"],
+      },
+    },
+  ],
+});
+
+assertDirectPlanningResultShape(directApprovalPlanningResult);
+assertDirectPlanningSummaryHonest(directApprovalPlanningResult);
+assertPlanningVerifierGateHonest(directApprovalPlanningResult);
+assert.equal(
+  directApprovalPlanningResult.adapterBoundary.approvalRequired,
+  true,
+  "planning logic smoke B should preserve adapter approval requirement",
+);
+assert.ok(
+  directApprovalPlanningResult.policy.some(
+    (policy) =>
+      policy.status === "requires_approval" && policy.approvalRequired,
+  ),
+  "planning logic smoke B should preserve policy approval requirement",
+);
+assert.ok(
+  directApprovalPlanningResult.steps.some((step) => step.kind === "approval"),
+  "planning logic smoke B should include approval step",
+);
+assert.equal(
+  directApprovalPlanningResult.steps.some(
+    (step) => step.kind === "batch_execution",
+  ),
+  false,
+  "planning logic smoke B should not proceed to batch execution without approval",
+);
+assert.equal(
+  directApprovalPlanningResult.ok,
+  false,
+  "planning logic smoke B should not be ok while approval is required",
+);
+assert.equal(
+  directApprovalPlanningResult.summary.approvalRequired,
+  true,
+  "planning logic smoke B summary should reflect approval requirement",
+);
+assert.ok(
+  directApprovalPlanningResult.prerequisites.some(
+    (prerequisite) =>
+      prerequisite.kind === "approval" && prerequisite.status === "blocked",
+  ),
+  "planning logic smoke B should represent blocked approval prerequisite",
+);
+
+const directBlockedPolicyIssue = {
+  code: "POLICY_DENIED_OPERATION",
+  message: "filesystem.write is denied for this planner smoke.",
+  severity: "error",
+  category: "policy_failure",
+  policyGateId: "policy-denied-filesystem-write",
+  retryable: false,
+  createdAt: "2026-08-04T09:00:00.000Z",
+};
+const directBlockedPolicyResult = planAgenticRunner({
+  taskId: "blocked-policy-plan",
+  taskContract: createPlanningTaskContract("blocked-policy-plan"),
+  workItems: [createPlanningWorkItem("blocked-work-item-001", "blocked-batch-001")],
+  batches: [createPlanningBatch("blocked-batch-001", ["blocked-work-item-001"])],
+  mode: "plan",
+  options: {
+    requireAudit: true,
+  },
+  policyRequirements: [
+    {
+      policyGateId: "policy-denied-filesystem-write",
+      status: "denied",
+      approvalRequired: false,
+      reasons: ["filesystem.write is not allowed for planning."],
+      issues: [directBlockedPolicyIssue],
+      metadata: {
+        deniedOperations: ["filesystem.write"],
+      },
+    },
+  ],
+});
+
+assertDirectPlanningResultShape(directBlockedPolicyResult);
+assertDirectPlanningSummaryHonest(directBlockedPolicyResult);
+assertPlanningVerifierGateHonest(directBlockedPolicyResult);
+assert.deepEqual(
+  planningIssueSummaries(directBlockedPolicyResult),
+  [
+    {
+      code: "POLICY_DENIED_OPERATION",
+      message: "filesystem.write is denied for this planner smoke.",
+      workItemId: undefined,
+      batchId: undefined,
+      policyGateId: "policy-denied-filesystem-write",
+      auditEventIds: undefined,
+    },
+  ],
+  "planning logic smoke C should create deterministic blocked policy issue",
+);
+assert.ok(
+  directBlockedPolicyResult.adapterBoundary.deniedOperations.includes(
+    "filesystem.write",
+  ),
+  "planning logic smoke C should preserve denied operation",
+);
+assert.equal(
+  directBlockedPolicyResult.ok,
+  false,
+  "planning logic smoke C should not be ok for denied policy",
+);
+assertPlanningStepsNotCompleted(
+  directBlockedPolicyResult,
+  "planning logic smoke C should not imply executable completion",
+);
+
+const directResumePlanningResult = planAgenticRunner({
+  taskId: "resume-planning-smoke",
+  taskContract: createPlanningTaskContract("resume-planning-smoke"),
+  mode: "resume",
+  options: {
+    requireAudit: true,
+    requireVerifier: true,
+  },
+  verifierRequirements: createVerifierRequirement("coverage-verifier-resume"),
+  resumeData: {
+    resumeCursorReference: {
+      id: "resume-cursor-planning-smoke",
+      path: "state/resume-planning-smoke.json",
+      version: "7",
+    },
+    nextStepId: "step-batch-003",
+    nextBatchId: "batch-003",
+    pendingWorkItemIds: ["sitemap-url-202", "sitemap-url-201", "sitemap-url-202"],
+    retryableWorkItemIds: ["sitemap-url-118", "sitemap-url-017"],
+    updatedAt: "2026-08-04T10:15:00.000Z",
+    metadata: {
+      source: "resume-cursor",
+    },
+  },
+});
+
+assertDirectPlanningResultShape(directResumePlanningResult);
+assertDirectPlanningSummaryHonest(directResumePlanningResult);
+assertPlanningVerifierGateHonest(directResumePlanningResult);
+assert.deepEqual(
+  directResumePlanningResult.resume?.resumeCursorReference,
+  {
+    id: "resume-cursor-planning-smoke",
+    path: "state/resume-planning-smoke.json",
+    version: "7",
+  },
+  "planning logic smoke D should preserve resume cursor reference",
+);
+assert.equal(
+  directResumePlanningResult.resume?.nextStepId,
+  "step-batch-003",
+  "planning logic smoke D should preserve next step id",
+);
+assert.equal(
+  directResumePlanningResult.resume?.nextBatchId,
+  "batch-003",
+  "planning logic smoke D should preserve next batch id",
+);
+assert.deepEqual(
+  directResumePlanningResult.resume?.pendingWorkItemIds,
+  ["sitemap-url-201", "sitemap-url-202"],
+  "planning logic smoke D should deterministically order pending work item ids",
+);
+assert.deepEqual(
+  directResumePlanningResult.resume?.retryableWorkItemIds,
+  ["sitemap-url-017", "sitemap-url-118"],
+  "planning logic smoke D should deterministically order retryable work item ids",
+);
+assert.ok(
+  directResumePlanningResult.resume?.updatedAt,
+  "planning logic smoke D should expose updatedAt",
+);
+
+const directVerifierGatedPlanningResult = planAgenticRunner({
+  taskId: "verifier-gated-executable-plan",
+  taskContract: createPlanningTaskContract("verifier-gated-executable-plan"),
+  workItems: [
+    createPlanningWorkItem("verifier-work-item-001", "verifier-batch-001"),
+  ],
+  batches: [
+    createPlanningBatch("verifier-batch-001", ["verifier-work-item-001"]),
+  ],
+  mode: "dry_run",
+  options: {
+    requireAudit: true,
+    requireVerifier: true,
+  },
+  verifierRequirements: createVerifierRequirement("coverage-verifier-executable"),
+});
+const directVerifierDisabledPlanningResult = planAgenticRunner({
+  taskId: "verifier-disabled-executable-plan",
+  taskContract: createPlanningTaskContract("verifier-disabled-executable-plan"),
+  workItems: [
+    createPlanningWorkItem("verifier-disabled-item-001", "verifier-disabled-batch"),
+  ],
+  batches: [
+    createPlanningBatch("verifier-disabled-batch", [
+      "verifier-disabled-item-001",
+    ]),
+  ],
+  mode: "dry_run",
+  options: {
+    requireAudit: true,
+  },
+  verifierRequirements: {
+    verifierRequired: false,
+    completionGatedByVerifier: false,
+    issues: [],
+  },
+});
+
+assertDirectPlanningResultShape(directVerifierGatedPlanningResult);
+assertDirectPlanningSummaryHonest(directVerifierGatedPlanningResult);
+assertPlanningVerifierGateHonest(directVerifierGatedPlanningResult);
+assert.equal(
+  directVerifierGatedPlanningResult.verifier.verifierRequired,
+  true,
+  "planning logic smoke E should require verifier for executable plans",
+);
+assert.equal(
+  directVerifierGatedPlanningResult.verifier.completionGatedByVerifier,
+  true,
+  "planning logic smoke E should gate completion by verifier",
+);
+assert.ok(
+  directVerifierGatedPlanningResult.steps.some(
+    (step) => step.kind === "verification" && step.verifierRequired,
+  ),
+  "planning logic smoke E should include verification step",
+);
+assert.equal(
+  directVerifierDisabledPlanningResult.ok,
+  false,
+  "planning logic smoke E should reject executable plans that disable verifier",
+);
+assert.deepEqual(
+  directVerifierDisabledPlanningResult.issues.map((issue) => issue.code),
+  ["VERIFIER_COMPLETION_GATE_FALSE", "VERIFIER_REQUIREMENT_FALSE"],
+  "planning logic smoke E should expose deterministic verifier gating issues",
+);
+
+const directAuditExpectationGapResult = planAgenticRunner({
+  taskId: "audit-expectation-gap",
+  taskContract: createPlanningTaskContract("audit-expectation-gap"),
+  mode: "plan",
+  options: {
+    requireAudit: true,
+  },
+  auditRequirements: {
+    expectedAuditEventIds: [
+      "audit-policy-preflight-planned",
+      "audit-batch-001-planned",
+      "audit-batch-002-planned",
+    ],
+    requiredEventKinds: ["policy.preflight.planned", "batch.execution.planned"],
+    missingAuditEventIds: ["audit-batch-002-planned"],
+    auditRequired: true,
+    issues: [],
+  },
+});
+
+assertDirectPlanningResultShape(directAuditExpectationGapResult);
+assertDirectPlanningSummaryHonest(directAuditExpectationGapResult);
+assertPlanningVerifierGateHonest(directAuditExpectationGapResult);
+assert.deepEqual(
+  directAuditExpectationGapResult.audit.expectedAuditEventIds,
+  [
+    "audit-batch-001-planned",
+    "audit-batch-002-planned",
+    "audit-policy-preflight-planned",
+  ],
+  "planning logic smoke F should represent expected audit event ids deterministically",
+);
+assert.deepEqual(
+  directAuditExpectationGapResult.audit.requiredEventKinds,
+  ["batch.execution.planned", "policy.preflight.planned"],
+  "planning logic smoke F should represent required event kinds deterministically",
+);
+assert.deepEqual(
+  directAuditExpectationGapResult.audit.missingAuditEventIds,
+  ["audit-batch-002-planned"],
+  "planning logic smoke F should represent missing audit event ids",
+);
+assert.deepEqual(
+  directAuditExpectationGapResult.issues.map((issue) => issue.code),
+  ["AUDIT_EXPECTATION_MISSING_EVENT_ID"],
+  "planning logic smoke F should create deterministic audit issue",
+);
+assert.equal(
+  directAuditExpectationGapResult.summary.issueCount,
+  1,
+  "planning logic smoke F issue count should be stable",
+);
+
+const directDuplicateWorkItemResult = planAgenticRunner({
+  taskId: "duplicate-work-item-plan",
+  taskContract: createPlanningTaskContract("duplicate-work-item-plan"),
+  workItems: [
+    createPlanningWorkItem("duplicate-work-item-001"),
+    createPlanningWorkItem("duplicate-work-item-001"),
+  ],
+  mode: "plan",
+  options: {
+    requireAudit: true,
+    requireVerifier: true,
+  },
+  verifierRequirements: createVerifierRequirement("coverage-verifier-duplicates"),
+});
+
+assertDirectPlanningResultShape(directDuplicateWorkItemResult);
+assertDirectPlanningSummaryHonest(directDuplicateWorkItemResult);
+assertPlanningVerifierGateHonest(directDuplicateWorkItemResult);
+assert.equal(
+  directDuplicateWorkItemResult.ok,
+  false,
+  "planning logic smoke G should reject or issue duplicate work item ids",
+);
+assert.deepEqual(
+  directDuplicateWorkItemResult.issues.map((issue) => issue.code),
+  ["DUPLICATE_WORK_ITEM_ID"],
+  "planning logic smoke G should produce deterministic duplicate work item issue",
+);
+assert.ok(
+  directDuplicateWorkItemResult.issues[0]?.message.includes(
+    "duplicate-work-item-001",
+  ),
+  "planning logic smoke G should mention duplicate id in issue message",
+);
+
+const directMissingBatchReferenceResult = planAgenticRunner({
+  taskId: "missing-batch-reference-plan",
+  taskContract: createPlanningTaskContract("missing-batch-reference-plan"),
+  workItems: [
+    createPlanningWorkItem("known-work-item-001", "batch-with-missing-reference"),
+  ],
+  batches: [
+    createPlanningBatch("batch-with-missing-reference", [
+      "known-work-item-001",
+      "missing-work-item-999",
+    ]),
+  ],
+  mode: "plan",
+  options: {
+    requireAudit: true,
+    requireVerifier: true,
+  },
+  verifierRequirements: createVerifierRequirement("coverage-verifier-missing"),
+});
+
+assertDirectPlanningResultShape(directMissingBatchReferenceResult);
+assertDirectPlanningSummaryHonest(directMissingBatchReferenceResult);
+assertPlanningVerifierGateHonest(directMissingBatchReferenceResult);
+assert.equal(
+  directMissingBatchReferenceResult.ok,
+  false,
+  "planning logic smoke H should reject or issue missing batch work item reference",
+);
+assert.deepEqual(
+  directMissingBatchReferenceResult.issues.map((issue) => issue.code),
+  ["BATCH_REFERENCES_MISSING_WORK_ITEM"],
+  "planning logic smoke H should produce deterministic missing reference issue",
+);
+assert.equal(
+  directMissingBatchReferenceResult.issues[0]?.workItemId,
+  "missing-work-item-999",
+  "planning logic smoke H should preserve missing work item id",
+);
+
+const directDuplicateAcrossBatchesInput = {
+  taskId: "duplicate-across-batches-plan",
+  taskContract: createPlanningTaskContract("duplicate-across-batches-plan"),
+  workItems: [
+    createPlanningWorkItem("cross-batch-item-001", "batch-b"),
+    createPlanningWorkItem("cross-batch-item-002", "batch-a"),
+  ],
+  batches: [
+    createPlanningBatch("batch-b", ["cross-batch-item-001"]),
+    createPlanningBatch("batch-a", [
+      "cross-batch-item-001",
+      "cross-batch-item-002",
+    ]),
+  ],
+  mode: "plan",
+  options: {
+    requireAudit: true,
+    requireVerifier: true,
+  },
+  verifierRequirements: createVerifierRequirement("coverage-verifier-cross-batch"),
+};
+const directDuplicateAcrossBatchesResult = planAgenticRunner(
+  directDuplicateAcrossBatchesInput,
+);
+const repeatedDuplicateAcrossBatchesResult = planAgenticRunner(
+  directDuplicateAcrossBatchesInput,
+);
+
+assertDirectPlanningResultShape(directDuplicateAcrossBatchesResult);
+assertDirectPlanningSummaryHonest(directDuplicateAcrossBatchesResult);
+assertPlanningVerifierGateHonest(directDuplicateAcrossBatchesResult);
+assert.equal(
+  directDuplicateAcrossBatchesResult.ok,
+  false,
+  "planning logic smoke I should reject duplicate work item id across batches",
+);
+assert.deepEqual(
+  directDuplicateAcrossBatchesResult.issues.map((issue) => issue.code),
+  ["WORK_ITEM_IN_MULTIPLE_BATCHES"],
+  "planning logic smoke I should produce deterministic duplicate-across-batches issue",
+);
+assert.deepEqual(
+  planningIssueSummaries(directDuplicateAcrossBatchesResult),
+  planningIssueSummaries(repeatedDuplicateAcrossBatchesResult),
+  "planning logic smoke I issue ordering should be stable",
+);
+
+const directOrderingPlanningInput = {
+  taskId: "deterministic-ordering-plan",
+  taskContract: createPlanningTaskContract("deterministic-ordering-plan"),
+  workItems: [
+    createPlanningWorkItem("item-c", "batch-c"),
+    createPlanningWorkItem("item-a", "batch-a"),
+    createPlanningWorkItem("item-b", "batch-b"),
+  ],
+  batches: [
+    createPlanningBatch("batch-c", ["item-c"]),
+    createPlanningBatch("batch-a", ["item-a"]),
+    createPlanningBatch("batch-b", ["item-b"]),
+  ],
+  mode: "plan",
+  options: {
+    requireAudit: true,
+    requireVerifier: true,
+  },
+  verifierRequirements: createVerifierRequirement("coverage-verifier-ordering"),
+};
+const directOrderingPlanningResult = planAgenticRunner(
+  directOrderingPlanningInput,
+);
+const repeatedOrderingPlanningResult = planAgenticRunner(
+  directOrderingPlanningInput,
+);
+
+assertDirectPlanningResultShape(directOrderingPlanningResult);
+assertDirectPlanningSummaryHonest(directOrderingPlanningResult);
+assertPlanningVerifierGateHonest(directOrderingPlanningResult);
+assert.deepEqual(
+  directOrderingPlanningResult.workItems.map((workItem) => workItem.id),
+  ["item-a", "item-b", "item-c"],
+  "planning logic smoke J should deterministically order work items",
+);
+assert.deepEqual(
+  directOrderingPlanningResult.batches.map((batch) => batch.id),
+  ["batch-a", "batch-b", "batch-c"],
+  "planning logic smoke J should deterministically order batches",
+);
+assert.deepEqual(
+  directOrderingPlanningResult.steps.map((step) => step.id),
+  [
+    "step-policy-preflight",
+    "step-batch-a",
+    "step-batch-b",
+    "step-batch-c",
+    "step-audit-append",
+    "step-verifier-handoff",
+  ],
+  "planning logic smoke J should deterministically order steps",
+);
+assert.deepEqual(
+  repeatedOrderingPlanningResult,
+  directOrderingPlanningResult,
+  "planning logic smoke J repeated planner calls should be equivalent",
+);
+
+for (const directPlanningResult of [
+  directSitemapPlanningResult,
+  directApprovalPlanningResult,
+  directBlockedPolicyResult,
+  directResumePlanningResult,
+  directVerifierGatedPlanningResult,
+  directVerifierDisabledPlanningResult,
+  directAuditExpectationGapResult,
+  directDuplicateWorkItemResult,
+  directMissingBatchReferenceResult,
+  directDuplicateAcrossBatchesResult,
+  directOrderingPlanningResult,
+]) {
+  assertDirectPlanningSummaryHonest(directPlanningResult);
+  assertDirectPlanningResultShape(directPlanningResult);
+}
 
 const tempRoot = await mkdtemp(join(tmpdir(), "aeos-core-smoke-"));
 
