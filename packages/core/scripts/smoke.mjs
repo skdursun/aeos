@@ -134,6 +134,20 @@ import {
   validMinimalTaskMappingResult,
   verifierRequirementMappingExample,
 } from "../dist/task-contract-mapping.example.js";
+import {
+  humanOutputShapeExample,
+  jsonOnlyParserFailurePlannerWiringResultExample,
+  jsonOutputShapeExample,
+  mappingWithoutNoExecutionNoWritesPlannerWiringResultExample,
+  mappingWithoutVerifierGatePlannerWiringResultExample,
+  parserFailurePlannerWiringResultExample,
+  plannerFailurePlannerWiringResultExample,
+  safetyStageExplicitFalseFlagsExample,
+  successfulMinimalPlannerWiringResultExample,
+  summaryShapeExample,
+  unsupportedMappingPlannerWiringResultExample,
+  validationFailurePlannerWiringResultExample,
+} from "../dist/task-plan-file-planner-wiring.example.js";
 
 async function pathExists(path) {
   try {
@@ -2039,6 +2053,892 @@ function assertTaskContractMappingNoRuntimeArtifacts(result, message) {
     );
   }
 }
+
+function assertWiringFields(value, fields, message) {
+  for (const field of fields) {
+    assert.ok(
+      Object.hasOwn(value, field),
+      `${message} should expose stable field ${field}`,
+    );
+  }
+}
+
+function assertWiringIssueRepresented(result, message) {
+  assert.ok(result.issues.length > 0, `${message} should expose issues`);
+  for (const issue of result.issues) {
+    assert.equal(
+      typeof issue.code,
+      "string",
+      `${message} issue should expose code`,
+    );
+    assert.ok(issue.code.length > 0, `${message} issue code should not be empty`);
+    assert.equal(
+      typeof issue.message,
+      "string",
+      `${message} issue should expose message`,
+    );
+    assert.ok(
+      issue.message.length > 0,
+      `${message} issue message should not be empty`,
+    );
+    assert.ok(
+      ["error", "warning", "info", "critical"].includes(issue.severity),
+      `${message} issue should expose known severity`,
+    );
+    assert.ok(
+      [
+        "input",
+        "parse",
+        "validation",
+        "mapping",
+        "planner",
+        "safety",
+        "output",
+        "unknown",
+      ].includes(issue.phase),
+      `${message} issue should expose known phase`,
+    );
+  }
+}
+
+function assertWiringSideEffectFalseFields(value, message) {
+  for (const field of [
+    "executionEnabled",
+    "adapterCalls",
+    "auditWrites",
+    "verifierRun",
+    "persistence",
+  ]) {
+    if (Object.hasOwn(value, field)) {
+      assert.equal(value[field], false, `${message} ${field} should be false`);
+    }
+  }
+}
+
+function assertWiringSafetyStageExplicit(result, message) {
+  assertWiringSideEffectFalseFields(result.safety, `${message} safety`);
+  assert.equal(
+    result.safety.filesystemMutation,
+    false,
+    `${message} safety filesystemMutation should be false`,
+  );
+  assert.equal(
+    result.safety.completedStateCreated,
+    false,
+    `${message} safety completedStateCreated should be false`,
+  );
+  assert.equal(
+    result.safety.parserExecutedHere,
+    false,
+    `${message} safety parserExecutedHere should be false`,
+  );
+  assert.equal(
+    result.safety.mapperExecutedHere,
+    false,
+    `${message} safety mapperExecutedHere should be false`,
+  );
+  assert.equal(
+    result.safety.plannerExecutedHere,
+    false,
+    `${message} safety plannerExecutedHere should be false`,
+  );
+  assert.equal(
+    result.safety.noExecution,
+    true,
+    `${message} safety noExecution should be true`,
+  );
+  assert.equal(
+    result.safety.noWrites,
+    true,
+    `${message} safety noWrites should be true`,
+  );
+}
+
+function assertWiringNoExecutionNoWriteResult(result, message) {
+  assertWiringSafetyStageExplicit(result, message);
+  assert.equal(
+    result.mapping.noExecution,
+    true,
+    `${message} mapping noExecution should be explicit`,
+  );
+  assert.equal(
+    result.mapping.noWrites,
+    true,
+    `${message} mapping noWrites should be explicit`,
+  );
+  assert.equal(
+    result.summary.noExecution,
+    true,
+    `${message} summary noExecution should be explicit`,
+  );
+  assert.equal(
+    result.summary.noWrites,
+    true,
+    `${message} summary noWrites should be explicit`,
+  );
+  assert.equal(
+    result.summary.executionEnabled,
+    false,
+    `${message} summary executionEnabled should be false`,
+  );
+  assert.equal(
+    result.summary.adapterCalls,
+    false,
+    `${message} summary adapterCalls should be false`,
+  );
+  assert.equal(
+    result.summary.auditWrites,
+    false,
+    `${message} summary auditWrites should be false`,
+  );
+  assert.equal(
+    result.summary.verifierRun,
+    false,
+    `${message} summary verifierRun should be false`,
+  );
+  assert.equal(
+    result.summary.persistence,
+    false,
+    `${message} summary persistence should be false`,
+  );
+  assert.equal(
+    result.summary.filesystemMutation,
+    false,
+    `${message} summary filesystemMutation should be false`,
+  );
+  assert.equal(
+    result.summary.completedStateCreated,
+    false,
+    `${message} summary completedStateCreated should be false`,
+  );
+  assert.equal(
+    result.planner.plannerExecuted,
+    false,
+    `${message} planner execution should be false`,
+  );
+}
+
+function assertWiringSummaryHonest(result, message) {
+  assert.equal(
+    result.summary.parsed,
+    result.parse.ok,
+    `${message} summary parsed should match parse ok`,
+  );
+  assert.equal(
+    result.summary.mapped,
+    result.mapping.ok,
+    `${message} summary mapped should match mapping ok`,
+  );
+  assert.equal(
+    result.summary.planned,
+    result.planner.ok,
+    `${message} summary planned should match planner ok`,
+  );
+  assert.equal(
+    result.summary.planStepCount,
+    result.planner.planStepCount ?? 0,
+    `${message} summary plan step count should match planner stage`,
+  );
+  assert.equal(
+    result.summary.issueCount,
+    result.issues.length,
+    `${message} summary issue count should match issues array`,
+  );
+  assert.equal(
+    result.summary.verifierRequired,
+    result.mapping.verifierRequired,
+    `${message} summary verifierRequired should match mapping stage`,
+  );
+  assert.equal(
+    result.summary.completionGatedByVerifier,
+    result.mapping.completionGatedByVerifier,
+    `${message} summary completion gate should match mapping stage`,
+  );
+  assert.equal(
+    result.summary.mappingSupported,
+    result.mapping.status === "mapped",
+    `${message} summary mappingSupported should match mapping status`,
+  );
+  assert.equal(
+    result.summary.planningInputAvailable,
+    result.mapping.planningInputAvailable,
+    `${message} summary planningInputAvailable should match mapping stage`,
+  );
+}
+
+function assertPlannerNotAttempted(result, message) {
+  assert.equal(
+    result.planner.attempted,
+    false,
+    `${message} planner should not be attempted`,
+  );
+  assert.equal(result.planner.ok, false, `${message} planner should not be ok`);
+  assert.equal(
+    result.planner.status,
+    "not_attempted",
+    `${message} planner status should be not_attempted`,
+  );
+}
+
+function assertWiringFailClosed(result, message) {
+  assert.equal(result.ok, false, `${message} should fail closed`);
+  assert.equal(
+    result.safety.executionEnabled,
+    false,
+    `${message} safety execution should remain disabled`,
+  );
+  assert.equal(
+    result.summary.executionEnabled,
+    false,
+    `${message} summary execution should remain disabled`,
+  );
+  assertWiringNoExecutionNoWriteResult(result, message);
+  assertWiringIssueRepresented(result, message);
+}
+
+function assertNoRuntimeTruth(value, message) {
+  const forbiddenTrueFields = new Set([
+    "parserExecuted",
+    "parserExecutedHere",
+    "mapperExecuted",
+    "mapperExecutedHere",
+    "planAgenticRunnerExecuted",
+    "plannerExecuted",
+    "plannerExecutedHere",
+    "runnerExecuted",
+    "runnerExecutionHappened",
+    "runnerExecutionStarted",
+    "adapterCallHappened",
+    "adapterCallsMade",
+    "auditWriteHappened",
+    "auditWritten",
+    "auditEventsEmitted",
+    "verifierExecuted",
+    "verifierRun",
+    "persistenceWritten",
+    "taskPersistenceWritten",
+    "filesystemMutation",
+    "filesystemMutationHappened",
+    "completedStateCreated",
+  ]);
+
+  const visit = (nestedValue, path = message) => {
+    if (nestedValue === null || typeof nestedValue !== "object") {
+      return;
+    }
+
+    if (Array.isArray(nestedValue)) {
+      nestedValue.forEach((item, index) => visit(item, `${path}[${index}]`));
+      return;
+    }
+
+    for (const [key, childValue] of Object.entries(nestedValue)) {
+      assert.equal(
+        !(forbiddenTrueFields.has(key) && childValue === true),
+        true,
+        `${path} must not imply ${key}`,
+      );
+      visit(childValue, `${path}.${key}`);
+    }
+  };
+
+  visit(value);
+}
+
+assert.equal(
+  successfulMinimalPlannerWiringResultExample.ok,
+  true,
+  "task plan file planner wiring smoke A should be ok",
+);
+assert.ok(
+  ["planned"].includes(successfulMinimalPlannerWiringResultExample.status),
+  "task plan file planner wiring smoke A should report successful status",
+);
+assert.equal(
+  successfulMinimalPlannerWiringResultExample.exitCode,
+  "success",
+  "task plan file planner wiring smoke A should report success exit code",
+);
+assert.ok(
+  successfulMinimalPlannerWiringResultExample.taskId,
+  "task plan file planner wiring smoke A should represent task id",
+);
+assert.equal(
+  successfulMinimalPlannerWiringResultExample.mode,
+  "plan",
+  "task plan file planner wiring smoke A should represent plan mode",
+);
+assert.equal(
+  successfulMinimalPlannerWiringResultExample.parse.attempted,
+  true,
+  "task plan file planner wiring smoke A parser should be attempted",
+);
+assert.equal(
+  successfulMinimalPlannerWiringResultExample.parse.ok,
+  true,
+  "task plan file planner wiring smoke A parser should be ok",
+);
+assert.equal(
+  successfulMinimalPlannerWiringResultExample.parse.pathOk,
+  true,
+  "task plan file planner wiring smoke A path should be ok",
+);
+assert.equal(
+  successfulMinimalPlannerWiringResultExample.parse.parseOk,
+  true,
+  "task plan file planner wiring smoke A parse should be ok",
+);
+assert.equal(
+  successfulMinimalPlannerWiringResultExample.mapping.attempted,
+  true,
+  "task plan file planner wiring smoke A mapping should be attempted",
+);
+assert.equal(
+  successfulMinimalPlannerWiringResultExample.mapping.ok,
+  true,
+  "task plan file planner wiring smoke A mapping should be ok",
+);
+assert.equal(
+  successfulMinimalPlannerWiringResultExample.mapping.planningInputAvailable,
+  true,
+  "task plan file planner wiring smoke A planning input should be available",
+);
+assertWiringFields(
+  successfulMinimalPlannerWiringResultExample.planner,
+  [
+    "attempted",
+    "ok",
+    "status",
+    "planningInput",
+    "planningInputReference",
+    "planningResultReference",
+    "planStepCount",
+    "plannerExecuted",
+    "issues",
+  ],
+  "task plan file planner wiring smoke A planner stage",
+);
+assert.equal(
+  successfulMinimalPlannerWiringResultExample.mapping.verifierRequired,
+  true,
+  "task plan file planner wiring smoke A should require verifier",
+);
+assert.equal(
+  successfulMinimalPlannerWiringResultExample.mapping.completionGatedByVerifier,
+  true,
+  "task plan file planner wiring smoke A should gate completion by verifier",
+);
+assertWiringNoExecutionNoWriteResult(
+  successfulMinimalPlannerWiringResultExample,
+  "task plan file planner wiring smoke A",
+);
+assertWiringSummaryHonest(
+  successfulMinimalPlannerWiringResultExample,
+  "task plan file planner wiring smoke A",
+);
+
+assert.equal(
+  parserFailurePlannerWiringResultExample.ok,
+  false,
+  "task plan file planner wiring smoke B should not be ok",
+);
+assert.equal(
+  parserFailurePlannerWiringResultExample.status,
+  "parser_failed",
+  "task plan file planner wiring smoke B should report parser_failed",
+);
+assert.equal(
+  parserFailurePlannerWiringResultExample.exitCode,
+  "parser_failure",
+  "task plan file planner wiring smoke B should report parser failure exit code",
+);
+assert.equal(
+  parserFailurePlannerWiringResultExample.parse.attempted,
+  true,
+  "task plan file planner wiring smoke B parser should be attempted",
+);
+assert.equal(
+  parserFailurePlannerWiringResultExample.parse.ok,
+  false,
+  "task plan file planner wiring smoke B parser should fail",
+);
+assert.equal(
+  parserFailurePlannerWiringResultExample.mapping.attempted,
+  false,
+  "task plan file planner wiring smoke B mapping should not be attempted",
+);
+assertPlannerNotAttempted(
+  parserFailurePlannerWiringResultExample,
+  "task plan file planner wiring smoke B",
+);
+assert.equal(
+  parserFailurePlannerWiringResultExample.mapping.planningInputAvailable,
+  false,
+  "task plan file planner wiring smoke B planning input should be unavailable",
+);
+assert.equal(
+  parserFailurePlannerWiringResultExample.safety.executionEnabled,
+  false,
+  "task plan file planner wiring smoke B execution should remain disabled",
+);
+assert.equal(
+  parserFailurePlannerWiringResultExample.summary.noWrites,
+  true,
+  "task plan file planner wiring smoke B noWrites should remain explicit",
+);
+assertWiringIssueRepresented(
+  parserFailurePlannerWiringResultExample,
+  "task plan file planner wiring smoke B",
+);
+
+assert.equal(
+  validationFailurePlannerWiringResultExample.ok,
+  false,
+  "task plan file planner wiring smoke C should not be ok",
+);
+assert.equal(
+  validationFailurePlannerWiringResultExample.status,
+  "validation_failed",
+  "task plan file planner wiring smoke C should report validation_failed",
+);
+assert.equal(
+  validationFailurePlannerWiringResultExample.exitCode,
+  "validation_failure",
+  "task plan file planner wiring smoke C should report validation failure exit code",
+);
+assert.equal(
+  validationFailurePlannerWiringResultExample.parse.parseOk,
+  true,
+  "task plan file planner wiring smoke C parse can be ok",
+);
+assert.equal(
+  validationFailurePlannerWiringResultExample.parse.validationCompatible,
+  false,
+  "task plan file planner wiring smoke C validation compatibility should fail",
+);
+assert.equal(
+  validationFailurePlannerWiringResultExample.parse.validationStatus,
+  "fail",
+  "task plan file planner wiring smoke C validation status should fail",
+);
+assert.equal(
+  validationFailurePlannerWiringResultExample.mapping.attempted,
+  false,
+  "task plan file planner wiring smoke C mapping should not be attempted",
+);
+assertPlannerNotAttempted(
+  validationFailurePlannerWiringResultExample,
+  "task plan file planner wiring smoke C",
+);
+assertWiringFailClosed(
+  validationFailurePlannerWiringResultExample,
+  "task plan file planner wiring smoke C",
+);
+
+assert.equal(
+  unsupportedMappingPlannerWiringResultExample.ok,
+  false,
+  "task plan file planner wiring smoke D should not be ok",
+);
+assert.equal(
+  unsupportedMappingPlannerWiringResultExample.status,
+  "unsupported_mapping",
+  "task plan file planner wiring smoke D should report unsupported_mapping",
+);
+assert.equal(
+  unsupportedMappingPlannerWiringResultExample.exitCode,
+  "unsupported_mapping",
+  "task plan file planner wiring smoke D should report unsupported mapping exit code",
+);
+assert.equal(
+  unsupportedMappingPlannerWiringResultExample.mapping.attempted,
+  true,
+  "task plan file planner wiring smoke D mapping should be attempted",
+);
+assert.equal(
+  unsupportedMappingPlannerWiringResultExample.mapping.ok,
+  false,
+  "task plan file planner wiring smoke D mapping should not be ok",
+);
+assert.equal(
+  unsupportedMappingPlannerWiringResultExample.mapping.status,
+  "unsupported",
+  "task plan file planner wiring smoke D mapping status should be unsupported",
+);
+assert.equal(
+  unsupportedMappingPlannerWiringResultExample.mapping.planningInputAvailable,
+  false,
+  "task plan file planner wiring smoke D planning input should be unavailable",
+);
+assertPlannerNotAttempted(
+  unsupportedMappingPlannerWiringResultExample,
+  "task plan file planner wiring smoke D",
+);
+assert.notEqual(
+  unsupportedMappingPlannerWiringResultExample.status,
+  "planned",
+  "task plan file planner wiring smoke D should not fake success",
+);
+assertWiringIssueRepresented(
+  unsupportedMappingPlannerWiringResultExample,
+  "task plan file planner wiring smoke D",
+);
+
+assert.equal(
+  mappingWithoutVerifierGatePlannerWiringResultExample.ok,
+  false,
+  "task plan file planner wiring smoke E should not be ok",
+);
+assert.ok(
+  ["mapping_failed", "blocked"].includes(
+    mappingWithoutVerifierGatePlannerWiringResultExample.status,
+  ),
+  "task plan file planner wiring smoke E should report blocked mapping status",
+);
+assertPlannerNotAttempted(
+  mappingWithoutVerifierGatePlannerWiringResultExample,
+  "task plan file planner wiring smoke E",
+);
+assert.equal(
+  mappingWithoutVerifierGatePlannerWiringResultExample.mapping.verifierRequired,
+  false,
+  "task plan file planner wiring smoke E should represent missing verifier requirement",
+);
+assert.equal(
+  mappingWithoutVerifierGatePlannerWiringResultExample.mapping
+    .completionGatedByVerifier,
+  false,
+  "task plan file planner wiring smoke E should represent missing completion gate",
+);
+assertWiringFailClosed(
+  mappingWithoutVerifierGatePlannerWiringResultExample,
+  "task plan file planner wiring smoke E",
+);
+
+assert.equal(
+  mappingWithoutNoExecutionNoWritesPlannerWiringResultExample.ok,
+  false,
+  "task plan file planner wiring smoke F should not be ok",
+);
+assert.ok(
+  ["mapping_failed", "blocked"].includes(
+    mappingWithoutNoExecutionNoWritesPlannerWiringResultExample.status,
+  ),
+  "task plan file planner wiring smoke F should report blocked mapping status",
+);
+assertPlannerNotAttempted(
+  mappingWithoutNoExecutionNoWritesPlannerWiringResultExample,
+  "task plan file planner wiring smoke F",
+);
+assert.equal(
+  mappingWithoutNoExecutionNoWritesPlannerWiringResultExample.mapping
+    .failClosedWithoutNoExecution,
+  true,
+  "task plan file planner wiring smoke F should represent missing noExecution",
+);
+assert.equal(
+  mappingWithoutNoExecutionNoWritesPlannerWiringResultExample.mapping
+    .failClosedWithoutNoWrites,
+  true,
+  "task plan file planner wiring smoke F should represent missing noWrites",
+);
+assert.equal(
+  mappingWithoutNoExecutionNoWritesPlannerWiringResultExample.issues[0].metadata
+    .sourceNoExecution,
+  false,
+  "task plan file planner wiring smoke F issue should represent source noExecution false",
+);
+assert.equal(
+  mappingWithoutNoExecutionNoWritesPlannerWiringResultExample.issues[0].metadata
+    .sourceNoWrites,
+  false,
+  "task plan file planner wiring smoke F issue should represent source noWrites false",
+);
+assert.equal(
+  mappingWithoutNoExecutionNoWritesPlannerWiringResultExample.safety
+    .executionEnabled,
+  false,
+  "task plan file planner wiring smoke F execution should remain disabled",
+);
+assert.equal(
+  mappingWithoutNoExecutionNoWritesPlannerWiringResultExample.safety
+    .filesystemMutation,
+  false,
+  "task plan file planner wiring smoke F filesystem mutation should remain false",
+);
+assertWiringFailClosed(
+  mappingWithoutNoExecutionNoWritesPlannerWiringResultExample,
+  "task plan file planner wiring smoke F",
+);
+
+assert.equal(
+  plannerFailurePlannerWiringResultExample.parse.ok,
+  true,
+  "task plan file planner wiring smoke G parser should be ok",
+);
+assert.equal(
+  plannerFailurePlannerWiringResultExample.mapping.ok,
+  true,
+  "task plan file planner wiring smoke G mapping should be ok",
+);
+assert.equal(
+  plannerFailurePlannerWiringResultExample.mapping.planningInputAvailable,
+  true,
+  "task plan file planner wiring smoke G planning input should be available",
+);
+assert.equal(
+  plannerFailurePlannerWiringResultExample.planner.attempted,
+  true,
+  "task plan file planner wiring smoke G planner should be attempted",
+);
+assert.equal(
+  plannerFailurePlannerWiringResultExample.planner.ok,
+  false,
+  "task plan file planner wiring smoke G planner should fail",
+);
+assert.equal(
+  plannerFailurePlannerWiringResultExample.status,
+  "planner_failed",
+  "task plan file planner wiring smoke G should report planner_failed",
+);
+assert.equal(
+  plannerFailurePlannerWiringResultExample.exitCode,
+  "planner_failure",
+  "task plan file planner wiring smoke G should report planner failure exit code",
+);
+assert.equal(
+  plannerFailurePlannerWiringResultExample.safety.executionEnabled,
+  false,
+  "task plan file planner wiring smoke G execution should remain disabled",
+);
+assertWiringIssueRepresented(
+  plannerFailurePlannerWiringResultExample,
+  "task plan file planner wiring smoke G",
+);
+
+assertWiringFields(
+  humanOutputShapeExample,
+  [
+    "title",
+    "taskId",
+    "sourceFile",
+    "mode",
+    "parsed",
+    "mapping",
+    "planning",
+    "workItems",
+    "batches",
+    "steps",
+    "policy",
+    "approvalRequired",
+    "verifierRequired",
+    "completionGatedByVerifier",
+    "auditExpected",
+    "realExecution",
+    "adapterCalls",
+    "auditWrites",
+    "verifierRun",
+    "persistence",
+    "issues",
+  ],
+  "task plan file planner wiring smoke H human output",
+);
+assertWiringSideEffectFalseFields(
+  humanOutputShapeExample,
+  "task plan file planner wiring smoke H human output",
+);
+assert.equal(
+  humanOutputShapeExample.realExecution,
+  false,
+  "task plan file planner wiring smoke H real execution should be false",
+);
+
+assertWiringFields(
+  jsonOutputShapeExample,
+  [
+    "ok",
+    "status",
+    "exitCode",
+    "taskId",
+    "mode",
+    "sourceFile",
+    "parse",
+    "mapping",
+    "plan",
+    "policy",
+    "verifier",
+    "audit",
+    "resume",
+    "executionEnabled",
+    "adapterCalls",
+    "auditWrites",
+    "verifierRun",
+    "persistence",
+    "issues",
+    "summary",
+  ],
+  "task plan file planner wiring smoke I JSON output",
+);
+assertWiringSideEffectFalseFields(
+  jsonOutputShapeExample,
+  "task plan file planner wiring smoke I JSON output",
+);
+
+assertWiringFields(
+  summaryShapeExample,
+  [
+    "parsed",
+    "mapped",
+    "planned",
+    "workItemCount",
+    "batchCount",
+    "planStepCount",
+    "issueCount",
+    "json",
+    "noExecution",
+    "noWrites",
+    "executionEnabled",
+    "adapterCalls",
+    "auditWrites",
+    "verifierRun",
+    "persistence",
+    "filesystemMutation",
+    "completedStateCreated",
+    "verifierRequired",
+    "completionGatedByVerifier",
+    "mappingSupported",
+    "planningInputAvailable",
+  ],
+  "task plan file planner wiring smoke J summary",
+);
+assertWiringSummaryHonest(
+  successfulMinimalPlannerWiringResultExample,
+  "task plan file planner wiring smoke J",
+);
+assert.equal(
+  successfulMinimalPlannerWiringResultExample.summary.issueCount,
+  successfulMinimalPlannerWiringResultExample.issues.length,
+  "task plan file planner wiring smoke J issue count should match issues",
+);
+
+assertWiringSideEffectFalseFields(
+  safetyStageExplicitFalseFlagsExample,
+  "task plan file planner wiring smoke K safety stage",
+);
+assert.equal(
+  safetyStageExplicitFalseFlagsExample.filesystemMutation,
+  false,
+  "task plan file planner wiring smoke K filesystemMutation should be false",
+);
+assert.equal(
+  safetyStageExplicitFalseFlagsExample.completedStateCreated,
+  false,
+  "task plan file planner wiring smoke K completedStateCreated should be false",
+);
+assert.equal(
+  safetyStageExplicitFalseFlagsExample.noExecution,
+  true,
+  "task plan file planner wiring smoke K noExecution should be true",
+);
+assert.equal(
+  safetyStageExplicitFalseFlagsExample.noWrites,
+  true,
+  "task plan file planner wiring smoke K noWrites should be true",
+);
+
+assert.equal(
+  jsonOnlyParserFailurePlannerWiringResultExample.summary.json,
+  true,
+  "task plan file planner wiring smoke L should represent json output",
+);
+assert.ok(
+  jsonOnlyParserFailurePlannerWiringResultExample.jsonOutput,
+  "task plan file planner wiring smoke L should include json output",
+);
+assert.equal(
+  jsonOnlyParserFailurePlannerWiringResultExample.ok,
+  false,
+  "task plan file planner wiring smoke L should not be ok",
+);
+assert.equal(
+  jsonOnlyParserFailurePlannerWiringResultExample.exitCode,
+  "parser_failure",
+  "task plan file planner wiring smoke L should report parser failure exit code",
+);
+assert.equal(
+  jsonOnlyParserFailurePlannerWiringResultExample.parse.ok,
+  false,
+  "task plan file planner wiring smoke L should represent parser failure",
+);
+assert.equal(
+  Object.hasOwn(jsonOnlyParserFailurePlannerWiringResultExample, "humanOutput"),
+  false,
+  "task plan file planner wiring smoke L should not require success human prose",
+);
+assert.equal(
+  jsonOnlyParserFailurePlannerWiringResultExample.safety.executionEnabled,
+  false,
+  "task plan file planner wiring smoke L execution should remain disabled",
+);
+
+for (const [message, result] of [
+  ["task plan file planner wiring smoke M parser failed", parserFailurePlannerWiringResultExample],
+  [
+    "task plan file planner wiring smoke M validation failed",
+    validationFailurePlannerWiringResultExample,
+  ],
+  [
+    "task plan file planner wiring smoke M unsupported mapping",
+    unsupportedMappingPlannerWiringResultExample,
+  ],
+  [
+    "task plan file planner wiring smoke M planning input unavailable",
+    mappingWithoutNoExecutionNoWritesPlannerWiringResultExample,
+  ],
+  [
+    "task plan file planner wiring smoke M verifier gate missing",
+    mappingWithoutVerifierGatePlannerWiringResultExample,
+  ],
+  [
+    "task plan file planner wiring smoke M noExecution/noWrites missing",
+    mappingWithoutNoExecutionNoWritesPlannerWiringResultExample,
+  ],
+]) {
+  assertPlannerNotAttempted(result, message);
+}
+
+for (const [message, result] of [
+  [
+    "task plan file planner wiring smoke N success",
+    successfulMinimalPlannerWiringResultExample,
+  ],
+  ["task plan file planner wiring smoke N parser failure", parserFailurePlannerWiringResultExample],
+  [
+    "task plan file planner wiring smoke N validation failure",
+    validationFailurePlannerWiringResultExample,
+  ],
+  [
+    "task plan file planner wiring smoke N unsupported mapping",
+    unsupportedMappingPlannerWiringResultExample,
+  ],
+  [
+    "task plan file planner wiring smoke N missing verifier gate",
+    mappingWithoutVerifierGatePlannerWiringResultExample,
+  ],
+  [
+    "task plan file planner wiring smoke N missing noExecution/noWrites",
+    mappingWithoutNoExecutionNoWritesPlannerWiringResultExample,
+  ],
+  ["task plan file planner wiring smoke N planner failure", plannerFailurePlannerWiringResultExample],
+  [
+    "task plan file planner wiring smoke N json parser failure",
+    jsonOnlyParserFailurePlannerWiringResultExample,
+  ],
+]) {
+  assertNoRuntimeTruth(result, message);
+}
+
+console.log("task plan file planner wiring contract smoke tests passed");
 
 const taskContractMapperLogicMinimalInput =
   createTaskContractMapperLogicSmokeInput();

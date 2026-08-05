@@ -37,6 +37,7 @@ condition.
 - TASK-0253: Wire task plan file mapping to planner design.
 - TASK-0254: Implement task plan file planner wiring contracts.
 - TASK-0255: Add task plan file planner wiring contract examples.
+- TASK-0256: Add task plan file planner wiring contract smoke tests.
 
 ## Do Not Load By Default
 
@@ -47,7 +48,7 @@ condition.
 
 ## Next Task
 
-TASK-0256 Add task plan file planner wiring contract smoke tests.
+TASK-0257 Implement task plan file planner wiring logic.
 
 ## Current Plans
 
