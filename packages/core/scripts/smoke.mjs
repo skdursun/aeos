@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   mkdtemp,
   mkdir,
+  readdir,
   readFile,
   rm,
   stat,
@@ -91,6 +92,7 @@ import {
   verifierPreviewChecks as logicVerifierPreviewChecks,
 } from "../dist/agentic-runner-dry-run-logic.example.js";
 import {
+  parseTaskPlanInputFile,
   planAgenticRunner,
   runAgenticRunnerDryRun,
   verifyAgenticCoverage,
@@ -1079,6 +1081,216 @@ function assertTaskPlanInputSafety(result, message) {
   visit(result);
 }
 
+function createTaskPlanInputSmokeOptions(overrides = {}) {
+  return {
+    allowAbsolutePath: false,
+    allowParentTraversal: false,
+    maxFileSizeBytes: 64_000,
+    requireJsonObject: true,
+    validateContract: false,
+    createPlanningHandoff: false,
+    noExecution: true,
+    noWrites: true,
+    trustModelSelfReporting: false,
+    ...overrides,
+  };
+}
+
+function createTaskPlanInputSmokeRequest(
+  currentWorkingDirectory,
+  inputPath,
+  optionOverrides = {},
+  requestOverrides = {},
+) {
+  const options = createTaskPlanInputSmokeOptions(optionOverrides);
+
+  return {
+    inputPath,
+    currentWorkingDirectory,
+    mode: "plan",
+    options,
+    expectedFormat: "json",
+    maxFileSizeBytes: options.maxFileSizeBytes,
+    noExecution: true,
+    noWrites: true,
+    ...requestOverrides,
+  };
+}
+
+function createTaskPlanInputSmokeTask() {
+  return {
+    id: "TASK-0237",
+    title: "Add task plan input parser logic smoke tests.",
+    purpose:
+      "Add dependency-free smoke tests for AEOS task plan input parser logic.",
+    status: "pending",
+    executionMode: "code",
+    context: {
+      load: [
+        {
+          path: "packages/core/src/task-plan-input-parser.ts",
+          required: true,
+        },
+      ],
+      doNotLoad: [
+        {
+          path: "docs/",
+          required: true,
+        },
+      ],
+    },
+    fileBoundary: {
+      filesToModify: ["packages/core/scripts/smoke.mjs", "PROJECT_CONTEXT.md"],
+      filesNotToTouch: ["packages/core/src/task-plan-input-parser.ts"],
+      allowGeneratedFiles: false,
+      requireStopOnBoundaryConflict: true,
+    },
+    allowedOperations: [
+      "read_context",
+      "modify_file",
+      "run_verification",
+      "check_git_status",
+    ],
+    forbiddenOperations: [
+      "read_unlisted_context",
+      "modify_unlisted_file",
+      "rename_file",
+      "delete_file",
+      "install_dependency",
+      "change_package_config",
+      "deploy",
+      "push_git",
+      "run_destructive_command",
+      "continue_next_task",
+    ],
+    steps: [
+      {
+        order: 1,
+        instruction: "Extend smoke tests for parser logic.",
+        required: true,
+      },
+    ],
+    verification: [
+      {
+        command: "pnpm --filter @aeos/core smoke",
+        level: "smoke_test",
+        required: true,
+        scope: ["packages/core/scripts/smoke.mjs"],
+        expectedEvidence: ["Parser input smoke scenarios pass."],
+      },
+    ],
+    stopCondition: {
+      description: "Stop after TASK-0237 smoke tests and context update.",
+      stopAfterCompletion: true,
+    },
+  };
+}
+
+function stableTaskPlanInputFields(result) {
+  return {
+    pathStatus: result.pathCheck.status,
+    parseOk: result.parse.ok,
+    validationRequested: result.validation.requested,
+    validationStatus: result.validation.status,
+    mappingRequested: result.mapping.requested,
+    mappingStatus: result.mapping.status,
+    summary: result.summary,
+    issues: result.issues.map((issue) => ({
+      code: issue.code,
+      message: issue.message,
+    })),
+  };
+}
+
+async function snapshotDirectoryEntries(root) {
+  const entries = [];
+
+  async function visit(directory, relativeDirectory) {
+    const dirents = await readdir(directory, { withFileTypes: true });
+    const sortedDirents = [...dirents].sort((left, right) =>
+      left.name.localeCompare(right.name),
+    );
+
+    for (const dirent of sortedDirents) {
+      const absolutePath = join(directory, dirent.name);
+      const relativePath =
+        relativeDirectory.length > 0
+          ? join(relativeDirectory, dirent.name)
+          : dirent.name;
+      const entryStat = await stat(absolutePath);
+      const entryType = dirent.isDirectory()
+        ? "directory"
+        : dirent.isFile()
+          ? "file"
+          : "other";
+
+      entries.push({
+        path: relativePath,
+        type: entryType,
+        size: entryStat.size,
+        mtimeMs: entryStat.mtimeMs,
+      });
+
+      if (dirent.isDirectory()) {
+        await visit(absolutePath, relativePath);
+      }
+    }
+  }
+
+  await visit(root, "");
+
+  return entries;
+}
+
+function assertTaskPlanInputParserReadOnly(result, message) {
+  assertTaskPlanInputSafety(result, message);
+  assert.equal(
+    Object.hasOwn(result, "plan"),
+    false,
+    `${message} must not produce a runner plan`,
+  );
+  assert.equal(
+    Object.hasOwn(result, "planningResult"),
+    false,
+    `${message} must not produce a planning result`,
+  );
+  assert.equal(
+    Object.hasOwn(result, "runnerPlanningResult"),
+    false,
+    `${message} must not produce a runner planning result`,
+  );
+  assert.equal(
+    Object.hasOwn(result, "adapterCalls"),
+    false,
+    `${message} must not expose adapter calls`,
+  );
+  assert.equal(
+    Object.hasOwn(result, "audit"),
+    false,
+    `${message} must not expose audit runtime output`,
+  );
+  assert.equal(
+    Object.hasOwn(result, "verifier"),
+    false,
+    `${message} must not expose verifier runtime output`,
+  );
+  assert.equal(
+    result.mapping.runnerPlanningInput,
+    undefined,
+    `${message} must not create runner planning input`,
+  );
+  assert.equal(
+    result.mapping.runnerPlanningInputReference,
+    undefined,
+    `${message} must not create runner planning references`,
+  );
+  assert.equal(
+    result.mapping.runnerPlanningInputData,
+    undefined,
+    `${message} must not create runner planning data handoff`,
+  );
+}
+
 function assertDirectPlanningResultShape(result) {
   assert.deepEqual(
     Object.keys(result),
@@ -1561,6 +1773,462 @@ for (const [message, result] of [
   assertTaskPlanInputResultShape(result, message);
   assertTaskPlanInputSummaryConsistent(result, message);
   assertTaskPlanInputSafety(result, message);
+}
+
+const taskPlanParserTempRoot = await mkdtemp(
+  join(tmpdir(), "aeos-task-plan-input-parser-smoke-"),
+);
+
+try {
+  const parserProjectRoot = join(taskPlanParserTempRoot, "project");
+  const parserTasksDirectory = join(parserProjectRoot, "tasks");
+  const validTaskPlanPath = join(parserTasksDirectory, "sitemap-audit.json");
+  const invalidJsonPath = join(parserTasksDirectory, "invalid.json");
+  const nonObjectJsonPath = join(parserTasksDirectory, "non-object.json");
+  const unsupportedFormatPath = join(parserTasksDirectory, "task.txt");
+  const oversizedJsonPath = join(parserTasksDirectory, "too-large.json");
+  const contractJsonPath = join(parserTasksDirectory, "contract.json");
+  const outsideJsonPath = join(taskPlanParserTempRoot, "outside.json");
+  const validTaskPlanContent = JSON.stringify(
+    {
+      id: "TASK-0237",
+      title: "Parser smoke valid JSON.",
+    },
+    null,
+    2,
+  );
+  const invalidJsonContent = '{"id":"TASK-0237",}';
+  const nonObjectJsonContent = JSON.stringify(["TASK-0237"]);
+  const unsupportedFormatContent = '{"id":"TASK-0237"}';
+  const oversizedJsonContent = JSON.stringify({
+    id: "TASK-0237",
+    title: "Parser smoke oversized JSON.",
+    purpose: "This content intentionally exceeds the small smoke max size.",
+  });
+  const contractJsonContent = JSON.stringify(
+    createTaskPlanInputSmokeTask(),
+    null,
+    2,
+  );
+  const outsideJsonContent = JSON.stringify({
+    id: "TASK-OUTSIDE",
+    title: "Outside parser smoke fixture.",
+  });
+
+  await mkdir(parserTasksDirectory, { recursive: true });
+  await writeNodeFile(validTaskPlanPath, validTaskPlanContent);
+  await writeNodeFile(invalidJsonPath, invalidJsonContent);
+  await writeNodeFile(nonObjectJsonPath, nonObjectJsonContent);
+  await writeNodeFile(unsupportedFormatPath, unsupportedFormatContent);
+  await writeNodeFile(oversizedJsonPath, oversizedJsonContent);
+  await writeNodeFile(contractJsonPath, contractJsonContent);
+  await writeNodeFile(outsideJsonPath, outsideJsonContent);
+
+  const parserSnapshotBefore = await snapshotDirectoryEntries(
+    taskPlanParserTempRoot,
+  );
+
+  const parserSmokeAValidLocalJson = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(
+      parserProjectRoot,
+      "tasks/sitemap-audit.json",
+    ),
+  );
+
+  assertTaskPlanInputResultShape(
+    parserSmokeAValidLocalJson,
+    "task plan parser logic smoke A valid local JSON result",
+  );
+  assertTaskPlanInputSummaryConsistent(
+    parserSmokeAValidLocalJson,
+    "task plan parser logic smoke A valid local JSON result",
+  );
+  assertTaskPlanInputParserReadOnly(
+    parserSmokeAValidLocalJson,
+    "task plan parser logic smoke A valid local JSON result",
+  );
+  assert.equal(
+    parserSmokeAValidLocalJson.ok,
+    true,
+    "task plan parser logic smoke A valid local JSON should be ok",
+  );
+  assert.ok(
+    parserSmokeAValidLocalJson.sourceFile,
+    "task plan parser logic smoke A should expose sourceFile",
+  );
+  assert.equal(
+    parserSmokeAValidLocalJson.pathCheck.status,
+    "ok",
+    "task plan parser logic smoke A path check should be ok",
+  );
+  assert.equal(
+    parserSmokeAValidLocalJson.parse.ok,
+    true,
+    "task plan parser logic smoke A parse should be ok",
+  );
+  assert.equal(
+    parserSmokeAValidLocalJson.summary.noExecution,
+    true,
+    "task plan parser logic smoke A should preserve noExecution",
+  );
+  assert.equal(
+    parserSmokeAValidLocalJson.summary.noWrites,
+    true,
+    "task plan parser logic smoke A should preserve noWrites",
+  );
+
+  const parserSmokeBMissingFile = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(parserProjectRoot, "tasks/missing.json"),
+  );
+
+  assert.equal(
+    parserSmokeBMissingFile.ok,
+    false,
+    "task plan parser logic smoke B missing file should not be ok",
+  );
+  assert.equal(
+    parserSmokeBMissingFile.pathCheck.status,
+    "missing",
+    "task plan parser logic smoke B should report missing path",
+  );
+  assert.ok(
+    parserSmokeBMissingFile.issues.length > 0,
+    "task plan parser logic smoke B should expose an issue",
+  );
+  assertTaskPlanInputParserReadOnly(
+    parserSmokeBMissingFile,
+    "task plan parser logic smoke B missing file result",
+  );
+
+  const parserSmokeCDirectory = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(parserProjectRoot, "tasks"),
+  );
+
+  assert.equal(
+    parserSmokeCDirectory.ok,
+    false,
+    "task plan parser logic smoke C directory input should not be ok",
+  );
+  assert.ok(
+    ["directory", "not_file"].includes(parserSmokeCDirectory.pathCheck.status),
+    "task plan parser logic smoke C should report directory or not_file",
+  );
+  assert.ok(
+    parserSmokeCDirectory.issues.length > 0,
+    "task plan parser logic smoke C should expose an issue",
+  );
+
+  const parserSmokeDParentTraversal = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(parserProjectRoot, "../outside.json"),
+  );
+
+  assert.equal(
+    parserSmokeDParentTraversal.ok,
+    false,
+    "task plan parser logic smoke D parent traversal should not be ok",
+  );
+  assert.ok(
+    ["outside_working_directory", "unsafe_path"].includes(
+      parserSmokeDParentTraversal.pathCheck.status,
+    ),
+    "task plan parser logic smoke D should deny parent traversal",
+  );
+  assert.ok(
+    parserSmokeDParentTraversal.issues.length > 0,
+    "task plan parser logic smoke D should expose an issue",
+  );
+  assert.equal(
+    await readFile(outsideJsonPath, "utf8"),
+    outsideJsonContent,
+    "task plan parser logic smoke D outside file should remain unchanged",
+  );
+  assertTaskPlanInputParserReadOnly(
+    parserSmokeDParentTraversal,
+    "task plan parser logic smoke D parent traversal result",
+  );
+
+  const parserSmokeEAbsoluteDenied = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(parserProjectRoot, validTaskPlanPath),
+  );
+
+  assert.equal(
+    parserSmokeEAbsoluteDenied.ok,
+    false,
+    "task plan parser logic smoke E absolute path default should not be ok",
+  );
+  assert.ok(
+    ["unsafe_path", "outside_working_directory", "unsupported"].includes(
+      parserSmokeEAbsoluteDenied.pathCheck.status,
+    ),
+    "task plan parser logic smoke E should deny absolute paths by default",
+  );
+  assert.ok(
+    parserSmokeEAbsoluteDenied.issues.length > 0,
+    "task plan parser logic smoke E should expose an issue",
+  );
+
+  const parserSmokeFAbsoluteAllowed = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(parserProjectRoot, validTaskPlanPath, {
+      allowAbsolutePath: true,
+    }),
+  );
+
+  assert.equal(
+    parserSmokeFAbsoluteAllowed.pathCheck.status,
+    "ok",
+    "task plan parser logic smoke F allowed absolute path should pass path check",
+  );
+  assert.equal(
+    parserSmokeFAbsoluteAllowed.parse.ok,
+    true,
+    "task plan parser logic smoke F allowed absolute path should parse JSON",
+  );
+  assert.equal(
+    parserSmokeFAbsoluteAllowed.summary.noWrites,
+    true,
+    "task plan parser logic smoke F should remain read-only",
+  );
+  assert.equal(
+    await readFile(validTaskPlanPath, "utf8"),
+    validTaskPlanContent,
+    "task plan parser logic smoke F source file should remain unchanged",
+  );
+
+  const parserSmokeGInvalidJson = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(parserProjectRoot, "tasks/invalid.json"),
+  );
+
+  assert.equal(
+    parserSmokeGInvalidJson.pathCheck.status,
+    "ok",
+    "task plan parser logic smoke G invalid JSON path should be ok",
+  );
+  assert.equal(
+    parserSmokeGInvalidJson.parse.ok,
+    false,
+    "task plan parser logic smoke G invalid JSON parse should not be ok",
+  );
+  assert.equal(
+    typeof parserSmokeGInvalidJson.parse.parseErrorMessage,
+    "string",
+    "task plan parser logic smoke G should expose parse error message",
+  );
+  assert.ok(
+    parserSmokeGInvalidJson.issues.length > 0,
+    "task plan parser logic smoke G should expose an issue",
+  );
+  assert.equal(
+    parserSmokeGInvalidJson.ok,
+    false,
+    "task plan parser logic smoke G invalid JSON result should not be ok",
+  );
+
+  const parserSmokeHNonObjectJson = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(parserProjectRoot, "tasks/non-object.json"),
+  );
+
+  assert.equal(
+    parserSmokeHNonObjectJson.parse.ok,
+    false,
+    "task plan parser logic smoke H non-object JSON should be rejected by default",
+  );
+  assert.equal(
+    parserSmokeHNonObjectJson.ok,
+    false,
+    "task plan parser logic smoke H non-object JSON result should not be ok",
+  );
+  assert.ok(
+    parserSmokeHNonObjectJson.issues.length > 0,
+    "task plan parser logic smoke H should expose an issue",
+  );
+
+  const parserSmokeIUnsupportedFormat = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(parserProjectRoot, "tasks/task.txt"),
+  );
+
+  assert.equal(
+    parserSmokeIUnsupportedFormat.ok,
+    false,
+    "task plan parser logic smoke I unsupported extension should not be ok",
+  );
+  assert.equal(
+    parserSmokeIUnsupportedFormat.pathCheck.status,
+    "ok",
+    "task plan parser logic smoke I unsupported extension path should be ok",
+  );
+  assert.ok(
+    parserSmokeIUnsupportedFormat.parse.format === "unsupported" ||
+      parserSmokeIUnsupportedFormat.issues.length > 0,
+    "task plan parser logic smoke I should represent unsupported format or issue",
+  );
+  assert.ok(
+    parserSmokeIUnsupportedFormat.issues.length > 0,
+    "task plan parser logic smoke I should expose an issue",
+  );
+
+  const parserSmokeJOversized = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(
+      parserProjectRoot,
+      "tasks/too-large.json",
+      {
+        maxFileSizeBytes: 16,
+      },
+      {
+        maxFileSizeBytes: 16,
+      },
+    ),
+  );
+
+  assert.equal(
+    parserSmokeJOversized.ok,
+    false,
+    "task plan parser logic smoke J oversized file should not be ok",
+  );
+  assert.ok(
+    parserSmokeJOversized.issues.length > 0,
+    "task plan parser logic smoke J should expose an issue",
+  );
+  assert.equal(
+    parserSmokeJOversized.parse.ok,
+    false,
+    "task plan parser logic smoke J should not pretend parse success",
+  );
+  assert.equal(
+    parserSmokeJOversized.summary.noWrites,
+    true,
+    "task plan parser logic smoke J should remain read-only",
+  );
+
+  const parserSmokeKValidation = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(parserProjectRoot, "tasks/contract.json", {
+      validateContract: true,
+    }),
+  );
+
+  assert.equal(
+    parserSmokeKValidation.validation.requested,
+    true,
+    "task plan parser logic smoke K validation should be requested",
+  );
+  assert.equal(
+    typeof parserSmokeKValidation.validation.status,
+    "string",
+    "task plan parser logic smoke K validation status should be represented",
+  );
+  assert.equal(
+    parserSmokeKValidation.validation.status,
+    "pass",
+    "task plan parser logic smoke K valid contract should pass validation",
+  );
+  assert.equal(
+    parserSmokeKValidation.mapping.runnerPlanningExecuted,
+    false,
+    "task plan parser logic smoke K must not execute runner planning",
+  );
+
+  const parserSmokeLMappingUnsupported = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(parserProjectRoot, "tasks/contract.json", {
+      validateContract: true,
+      createPlanningHandoff: true,
+    }),
+  );
+
+  assert.equal(
+    parserSmokeLMappingUnsupported.mapping.requested,
+    true,
+    "task plan parser logic smoke L mapping should be requested",
+  );
+  assert.ok(
+    ["unsupported", "failed", "not_implemented", "blocked"].includes(
+      parserSmokeLMappingUnsupported.mapping.status,
+    ),
+    "task plan parser logic smoke L should report unsupported mapping handoff",
+  );
+  assert.equal(
+    typeof parserSmokeLMappingUnsupported.mapping.unsupportedReason,
+    "string",
+    "task plan parser logic smoke L should represent unsupported reason",
+  );
+  assert.equal(
+    parserSmokeLMappingUnsupported.mapping.runnerPlanningExecuted,
+    false,
+    "task plan parser logic smoke L must not run planAgenticRunner",
+  );
+
+  const parserSmokeMFirst = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(parserProjectRoot, "tasks/contract.json", {
+      validateContract: true,
+      createPlanningHandoff: true,
+    }),
+  );
+  const parserSmokeMSecond = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(parserProjectRoot, "tasks/contract.json", {
+      validateContract: true,
+      createPlanningHandoff: true,
+    }),
+  );
+
+  assert.deepEqual(
+    stableTaskPlanInputFields(parserSmokeMFirst),
+    stableTaskPlanInputFields(parserSmokeMSecond),
+    "task plan parser logic smoke M repeated parse should be deterministic",
+  );
+
+  for (const [message, result] of [
+    ["task plan parser logic smoke A", parserSmokeAValidLocalJson],
+    ["task plan parser logic smoke B", parserSmokeBMissingFile],
+    ["task plan parser logic smoke C", parserSmokeCDirectory],
+    ["task plan parser logic smoke D", parserSmokeDParentTraversal],
+    ["task plan parser logic smoke E", parserSmokeEAbsoluteDenied],
+    ["task plan parser logic smoke F", parserSmokeFAbsoluteAllowed],
+    ["task plan parser logic smoke G", parserSmokeGInvalidJson],
+    ["task plan parser logic smoke H", parserSmokeHNonObjectJson],
+    ["task plan parser logic smoke I", parserSmokeIUnsupportedFormat],
+    ["task plan parser logic smoke J", parserSmokeJOversized],
+    ["task plan parser logic smoke K", parserSmokeKValidation],
+    ["task plan parser logic smoke L", parserSmokeLMappingUnsupported],
+    ["task plan parser logic smoke M first", parserSmokeMFirst],
+    ["task plan parser logic smoke M second", parserSmokeMSecond],
+  ]) {
+    assertTaskPlanInputResultShape(result, `${message} result`);
+    assertTaskPlanInputSummaryConsistent(result, `${message} result`);
+    assertTaskPlanInputParserReadOnly(result, `${message} result`);
+    assert.ok(
+      result.issues.length === 0 || result.issues.every((issue) => issue.message),
+      `${message} issues should include deterministic messages`,
+    );
+  }
+
+  const parserSnapshotAfter = await snapshotDirectoryEntries(
+    taskPlanParserTempRoot,
+  );
+
+  assert.deepEqual(
+    parserSnapshotAfter,
+    parserSnapshotBefore,
+    "task plan parser logic smoke N parser calls should not create, delete, or modify files",
+  );
+  assert.equal(
+    await readFile(outsideJsonPath, "utf8"),
+    outsideJsonContent,
+    "task plan parser logic smoke N outside fixture should remain unchanged",
+  );
+  assert.equal(
+    parserSmokeAValidLocalJson.summary.noExecution &&
+      parserSmokeFAbsoluteAllowed.summary.noExecution &&
+      parserSmokeLMappingUnsupported.summary.noExecution,
+    true,
+    "task plan parser logic smoke N summaries should keep noExecution true",
+  );
+  assert.equal(
+    parserSmokeAValidLocalJson.summary.noWrites &&
+      parserSmokeFAbsoluteAllowed.summary.noWrites &&
+      parserSmokeLMappingUnsupported.summary.noWrites,
+    true,
+    "task plan parser logic smoke N summaries should keep noWrites true",
+  );
+} finally {
+  await rm(taskPlanParserTempRoot, { recursive: true, force: true });
 }
 
 const verifierResults = [
