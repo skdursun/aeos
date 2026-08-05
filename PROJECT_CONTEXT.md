@@ -84,6 +84,7 @@ condition.
 - TASK-0249: Add task contract mapping logic smoke tests.
 - TASK-0250: Add task contract mapping safety review.
 - TASK-0251: Add task contract mapping documentation.
+- TASK-0252: Add task contract mapping final safety review.
 
 ## Do Not Load By Default
 
@@ -94,7 +95,7 @@ condition.
 
 ## Next Task
 
-TASK-0252 Add task contract mapping final safety review.
+TASK-0253 Wire task plan file mapping to planner design.
 
 ## Current Plans
 

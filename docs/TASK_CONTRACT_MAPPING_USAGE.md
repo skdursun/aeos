@@ -123,6 +123,11 @@ Current unsupported cases include:
 Unsupported results set `ok: false`, use an unsupported status where applicable,
 and omit `runnerPlanningInput`.
 
+Static contract-shape examples may show future explicit work item or batch
+objects for type illustration. They are not implemented mapper support. Current
+runtime mapper behavior is defined by `mapTaskContractToRunnerPlanningInput()`,
+which rejects unvalidated explicit `workItems`, `batches`, and `resume` fields.
+
 ## Single Work Item Fallback Behavior
 When `allowSingleWorkItemFallback` is true and explicit work items are not
 required, the mapper may represent a validated task as one whole-task work item:

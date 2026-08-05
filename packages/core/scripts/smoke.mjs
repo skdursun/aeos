@@ -2846,7 +2846,7 @@ assertTaskContractMappingSafety(
 assert.equal(
   explicitWorkItemMappingResult.workItems.length,
   2,
-  "task contract mapping smoke C should represent multiple work items",
+  "task contract mapping smoke C static contract fixture should represent multiple work items only as a future typed shape",
 );
 assert.deepEqual(
   explicitWorkItemMappingResult.workItems.map((workItem) => workItem.workItemId),
@@ -2854,17 +2854,32 @@ assert.deepEqual(
     "work-item:TASK-0245:001-load-contracts",
     "work-item:TASK-0245:002-add-examples",
   ],
-  "task contract mapping smoke C work item ids should remain deterministic",
+  "task contract mapping smoke C static contract fixture work item ids should remain deterministic",
 );
 assert.deepEqual(
   explicitWorkItemBatchMapping.workItemIds,
   explicitWorkItemMappingResult.workItems.map((workItem) => workItem.workItemId),
-  "task contract mapping smoke C batch should reference work item ids",
+  "task contract mapping smoke C static contract fixture batch should reference work item ids",
 );
 assert.equal(
   explicitWorkItemBatchMapping.expectedItemCount,
   explicitWorkItemBatchMapping.workItemIds.length,
-  "task contract mapping smoke C batch expected count should match work item ids",
+  "task contract mapping smoke C static contract fixture batch expected count should match work item ids",
+);
+assert.equal(
+  taskContractMapperLogicExplicitResult.ok,
+  false,
+  "task contract mapping smoke C implemented mapper must not accept unvalidated explicit work items as supported",
+);
+assert.equal(
+  taskContractMapperLogicExplicitResult.status,
+  "unsupported",
+  "task contract mapping smoke C implemented mapper should report unsupported explicit work item mapping",
+);
+assert.equal(
+  taskContractMapperLogicExplicitResult.planningInput.runnerPlanningInput,
+  undefined,
+  "task contract mapping smoke C implemented mapper should not create planning input for unsupported explicit work items",
 );
 
 assert.equal(

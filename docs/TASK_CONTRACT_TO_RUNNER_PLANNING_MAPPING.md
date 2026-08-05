@@ -469,6 +469,8 @@ work item and one default batch when fallback is allowed and the shape is safe.
 Explicit `workItems` and `batches` remain unsupported because the current
 `AeosTask` contract does not validate those fields. The mapper reports those
 cases honestly instead of inventing support or producing fake success.
+Any explicit work item or batch examples in contract-level fixtures are
+illustrative typed shapes for later scope, not current runtime mapper support.
 
 The mapper does not run `planAgenticRunner()`, runner execution, adapters,
 audit writes, verifier logic, persistence, or filesystem mutation. Model or task
