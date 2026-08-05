@@ -715,12 +715,52 @@ function expectTaskPlanHelpNoOverpromises(message, result) {
 function expectTaskPlanNoWrites(message, rootPath, before, result) {
   expectSameFiles(message, before, listRelativeFiles(rootPath));
 
-  if (existsSync(join(rootPath, "AGENTS.md"))) {
-    fail(`${message}: created AGENTS.md`, result);
+  for (const unexpectedPath of [
+    "AGENTS.md",
+    "task-output.json",
+    "task-plan.json",
+    "task-state.json",
+    "task-plan-state.json",
+    ".aeos/task-output.json",
+    ".aeos/task-plan.json",
+    ".aeos/task-state.json",
+    ".aeos/tasks",
+    ".aeos/audit",
+  ]) {
+    if (existsSync(join(rootPath, unexpectedPath))) {
+      fail(`${message}: created ${unexpectedPath}`, result);
+    }
+  }
+}
+
+function expectTaskPlanParserOnlySafety(message, outputText, result) {
+  for (const expectedText of [
+    "planningEnabled\":false",
+    "executionEnabled\":false",
+    "adapterCalls\":false",
+    "auditWrites\":false",
+    "verifierRun\":false",
+    "persistence\":false",
+    "runnerPlanningExecuted\":false",
+    "taskPersistenceWritten\":false",
+  ]) {
+    if (!outputText.includes(expectedText)) {
+      fail(`${message}: missing parser-only safety marker ${expectedText}`, result);
+    }
   }
 
-  if (existsSync(join(rootPath, "task-output.json"))) {
-    fail(`${message}: created task-output.json`, result);
+  for (const unexpectedText of [
+    "planAgenticRunner",
+    "runAgenticRunner",
+    "runner execution invoked",
+    "adapter call executed",
+    "audit event written",
+    "verifier executed",
+    "persisted task state",
+  ]) {
+    if (outputText.includes(unexpectedText)) {
+      fail(`${message}: implied runtime side effect ${unexpectedText}`, result);
+    }
   }
 }
 
@@ -2938,10 +2978,12 @@ try {
   const validTaskPath = join(taskPlanNoWriteRoot, "valid-task.json");
   const invalidJsonPath = join(taskPlanNoWriteRoot, "invalid-task.json");
   const markdownTaskPath = join(taskPlanNoWriteRoot, "task.md");
+  const directoryTaskPath = join(taskPlanNoWriteRoot, "task-directory");
   const traversalChildRoot = join(taskPlanTraversalParentRoot, "cwd");
   const traversalTaskPath = join(taskPlanTraversalParentRoot, "outside.json");
 
   mkdirSync(traversalChildRoot);
+  mkdirSync(directoryTaskPath);
   writeFileSync(
     validTaskPath,
     `${JSON.stringify(createValidTaskPlanContract("smoke-task-plan-valid"), null, 2)}\n`,
@@ -3015,6 +3057,16 @@ try {
     taskPlanInvalidJson,
     "Task plan input file contains invalid JSON.",
   );
+  expectOutputExcludes(
+    "task plan invalid JSON leaked raw JSON parser message",
+    taskPlanInvalidJson,
+    "Unexpected token",
+  );
+  expectOutputExcludes(
+    "task plan invalid JSON dumped raw invalid task content",
+    taskPlanInvalidJson,
+    "{ invalid json",
+  );
   expectTaskPlanNoWrites(
     "task plan invalid JSON created files in no-write fixture",
     taskPlanNoWriteRoot,
@@ -3042,6 +3094,19 @@ try {
   if (parsedTaskPlanJsonInvalid.error.code !== "task_plan_invalid_json") {
     fail("task plan invalid JSON --json did not use stable error code", taskPlanJsonInvalid);
   }
+  if (parsedTaskPlanJsonInvalid.parse.parseErrorMessage !== "Invalid JSON.") {
+    fail("task plan invalid JSON --json did not use normalized parse message", taskPlanJsonInvalid);
+  }
+  expectOutputExcludes(
+    "task plan invalid JSON --json leaked raw JSON parser message",
+    taskPlanJsonInvalid,
+    "Unexpected token",
+  );
+  expectOutputExcludes(
+    "task plan invalid JSON --json dumped raw invalid task content",
+    taskPlanJsonInvalid,
+    "{ invalid json",
+  );
   expectTaskPlanNoWrites(
     "task plan invalid JSON --json created files in no-write fixture",
     taskPlanNoWriteRoot,
@@ -3066,6 +3131,66 @@ try {
     taskPlanNoWriteRoot,
     taskPlanUnsupportedFilesBefore,
     taskPlanUnsupported,
+  );
+
+  const taskPlanUnsupportedJsonFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
+  const taskPlanUnsupportedJson = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "plan",
+    "task.md",
+    "--json",
+  ]);
+  expectNonzero("task plan unsupported extension --json exited zero", taskPlanUnsupportedJson);
+  const parsedTaskPlanUnsupportedJson = parseJsonOnlyStdout(
+    "task plan unsupported extension --json output was not valid JSON only",
+    taskPlanUnsupportedJson,
+  );
+  expectTaskPlanInputErrorJsonShape(
+    "task plan unsupported extension --json shape was invalid",
+    parsedTaskPlanUnsupportedJson,
+    taskPlanUnsupportedJson,
+  );
+  if (parsedTaskPlanUnsupportedJson.error.code !== "task_plan_unsupported_extension") {
+    fail(
+      "task plan unsupported extension --json did not use stable error code",
+      taskPlanUnsupportedJson,
+    );
+  }
+  expectTaskPlanNoWrites(
+    "task plan unsupported extension --json created files in no-write fixture",
+    taskPlanNoWriteRoot,
+    taskPlanUnsupportedJsonFilesBefore,
+    taskPlanUnsupportedJson,
+  );
+
+  const taskPlanDirectoryJsonFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
+  const taskPlanDirectoryJson = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "plan",
+    "task-directory",
+    "--json",
+  ]);
+  expectNonzero("task plan directory input --json exited zero", taskPlanDirectoryJson);
+  const parsedTaskPlanDirectoryJson = parseJsonOnlyStdout(
+    "task plan directory input --json output was not valid JSON only",
+    taskPlanDirectoryJson,
+  );
+  expectTaskPlanInputErrorJsonShape(
+    "task plan directory input --json shape was invalid",
+    parsedTaskPlanDirectoryJson,
+    taskPlanDirectoryJson,
+  );
+  if (parsedTaskPlanDirectoryJson.error.code !== "task_plan_directory_input") {
+    fail(
+      "task plan directory input --json did not use stable error code",
+      taskPlanDirectoryJson,
+    );
+  }
+  expectTaskPlanNoWrites(
+    "task plan directory input --json created files in no-write fixture",
+    taskPlanNoWriteRoot,
+    taskPlanDirectoryJsonFilesBefore,
+    taskPlanDirectoryJson,
   );
 
   const taskPlanAbsoluteJsonFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
@@ -3165,6 +3290,19 @@ try {
     taskPlanValid,
     "Task validation",
   );
+  for (const unexpectedText of [
+    "Smoke valid task plan input",
+    "Verify parser-only task plan CLI integration.",
+    "Stop after parser-only task plan smoke validation.",
+    "filesToModify",
+    "filesNotToTouch",
+  ]) {
+    expectOutputExcludes(
+      `task plan valid parse human output dumped parsed task content: ${unexpectedText}`,
+      taskPlanValid,
+      unexpectedText,
+    );
+  }
   expectTaskPlanNoWrites(
     "task plan valid parse created files in no-write fixture",
     taskPlanNoWriteRoot,
@@ -3199,6 +3337,24 @@ try {
     )
   ) {
     fail("task plan valid parse --json did not report unsupported mapping", taskPlanValidJson);
+  }
+  expectTaskPlanParserOnlySafety(
+    "task plan valid parse --json",
+    taskPlanValidJson.stdout,
+    taskPlanValidJson,
+  );
+  for (const unexpectedText of [
+    "Smoke valid task plan input",
+    "Verify parser-only task plan CLI integration.",
+    "Stop after parser-only task plan smoke validation.",
+    "filesToModify",
+    "filesNotToTouch",
+  ]) {
+    expectOutputExcludes(
+      `task plan valid parse --json dumped parsed task content: ${unexpectedText}`,
+      taskPlanValidJson,
+      unexpectedText,
+    );
   }
   expectTaskPlanNoWrites(
     "task plan valid parse --json created files in no-write fixture",

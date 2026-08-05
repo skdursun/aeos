@@ -74,6 +74,7 @@ condition.
 - TASK-0239: Add task plan input parser documentation.
 - TASK-0240: Add task plan input parser final safety review.
 - TASK-0241: Implement aeos task plan file argument skeleton.
+- TASK-0242: Add task plan file argument JSON safety review.
 
 ## Do Not Load By Default
 
@@ -84,7 +85,7 @@ condition.
 
 ## Next Task
 
-TASK-0242 Add task plan file argument JSON safety review.
+TASK-0243 Design task contract to runner planning mapping.
 
 ## Current Plans
 
