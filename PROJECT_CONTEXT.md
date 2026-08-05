@@ -35,6 +35,7 @@ condition.
 - TASK-0251: Add task contract mapping documentation.
 - TASK-0252: Add task contract mapping final safety review.
 - TASK-0253: Wire task plan file mapping to planner design.
+- TASK-0254: Implement task plan file planner wiring contracts.
 
 ## Do Not Load By Default
 
@@ -45,7 +46,7 @@ condition.
 
 ## Next Task
 
-TASK-0254 Implement task plan file planner wiring contracts.
+TASK-0255 Add task plan file planner wiring contract examples.
 
 ## Current Plans
 

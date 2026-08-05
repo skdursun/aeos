@@ -11,6 +11,7 @@ export type * from "./agentic-runner.js";
 export type * from "./agentic-runner-planning.js";
 export type * from "./task-plan-input.js";
 export type * from "./task-contract-mapping.js";
+export type * from "./task-plan-file-planner-wiring.js";
 export * from "./task-contract-mapper.js";
 export * from "./task-plan-input-parser.js";
 export type * from "./agentic-runner-execution.js";
