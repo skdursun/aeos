@@ -114,6 +114,25 @@ import {
   validLocalJsonTaskFileRequest,
   validationHandoffRequested,
 } from "../dist/task-plan-input.example.js";
+import {
+  adapterBoundaryMappingExample,
+  auditExpectationMappingExample,
+  explicitWorkItemBatchMapping,
+  explicitWorkItemMappingResult,
+  fullMappingResultShapeExample,
+  invalidTaskContractMappingInput,
+  invalidTaskContractMappingResult,
+  minimalTaskContractMappingInput,
+  planningInputHandoffExample,
+  policyMappingExample,
+  resumeMappingExample,
+  singleWorkItemFallbackMappingResult,
+  taskContractMappingExampleOptions,
+  taskContractMappingExamples,
+  unsupportedMappingResult,
+  validMinimalTaskMappingResult,
+  verifierRequirementMappingExample,
+} from "../dist/task-contract-mapping.example.js";
 
 async function pathExists(path) {
   try {
@@ -1568,6 +1587,507 @@ function assertVerifiedVerifierResult(result, message) {
   assert.equal(result.ok, true, `${message} should be ok`);
   assert.equal(result.status, "verified", `${message} should be verified`);
   assert.equal(result.issues.length, 0, `${message} should not expose issues`);
+}
+
+function assertTaskContractMappingResultShape(result, message) {
+  for (const field of [
+    "ok",
+    "taskId",
+    "mode",
+    "status",
+    "sourceFile",
+    "workItems",
+    "batches",
+    "policy",
+    "adapterBoundary",
+    "audit",
+    "verifier",
+    "resume",
+    "planningInput",
+    "issues",
+    "summary",
+  ]) {
+    assert.ok(
+      Object.hasOwn(result, field) || result[field] === undefined,
+      `${message} should expose stable field ${field} when represented`,
+    );
+  }
+
+  assert.ok(Array.isArray(result.workItems), `${message} should expose work items`);
+  assert.ok(Array.isArray(result.batches), `${message} should expose batches`);
+  assert.ok(Array.isArray(result.issues), `${message} should expose issues`);
+  assert.equal(
+    result.planningInput.runnerPlanningExecuted,
+    false,
+    `${message} must not imply planAgenticRunner execution`,
+  );
+  assert.equal(
+    result.planningInput.taskPersistenceWritten,
+    false,
+    `${message} must not imply task persistence writes`,
+  );
+}
+
+function assertTaskContractMappingSummaryConsistent(result, message) {
+  const planningInputData = result.planningInput.runnerPlanningInputData?.data;
+  const adapterReferenceCount =
+    (result.adapterBoundary?.modelAdapterReferences.length ?? 0) +
+    (result.adapterBoundary?.toolAdapterReferences.length ?? 0) ||
+    planningInputData?.adapterReferences?.length ||
+    0;
+  const policyRequired =
+    result.policy?.required ??
+    Boolean(planningInputData?.policyRequirements?.length);
+  const approvalRequired =
+    (result.policy?.approvalRequired ?? false) ||
+    (result.adapterBoundary?.approvalRequired ?? false) ||
+    Boolean(
+      planningInputData?.policyRequirements?.some(
+        (policy) => policy.approvalRequired,
+      ),
+    );
+  const expectedAuditEventCount =
+    result.audit?.expectedAuditEventIds.length ??
+    planningInputData?.auditRequirements?.expectedAuditEventIds.length ??
+    0;
+  const verifierRequired =
+    result.verifier?.verifierRequired ??
+    planningInputData?.verifierRequirements?.verifierRequired ??
+    false;
+  const completionGatedByVerifier =
+    result.verifier?.completionGatedByVerifier ??
+    planningInputData?.verifierRequirements?.completionGatedByVerifier ??
+    false;
+
+  assert.equal(
+    result.summary.workItemCount,
+    result.workItems.length,
+    `${message} summary work item count should match mappings`,
+  );
+  assert.equal(
+    result.summary.batchCount,
+    result.batches.length,
+    `${message} summary batch count should match mappings`,
+  );
+  assert.equal(
+    result.summary.policyRequired,
+    policyRequired,
+    `${message} summary policyRequired should match policy mapping`,
+  );
+  assert.equal(
+    result.summary.approvalRequired,
+    approvalRequired,
+    `${message} summary approvalRequired should match gates`,
+  );
+  assert.equal(
+    result.summary.adapterReferenceCount,
+    adapterReferenceCount,
+    `${message} summary adapter count should match adapter boundary`,
+  );
+  assert.equal(
+    result.summary.expectedAuditEventCount,
+    expectedAuditEventCount,
+    `${message} summary audit event count should match audit expectations`,
+  );
+  assert.equal(
+    result.summary.verifierRequired,
+    verifierRequired,
+    `${message} summary verifierRequired should match verifier mapping`,
+  );
+  assert.equal(
+    result.summary.completionGatedByVerifier,
+    completionGatedByVerifier,
+    `${message} summary verifier completion gate should match verifier mapping`,
+  );
+  assert.equal(
+    result.summary.mappingSupported,
+    result.status === "mapped",
+    `${message} summary mappingSupported should match mapped status`,
+  );
+  assert.equal(
+    result.summary.noExecution,
+    true,
+    `${message} summary should keep noExecution explicit`,
+  );
+  assert.equal(
+    result.summary.noWrites,
+    true,
+    `${message} summary should keep noWrites explicit`,
+  );
+  assert.equal(
+    result.summary.issueCount,
+    result.issues.length,
+    `${message} summary issue count should match issues array`,
+  );
+}
+
+function assertTaskContractMappingSafety(result, message) {
+  assert.equal(
+    result.planningInput.runnerPlanningExecuted,
+    false,
+    `${message} must not execute runner planning`,
+  );
+  assert.equal(
+    result.planningInput.taskPersistenceWritten,
+    false,
+    `${message} must not write task persistence`,
+  );
+  assert.equal(
+    Object.hasOwn(result, "plan"),
+    false,
+    `${message} must not expose runner plan execution output`,
+  );
+  assert.equal(
+    Object.hasOwn(result, "runnerPlanningResult"),
+    false,
+    `${message} must not expose runner planning result output`,
+  );
+  assert.equal(
+    Object.hasOwn(result, "executionResult"),
+    false,
+    `${message} must not expose runner execution output`,
+  );
+
+  const forbiddenTrueFields = new Set([
+    "taskParsingExecuted",
+    "taskValidationExecuted",
+    "planAgenticRunnerExecuted",
+    "runnerPlanningExecuted",
+    "runnerExecutionExecuted",
+    "taskPersistenceExists",
+    "taskPersistenceWritten",
+    "auditWritten",
+    "auditEventsEmitted",
+    "verifierExecuted",
+    "adapterCallHappened",
+    "adapterCallsMade",
+    "filesystemMutationHappened",
+  ]);
+
+  const visit = (value) => {
+    if (value === null || typeof value !== "object") {
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        visit(item);
+      }
+      return;
+    }
+
+    for (const [key, nestedValue] of Object.entries(value)) {
+      assert.equal(
+        !(forbiddenTrueFields.has(key) && nestedValue === true),
+        true,
+        `${message} must not imply ${key}`,
+      );
+      visit(nestedValue);
+    }
+  };
+
+  visit(result);
+}
+
+assert.equal(
+  minimalTaskContractMappingInput.taskId,
+  validMinimalTaskMappingResult.taskId,
+  "task contract mapping smoke A should represent task id",
+);
+assert.equal(
+  validMinimalTaskMappingResult.sourceFile,
+  minimalTaskContractMappingInput.sourceFile,
+  "task contract mapping smoke A should represent source file",
+);
+assert.equal(
+  validMinimalTaskMappingResult.mode,
+  "plan",
+  "task contract mapping smoke A should represent plan mode",
+);
+assert.equal(
+  minimalTaskContractMappingInput.noExecution,
+  true,
+  "task contract mapping smoke A input should preserve noExecution",
+);
+assert.equal(
+  minimalTaskContractMappingInput.noWrites,
+  true,
+  "task contract mapping smoke A input should preserve noWrites",
+);
+assert.equal(
+  validMinimalTaskMappingResult.summary.noExecution,
+  true,
+  "task contract mapping smoke A result should preserve noExecution",
+);
+assert.equal(
+  validMinimalTaskMappingResult.summary.noWrites,
+  true,
+  "task contract mapping smoke A result should preserve noWrites",
+);
+assert.equal(
+  validMinimalTaskMappingResult.verifier.verifierRequired,
+  true,
+  "task contract mapping smoke A should require verifier",
+);
+assert.equal(
+  validMinimalTaskMappingResult.verifier.completionGatedByVerifier,
+  true,
+  "task contract mapping smoke A should gate completion by verifier",
+);
+
+assert.equal(
+  taskContractMappingExampleOptions.allowSingleWorkItemFallback,
+  true,
+  "task contract mapping smoke B should represent single work item fallback option",
+);
+assert.equal(
+  singleWorkItemFallbackMappingResult.workItems.length,
+  1,
+  "task contract mapping smoke B should represent one work item mapping",
+);
+assert.equal(
+  singleWorkItemFallbackMappingResult.workItems[0].derivedFrom,
+  "single_work_item_fallback",
+  "task contract mapping smoke B should represent fallback derivation",
+);
+assert.equal(
+  singleWorkItemFallbackMappingResult.batches[0].derivedDefaultBatch,
+  true,
+  "task contract mapping smoke B should represent default batch",
+);
+assert.equal(
+  singleWorkItemFallbackMappingResult.batches[0].expectedItemCount,
+  1,
+  "task contract mapping smoke B default batch expected count should be one",
+);
+assert.equal(
+  singleWorkItemFallbackMappingResult.verifier.verifierRequired,
+  true,
+  "task contract mapping smoke B should require verifier",
+);
+assertTaskContractMappingSafety(
+  singleWorkItemFallbackMappingResult,
+  "task contract mapping smoke B",
+);
+
+assert.equal(
+  explicitWorkItemMappingResult.workItems.length,
+  2,
+  "task contract mapping smoke C should represent multiple work items",
+);
+assert.deepEqual(
+  explicitWorkItemMappingResult.workItems.map((workItem) => workItem.workItemId),
+  [
+    "work-item:TASK-0245:001-load-contracts",
+    "work-item:TASK-0245:002-add-examples",
+  ],
+  "task contract mapping smoke C work item ids should remain deterministic",
+);
+assert.deepEqual(
+  explicitWorkItemBatchMapping.workItemIds,
+  explicitWorkItemMappingResult.workItems.map((workItem) => workItem.workItemId),
+  "task contract mapping smoke C batch should reference work item ids",
+);
+assert.equal(
+  explicitWorkItemBatchMapping.expectedItemCount,
+  explicitWorkItemBatchMapping.workItemIds.length,
+  "task contract mapping smoke C batch expected count should match work item ids",
+);
+
+assert.equal(
+  unsupportedMappingResult.status,
+  "unsupported",
+  "task contract mapping smoke D should represent unsupported status",
+);
+assert.equal(
+  unsupportedMappingResult.ok,
+  false,
+  "task contract mapping smoke D should not be ok",
+);
+assert.equal(
+  typeof unsupportedMappingResult.planningInput.unsupportedReason,
+  "string",
+  "task contract mapping smoke D should represent unsupported reason",
+);
+assert.equal(
+  unsupportedMappingResult.planningInput.handoffStatus,
+  "unsupported",
+  "task contract mapping smoke D planning handoff should be unsupported",
+);
+assertTaskContractMappingSafety(
+  unsupportedMappingResult,
+  "task contract mapping smoke D",
+);
+
+assert.ok(
+  ["invalid", "failed"].includes(invalidTaskContractMappingResult.status),
+  "task contract mapping smoke E should represent invalid or failed status",
+);
+assert.equal(
+  invalidTaskContractMappingInput.validation.status,
+  "fail",
+  "task contract mapping smoke E should represent validation status",
+);
+assert.equal(
+  invalidTaskContractMappingInput.validation.reference.id,
+  "task-validation:TASK-INVALID",
+  "task contract mapping smoke E should represent validation reference",
+);
+assert.ok(
+  invalidTaskContractMappingResult.issues.length > 0,
+  "task contract mapping smoke E should represent an issue",
+);
+assert.equal(
+  invalidTaskContractMappingResult.ok,
+  false,
+  "task contract mapping smoke E should not be ok",
+);
+
+assert.equal(
+  policyMappingExample.required,
+  true,
+  "task contract mapping smoke F should represent required policy",
+);
+assert.equal(
+  typeof policyMappingExample.approvalRequired,
+  "boolean",
+  "task contract mapping smoke F should represent approval requirement",
+);
+assert.equal(
+  policyMappingExample.policyGateId,
+  "policy-gate:TASK-0245:no-writes",
+  "task contract mapping smoke F should represent policy gate id",
+);
+assert.equal(
+  policyMappingExample.status,
+  "not_evaluated",
+  "task contract mapping smoke F should not imply policy enforcement",
+);
+
+assert.ok(
+  adapterBoundaryMappingExample.modelAdapterReferences.length > 0,
+  "task contract mapping smoke G should represent model adapter refs",
+);
+assert.ok(
+  adapterBoundaryMappingExample.toolAdapterReferences.length > 0,
+  "task contract mapping smoke G should represent tool adapter refs",
+);
+assert.ok(
+  adapterBoundaryMappingExample.allowedOperations.length > 0,
+  "task contract mapping smoke G should represent allowed operations",
+);
+assert.ok(
+  adapterBoundaryMappingExample.deniedOperations.length > 0,
+  "task contract mapping smoke G should represent denied operations",
+);
+assert.equal(
+  typeof adapterBoundaryMappingExample.approvalRequired,
+  "boolean",
+  "task contract mapping smoke G should represent approval requirement",
+);
+assert.ok(
+  adapterBoundaryMappingExample.deniedOperations.includes("call_adapter"),
+  "task contract mapping smoke G should not imply adapter calls",
+);
+
+assert.ok(
+  auditExpectationMappingExample.expectedAuditEventIds.length > 0,
+  "task contract mapping smoke H should represent expected audit event ids",
+);
+assert.ok(
+  auditExpectationMappingExample.requiredEventKinds.length > 0,
+  "task contract mapping smoke H should represent required audit event kinds",
+);
+assert.equal(
+  auditExpectationMappingExample.auditRequired,
+  true,
+  "task contract mapping smoke H should represent audit requirement",
+);
+assert.equal(
+  planningInputHandoffExample.runnerPlanningInputData.data.metadata
+    .auditEventsEmitted,
+  false,
+  "task contract mapping smoke H should not imply audit events emitted",
+);
+
+assert.equal(
+  verifierRequirementMappingExample.verifierRequired,
+  true,
+  "task contract mapping smoke I should require verifier",
+);
+assert.equal(
+  verifierRequirementMappingExample.completionGatedByVerifier,
+  true,
+  "task contract mapping smoke I should gate completion by verifier",
+);
+assert.equal(
+  typeof verifierRequirementMappingExample.expectedCoverageRule,
+  "string",
+  "task contract mapping smoke I should represent expected coverage rule",
+);
+assert.notEqual(
+  fullMappingResultShapeExample.status,
+  "completed",
+  "task contract mapping smoke I should not imply completed state",
+);
+
+assert.equal(
+  resumeMappingExample.resumeCursorReference.id,
+  "resume-cursor:TASK-0245:example",
+  "task contract mapping smoke J should represent resume cursor reference",
+);
+assert.ok(
+  resumeMappingExample.pendingWorkItemIds.length > 0,
+  "task contract mapping smoke J should represent pending work item ids",
+);
+assert.ok(
+  resumeMappingExample.retryableWorkItemIds.length > 0,
+  "task contract mapping smoke J should represent retryable work item ids",
+);
+assert.equal(
+  resumeMappingExample.nextBatchId,
+  "batch:TASK-0245:explicit",
+  "task contract mapping smoke J should represent next batch id",
+);
+assert.equal(
+  fullMappingResultShapeExample.planningInput.taskPersistenceWritten,
+  false,
+  "task contract mapping smoke J should not imply persistence",
+);
+
+assert.deepEqual(
+  Object.keys(fullMappingResultShapeExample),
+  [
+    "ok",
+    "taskId",
+    "mode",
+    "status",
+    "sourceFile",
+    "workItems",
+    "batches",
+    "policy",
+    "adapterBoundary",
+    "audit",
+    "verifier",
+    "resume",
+    "planningInput",
+    "issues",
+    "summary",
+  ],
+  "task contract mapping smoke K full result should expose stable fields",
+);
+
+for (const [message, result] of [
+  ["task contract mapping smoke K full result", fullMappingResultShapeExample],
+  ["task contract mapping smoke L full result", fullMappingResultShapeExample],
+  ...taskContractMappingExamples.map((result, index) => [
+    `task contract mapping smoke M example ${index + 1}`,
+    result,
+  ]),
+]) {
+  assertTaskContractMappingResultShape(result, message);
+  assertTaskContractMappingSummaryConsistent(result, message);
+  assertTaskContractMappingSafety(result, message);
 }
 
 assert.equal(
