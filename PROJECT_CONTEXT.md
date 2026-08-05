@@ -82,6 +82,7 @@ condition.
 - TASK-0247: Implement task contract mapping logic.
 - TASK-0248: Add task contract mapping logic examples.
 - TASK-0249: Add task contract mapping logic smoke tests.
+- TASK-0250: Add task contract mapping safety review.
 
 ## Do Not Load By Default
 
@@ -92,7 +93,7 @@ condition.
 
 ## Next Task
 
-TASK-0250 Add task contract mapping safety review.
+TASK-0251 Add task contract mapping documentation.
 
 ## Current Plans
 

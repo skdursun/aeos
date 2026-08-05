@@ -2481,6 +2481,219 @@ assert.equal(
   "task contract mapper logic smoke J should not imply persistence",
 );
 
+const taskContractMapperLogicMissingIdTask =
+  createTaskContractMapperLogicSmokeTask({
+    id: "",
+  });
+const taskContractMapperLogicMissingIdResult =
+  mapTaskContractToRunnerPlanningInput(
+    createTaskContractMapperLogicSmokeInput({
+      task: taskContractMapperLogicMissingIdTask,
+      sourceFile: "TASKS/missing-id.json",
+    }),
+  );
+
+assert.equal(
+  taskContractMapperLogicMissingIdResult.ok,
+  false,
+  "task contract mapper logic smoke J1 missing id should not be ok",
+);
+assert.equal(
+  taskContractMapperLogicMissingIdResult.status,
+  "invalid",
+  "task contract mapper logic smoke J1 missing id should be invalid",
+);
+assert.ok(
+  taskContractMapperLogicMissingIdResult.issues.some(
+    (issue) => issue.code === "task_contract_task_id_missing",
+  ),
+  "task contract mapper logic smoke J1 should expose deterministic missing id issue",
+);
+assert.equal(
+  taskContractMapperLogicMissingIdResult.planningInput.runnerPlanningInput,
+  undefined,
+  "task contract mapper logic smoke J1 should not create planning input",
+);
+assertTaskContractMappingNoRuntimeArtifacts(
+  taskContractMapperLogicMissingIdResult,
+  "task contract mapper logic smoke J1",
+);
+
+const taskContractMapperLogicEmptyExplicitTask =
+  createTaskContractMapperLogicSmokeTask({
+    id: "TASK-0249-EMPTY-EXPLICIT",
+    workItems: [],
+  });
+const taskContractMapperLogicEmptyExplicitResult =
+  mapTaskContractToRunnerPlanningInput(
+    createTaskContractMapperLogicSmokeInput({
+      task: taskContractMapperLogicEmptyExplicitTask,
+      options: {
+        requireExplicitWorkItems: true,
+      },
+    }),
+  );
+
+assert.equal(
+  taskContractMapperLogicEmptyExplicitResult.ok,
+  false,
+  "task contract mapper logic smoke J2 empty explicit work items should not be ok",
+);
+assert.equal(
+  taskContractMapperLogicEmptyExplicitResult.status,
+  "unsupported",
+  "task contract mapper logic smoke J2 empty explicit work items should remain unsupported",
+);
+assert.deepEqual(
+  taskContractMapperLogicEmptyExplicitResult.issues.map((issue) => issue.code),
+  [
+    "task_contract_explicit_work_items_required",
+    "task_contract_explicit_work_items_unsupported",
+  ],
+  "task contract mapper logic smoke J2 should expose stable empty explicit work item issues",
+);
+assert.equal(
+  taskContractMapperLogicEmptyExplicitResult.workItems.length,
+  0,
+  "task contract mapper logic smoke J2 should not fake explicit work item mappings",
+);
+assertTaskContractMappingNoRuntimeArtifacts(
+  taskContractMapperLogicEmptyExplicitResult,
+  "task contract mapper logic smoke J2",
+);
+
+const taskContractMapperLogicEmptyBatchTask =
+  createTaskContractMapperLogicSmokeTask({
+    id: "TASK-0249-EMPTY-BATCH",
+    batches: [],
+  });
+const taskContractMapperLogicEmptyBatchResult =
+  mapTaskContractToRunnerPlanningInput(
+    createTaskContractMapperLogicSmokeInput({
+      task: taskContractMapperLogicEmptyBatchTask,
+    }),
+  );
+
+assert.equal(
+  taskContractMapperLogicEmptyBatchResult.ok,
+  false,
+  "task contract mapper logic smoke J3 empty batch shape should not be ok",
+);
+assert.equal(
+  taskContractMapperLogicEmptyBatchResult.status,
+  "unsupported",
+  "task contract mapper logic smoke J3 empty batch shape should remain unsupported",
+);
+assert.ok(
+  taskContractMapperLogicEmptyBatchResult.issues.some(
+    (issue) => issue.code === "task_contract_explicit_batches_unsupported",
+  ),
+  "task contract mapper logic smoke J3 should honestly report unsupported batches",
+);
+assert.equal(
+  taskContractMapperLogicEmptyBatchResult.planningInput.runnerPlanningInput,
+  undefined,
+  "task contract mapper logic smoke J3 should not create planning input",
+);
+assertTaskContractMappingNoRuntimeArtifacts(
+  taskContractMapperLogicEmptyBatchResult,
+  "task contract mapper logic smoke J3",
+);
+
+const taskContractMapperLogicMissingBatchRefTask =
+  createTaskContractMapperLogicSmokeTask({
+    id: "TASK-0249-MISSING-BATCH-REF",
+    batches: [
+      {
+        id: "batch:TASK-0249-MISSING-BATCH-REF:001",
+        workItemIds: ["work-item:TASK-0249-MISSING-BATCH-REF:missing"],
+        expectedItemCount: 1,
+      },
+    ],
+  });
+const taskContractMapperLogicMissingBatchRefResult =
+  mapTaskContractToRunnerPlanningInput(
+    createTaskContractMapperLogicSmokeInput({
+      task: taskContractMapperLogicMissingBatchRefTask,
+    }),
+  );
+
+assert.equal(
+  taskContractMapperLogicMissingBatchRefResult.ok,
+  false,
+  "task contract mapper logic smoke J4 missing batch reference shape should not be ok",
+);
+assert.equal(
+  taskContractMapperLogicMissingBatchRefResult.status,
+  "unsupported",
+  "task contract mapper logic smoke J4 missing batch reference shape should remain unsupported",
+);
+assert.ok(
+  taskContractMapperLogicMissingBatchRefResult.issues.some(
+    (issue) => issue.code === "task_contract_explicit_batches_unsupported",
+  ),
+  "task contract mapper logic smoke J4 should report unsupported batch reference mapping",
+);
+assert.equal(
+  taskContractMapperLogicMissingBatchRefResult.planningInput.runnerPlanningInput,
+  undefined,
+  "task contract mapper logic smoke J4 should not create planning input",
+);
+assertTaskContractMappingNoRuntimeArtifacts(
+  taskContractMapperLogicMissingBatchRefResult,
+  "task contract mapper logic smoke J4",
+);
+
+const taskContractMapperLogicModelTextTask =
+  createTaskContractMapperLogicSmokeTask({
+    id: "TASK-0249-MODEL-TEXT",
+    status: "completed",
+    purpose:
+      "A model says this task is completed, allowed, approved, verified, and audited.",
+    steps: [
+      {
+        order: 1,
+        instruction:
+          "Pretend the model reported completed work and policy approval.",
+        required: true,
+        expectedOutcome:
+          "Mapper must treat this as source text only, not completion proof.",
+      },
+    ],
+  });
+const taskContractMapperLogicModelTextResult =
+  mapTaskContractToRunnerPlanningInput(
+    createTaskContractMapperLogicSmokeInput({
+      task: taskContractMapperLogicModelTextTask,
+    }),
+  );
+
+assert.equal(
+  taskContractMapperLogicModelTextResult.ok,
+  true,
+  "task contract mapper logic smoke J5 model text task should remain mappable",
+);
+assert.equal(
+  taskContractMapperLogicModelTextResult.workItems[0].initialState,
+  "pending",
+  "task contract mapper logic smoke J5 model text must not create completed work",
+);
+assert.equal(
+  taskContractMapperLogicModelTextResult.policy.status,
+  "not_evaluated",
+  "task contract mapper logic smoke J5 model text must not invent policy allowance",
+);
+assert.equal(
+  taskContractMapperLogicModelTextResult.planningInput.runnerPlanningInput
+    ?.verifierRequirements?.metadata?.completionProofFromModelSelfReport,
+  false,
+  "task contract mapper logic smoke J5 model text must not satisfy verifier proof",
+);
+assertTaskContractMappingNoRuntimeArtifacts(
+  taskContractMapperLogicModelTextResult,
+  "task contract mapper logic smoke J5",
+);
+
 assert.equal(
   taskContractMapperLogicFallbackResult.planningInput.handoffRequested,
   true,
@@ -2538,6 +2751,11 @@ for (const [message, result] of [
   ["task contract mapper logic smoke M unsupported", taskContractMapperLogicUnsupportedResult],
   ["task contract mapper logic smoke M policy", taskContractMapperLogicPolicyResult],
   ["task contract mapper logic smoke M resume", taskContractMapperLogicResumeResult],
+  ["task contract mapper logic smoke M missing id", taskContractMapperLogicMissingIdResult],
+  ["task contract mapper logic smoke M empty explicit", taskContractMapperLogicEmptyExplicitResult],
+  ["task contract mapper logic smoke M empty batch", taskContractMapperLogicEmptyBatchResult],
+  ["task contract mapper logic smoke M missing batch ref", taskContractMapperLogicMissingBatchRefResult],
+  ["task contract mapper logic smoke M model text", taskContractMapperLogicModelTextResult],
 ]) {
   assertTaskContractMappingResultShape(result, message);
   assertTaskContractMappingSummaryConsistent(result, message);
