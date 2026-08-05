@@ -83,6 +83,7 @@ condition.
 - TASK-0248: Add task contract mapping logic examples.
 - TASK-0249: Add task contract mapping logic smoke tests.
 - TASK-0250: Add task contract mapping safety review.
+- TASK-0251: Add task contract mapping documentation.
 
 ## Do Not Load By Default
 
@@ -93,7 +94,7 @@ condition.
 
 ## Next Task
 
-TASK-0251 Add task contract mapping documentation.
+TASK-0252 Add task contract mapping final safety review.
 
 ## Current Plans
 
@@ -107,3 +108,4 @@ TASK-0251 Add task contract mapping documentation.
 - docs/TASK_PLAN_INPUT_FILE_DESIGN.md
 - docs/TASK_PLAN_INPUT_PARSER_USAGE.md
 - docs/TASK_CONTRACT_TO_RUNNER_PLANNING_MAPPING.md
+- docs/TASK_CONTRACT_MAPPING_USAGE.md

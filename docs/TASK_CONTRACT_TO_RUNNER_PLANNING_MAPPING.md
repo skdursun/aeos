@@ -461,6 +461,20 @@ If the contract needs explicit inventory, explicit work item accounting, real
 adapter discovery, persistence, or filesystem inspection to plan honestly, MVP
 mapping returns `unsupported`.
 
+## Implemented MVP Notes
+The implemented mapper is a pure, deterministic, no-execution, no-write helper.
+It can map a validated task contract in `plan` mode to a single pending fallback
+work item and one default batch when fallback is allowed and the shape is safe.
+
+Explicit `workItems` and `batches` remain unsupported because the current
+`AeosTask` contract does not validate those fields. The mapper reports those
+cases honestly instead of inventing support or producing fake success.
+
+The mapper does not run `planAgenticRunner()`, runner execution, adapters,
+audit writes, verifier logic, persistence, or filesystem mutation. Model or task
+text claims of completion or approval are not trusted, and verifier-gated
+completion remains required for supported executable mapping.
+
 ## MVP Scope
 MVP scope:
 
