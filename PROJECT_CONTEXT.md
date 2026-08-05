@@ -68,6 +68,7 @@ condition.
 - TASK-0233: Add task plan input parser contract examples.
 - TASK-0234: Add task plan input parser contract smoke tests.
 - TASK-0235: Implement task plan input parser logic.
+- TASK-0236: Add task plan input parser logic examples.
 
 ## Do Not Load By Default
 
@@ -78,7 +79,7 @@ condition.
 
 ## Next Task
 
-TASK-0236 Add task plan input parser logic examples.
+TASK-0237 Add task plan input parser logic smoke tests.
 
 ## Current Plans
 
