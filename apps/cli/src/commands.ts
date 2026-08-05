@@ -1,5 +1,6 @@
 import {
   createFilesystemGenerationAdapter,
+  parseTaskPlanInputFile,
   runInitPipeline,
   validateAeosTask,
 } from "@aeos/core";
@@ -12,6 +13,8 @@ import type {
   MemorySearchResult,
   MemoryType,
   MemoryValidationIssue,
+  TaskPlanInputIssue,
+  TaskPlanInputResult,
   TaskValidationIssue,
 } from "@aeos/core";
 import { handleContext } from "./context.js";
@@ -51,6 +54,8 @@ Commands:
   task validate <path> --json
   task plan (skeleton)
   task plan --json (skeleton)
+  task plan <task-file>
+  task plan <task-file> --json
   version
   help`;
 
@@ -134,6 +139,39 @@ type TaskPlanJsonErrorOutput = {
     readonly message: string;
   };
   readonly issues: readonly [];
+};
+
+type TaskPlanParsedJsonOutput = {
+  readonly ok: false;
+  readonly status: "parsed";
+  readonly mode: "plan";
+  readonly sourceFile: string;
+  readonly parse: ReturnType<typeof createTaskPlanParseJsonField>;
+  readonly validation: ReturnType<typeof createTaskPlanValidationJsonField>;
+  readonly mapping: ReturnType<typeof createTaskPlanMappingJsonField>;
+  readonly planningEnabled: false;
+  readonly executionEnabled: false;
+  readonly adapterCalls: false;
+  readonly auditWrites: false;
+  readonly verifierRun: false;
+  readonly persistence: false;
+  readonly issues: readonly TaskPlanInputIssue[];
+  readonly summary: TaskPlanInputResult["summary"];
+};
+
+type TaskPlanFileJsonErrorOutput = {
+  readonly ok: false;
+  readonly error: {
+    readonly code: string;
+    readonly message: string;
+  };
+  readonly sourceFile?: string;
+  readonly pathCheck?: TaskPlanInputResult["pathCheck"];
+  readonly parse?: ReturnType<typeof createTaskPlanParseJsonField>;
+  readonly validation?: ReturnType<typeof createTaskPlanValidationJsonField>;
+  readonly mapping?: ReturnType<typeof createTaskPlanMappingJsonField>;
+  readonly issues: readonly TaskPlanInputIssue[];
+  readonly summary?: TaskPlanInputResult["summary"];
 };
 
 type RememberJsonFailureReason =
@@ -682,7 +720,11 @@ function writeTaskValidationJson(
 }
 
 function writeTaskPlanSkeletonJson(
-  value: TaskPlanSkeletonJsonOutput | TaskPlanJsonErrorOutput,
+  value:
+    | TaskPlanSkeletonJsonOutput
+    | TaskPlanJsonErrorOutput
+    | TaskPlanParsedJsonOutput
+    | TaskPlanFileJsonErrorOutput,
 ): void {
   writeJsonLine(value);
 }
@@ -882,6 +924,199 @@ function printTaskPlanSkeleton(output: TaskPlanSkeletonJsonOutput): void {
   console.log(
     "Reason: task contract input support is not implemented yet; this command is a safe skeleton only.",
   );
+}
+
+function createTaskPlanInputRequest(inputPath: string): Parameters<
+  typeof parseTaskPlanInputFile
+>[0] {
+  return {
+    inputPath,
+    currentWorkingDirectory: getCwd(),
+    mode: "plan",
+    expectedFormat: "json",
+    options: {
+      allowAbsolutePath: false,
+      allowParentTraversal: false,
+      requireJsonObject: true,
+      validateContract: true,
+      createPlanningHandoff: true,
+      noExecution: true,
+      noWrites: true,
+      trustModelSelfReporting: false,
+    },
+    noExecution: true,
+    noWrites: true,
+  };
+}
+
+function createTaskPlanParseJsonField(result: TaskPlanInputResult) {
+  return {
+    ok: result.parse.ok,
+    format: result.parse.format,
+    valueReference: result.parse.valueReference,
+    rawSizeBytes: result.parse.rawSizeBytes,
+    parseErrorMessage: result.parse.parseErrorMessage,
+    issues: result.parse.issues,
+  };
+}
+
+function createTaskPlanValidationJsonField(result: TaskPlanInputResult) {
+  return {
+    requested: result.validation.requested,
+    status: result.validation.status,
+    taskId: result.validation.taskId,
+    issues: result.validation.issues,
+  };
+}
+
+function createTaskPlanMappingJsonField(result: TaskPlanInputResult) {
+  return {
+    requested: result.mapping.requested,
+    status: result.mapping.status,
+    runnerPlanningExecuted: result.mapping.runnerPlanningExecuted,
+    unsupportedReason: result.mapping.unsupportedReason,
+    issues: result.mapping.issues,
+  };
+}
+
+function createTaskPlanParsedJsonOutput(
+  result: TaskPlanInputResult,
+): TaskPlanParsedJsonOutput {
+  return {
+    ok: false,
+    status: "parsed",
+    mode: "plan",
+    sourceFile: result.sourceFile ?? "",
+    parse: createTaskPlanParseJsonField(result),
+    validation: createTaskPlanValidationJsonField(result),
+    mapping: createTaskPlanMappingJsonField(result),
+    planningEnabled: false,
+    executionEnabled: false,
+    adapterCalls: false,
+    auditWrites: false,
+    verifierRun: false,
+    persistence: false,
+    issues: result.issues,
+    summary: result.summary,
+  };
+}
+
+function taskPlanInputErrorCode(result: TaskPlanInputResult): string {
+  const primaryIssue = result.issues[0];
+
+  if (primaryIssue === undefined) {
+    return "task_plan_input_failed";
+  }
+
+  switch (primaryIssue.code) {
+    case "task_plan_input_file_missing":
+      return "task_plan_file_missing";
+
+    case "task_plan_input_path_is_directory":
+      return "task_plan_directory_input";
+
+    case "task_plan_input_unsupported_format":
+      return "task_plan_unsupported_extension";
+
+    case "task_plan_input_invalid_json":
+      return "task_plan_invalid_json";
+
+    case "task_plan_input_contract_shape_invalid":
+      return "task_plan_invalid_task_contract";
+
+    default:
+      return primaryIssue.code;
+  }
+}
+
+function taskPlanInputErrorMessage(result: TaskPlanInputResult): string {
+  const code = taskPlanInputErrorCode(result);
+
+  switch (code) {
+    case "task_plan_file_missing":
+      return "Task plan input file does not exist.";
+
+    case "task_plan_directory_input":
+      return "Task plan input path must be a regular file.";
+
+    case "task_plan_unsupported_extension":
+      return "Task plan input file must be a .json file.";
+
+    case "task_plan_invalid_json":
+      return "Task plan input file contains invalid JSON.";
+
+    case "task_plan_invalid_task_contract":
+      return "Task plan input file is not a valid AEOS task contract.";
+
+    default:
+      return result.issues[0]?.message ?? "Task plan input failed.";
+  }
+}
+
+function createTaskPlanFileJsonErrorOutput(
+  result: TaskPlanInputResult,
+): TaskPlanFileJsonErrorOutput {
+  return {
+    ok: false,
+    error: {
+      code: taskPlanInputErrorCode(result),
+      message: taskPlanInputErrorMessage(result),
+    },
+    sourceFile: result.sourceFile,
+    pathCheck: result.pathCheck,
+    parse: createTaskPlanParseJsonField(result),
+    validation: createTaskPlanValidationJsonField(result),
+    mapping: createTaskPlanMappingJsonField(result),
+    issues: result.issues,
+    summary: result.summary,
+  };
+}
+
+function formatTaskPlanInputIssue(issue: TaskPlanInputIssue): string {
+  const path = issue.path === undefined ? "" : ` (${issue.path})`;
+  return `- ${issue.code}: ${issue.message}${path}`;
+}
+
+function printTaskPlanParsed(result: TaskPlanInputResult): void {
+  console.log("Task Plan");
+  console.log("");
+  console.log("Status: parsed");
+  console.log("Mode: plan");
+  console.log(`Source file: ${result.sourceFile ?? ""}`);
+  console.log(`Parse: ${result.parse.ok ? "ok" : "fail"}`);
+  console.log(`Validation: ${result.validation.status}`);
+  console.log(`Mapping: ${result.mapping.status}`);
+  console.log("Real planning: false");
+  console.log("Real execution: false");
+  console.log("Adapter calls: false");
+  console.log("Audit writes: false");
+  console.log("Verifier run: false");
+  console.log("Persistence: false");
+  console.log("Issues");
+
+  if (result.issues.length === 0) {
+    console.log("- none");
+  } else {
+    for (const issue of result.issues) {
+      console.log(formatTaskPlanInputIssue(issue));
+    }
+  }
+
+  console.log("");
+  console.log(
+    "Reason: task file parsing is available; runner planning handoff is not implemented yet.",
+  );
+}
+
+function printTaskPlanInputError(result: TaskPlanInputResult): void {
+  console.error("Task Plan");
+  console.error(`Source file: ${result.sourceFile ?? ""}`);
+  console.error(`Error: ${taskPlanInputErrorMessage(result)}`);
+  console.error(`Issues: ${result.issues.length}`);
+
+  for (const issue of result.issues) {
+    console.error(formatTaskPlanInputIssue(issue));
+  }
 }
 
 function printVersion(): void {
@@ -2259,14 +2494,17 @@ async function handleSearch(args: readonly string[]): Promise<void> {
   }
 }
 
-function handleTask(args: readonly string[]): void {
+async function handleTask(args: readonly string[]): Promise<void> {
   if (args[0] === "plan") {
     const planArgs = args.slice(1);
     const json = planArgs.includes("--json");
-    const unknownArgs = planArgs.filter((arg) => arg !== "--json");
+    const positionalArgs = planArgs.filter((arg) => !arg.startsWith("--"));
+    const unknownArgs = planArgs.filter(
+      (arg) => arg !== "--json" && arg.startsWith("--"),
+    );
     const output = createTaskPlanSkeletonOutput();
 
-    if (unknownArgs.length > 0) {
+    if (unknownArgs.length > 0 || positionalArgs.length > 1) {
       if (json) {
         writeTaskPlanSkeletonJson({
           ok: false,
@@ -2281,7 +2519,39 @@ function handleTask(args: readonly string[]): void {
       }
 
       console.error("Error: unknown task plan option.");
-      console.error("Usage: aeos task plan [--json]");
+      console.error("Usage: aeos task plan [<task-file>] [--json]");
+      setExitCode(1);
+      return;
+    }
+
+    const taskFile = positionalArgs[0];
+
+    if (taskFile !== undefined) {
+      const result = await parseTaskPlanInputFile(
+        createTaskPlanInputRequest(taskFile),
+      );
+
+      if (
+        result.summary.pathOk &&
+        result.summary.parseOk &&
+        result.summary.validationOk
+      ) {
+        if (json) {
+          writeTaskPlanSkeletonJson(createTaskPlanParsedJsonOutput(result));
+        } else {
+          printTaskPlanParsed(result);
+        }
+
+        setExitCode(1);
+        return;
+      }
+
+      if (json) {
+        writeTaskPlanSkeletonJson(createTaskPlanFileJsonErrorOutput(result));
+      } else {
+        printTaskPlanInputError(result);
+      }
+
       setExitCode(1);
       return;
     }
@@ -2299,7 +2569,7 @@ function handleTask(args: readonly string[]): void {
   if (args[0] !== "validate") {
     console.error("Error: unknown task command.");
     console.error("Usage: aeos task validate <path>");
-    console.error("Usage: aeos task plan [--json]");
+    console.error("Usage: aeos task plan [<task-file>] [--json]");
     setExitCode(1);
     return;
   }
@@ -2392,7 +2662,7 @@ export function main(argv: readonly string[]): void {
       break;
 
     case "task":
-      handleTask(args);
+      void handleTask(args);
       break;
 
     case "--version":

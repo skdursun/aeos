@@ -574,6 +574,122 @@ function expectTaskPlanErrorJsonShape(message, value, result) {
   }
 }
 
+function expectTaskPlanParsedJsonShape(message, value, result) {
+  const expectedKeys = [
+    "adapterCalls",
+    "auditWrites",
+    "executionEnabled",
+    "issues",
+    "mapping",
+    "mode",
+    "ok",
+    "parse",
+    "persistence",
+    "planningEnabled",
+    "sourceFile",
+    "status",
+    "summary",
+    "validation",
+    "verifierRun",
+  ];
+
+  if (
+    typeof value !== "object" ||
+    value === null
+  ) {
+    fail(message, result);
+  }
+
+  const keys = Object.keys(value).sort();
+
+  if (
+    keys.length !== expectedKeys.length ||
+    keys.some((key, index) => key !== expectedKeys[index]) ||
+    value.ok !== false ||
+    value.status !== "parsed" ||
+    value.mode !== "plan" ||
+    typeof value.sourceFile !== "string" ||
+    typeof value.parse !== "object" ||
+    value.parse === null ||
+    value.parse.ok !== true ||
+    typeof value.validation !== "object" ||
+    value.validation === null ||
+    value.validation.status !== "pass" ||
+    typeof value.mapping !== "object" ||
+    value.mapping === null ||
+    value.mapping.status !== "unsupported" ||
+    value.mapping.runnerPlanningExecuted !== false ||
+    value.planningEnabled !== false ||
+    value.executionEnabled !== false ||
+    value.adapterCalls !== false ||
+    value.auditWrites !== false ||
+    value.verifierRun !== false ||
+    value.persistence !== false ||
+    !Array.isArray(value.issues) ||
+    typeof value.summary !== "object" ||
+    value.summary === null ||
+    value.summary.noExecution !== true ||
+    value.summary.noWrites !== true ||
+    value.summary.runnerPlanningExecuted !== false ||
+    value.summary.taskPersistenceWritten !== false
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectTaskPlanInputErrorJsonShape(message, value, result) {
+  const expectedKeys = [
+    "error",
+    "issues",
+    "mapping",
+    "ok",
+    "parse",
+    "pathCheck",
+    "sourceFile",
+    "summary",
+    "validation",
+  ];
+
+  if (
+    typeof value !== "object" ||
+    value === null
+  ) {
+    fail(message, result);
+  }
+
+  const keys = Object.keys(value).sort();
+
+  if (
+    keys.length !== expectedKeys.length ||
+    keys.some((key, index) => key !== expectedKeys[index]) ||
+    value.ok !== false ||
+    typeof value.error !== "object" ||
+    value.error === null ||
+    typeof value.error.code !== "string" ||
+    value.error.code.length === 0 ||
+    typeof value.error.message !== "string" ||
+    value.error.message.length === 0 ||
+    typeof value.sourceFile !== "string" ||
+    typeof value.pathCheck !== "object" ||
+    value.pathCheck === null ||
+    typeof value.parse !== "object" ||
+    value.parse === null ||
+    typeof value.validation !== "object" ||
+    value.validation === null ||
+    typeof value.mapping !== "object" ||
+    value.mapping === null ||
+    !Array.isArray(value.issues) ||
+    typeof value.summary !== "object" ||
+    value.summary === null ||
+    value.summary.noExecution !== true ||
+    value.summary.noWrites !== true ||
+    value.summary.runnerPlanningExecuted !== false ||
+    value.summary.taskPersistenceWritten !== false
+  ) {
+    fail(message, result);
+  }
+}
+
 function expectTaskPlanHelpNoOverpromises(message, result) {
   for (const unexpectedText of [
     "real planning",
@@ -593,6 +709,18 @@ function expectTaskPlanHelpNoOverpromises(message, result) {
       result,
       unexpectedText,
     );
+  }
+}
+
+function expectTaskPlanNoWrites(message, rootPath, before, result) {
+  expectSameFiles(message, before, listRelativeFiles(rootPath));
+
+  if (existsSync(join(rootPath, "AGENTS.md"))) {
+    fail(`${message}: created AGENTS.md`, result);
+  }
+
+  if (existsSync(join(rootPath, "task-output.json"))) {
+    fail(`${message}: created task-output.json`, result);
   }
 }
 
@@ -708,6 +836,34 @@ function createInfrastructureStyleProject(rootPath) {
   writeFileSync(join(rootPath, ".nvmrc"), "22\n");
 }
 
+function createValidTaskPlanContract(id) {
+  return {
+    id,
+    title: "Smoke valid task plan input",
+    purpose: "Verify parser-only task plan CLI integration.",
+    status: "draft",
+    executionMode: "manual",
+    context: {
+      load: ["PROJECT_CONTEXT.md"],
+      doNotLoad: [],
+    },
+    fileBoundary: {
+      filesToModify: ["apps/cli/src/commands.ts"],
+      filesNotToTouch: ["package.json"],
+      allowGeneratedFiles: false,
+      requireStopOnBoundaryConflict: true,
+    },
+    allowedOperations: [],
+    forbiddenOperations: [],
+    steps: [],
+    verification: [],
+    stopCondition: {
+      description: "Stop after parser-only task plan smoke validation.",
+      stopAfterCompletion: true,
+    },
+  };
+}
+
 const smokeRunId = String(Date.now());
 const createdMemoryPaths = new Set();
 
@@ -794,6 +950,16 @@ expectOutputIncludes(
   'help output did not include "task plan --json"',
   helpCommand,
   "task plan --json",
+);
+expectOutputIncludes(
+  'help output did not include "task plan <task-file>"',
+  helpCommand,
+  "task plan <task-file>",
+);
+expectOutputIncludes(
+  'help output did not include "task plan <task-file> --json"',
+  helpCommand,
+  "task plan <task-file> --json",
 );
 expectTaskPlanHelpNoOverpromises("help output", helpCommand);
 expectTaskPlanSourceSafety();
@@ -2748,7 +2914,7 @@ expectOutputIncludes(
 expectOutputIncludes(
   "task plan unknown option did not include task plan usage",
   taskPlanUnknown,
-  "Usage: aeos task plan [--json]",
+  "Usage: aeos task plan [<task-file>] [--json]",
 );
 
 const taskPlanUnknownJson = runCli(["task", "plan", "--unknown", "--json"]);
@@ -2764,46 +2930,56 @@ expectTaskPlanErrorJsonShape(
 );
 
 const taskPlanNoWriteRoot = mkdtempSync(join(tmpdir(), "aeos-cli-task-plan-no-write-"));
+const taskPlanTraversalParentRoot = mkdtempSync(
+  join(tmpdir(), "aeos-cli-task-plan-parent-"),
+);
 
 try {
-  const unparsedTaskPath = join(taskPlanNoWriteRoot, "unparsed-task.json");
-  writeFileSync(unparsedTaskPath, "{ invalid json");
+  const validTaskPath = join(taskPlanNoWriteRoot, "valid-task.json");
+  const invalidJsonPath = join(taskPlanNoWriteRoot, "invalid-task.json");
+  const markdownTaskPath = join(taskPlanNoWriteRoot, "task.md");
+  const traversalChildRoot = join(taskPlanTraversalParentRoot, "cwd");
+  const traversalTaskPath = join(taskPlanTraversalParentRoot, "outside.json");
+
+  mkdirSync(traversalChildRoot);
+  writeFileSync(
+    validTaskPath,
+    `${JSON.stringify(createValidTaskPlanContract("smoke-task-plan-valid"), null, 2)}\n`,
+  );
+  writeFileSync(invalidJsonPath, "{ invalid json");
+  writeFileSync(markdownTaskPath, "# unsupported\n");
+  writeFileSync(
+    traversalTaskPath,
+    `${JSON.stringify(createValidTaskPlanContract("smoke-task-plan-traversal"), null, 2)}\n`,
+  );
 
   const taskPlanNoWriteFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
   const taskPlanNoWrite = runCliFrom(taskPlanNoWriteRoot, ["task", "plan"]);
   expectNonzero("task plan no-write fixture exited zero", taskPlanNoWrite);
-  expectSameFiles(
+  expectTaskPlanNoWrites(
     "task plan created files in no-write fixture",
+    taskPlanNoWriteRoot,
     taskPlanNoWriteFilesBefore,
-    listRelativeFiles(taskPlanNoWriteRoot),
+    taskPlanNoWrite,
   );
 
-  const taskPlanWithPathFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
-  const taskPlanWithPath = runCliFrom(taskPlanNoWriteRoot, [
+  const taskPlanMissingFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
+  const taskPlanMissing = runCliFrom(taskPlanNoWriteRoot, [
     "task",
     "plan",
-    unparsedTaskPath,
+    "missing-task.json",
   ]);
-  expectNonzero("task plan with path exited zero", taskPlanWithPath);
+  expectNonzero("task plan missing file exited zero", taskPlanMissing);
   expectOutputIncludes(
-    "task plan with path did not reject positional task input as an unknown option",
-    taskPlanWithPath,
-    "unknown task plan option",
+    "task plan missing file did not report missing file",
+    taskPlanMissing,
+    "Task plan input file does not exist.",
   );
-  expectOutputExcludes(
-    "task plan with path parsed task file despite skeleton contract",
-    taskPlanWithPath,
-    "invalid JSON",
-  );
-  expectOutputExcludes(
-    "task plan with path ran task validation despite skeleton contract",
-    taskPlanWithPath,
-    "Task validation",
-  );
-  expectSameFiles(
-    "task plan with path created files in no-write fixture",
-    taskPlanWithPathFilesBefore,
-    listRelativeFiles(taskPlanNoWriteRoot),
+  expectTaskPlanNoWrites(
+    "task plan missing file created files in no-write fixture",
+    taskPlanNoWriteRoot,
+    taskPlanMissingFilesBefore,
+    taskPlanMissing,
   );
 
   const taskPlanJsonNoWriteFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
@@ -2820,36 +2996,251 @@ try {
     "task plan --json no-write fixture output was not valid JSON only",
     taskPlanJsonNoWrite,
   );
-  expectSameFiles(
+  expectTaskPlanNoWrites(
     "task plan --json created files in no-write fixture",
+    taskPlanNoWriteRoot,
     taskPlanJsonNoWriteFilesBefore,
-    listRelativeFiles(taskPlanNoWriteRoot),
+    taskPlanJsonNoWrite,
   );
 
-  const taskPlanJsonWithPathFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
-  const taskPlanJsonWithPath = runCliFrom(taskPlanNoWriteRoot, [
+  const taskPlanInvalidJsonFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
+  const taskPlanInvalidJson = runCliFrom(taskPlanNoWriteRoot, [
     "task",
     "plan",
-    unparsedTaskPath,
+    "invalid-task.json",
+  ]);
+  expectNonzero("task plan invalid JSON exited zero", taskPlanInvalidJson);
+  expectOutputIncludes(
+    "task plan invalid JSON did not report invalid JSON",
+    taskPlanInvalidJson,
+    "Task plan input file contains invalid JSON.",
+  );
+  expectTaskPlanNoWrites(
+    "task plan invalid JSON created files in no-write fixture",
+    taskPlanNoWriteRoot,
+    taskPlanInvalidJsonFilesBefore,
+    taskPlanInvalidJson,
+  );
+
+  const taskPlanJsonInvalidFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
+  const taskPlanJsonInvalid = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "plan",
+    "invalid-task.json",
     "--json",
   ]);
-  expectNonzero("task plan --json with path exited zero", taskPlanJsonWithPath);
-  const parsedTaskPlanJsonWithPath = parseJsonOnlyStdout(
-    "task plan --json with path output was not valid JSON only",
-    taskPlanJsonWithPath,
+  expectNonzero("task plan invalid JSON --json exited zero", taskPlanJsonInvalid);
+  const parsedTaskPlanJsonInvalid = parseJsonOnlyStdout(
+    "task plan invalid JSON --json output was not valid JSON only",
+    taskPlanJsonInvalid,
   );
-  expectTaskPlanErrorJsonShape(
-    "task plan --json with path shape was invalid",
-    parsedTaskPlanJsonWithPath,
-    taskPlanJsonWithPath,
+  expectTaskPlanInputErrorJsonShape(
+    "task plan invalid JSON --json shape was invalid",
+    parsedTaskPlanJsonInvalid,
+    taskPlanJsonInvalid,
   );
+  if (parsedTaskPlanJsonInvalid.error.code !== "task_plan_invalid_json") {
+    fail("task plan invalid JSON --json did not use stable error code", taskPlanJsonInvalid);
+  }
+  expectTaskPlanNoWrites(
+    "task plan invalid JSON --json created files in no-write fixture",
+    taskPlanNoWriteRoot,
+    taskPlanJsonInvalidFilesBefore,
+    taskPlanJsonInvalid,
+  );
+
+  const taskPlanUnsupportedFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
+  const taskPlanUnsupported = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "plan",
+    "task.md",
+  ]);
+  expectNonzero("task plan unsupported extension exited zero", taskPlanUnsupported);
+  expectOutputIncludes(
+    "task plan unsupported extension did not report extension failure",
+    taskPlanUnsupported,
+    "Task plan input file must be a .json file.",
+  );
+  expectTaskPlanNoWrites(
+    "task plan unsupported extension created files in no-write fixture",
+    taskPlanNoWriteRoot,
+    taskPlanUnsupportedFilesBefore,
+    taskPlanUnsupported,
+  );
+
+  const taskPlanAbsoluteJsonFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
+  const taskPlanAbsoluteJson = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "plan",
+    validTaskPath,
+    "--json",
+  ]);
+  expectNonzero("task plan absolute path --json exited zero", taskPlanAbsoluteJson);
+  const parsedTaskPlanAbsoluteJson = parseJsonOnlyStdout(
+    "task plan absolute path --json output was not valid JSON only",
+    taskPlanAbsoluteJson,
+  );
+  expectTaskPlanInputErrorJsonShape(
+    "task plan absolute path --json shape was invalid",
+    parsedTaskPlanAbsoluteJson,
+    taskPlanAbsoluteJson,
+  );
+  if (
+    parsedTaskPlanAbsoluteJson.error.code !==
+    "task_plan_input_absolute_path_disallowed"
+  ) {
+    fail("task plan absolute path --json was not denied by default", taskPlanAbsoluteJson);
+  }
+  expectTaskPlanNoWrites(
+    "task plan absolute path --json created files in no-write fixture",
+    taskPlanNoWriteRoot,
+    taskPlanAbsoluteJsonFilesBefore,
+    taskPlanAbsoluteJson,
+  );
+
+  const traversalFilesBefore = listRelativeFiles(taskPlanTraversalParentRoot);
+  const taskPlanTraversalJson = runCliFrom(traversalChildRoot, [
+    "task",
+    "plan",
+    "../outside.json",
+    "--json",
+  ]);
+  expectNonzero("task plan parent traversal --json exited zero", taskPlanTraversalJson);
+  const parsedTaskPlanTraversalJson = parseJsonOnlyStdout(
+    "task plan parent traversal --json output was not valid JSON only",
+    taskPlanTraversalJson,
+  );
+  expectTaskPlanInputErrorJsonShape(
+    "task plan parent traversal --json shape was invalid",
+    parsedTaskPlanTraversalJson,
+    taskPlanTraversalJson,
+  );
+  if (
+    parsedTaskPlanTraversalJson.error.code !==
+    "task_plan_input_parent_traversal_disallowed"
+  ) {
+    fail("task plan parent traversal --json was not denied", taskPlanTraversalJson);
+  }
   expectSameFiles(
-    "task plan --json with path created files in no-write fixture",
-    taskPlanJsonWithPathFilesBefore,
-    listRelativeFiles(taskPlanNoWriteRoot),
+    "task plan parent traversal changed files",
+    traversalFilesBefore,
+    listRelativeFiles(taskPlanTraversalParentRoot),
+  );
+  if (existsSync(join(traversalChildRoot, "AGENTS.md"))) {
+    fail("task plan parent traversal created AGENTS.md", taskPlanTraversalJson);
+  }
+
+  const taskPlanValidFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
+  const taskPlanValid = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "plan",
+    "valid-task.json",
+  ]);
+  expectNonzero("task plan valid parse exited zero despite disabled planning", taskPlanValid);
+  for (const expectedText of [
+    "Task Plan",
+    "Status: parsed",
+    "Mode: plan",
+    "Source file: valid-task.json",
+    "Parse: ok",
+    "Validation: pass",
+    "Mapping: unsupported",
+    "Real planning: false",
+    "Real execution: false",
+    "Adapter calls: false",
+    "Audit writes: false",
+    "Verifier run: false",
+    "Persistence: false",
+    "Issues",
+    "task file parsing is available; runner planning handoff is not implemented yet",
+  ]) {
+    expectOutputIncludes(
+      `task plan valid parse output did not include ${expectedText}`,
+      taskPlanValid,
+      expectedText,
+    );
+  }
+  expectOutputExcludes(
+    "task plan valid parse ran task validation command output",
+    taskPlanValid,
+    "Task validation",
+  );
+  expectTaskPlanNoWrites(
+    "task plan valid parse created files in no-write fixture",
+    taskPlanNoWriteRoot,
+    taskPlanValidFilesBefore,
+    taskPlanValid,
+  );
+
+  const taskPlanValidJsonFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
+  const taskPlanValidJson = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "plan",
+    "valid-task.json",
+    "--json",
+  ]);
+  expectNonzero(
+    "task plan valid parse --json exited zero despite disabled planning",
+    taskPlanValidJson,
+  );
+  const parsedTaskPlanValidJson = parseJsonOnlyStdout(
+    "task plan valid parse --json output was not valid JSON only",
+    taskPlanValidJson,
+  );
+  expectTaskPlanParsedJsonShape(
+    "task plan valid parse --json shape was invalid",
+    parsedTaskPlanValidJson,
+    taskPlanValidJson,
+  );
+  if (
+    parsedTaskPlanValidJson.sourceFile !== "valid-task.json" ||
+    !parsedTaskPlanValidJson.issues.some(
+      (issue) => issue.code === "task_plan_input_mapping_unsupported",
+    )
+  ) {
+    fail("task plan valid parse --json did not report unsupported mapping", taskPlanValidJson);
+  }
+  expectTaskPlanNoWrites(
+    "task plan valid parse --json created files in no-write fixture",
+    taskPlanNoWriteRoot,
+    taskPlanValidJsonFilesBefore,
+    taskPlanValidJson,
+  );
+
+  const taskPlanMissingJson = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "plan",
+    "missing-task.json",
+    "--json",
+  ]);
+  expectNonzero("task plan missing file --json exited zero", taskPlanMissingJson);
+  const parsedTaskPlanMissingJson = parseJsonOnlyStdout(
+    "task plan missing file --json output was not valid JSON only",
+    taskPlanMissingJson,
+  );
+  expectTaskPlanInputErrorJsonShape(
+    "task plan missing file --json shape was invalid",
+    parsedTaskPlanMissingJson,
+    taskPlanMissingJson,
+  );
+  if (parsedTaskPlanMissingJson.error.code !== "task_plan_file_missing") {
+    fail("task plan missing file --json did not use stable error code", taskPlanMissingJson);
+  }
+
+  const taskPlanUnknownWithJson = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "plan",
+    "--unknown",
+    "--json",
+  ]);
+  expectNonzero("task plan unknown flag --json fixture exited zero", taskPlanUnknownWithJson);
+  parseJsonOnlyStdout(
+    "task plan unknown flag --json fixture output was not valid JSON only",
+    taskPlanUnknownWithJson,
   );
 } finally {
   rmSync(taskPlanNoWriteRoot, { recursive: true, force: true });
+  rmSync(taskPlanTraversalParentRoot, { recursive: true, force: true });
 }
 
 const validTaskPath = fileURLToPath(
