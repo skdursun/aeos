@@ -1195,9 +1195,12 @@ function stableTaskPlanInputFields(result) {
     mappingRequested: result.mapping.requested,
     mappingStatus: result.mapping.status,
     summary: result.summary,
+    parseErrorMessage: result.parse.parseErrorMessage,
     issues: result.issues.map((issue) => ({
       code: issue.code,
       message: issue.message,
+      severity: issue.severity,
+      phase: issue.phase,
     })),
   };
 }
@@ -1288,6 +1291,27 @@ function assertTaskPlanInputParserReadOnly(result, message) {
     result.mapping.runnerPlanningInputData,
     undefined,
     `${message} must not create runner planning data handoff`,
+  );
+}
+
+function assertTaskPlanInputTempCleanupTarget(tempRoot, prefix, message) {
+  const resolvedTmpDir = resolve(tmpdir());
+  const expectedPrefix = resolve(join(tmpdir(), prefix));
+  const resolvedTempRoot = resolve(tempRoot);
+
+  assert.ok(
+    resolvedTempRoot.startsWith(expectedPrefix),
+    `${message} cleanup target should be the created task plan parser temp directory`,
+  );
+  assert.notEqual(
+    resolvedTempRoot,
+    resolvedTmpDir,
+    `${message} cleanup target must not be os.tmpdir()`,
+  );
+  assert.notEqual(
+    resolvedTempRoot,
+    expectedPrefix,
+    `${message} cleanup target must include mkdtemp suffix`,
   );
 }
 
@@ -1775,8 +1799,15 @@ for (const [message, result] of [
   assertTaskPlanInputSafety(result, message);
 }
 
+const taskPlanParserTempPrefix = "aeos-task-plan-input-parser-smoke-";
 const taskPlanParserTempRoot = await mkdtemp(
-  join(tmpdir(), "aeos-task-plan-input-parser-smoke-"),
+  join(tmpdir(), taskPlanParserTempPrefix),
+);
+
+assertTaskPlanInputTempCleanupTarget(
+  taskPlanParserTempRoot,
+  taskPlanParserTempPrefix,
+  "task plan parser logic smoke temp root",
 );
 
 try {
@@ -1788,6 +1819,10 @@ try {
   const unsupportedFormatPath = join(parserTasksDirectory, "task.txt");
   const oversizedJsonPath = join(parserTasksDirectory, "too-large.json");
   const contractJsonPath = join(parserTasksDirectory, "contract.json");
+  const invalidContractJsonPath = join(
+    parserTasksDirectory,
+    "invalid-contract.json",
+  );
   const outsideJsonPath = join(taskPlanParserTempRoot, "outside.json");
   const validTaskPlanContent = JSON.stringify(
     {
@@ -1810,6 +1845,14 @@ try {
     null,
     2,
   );
+  const invalidContractJsonContent = JSON.stringify(
+    {
+      id: "TASK-0238",
+      title: "Invalid parser safety review fixture.",
+    },
+    null,
+    2,
+  );
   const outsideJsonContent = JSON.stringify({
     id: "TASK-OUTSIDE",
     title: "Outside parser smoke fixture.",
@@ -1822,6 +1865,7 @@ try {
   await writeNodeFile(unsupportedFormatPath, unsupportedFormatContent);
   await writeNodeFile(oversizedJsonPath, oversizedJsonContent);
   await writeNodeFile(contractJsonPath, contractJsonContent);
+  await writeNodeFile(invalidContractJsonPath, invalidContractJsonContent);
   await writeNodeFile(outsideJsonPath, outsideJsonContent);
 
   const parserSnapshotBefore = await snapshotDirectoryEntries(
@@ -1947,6 +1991,33 @@ try {
     "task plan parser logic smoke D parent traversal result",
   );
 
+  const parserSmokeDNormalizedTraversal = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(
+      parserProjectRoot,
+      "tasks/../tasks/sitemap-audit.json",
+    ),
+  );
+
+  assert.equal(
+    parserSmokeDNormalizedTraversal.ok,
+    false,
+    "task plan parser logic smoke D2 normalized parent traversal should not be ok",
+  );
+  assert.equal(
+    parserSmokeDNormalizedTraversal.pathCheck.status,
+    "unsafe_path",
+    "task plan parser logic smoke D2 should deny normalized parent traversal before reading",
+  );
+  assert.deepEqual(
+    issueCodes(parserSmokeDNormalizedTraversal),
+    ["task_plan_input_parent_traversal_disallowed"],
+    "task plan parser logic smoke D2 should expose deterministic parent traversal issue",
+  );
+  assertTaskPlanInputParserReadOnly(
+    parserSmokeDNormalizedTraversal,
+    "task plan parser logic smoke D2 normalized parent traversal result",
+  );
+
   const parserSmokeEAbsoluteDenied = await parseTaskPlanInputFile(
     createTaskPlanInputSmokeRequest(parserProjectRoot, validTaskPlanPath),
   );
@@ -2012,6 +2083,16 @@ try {
     typeof parserSmokeGInvalidJson.parse.parseErrorMessage,
     "string",
     "task plan parser logic smoke G should expose parse error message",
+  );
+  assert.equal(
+    parserSmokeGInvalidJson.parse.parseErrorMessage,
+    "Invalid JSON.",
+    "task plan parser logic smoke G parse error message should be deterministic",
+  );
+  assert.deepEqual(
+    issueCodes(parserSmokeGInvalidJson),
+    ["task_plan_input_invalid_json"],
+    "task plan parser logic smoke G should expose deterministic invalid JSON issue",
   );
   assert.ok(
     parserSmokeGInvalidJson.issues.length > 0,
@@ -2099,6 +2180,46 @@ try {
     "task plan parser logic smoke J should remain read-only",
   );
 
+  const parserSmokeKInvalidValidation = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(
+      parserProjectRoot,
+      "tasks/invalid-contract.json",
+      {
+        validateContract: true,
+      },
+    ),
+  );
+
+  assert.equal(
+    parserSmokeKInvalidValidation.ok,
+    false,
+    "task plan parser logic smoke K invalid contract should not be ok",
+  );
+  assert.equal(
+    parserSmokeKInvalidValidation.validation.requested,
+    true,
+    "task plan parser logic smoke K invalid contract validation should be requested",
+  );
+  assert.equal(
+    parserSmokeKInvalidValidation.validation.status,
+    "fail",
+    "task plan parser logic smoke K invalid contract validation should fail honestly",
+  );
+  assert.deepEqual(
+    issueCodes(parserSmokeKInvalidValidation),
+    ["task_plan_input_contract_shape_invalid"],
+    "task plan parser logic smoke K invalid contract should expose deterministic validation issue",
+  );
+  assert.equal(
+    parserSmokeKInvalidValidation.validation.task,
+    undefined,
+    "task plan parser logic smoke K invalid contract must not be treated as valid",
+  );
+  assertTaskPlanInputParserReadOnly(
+    parserSmokeKInvalidValidation,
+    "task plan parser logic smoke K invalid contract result",
+  );
+
   const parserSmokeKValidation = await parseTaskPlanInputFile(
     createTaskPlanInputSmokeRequest(parserProjectRoot, "tasks/contract.json", {
       validateContract: true,
@@ -2154,6 +2275,11 @@ try {
     false,
     "task plan parser logic smoke L must not run planAgenticRunner",
   );
+  assert.deepEqual(
+    issueCodes(parserSmokeLMappingUnsupported),
+    ["task_plan_input_mapping_unsupported"],
+    "task plan parser logic smoke L should expose deterministic unsupported mapping issue",
+  );
 
   const parserSmokeMFirst = await parseTaskPlanInputFile(
     createTaskPlanInputSmokeRequest(parserProjectRoot, "tasks/contract.json", {
@@ -2174,21 +2300,38 @@ try {
     "task plan parser logic smoke M repeated parse should be deterministic",
   );
 
+  const parserSmokeMInvalidFirst = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(parserProjectRoot, "tasks/invalid.json"),
+  );
+  const parserSmokeMInvalidSecond = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(parserProjectRoot, "tasks/invalid.json"),
+  );
+
+  assert.deepEqual(
+    stableTaskPlanInputFields(parserSmokeMInvalidFirst),
+    stableTaskPlanInputFields(parserSmokeMInvalidSecond),
+    "task plan parser logic smoke M invalid repeated parse should be deterministic",
+  );
+
   for (const [message, result] of [
     ["task plan parser logic smoke A", parserSmokeAValidLocalJson],
     ["task plan parser logic smoke B", parserSmokeBMissingFile],
     ["task plan parser logic smoke C", parserSmokeCDirectory],
     ["task plan parser logic smoke D", parserSmokeDParentTraversal],
+    ["task plan parser logic smoke D2", parserSmokeDNormalizedTraversal],
     ["task plan parser logic smoke E", parserSmokeEAbsoluteDenied],
     ["task plan parser logic smoke F", parserSmokeFAbsoluteAllowed],
     ["task plan parser logic smoke G", parserSmokeGInvalidJson],
     ["task plan parser logic smoke H", parserSmokeHNonObjectJson],
     ["task plan parser logic smoke I", parserSmokeIUnsupportedFormat],
     ["task plan parser logic smoke J", parserSmokeJOversized],
+    ["task plan parser logic smoke K invalid", parserSmokeKInvalidValidation],
     ["task plan parser logic smoke K", parserSmokeKValidation],
     ["task plan parser logic smoke L", parserSmokeLMappingUnsupported],
     ["task plan parser logic smoke M first", parserSmokeMFirst],
     ["task plan parser logic smoke M second", parserSmokeMSecond],
+    ["task plan parser logic smoke M invalid first", parserSmokeMInvalidFirst],
+    ["task plan parser logic smoke M invalid second", parserSmokeMInvalidSecond],
   ]) {
     assertTaskPlanInputResultShape(result, `${message} result`);
     assertTaskPlanInputSummaryConsistent(result, `${message} result`);
@@ -2228,7 +2371,22 @@ try {
     "task plan parser logic smoke N summaries should keep noWrites true",
   );
 } finally {
+  assertTaskPlanInputTempCleanupTarget(
+    taskPlanParserTempRoot,
+    taskPlanParserTempPrefix,
+    "task plan parser logic smoke temp cleanup",
+  );
   await rm(taskPlanParserTempRoot, { recursive: true, force: true });
+  assert.equal(
+    await pathExists(taskPlanParserTempRoot),
+    false,
+    "task plan parser logic smoke cleanup should remove only the created temp directory",
+  );
+  assert.equal(
+    await pathExists(tmpdir()),
+    true,
+    "task plan parser logic smoke cleanup must not remove os.tmpdir()",
+  );
 }
 
 const verifierResults = [

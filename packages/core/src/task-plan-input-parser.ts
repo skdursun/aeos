@@ -630,9 +630,7 @@ export function parseTaskPlanInputJson(
 
   try {
     parsedValue = JSON.parse(text);
-  } catch (error: unknown) {
-    const parseErrorMessage =
-      error instanceof Error ? error.message : "Invalid JSON.";
+  } catch {
     const issue = createIssue(
       "task_plan_input_invalid_json",
       "Task plan input file is not valid JSON.",
@@ -644,7 +642,7 @@ export function parseTaskPlanInputJson(
       ok: false,
       format: "json",
       rawSizeBytes: utf8ByteLength(text),
-      parseErrorMessage,
+      parseErrorMessage: "Invalid JSON.",
       issues: [issue],
     };
   }

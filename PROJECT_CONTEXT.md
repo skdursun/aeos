@@ -70,6 +70,7 @@ condition.
 - TASK-0235: Implement task plan input parser logic.
 - TASK-0236: Add task plan input parser logic examples.
 - TASK-0237: Add task plan input parser logic smoke tests.
+- TASK-0238: Add task plan input parser safety review.
 
 ## Do Not Load By Default
 
@@ -80,7 +81,7 @@ condition.
 
 ## Next Task
 
-TASK-0238 Add task plan input parser safety review.
+TASK-0239 Add task plan input parser documentation.
 
 ## Current Plans
 
