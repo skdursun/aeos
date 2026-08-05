@@ -75,6 +75,7 @@ condition.
 - TASK-0240: Add task plan input parser final safety review.
 - TASK-0241: Implement aeos task plan file argument skeleton.
 - TASK-0242: Add task plan file argument JSON safety review.
+- TASK-0243: Design task contract to runner planning mapping.
 
 ## Do Not Load By Default
 
@@ -85,7 +86,7 @@ condition.
 
 ## Next Task
 
-TASK-0243 Design task contract to runner planning mapping.
+TASK-0244 Implement task contract mapping contracts.
 
 ## Current Plans
 
@@ -98,3 +99,4 @@ TASK-0243 Design task contract to runner planning mapping.
 - docs/AGENTIC_RUNNER_DRY_RUN_EXECUTION_LOGIC.md
 - docs/TASK_PLAN_INPUT_FILE_DESIGN.md
 - docs/TASK_PLAN_INPUT_PARSER_USAGE.md
+- docs/TASK_CONTRACT_TO_RUNNER_PLANNING_MAPPING.md
