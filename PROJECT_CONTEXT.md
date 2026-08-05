@@ -72,6 +72,7 @@ condition.
 - TASK-0237: Add task plan input parser logic smoke tests.
 - TASK-0238: Add task plan input parser safety review.
 - TASK-0239: Add task plan input parser documentation.
+- TASK-0240: Add task plan input parser final safety review.
 
 ## Do Not Load By Default
 
@@ -82,7 +83,7 @@ condition.
 
 ## Next Task
 
-TASK-0240 Add task plan input parser final safety review.
+TASK-0241 Implement aeos task plan file argument skeleton.
 
 ## Current Plans
 

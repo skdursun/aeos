@@ -788,7 +788,7 @@ export async function parseTaskPlanInputFile(
     );
   }
 
-  const format = extensionToFormat(pathModule, pathCheck.resolvedPath);
+  const format = extensionToFormat(pathModule, sourceFile);
 
   if (request.expectedFormat !== "json" || format !== "json") {
     const issue = createIssue(

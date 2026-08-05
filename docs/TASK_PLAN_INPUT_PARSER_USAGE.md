@@ -89,12 +89,16 @@ Unsupported examples:
 - `.md`
 - `.yaml`
 - `.yml`
+- `.toml`
 - `.jsonl`
 - extensionless files
 - directories
 - remote URL-like input
 
-The parser rejects unsupported extensions before parsing content.
+The parser rejects unsupported extensions on the operator-supplied input path
+before parsing content. A symlink target with a `.json` extension does not make
+an unsupported input path such as `.txt`, `.md`, `.yaml`, or `.toml`
+acceptable.
 
 ## Path Safety Behavior
 Default path policy is fail-closed:
@@ -251,7 +255,7 @@ The summary includes:
 - JSON only.
 - Local files only.
 - No CLI integration guarantee.
-- No Markdown or YAML task parsing.
+- No Markdown, YAML, or TOML task parsing.
 - No task-to-runner planning adapter.
 - No runner planning result.
 - No persisted parser output.
@@ -262,7 +266,7 @@ The summary includes:
 Later tasks may add:
 
 - CLI wiring for `aeos task plan <task-file>`;
-- Markdown or YAML parsers;
+- Markdown, YAML, or TOML parsers;
 - richer task schema validation;
 - explicit task-contract versioning;
 - safe task-to-runner planning input mapping;

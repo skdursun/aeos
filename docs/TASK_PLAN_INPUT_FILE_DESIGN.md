@@ -89,13 +89,15 @@ Path handling should be deterministic and local-first.
 MVP behavior:
 
 - resolve the input path relative to the current working directory;
-- allow absolute local paths only if the resolved real path is accepted by the
-  same local safety checks;
+- reject absolute local paths by default;
+- allow absolute local paths only when explicitly configured and when the
+  resolved real path is accepted by the same local safety checks;
 - require the file to exist;
 - require the path to resolve to a regular file;
 - reject directories;
 - reject missing files;
-- reject unsupported extensions before parsing;
+- reject unsupported extensions on the operator-supplied input path before
+  parsing;
 - reject paths that escape the current working directory through `..` traversal
   or symlink resolution unless a later design explicitly allows safe absolute
   local paths outside the current working directory;
@@ -423,19 +425,19 @@ Safety hardening now includes:
 - `runnerPlanningExecuted` remains false;
 - the parser does not run `planAgenticRunner()`.
 
-## MVP Scope
-MVP includes:
+## Current Parser MVP Scope
+The implemented parser MVP includes:
 
 - parse exactly one local `.json` task contract file;
 - reject missing files, directories, unsupported extensions, invalid JSON, and
   invalid contracts;
 - reuse `validateAeosTask()` for existing task contract validation;
-- emit human and JSON-only errors;
+- return structured parser issues and summaries;
 - preserve current no-execution and no-write guarantees;
-- call runner planning only after an explicit safe mapping exists;
+- avoid runner planning execution until an explicit safe mapping exists;
 - fail closed when mapping is unsupported;
-- add smoke tests for parser contract, JSON-only behavior, no-execution, and
-  no-write behavior.
+- add smoke tests for parser contract, path safety, JSON behavior,
+  deterministic issues, no-execution, and no-write behavior.
 
 ## Later Scope
 Later work may include:
@@ -510,101 +512,14 @@ F. Help honesty:
 - help does not promise execution, autonomous agents, audit writes, verifier
   runs, persistence, or completion.
 
-## Implementation Sequence
-1. TASK-0232: Implement task plan input file parser contracts.
-   Purpose: define CLI-local types and error codes for task plan file parsing
-   without reading files yet.
-   Likely files: `apps/cli/src/commands.ts`.
-   Verification command: `pnpm --filter @aeos/cli check`.
-   Recommended model effort: Medium.
-   Classification: Code.
+## Current Follow-Up Sequence
+1. TASK-0240: Final parser safety review.
+   Purpose: confirm parser, validation handoff, unsupported mapping, smoke
+   tests, and docs are deterministic, local-only, read-only, and no-execution.
 
-2. TASK-0233: Add task plan argv contract for required file input.
-   Purpose: parse `aeos task plan <task-file> [--json]`, require exactly one
-   positional file, and keep unknown flag errors JSON-only in JSON mode.
-   Likely files: `apps/cli/src/commands.ts`, `apps/cli/scripts/smoke.mjs`.
-   Verification command: `pnpm --filter @aeos/cli check`.
-   Recommended model effort: Medium.
-   Classification: Code.
+2. TASK-0241: Implement `aeos task plan` file argument skeleton.
+   Purpose: begin CLI argument wiring without planner execution, persistence,
+   audit runtime, verifier runtime, adapters, or task execution.
 
-3. TASK-0234: Add task plan local path safety checks.
-   Purpose: resolve the input relative to cwd, reject missing files,
-   directories, unsupported extensions, unsafe traversal, and oversized files.
-   Likely files: `apps/cli/src/commands.ts`, `apps/cli/scripts/smoke.mjs`.
-   Verification command: `pnpm --filter @aeos/cli check`.
-   Recommended model effort: High.
-   Classification: Code.
-
-4. TASK-0235: Add task plan JSON parse behavior.
-   Purpose: read the checked `.json` file, parse JSON, require an object root,
-   and return stable human and JSON errors.
-   Likely files: `apps/cli/src/commands.ts`, `apps/cli/scripts/smoke.mjs`.
-   Verification command: `pnpm --filter @aeos/cli check`.
-   Recommended model effort: Medium.
-   Classification: Code.
-
-5. TASK-0236: Reuse AEOS task contract validation for plan input.
-   Purpose: call `validateAeosTask()` after parsing and return non-zero invalid
-   contract output with structured issues.
-   Likely files: `apps/cli/src/commands.ts`, `apps/cli/scripts/smoke.mjs`.
-   Verification command: `pnpm --filter @aeos/cli check`.
-   Recommended model effort: Medium.
-   Classification: Code.
-
-6. TASK-0237: Add task-to-runner mapping unsupported guard.
-   Purpose: fail closed with `task_plan_mapping_unsupported` until a safe
-   `AeosTask` to `AgenticRunnerPlanningInput` adapter is implemented.
-   Likely files: `apps/cli/src/commands.ts`, `apps/cli/scripts/smoke.mjs`.
-   Verification command: `pnpm --filter @aeos/cli check`.
-   Recommended model effort: Medium.
-   Classification: Code.
-
-7. TASK-0238: Design task-to-runner planning adapter.
-   Purpose: document the conservative mapping from validated `AeosTask` to
-   represented runner planning input.
-   Likely files: `docs/TASK_PLAN_RUNNER_MAPPING_DESIGN.md`,
-   `TASKS/backlog.md`, `PROJECT_CONTEXT.md`.
-   Verification command: `git status --short`.
-   Recommended model effort: Medium.
-   Classification: Docs.
-
-8. TASK-0239: Implement minimal task-to-runner planning adapter.
-   Purpose: map validated task identity and contract metadata to
-   `AgenticRunnerPlanningInput` without inventing work items or batches.
-   Likely files: `apps/cli/src/commands.ts`, `apps/cli/scripts/smoke.mjs`.
-   Verification command: `pnpm --filter @aeos/cli check`.
-   Recommended model effort: High.
-   Classification: Code.
-
-9. TASK-0240: Wire task plan to `planAgenticRunner()`.
-   Purpose: call the side-effect-free planner only after validation and safe
-   mapping, preserving no-execution and no-write guarantees.
-   Likely files: `apps/cli/src/commands.ts`, `apps/cli/scripts/smoke.mjs`.
-   Verification command: `pnpm --filter @aeos/cli check`.
-   Recommended model effort: High.
-   Classification: Code.
-
-10. TASK-0241: Render final task plan human and JSON output.
-    Purpose: emit the stable Task Plan human fields and JSON top-level shape
-    from the planning result.
-    Likely files: `apps/cli/src/commands.ts`, `apps/cli/scripts/smoke.mjs`.
-    Verification command: `pnpm --filter @aeos/cli check`.
-    Recommended model effort: Medium.
-    Classification: Code.
-
-11. TASK-0242: Add task plan input file smoke suite.
-    Purpose: cover missing file, invalid JSON, valid no-execution, no-write,
-    JSON-only, and help honesty requirements.
-    Likely files: `apps/cli/scripts/smoke.mjs`.
-    Verification command: `pnpm --filter @aeos/cli smoke`.
-    Recommended model effort: High.
-    Classification: Code.
-
-12. TASK-0243: Review task plan input file safety.
-    Purpose: confirm parser, validator, mapping, planner call, output, and smoke
-    tests remain deterministic, local-only, read-only, and planner-only.
-    Likely files: `docs/TASK_PLAN_INPUT_FILE_DESIGN.md`,
-    `TASKS/backlog.md`.
-    Verification command: `git status --short`.
-    Recommended model effort: Medium.
-    Classification: Docs.
+Later tasks may add explicit task-to-runner mapping and a reviewed
+`planAgenticRunner()` call. Those are not implemented by the parser MVP.

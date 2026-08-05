@@ -6,6 +6,7 @@ import {
   readFile,
   rm,
   stat,
+  symlink,
   writeFile as writeNodeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1817,6 +1818,11 @@ try {
   const invalidJsonPath = join(parserTasksDirectory, "invalid.json");
   const nonObjectJsonPath = join(parserTasksDirectory, "non-object.json");
   const unsupportedFormatPath = join(parserTasksDirectory, "task.txt");
+  const unsupportedMarkdownPath = join(parserTasksDirectory, "task.md");
+  const unsupportedYamlPath = join(parserTasksDirectory, "task.yaml");
+  const unsupportedTomlPath = join(parserTasksDirectory, "task.toml");
+  const unsupportedSymlinkPath = join(parserTasksDirectory, "task-link.txt");
+  const outsideSymlinkPath = join(parserTasksDirectory, "outside-link.json");
   const oversizedJsonPath = join(parserTasksDirectory, "too-large.json");
   const contractJsonPath = join(parserTasksDirectory, "contract.json");
   const invalidContractJsonPath = join(
@@ -1863,10 +1869,15 @@ try {
   await writeNodeFile(invalidJsonPath, invalidJsonContent);
   await writeNodeFile(nonObjectJsonPath, nonObjectJsonContent);
   await writeNodeFile(unsupportedFormatPath, unsupportedFormatContent);
+  await writeNodeFile(unsupportedMarkdownPath, unsupportedFormatContent);
+  await writeNodeFile(unsupportedYamlPath, unsupportedFormatContent);
+  await writeNodeFile(unsupportedTomlPath, unsupportedFormatContent);
   await writeNodeFile(oversizedJsonPath, oversizedJsonContent);
   await writeNodeFile(contractJsonPath, contractJsonContent);
   await writeNodeFile(invalidContractJsonPath, invalidContractJsonContent);
   await writeNodeFile(outsideJsonPath, outsideJsonContent);
+  await symlink(validTaskPlanPath, unsupportedSymlinkPath);
+  await symlink(outsideJsonPath, outsideSymlinkPath);
 
   const parserSnapshotBefore = await snapshotDirectoryEntries(
     taskPlanParserTempRoot,
@@ -1939,6 +1950,11 @@ try {
     parserSmokeBMissingFile.issues.length > 0,
     "task plan parser logic smoke B should expose an issue",
   );
+  assert.deepEqual(
+    issueCodes(parserSmokeBMissingFile),
+    ["task_plan_input_file_missing"],
+    "task plan parser logic smoke B should expose deterministic missing file issue",
+  );
   assertTaskPlanInputParserReadOnly(
     parserSmokeBMissingFile,
     "task plan parser logic smoke B missing file result",
@@ -1954,12 +1970,17 @@ try {
     "task plan parser logic smoke C directory input should not be ok",
   );
   assert.ok(
-    ["directory", "not_file"].includes(parserSmokeCDirectory.pathCheck.status),
-    "task plan parser logic smoke C should report directory or not_file",
+    parserSmokeCDirectory.pathCheck.status === "directory",
+    "task plan parser logic smoke C should report directory deterministically",
   );
   assert.ok(
     parserSmokeCDirectory.issues.length > 0,
     "task plan parser logic smoke C should expose an issue",
+  );
+  assert.deepEqual(
+    issueCodes(parserSmokeCDirectory),
+    ["task_plan_input_path_is_directory"],
+    "task plan parser logic smoke C should expose deterministic directory issue",
   );
 
   const parserSmokeDParentTraversal = await parseTaskPlanInputFile(
@@ -1972,14 +1993,17 @@ try {
     "task plan parser logic smoke D parent traversal should not be ok",
   );
   assert.ok(
-    ["outside_working_directory", "unsafe_path"].includes(
-      parserSmokeDParentTraversal.pathCheck.status,
-    ),
-    "task plan parser logic smoke D should deny parent traversal",
+    parserSmokeDParentTraversal.pathCheck.status === "unsafe_path",
+    "task plan parser logic smoke D should deny parent traversal before reading",
   );
   assert.ok(
     parserSmokeDParentTraversal.issues.length > 0,
     "task plan parser logic smoke D should expose an issue",
+  );
+  assert.deepEqual(
+    issueCodes(parserSmokeDParentTraversal),
+    ["task_plan_input_parent_traversal_disallowed"],
+    "task plan parser logic smoke D should expose deterministic parent traversal issue",
   );
   assert.equal(
     await readFile(outsideJsonPath, "utf8"),
@@ -2028,14 +2052,17 @@ try {
     "task plan parser logic smoke E absolute path default should not be ok",
   );
   assert.ok(
-    ["unsafe_path", "outside_working_directory", "unsupported"].includes(
-      parserSmokeEAbsoluteDenied.pathCheck.status,
-    ),
+    parserSmokeEAbsoluteDenied.pathCheck.status === "unsafe_path",
     "task plan parser logic smoke E should deny absolute paths by default",
   );
   assert.ok(
     parserSmokeEAbsoluteDenied.issues.length > 0,
     "task plan parser logic smoke E should expose an issue",
+  );
+  assert.deepEqual(
+    issueCodes(parserSmokeEAbsoluteDenied),
+    ["task_plan_input_absolute_path_disallowed"],
+    "task plan parser logic smoke E should expose deterministic absolute path issue",
   );
 
   const parserSmokeFAbsoluteAllowed = await parseTaskPlanInputFile(
@@ -2122,6 +2149,11 @@ try {
     parserSmokeHNonObjectJson.issues.length > 0,
     "task plan parser logic smoke H should expose an issue",
   );
+  assert.deepEqual(
+    issueCodes(parserSmokeHNonObjectJson),
+    ["task_plan_input_json_root_not_object"],
+    "task plan parser logic smoke H should expose deterministic non-object JSON issue",
+  );
 
   const parserSmokeIUnsupportedFormat = await parseTaskPlanInputFile(
     createTaskPlanInputSmokeRequest(parserProjectRoot, "tasks/task.txt"),
@@ -2137,14 +2169,89 @@ try {
     "ok",
     "task plan parser logic smoke I unsupported extension path should be ok",
   );
-  assert.ok(
-    parserSmokeIUnsupportedFormat.parse.format === "unsupported" ||
-      parserSmokeIUnsupportedFormat.issues.length > 0,
-    "task plan parser logic smoke I should represent unsupported format or issue",
+  assert.equal(
+    parserSmokeIUnsupportedFormat.parse.format,
+    "unsupported",
+    "task plan parser logic smoke I should represent unsupported format",
   );
   assert.ok(
     parserSmokeIUnsupportedFormat.issues.length > 0,
     "task plan parser logic smoke I should expose an issue",
+  );
+  assert.deepEqual(
+    issueCodes(parserSmokeIUnsupportedFormat),
+    ["task_plan_input_unsupported_format"],
+    "task plan parser logic smoke I should expose deterministic unsupported format issue",
+  );
+
+  const parserSmokeIUnsupportedFormatVariants = [];
+
+  for (const inputPath of [
+    "tasks/task.md",
+    "tasks/task.yaml",
+    "tasks/task.toml",
+  ]) {
+    parserSmokeIUnsupportedFormatVariants.push(
+      await parseTaskPlanInputFile(
+        createTaskPlanInputSmokeRequest(parserProjectRoot, inputPath),
+      ),
+    );
+  }
+
+  for (const result of parserSmokeIUnsupportedFormatVariants) {
+    assert.equal(
+      result.ok,
+      false,
+      "task plan parser logic smoke I2 unsupported format variant should not be ok",
+    );
+    assert.equal(
+      result.pathCheck.status,
+      "ok",
+      "task plan parser logic smoke I2 unsupported format variant path should be ok",
+    );
+    assert.equal(
+      result.parse.format,
+      "unsupported",
+      "task plan parser logic smoke I2 unsupported format variant should not parse content",
+    );
+    assert.deepEqual(
+      issueCodes(result),
+      ["task_plan_input_unsupported_format"],
+      "task plan parser logic smoke I2 unsupported format variant should expose deterministic unsupported format issue",
+    );
+    assertTaskPlanInputParserReadOnly(
+      result,
+      "task plan parser logic smoke I2 unsupported format variant result",
+    );
+  }
+
+  const parserSmokeIUnsupportedSymlink = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(parserProjectRoot, "tasks/task-link.txt"),
+  );
+
+  assert.equal(
+    parserSmokeIUnsupportedSymlink.ok,
+    false,
+    "task plan parser logic smoke I3 unsupported symlink input extension should not be ok",
+  );
+  assert.equal(
+    parserSmokeIUnsupportedSymlink.pathCheck.status,
+    "ok",
+    "task plan parser logic smoke I3 unsupported symlink path should pass path safety",
+  );
+  assert.equal(
+    parserSmokeIUnsupportedSymlink.parse.format,
+    "unsupported",
+    "task plan parser logic smoke I3 should use the operator input extension",
+  );
+  assert.deepEqual(
+    issueCodes(parserSmokeIUnsupportedSymlink),
+    ["task_plan_input_unsupported_format"],
+    "task plan parser logic smoke I3 should expose deterministic unsupported symlink issue",
+  );
+  assertTaskPlanInputParserReadOnly(
+    parserSmokeIUnsupportedSymlink,
+    "task plan parser logic smoke I3 unsupported symlink result",
   );
 
   const parserSmokeJOversized = await parseTaskPlanInputFile(
@@ -2173,6 +2280,11 @@ try {
     parserSmokeJOversized.parse.ok,
     false,
     "task plan parser logic smoke J should not pretend parse success",
+  );
+  assert.deepEqual(
+    issueCodes(parserSmokeJOversized),
+    ["task_plan_input_file_too_large"],
+    "task plan parser logic smoke J should expose deterministic oversized file issue",
   );
   assert.equal(
     parserSmokeJOversized.summary.noWrites,
@@ -2260,9 +2372,7 @@ try {
     "task plan parser logic smoke L mapping should be requested",
   );
   assert.ok(
-    ["unsupported", "failed", "not_implemented", "blocked"].includes(
-      parserSmokeLMappingUnsupported.mapping.status,
-    ),
+    parserSmokeLMappingUnsupported.mapping.status === "unsupported",
     "task plan parser logic smoke L should report unsupported mapping handoff",
   );
   assert.equal(
@@ -2279,6 +2389,35 @@ try {
     issueCodes(parserSmokeLMappingUnsupported),
     ["task_plan_input_mapping_unsupported"],
     "task plan parser logic smoke L should expose deterministic unsupported mapping issue",
+  );
+
+  const parserSmokeLSymlinkOutside = await parseTaskPlanInputFile(
+    createTaskPlanInputSmokeRequest(parserProjectRoot, "tasks/outside-link.json"),
+  );
+
+  assert.equal(
+    parserSmokeLSymlinkOutside.ok,
+    false,
+    "task plan parser logic smoke L2 outside symlink should not be ok",
+  );
+  assert.equal(
+    parserSmokeLSymlinkOutside.pathCheck.status,
+    "outside_working_directory",
+    "task plan parser logic smoke L2 should deny symlink escape deterministically",
+  );
+  assert.deepEqual(
+    issueCodes(parserSmokeLSymlinkOutside),
+    ["task_plan_input_outside_working_directory"],
+    "task plan parser logic smoke L2 should expose deterministic outside working directory issue",
+  );
+  assert.equal(
+    await readFile(outsideJsonPath, "utf8"),
+    outsideJsonContent,
+    "task plan parser logic smoke L2 outside symlink target should remain unchanged",
+  );
+  assertTaskPlanInputParserReadOnly(
+    parserSmokeLSymlinkOutside,
+    "task plan parser logic smoke L2 outside symlink result",
   );
 
   const parserSmokeMFirst = await parseTaskPlanInputFile(
@@ -2324,10 +2463,16 @@ try {
     ["task plan parser logic smoke G", parserSmokeGInvalidJson],
     ["task plan parser logic smoke H", parserSmokeHNonObjectJson],
     ["task plan parser logic smoke I", parserSmokeIUnsupportedFormat],
+    ...parserSmokeIUnsupportedFormatVariants.map((result, index) => [
+      `task plan parser logic smoke I2 variant ${index + 1}`,
+      result,
+    ]),
+    ["task plan parser logic smoke I3", parserSmokeIUnsupportedSymlink],
     ["task plan parser logic smoke J", parserSmokeJOversized],
     ["task plan parser logic smoke K invalid", parserSmokeKInvalidValidation],
     ["task plan parser logic smoke K", parserSmokeKValidation],
     ["task plan parser logic smoke L", parserSmokeLMappingUnsupported],
+    ["task plan parser logic smoke L2", parserSmokeLSymlinkOutside],
     ["task plan parser logic smoke M first", parserSmokeMFirst],
     ["task plan parser logic smoke M second", parserSmokeMSecond],
     ["task plan parser logic smoke M invalid first", parserSmokeMInvalidFirst],
