@@ -76,6 +76,7 @@ condition.
 - TASK-0241: Implement aeos task plan file argument skeleton.
 - TASK-0242: Add task plan file argument JSON safety review.
 - TASK-0243: Design task contract to runner planning mapping.
+- TASK-0244: Implement task contract mapping contracts.
 
 ## Do Not Load By Default
 
@@ -86,7 +87,7 @@ condition.
 
 ## Next Task
 
-TASK-0244 Implement task contract mapping contracts.
+TASK-0245 Add task contract mapping contract examples.
 
 ## Current Plans
 
