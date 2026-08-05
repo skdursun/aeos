@@ -30,61 +30,11 @@ condition.
 
 ## Recent Completed Tasks
 
-- TASK-0198: Add agentic coverage verifier final safety review.
-- TASK-0199: Design agentic runner architecture.
-- TASK-0200: Implement agentic runner contracts.
-- TASK-0201: Add agentic runner contract examples.
-- TASK-0202: Add agentic runner contract smoke tests.
-- TASK-0203: Design agentic runner planning logic.
-- TASK-0204: Implement agentic runner planning contracts.
-- TASK-0205: Add agentic runner planning contract examples.
-- TASK-0206: Add agentic runner planning contract smoke tests.
-- TASK-0207: Implement agentic runner planning logic.
-- TASK-0208: Add agentic runner planning logic examples.
-- TASK-0209: Add agentic runner planning logic smoke tests.
-- TASK-0210: Add agentic runner planning safety review.
-- TASK-0211: Add agentic runner planning documentation.
-- TASK-0212: Add agentic runner planning final safety review.
-- TASK-0213: Design agentic runner execution lifecycle.
-- TASK-0214: Implement agentic runner execution contracts.
-- TASK-0215: Add agentic runner execution contract examples.
-- TASK-0216: Add agentic runner execution contract smoke tests.
-- TASK-0217: Design agentic runner dry-run execution logic.
-- TASK-0218: Implement agentic runner dry-run execution contracts.
-- TASK-0219: Add agentic runner dry-run contract examples.
-- TASK-0220: Add agentic runner dry-run contract smoke tests.
-- TASK-0221: Implement agentic runner dry-run execution logic.
-- TASK-0222: Add agentic runner dry-run logic examples.
-- TASK-0223: Add agentic runner dry-run logic smoke tests.
-- TASK-0224: Add agentic runner dry-run safety review.
-- TASK-0225: Add agentic runner dry-run documentation.
-- TASK-0226: Add agentic runner dry-run final safety review.
-- TASK-0227: Design agentic task CLI surface.
-- TASK-0228: Implement agentic task CLI contract/output design.
-- TASK-0229: Implement aeos task plan command skeleton.
-- TASK-0230: Add task plan skeleton JSON safety review.
-- TASK-0231: Implement task plan input contract file parsing design.
-- TASK-0232: Implement task plan input file parser contracts.
-- TASK-0233: Add task plan input parser contract examples.
-- TASK-0234: Add task plan input parser contract smoke tests.
-- TASK-0235: Implement task plan input parser logic.
-- TASK-0236: Add task plan input parser logic examples.
-- TASK-0237: Add task plan input parser logic smoke tests.
-- TASK-0238: Add task plan input parser safety review.
-- TASK-0239: Add task plan input parser documentation.
-- TASK-0240: Add task plan input parser final safety review.
-- TASK-0241: Implement aeos task plan file argument skeleton.
-- TASK-0242: Add task plan file argument JSON safety review.
-- TASK-0243: Design task contract to runner planning mapping.
-- TASK-0244: Implement task contract mapping contracts.
-- TASK-0245: Add task contract mapping contract examples.
-- TASK-0246: Add task contract mapping contract smoke tests.
-- TASK-0247: Implement task contract mapping logic.
-- TASK-0248: Add task contract mapping logic examples.
 - TASK-0249: Add task contract mapping logic smoke tests.
 - TASK-0250: Add task contract mapping safety review.
 - TASK-0251: Add task contract mapping documentation.
 - TASK-0252: Add task contract mapping final safety review.
+- TASK-0253: Wire task plan file mapping to planner design.
 
 ## Do Not Load By Default
 
@@ -95,7 +45,7 @@ condition.
 
 ## Next Task
 
-TASK-0253 Wire task plan file mapping to planner design.
+TASK-0254 Implement task plan file planner wiring contracts.
 
 ## Current Plans
 
@@ -110,3 +60,4 @@ TASK-0253 Wire task plan file mapping to planner design.
 - docs/TASK_PLAN_INPUT_PARSER_USAGE.md
 - docs/TASK_CONTRACT_TO_RUNNER_PLANNING_MAPPING.md
 - docs/TASK_CONTRACT_MAPPING_USAGE.md
+- docs/TASK_PLAN_FILE_TO_PLANNER_WIRING_DESIGN.md
