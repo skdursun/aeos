@@ -94,6 +94,7 @@ import {
 } from "../dist/agentic-runner-dry-run-logic.example.js";
 import {
   parseTaskPlanInputFile,
+  mapTaskContractToRunnerPlanningInput,
   planAgenticRunner,
   runAgenticRunnerDryRun,
   verifyAgenticCoverage,
@@ -1787,6 +1788,760 @@ function assertTaskContractMappingSafety(result, message) {
   };
 
   visit(result);
+}
+
+function createTaskContractMapperLogicSmokeTask(overrides = {}) {
+  return {
+    id: "TASK-0249-SMOKE",
+    title: "Add task contract mapping logic smoke tests.",
+    purpose: "Verify task contract mapper behavior without side effects.",
+    status: "pending",
+    executionMode: "planning",
+    context: {
+      load: [
+        {
+          path: "PROJECT_CONTEXT.md",
+          required: true,
+        },
+        {
+          path: "packages/core/src/task-contract-mapper.ts",
+          required: true,
+        },
+      ],
+      doNotLoad: [
+        {
+          path: "docs/",
+          required: true,
+        },
+      ],
+    },
+    fileBoundary: {
+      filesToModify: ["packages/core/scripts/smoke.mjs", "PROJECT_CONTEXT.md"],
+      filesNotToTouch: [
+        "packages/core/src/task-contract-mapper.ts",
+        "packages/core/src/task-contract-mapping.ts",
+      ],
+      allowGeneratedFiles: false,
+      requireStopOnBoundaryConflict: true,
+    },
+    allowedOperations: [
+      "read_context",
+      "run_verification",
+      "check_git_status",
+    ],
+    forbiddenOperations: [
+      "read_unlisted_context",
+      "modify_unlisted_file",
+      "rename_file",
+      "delete_file",
+      "install_dependency",
+      "change_package_config",
+      "deploy",
+      "push_git",
+      "run_destructive_command",
+      "continue_next_task",
+    ],
+    steps: [
+      {
+        order: 1,
+        instruction: "Add dependency-free mapper logic smoke tests.",
+        required: true,
+        expectedOutcome: "Mapper behavior is represented without execution.",
+      },
+    ],
+    verification: [
+      {
+        command: "pnpm --filter @aeos/core smoke",
+        level: "smoke_test",
+        required: true,
+        scope: ["packages/core/scripts/smoke.mjs"],
+        expectedEvidence: ["Mapper logic smoke scenarios pass."],
+      },
+    ],
+    stopCondition: {
+      description: "Stop after TASK-0249 smoke tests and context update.",
+      stopAfterCompletion: true,
+    },
+    modelRecommendation: {
+      purpose: "Plan deterministic mapper smoke coverage.",
+      requiredCapabilities: ["typescript", "static_analysis", "planning"],
+      preferredExecutionMode: "planning",
+      constraints: ["no_execution", "no_writes", "no_adapter_calls"],
+    },
+    ...overrides,
+  };
+}
+
+function createTaskContractMapperLogicSmokeInput({
+  task = createTaskContractMapperLogicSmokeTask(),
+  mode = "plan",
+  options = {},
+  sourceFile = `TASKS/${task.id}.json`,
+} = {}) {
+  const validationResult = {
+    taskId: task.id,
+    status: "pass",
+    valid: true,
+    issues: [],
+    fileBoundary: task.fileBoundary,
+  };
+
+  return {
+    taskId: task.id,
+    task,
+    taskContract: {
+      kind: "data",
+      data: task,
+      reference: {
+        id: `task-contract:${task.id}`,
+        path: sourceFile,
+      },
+    },
+    sourceFile,
+    mode,
+    options: {
+      allowSingleWorkItemFallback: true,
+      requireExplicitWorkItems: false,
+      requireVerifier: true,
+      createDefaultBatch: true,
+      createAuditExpectations: true,
+      createPolicyBoundary: true,
+      createAdapterBoundary: true,
+      ...options,
+    },
+    validation: {
+      status: "pass",
+      valid: true,
+      result: validationResult,
+      reference: {
+        id: `task-validation:${task.id}`,
+        path: `TASKS/${task.id}.validation.json`,
+      },
+      issues: [],
+    },
+    noExecution: true,
+    noWrites: true,
+  };
+}
+
+function taskContractMapperLogicSignature(result) {
+  return {
+    ok: result.ok,
+    taskId: result.taskId,
+    mode: result.mode,
+    status: result.status,
+    sourceFile: result.sourceFile,
+    workItemIds: result.workItems.map((workItem) => workItem.workItemId),
+    batchIds: result.batches.map((batch) => batch.batchId),
+    batchWorkItemIds: result.batches.map((batch) => batch.workItemIds),
+    issueCodes: result.issues.map((issue) => issue.code),
+    issueFields: result.issues.map((issue) => issue.field),
+    summary: result.summary,
+    handoffStatus: result.planningInput.handoffStatus,
+    runnerPlanningExecuted: result.planningInput.runnerPlanningExecuted,
+    taskPersistenceWritten: result.planningInput.taskPersistenceWritten,
+  };
+}
+
+function assertTaskContractMappingNoCompletedState(result, message) {
+  assert.equal(
+    result.workItems.some((workItem) => workItem.initialState === "completed"),
+    false,
+    `${message} must not create completed work item mappings`,
+  );
+  assert.equal(
+    result.planningInput.runnerPlanningInput?.workItems?.some(
+      (workItem) => workItem.state === "completed",
+    ) ?? false,
+    false,
+    `${message} must not create completed runner work items`,
+  );
+  assert.equal(
+    result.planningInput.runnerPlanningInput?.batches?.some(
+      (batch) => batch.completedCount > 0,
+    ) ?? false,
+    false,
+    `${message} must not create completed batch counts`,
+  );
+  assert.notEqual(
+    result.status,
+    "completed",
+    `${message} must not represent completed mapping status`,
+  );
+}
+
+function assertTaskContractMappingNoRuntimeArtifacts(result, message) {
+  assertTaskContractMappingSafety(result, message);
+  assertTaskContractMappingNoCompletedState(result, message);
+  assert.equal(
+    Object.hasOwn(result, "taskParsingResult"),
+    false,
+    `${message} must not expose task parsing output`,
+  );
+  assert.equal(
+    Object.hasOwn(result, "taskValidationResult"),
+    false,
+    `${message} must not expose task validation execution output`,
+  );
+  assert.equal(
+    Object.hasOwn(result, "runnerExecutionResult"),
+    false,
+    `${message} must not expose runner execution result`,
+  );
+  assert.equal(
+    Object.hasOwn(result, "persistence"),
+    false,
+    `${message} must not expose persistence output`,
+  );
+  assert.equal(
+    Object.hasOwn(result, "adapterCalls"),
+    false,
+    `${message} must not expose adapter call output`,
+  );
+
+  const metadata = result.planningInput.runnerPlanningInput?.metadata ?? {};
+
+  if (result.status === "mapped") {
+    assert.equal(
+      metadata.planAgenticRunnerExecuted,
+      false,
+      `${message} metadata must keep planAgenticRunner execution false`,
+    );
+    assert.equal(
+      metadata.runnerExecutionStarted,
+      false,
+      `${message} metadata must keep runner execution false`,
+    );
+    assert.equal(
+      metadata.adapterCallsMade,
+      false,
+      `${message} metadata must keep adapter calls false`,
+    );
+    assert.equal(
+      metadata.auditEventsEmitted,
+      false,
+      `${message} metadata must keep audit writes false`,
+    );
+    assert.equal(
+      metadata.verifierExecuted,
+      false,
+      `${message} metadata must keep verifier execution false`,
+    );
+    assert.equal(
+      metadata.taskPersistenceWritten,
+      false,
+      `${message} metadata must keep persistence writes false`,
+    );
+    assert.equal(
+      metadata.mappingNoCompletedState,
+      true,
+      `${message} metadata must represent no completed state`,
+    );
+  }
+}
+
+const taskContractMapperLogicMinimalInput =
+  createTaskContractMapperLogicSmokeInput();
+const taskContractMapperLogicMinimalResult =
+  mapTaskContractToRunnerPlanningInput(taskContractMapperLogicMinimalInput);
+
+assert.equal(
+  taskContractMapperLogicMinimalResult.taskId,
+  taskContractMapperLogicMinimalInput.taskId,
+  "task contract mapper logic smoke A should represent task id",
+);
+assert.equal(
+  taskContractMapperLogicMinimalResult.mode,
+  "plan",
+  "task contract mapper logic smoke A should represent plan mode",
+);
+assert.equal(
+  taskContractMapperLogicMinimalInput.noExecution,
+  true,
+  "task contract mapper logic smoke A input should keep noExecution",
+);
+assert.equal(
+  taskContractMapperLogicMinimalInput.noWrites,
+  true,
+  "task contract mapper logic smoke A input should keep noWrites",
+);
+assert.equal(
+  taskContractMapperLogicMinimalResult.summary.noExecution,
+  true,
+  "task contract mapper logic smoke A result should keep noExecution",
+);
+assert.equal(
+  taskContractMapperLogicMinimalResult.summary.noWrites,
+  true,
+  "task contract mapper logic smoke A result should keep noWrites",
+);
+assert.equal(
+  taskContractMapperLogicMinimalResult.verifier.verifierRequired,
+  true,
+  "task contract mapper logic smoke A should require verifier",
+);
+assert.equal(
+  taskContractMapperLogicMinimalResult.verifier.completionGatedByVerifier,
+  true,
+  "task contract mapper logic smoke A should gate completion by verifier",
+);
+assertTaskContractMappingNoRuntimeArtifacts(
+  taskContractMapperLogicMinimalResult,
+  "task contract mapper logic smoke A",
+);
+
+const taskContractMapperLogicFallbackInput =
+  createTaskContractMapperLogicSmokeInput({
+    options: {
+      allowSingleWorkItemFallback: true,
+      createDefaultBatch: true,
+    },
+  });
+const taskContractMapperLogicFallbackResult =
+  mapTaskContractToRunnerPlanningInput(taskContractMapperLogicFallbackInput);
+
+assert.equal(
+  taskContractMapperLogicFallbackInput.options.allowSingleWorkItemFallback,
+  true,
+  "task contract mapper logic smoke B should enable fallback option",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.workItems.length,
+  1,
+  "task contract mapper logic smoke B should produce one fallback work item",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.workItems[0].derivedFrom,
+  "single_work_item_fallback",
+  "task contract mapper logic smoke B work item should be fallback derived",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.workItems[0].initialState,
+  "pending",
+  "task contract mapper logic smoke B work item should start pending",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.batches.length,
+  1,
+  "task contract mapper logic smoke B should represent one default batch",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.batches[0].derivedDefaultBatch,
+  true,
+  "task contract mapper logic smoke B should represent default batch",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.batches[0].expectedItemCount,
+  1,
+  "task contract mapper logic smoke B batch expected count should be one",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.summary.workItemCount,
+  1,
+  "task contract mapper logic smoke B summary work item count should be one",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.summary.batchCount,
+  1,
+  "task contract mapper logic smoke B summary batch count should be one",
+);
+
+const taskContractMapperLogicExplicitTask =
+  createTaskContractMapperLogicSmokeTask({
+    id: "TASK-0249-EXPLICIT",
+    workItems: [
+      {
+        id: "work-item:TASK-0249-EXPLICIT:001",
+        title: "First explicit work item.",
+      },
+      {
+        id: "work-item:TASK-0249-EXPLICIT:002",
+        title: "Second explicit work item.",
+      },
+    ],
+  });
+const taskContractMapperLogicExplicitResult =
+  mapTaskContractToRunnerPlanningInput(
+    createTaskContractMapperLogicSmokeInput({
+      task: taskContractMapperLogicExplicitTask,
+      options: {
+        requireExplicitWorkItems: true,
+      },
+    }),
+  );
+
+if (
+  taskContractMapperLogicExplicitResult.status === "unsupported" ||
+  taskContractMapperLogicExplicitResult.issues.some(
+    (issue) => issue.code === "task_contract_explicit_work_items_unsupported",
+  )
+) {
+  assert.equal(
+    taskContractMapperLogicExplicitResult.ok,
+    false,
+    "task contract mapper logic smoke C unsupported explicit mapping should not be ok",
+  );
+  assert.ok(
+    taskContractMapperLogicExplicitResult.issues.some(
+      (issue) =>
+        issue.code === "task_contract_explicit_work_items_unsupported" ||
+        issue.code === "task_contract_explicit_work_items_required",
+    ),
+    "task contract mapper logic smoke C should represent unsupported explicit work item issue",
+  );
+  assert.equal(
+    taskContractMapperLogicExplicitResult.workItems.length,
+    0,
+    "task contract mapper logic smoke C should not fake successful explicit work item mappings",
+  );
+} else {
+  assert.deepEqual(
+    taskContractMapperLogicExplicitResult.workItems.map(
+      (workItem) => workItem.workItemId,
+    ),
+    [
+      "work-item:TASK-0249-EXPLICIT:001",
+      "work-item:TASK-0249-EXPLICIT:002",
+    ],
+    "task contract mapper logic smoke C explicit work item ids should be deterministic when supported",
+  );
+  assert.deepEqual(
+    taskContractMapperLogicExplicitResult.batches.flatMap(
+      (batch) => batch.workItemIds,
+    ),
+    taskContractMapperLogicExplicitResult.workItems.map(
+      (workItem) => workItem.workItemId,
+    ),
+    "task contract mapper logic smoke C batch should reference mapped work item ids when supported",
+  );
+  assert.equal(
+    taskContractMapperLogicExplicitResult.batches.reduce(
+      (count, batch) => count + batch.expectedItemCount,
+      0,
+    ),
+    taskContractMapperLogicExplicitResult.workItems.length,
+    "task contract mapper logic smoke C expected count should match mapped work items when supported",
+  );
+}
+assertTaskContractMappingNoRuntimeArtifacts(
+  taskContractMapperLogicExplicitResult,
+  "task contract mapper logic smoke C",
+);
+
+const taskContractMapperLogicDuplicateTask =
+  createTaskContractMapperLogicSmokeTask({
+    id: "TASK-0249-DUPLICATE",
+    workItems: [
+      {
+        id: "work-item:TASK-0249-DUPLICATE:001",
+        title: "Duplicate explicit work item.",
+      },
+      {
+        id: "work-item:TASK-0249-DUPLICATE:001",
+        title: "Duplicate explicit work item.",
+      },
+    ],
+  });
+const taskContractMapperLogicDuplicateResult =
+  mapTaskContractToRunnerPlanningInput(
+    createTaskContractMapperLogicSmokeInput({
+      task: taskContractMapperLogicDuplicateTask,
+    }),
+  );
+
+assert.equal(
+  taskContractMapperLogicDuplicateResult.ok === false ||
+    taskContractMapperLogicDuplicateResult.summary.issueCount > 0,
+  true,
+  "task contract mapper logic smoke D duplicate/invalid shape should not be silently successful",
+);
+assert.ok(
+  taskContractMapperLogicDuplicateResult.issues.some(
+    (issue) => issue.code === "task_contract_explicit_work_items_unsupported",
+  ),
+  "task contract mapper logic smoke D should represent deterministic unsupported duplicate shape issue",
+);
+assert.deepEqual(
+  taskContractMapperLogicDuplicateResult.issues.map((issue) => issue.code),
+  [...taskContractMapperLogicDuplicateResult.issues.map((issue) => issue.code)].sort(),
+  "task contract mapper logic smoke D issue ordering should be stable",
+);
+assertTaskContractMappingNoRuntimeArtifacts(
+  taskContractMapperLogicDuplicateResult,
+  "task contract mapper logic smoke D",
+);
+
+const taskContractMapperLogicUnsupportedResult =
+  mapTaskContractToRunnerPlanningInput(
+    createTaskContractMapperLogicSmokeInput({
+      task: createTaskContractMapperLogicSmokeTask({
+        id: "TASK-0249-UNSUPPORTED",
+      }),
+      mode: "dry_run",
+    }),
+  );
+
+assert.equal(
+  taskContractMapperLogicUnsupportedResult.ok,
+  false,
+  "task contract mapper logic smoke E unsupported mode should not be ok",
+);
+assert.equal(
+  taskContractMapperLogicUnsupportedResult.summary.mappingSupported,
+  false,
+  "task contract mapper logic smoke E unsupported mode should not be mappingSupported",
+);
+assert.ok(
+  taskContractMapperLogicUnsupportedResult.issues.some(
+    (issue) => issue.code === "task_contract_mapping_mode_unsupported",
+  ),
+  "task contract mapper logic smoke E should represent unsupported issue",
+);
+assert.equal(
+  taskContractMapperLogicUnsupportedResult.planningInput.handoffStatus,
+  "unsupported",
+  "task contract mapper logic smoke E planning handoff should be unsupported",
+);
+assert.equal(
+  taskContractMapperLogicUnsupportedResult.planningInput.runnerPlanningInput,
+  undefined,
+  "task contract mapper logic smoke E should not create planning input",
+);
+assertTaskContractMappingNoRuntimeArtifacts(
+  taskContractMapperLogicUnsupportedResult,
+  "task contract mapper logic smoke E",
+);
+
+const taskContractMapperLogicPolicyResult =
+  mapTaskContractToRunnerPlanningInput(
+    createTaskContractMapperLogicSmokeInput({
+      task: createTaskContractMapperLogicSmokeTask({
+        id: "TASK-0249-POLICY",
+        riskProfile: {
+          riskClass: "medium",
+          permissionLevel: "approval_required",
+          requiresApproval: true,
+          rationale: "Smoke test policy mapping only.",
+        },
+      }),
+    }),
+  );
+
+assert.equal(
+  taskContractMapperLogicPolicyResult.policy.required,
+  true,
+  "task contract mapper logic smoke F should represent policy requirement",
+);
+assert.equal(
+  taskContractMapperLogicPolicyResult.policy.approvalRequired,
+  true,
+  "task contract mapper logic smoke F should represent approval requirement",
+);
+assert.equal(
+  taskContractMapperLogicPolicyResult.policy.policyGateId,
+  "policy-gate:TASK-0249-POLICY:task-contract",
+  "task contract mapper logic smoke F should represent policy gate id",
+);
+assert.equal(
+  taskContractMapperLogicPolicyResult.policy.status,
+  "requires_approval",
+  "task contract mapper logic smoke F should not imply policy enforcement",
+);
+assert.equal(
+  taskContractMapperLogicPolicyResult.planningInput.runnerPlanningInput
+    ?.policyRequirements?.[0]?.metadata?.noPolicyAdapterCalled,
+  true,
+  "task contract mapper logic smoke F should not imply policy adapter enforcement",
+);
+
+assert.ok(
+  taskContractMapperLogicFallbackResult.adapterBoundary.modelAdapterReferences
+    .length > 0,
+  "task contract mapper logic smoke G should represent model adapter refs when supported",
+);
+assert.ok(
+  Array.isArray(
+    taskContractMapperLogicFallbackResult.adapterBoundary.toolAdapterReferences,
+  ),
+  "task contract mapper logic smoke G should represent tool adapter refs array",
+);
+assert.ok(
+  taskContractMapperLogicFallbackResult.adapterBoundary.allowedOperations.length >
+    0,
+  "task contract mapper logic smoke G should represent allowed operations",
+);
+assert.ok(
+  taskContractMapperLogicFallbackResult.adapterBoundary.deniedOperations.includes(
+    "call_adapter",
+  ),
+  "task contract mapper logic smoke G should represent denied adapter calls",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.summary.adapterReferenceCount,
+  taskContractMapperLogicFallbackResult.adapterBoundary.modelAdapterReferences
+    .length +
+    taskContractMapperLogicFallbackResult.adapterBoundary.toolAdapterReferences
+      .length,
+  "task contract mapper logic smoke G adapter reference summary should be deterministic",
+);
+
+assert.ok(
+  taskContractMapperLogicFallbackResult.audit.expectedAuditEventIds.length > 0,
+  "task contract mapper logic smoke H should represent expected audit event ids",
+);
+assert.ok(
+  taskContractMapperLogicFallbackResult.audit.requiredEventKinds.includes(
+    "verification.handoff.planned",
+  ),
+  "task contract mapper logic smoke H should represent required audit event kinds",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.audit.auditRequired,
+  true,
+  "task contract mapper logic smoke H should represent audit requirement",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.planningInput.runnerPlanningInput
+    ?.auditRequirements?.metadata?.auditEventsEmitted,
+  false,
+  "task contract mapper logic smoke H should not emit audit events",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.summary.expectedAuditEventCount,
+  taskContractMapperLogicFallbackResult.audit.expectedAuditEventIds.length,
+  "task contract mapper logic smoke H expected audit summary should be deterministic",
+);
+
+assert.equal(
+  taskContractMapperLogicFallbackResult.verifier.verifierRequired,
+  true,
+  "task contract mapper logic smoke I should require verifier",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.verifier.completionGatedByVerifier,
+  true,
+  "task contract mapper logic smoke I should gate completion by verifier",
+);
+assert.equal(
+  typeof taskContractMapperLogicFallbackResult.verifier.expectedCoverageRule,
+  "string",
+  "task contract mapper logic smoke I should represent expected coverage rule",
+);
+assertTaskContractMappingNoCompletedState(
+  taskContractMapperLogicFallbackResult,
+  "task contract mapper logic smoke I",
+);
+
+const taskContractMapperLogicResumeTask =
+  createTaskContractMapperLogicSmokeTask({
+    id: "TASK-0249-RESUME",
+    resume: {
+      resumeCursorReference: {
+        id: "resume-cursor:TASK-0249-RESUME",
+        path: "TASKS/TASK-0249-RESUME.cursor.json",
+      },
+      pendingWorkItemIds: ["work-item:TASK-0249-RESUME:default"],
+      retryableWorkItemIds: ["work-item:TASK-0249-RESUME:default"],
+    },
+  });
+const taskContractMapperLogicResumeResult =
+  mapTaskContractToRunnerPlanningInput(
+    createTaskContractMapperLogicSmokeInput({
+      task: taskContractMapperLogicResumeTask,
+    }),
+  );
+
+if (taskContractMapperLogicResumeResult.resume.resumeCursorReference) {
+  assert.equal(
+    taskContractMapperLogicResumeResult.resume.resumeCursorReference.id,
+    "resume-cursor:TASK-0249-RESUME",
+    "task contract mapper logic smoke J should represent resume cursor reference when supported",
+  );
+} else {
+  assert.ok(
+    taskContractMapperLogicResumeResult.resume.issues.some(
+      (issue) => issue.code === "task_contract_resume_unsupported",
+    ),
+    "task contract mapper logic smoke J should honestly represent unsupported resume mapping",
+  );
+}
+assert.deepEqual(
+  taskContractMapperLogicResumeResult.resume.pendingWorkItemIds,
+  [...taskContractMapperLogicResumeResult.resume.pendingWorkItemIds].sort(),
+  "task contract mapper logic smoke J pending ids should be deterministic when represented",
+);
+assert.deepEqual(
+  taskContractMapperLogicResumeResult.resume.retryableWorkItemIds,
+  [...taskContractMapperLogicResumeResult.resume.retryableWorkItemIds].sort(),
+  "task contract mapper logic smoke J retryable ids should be deterministic when represented",
+);
+assert.equal(
+  taskContractMapperLogicResumeResult.planningInput.taskPersistenceWritten,
+  false,
+  "task contract mapper logic smoke J should not imply persistence",
+);
+
+assert.equal(
+  taskContractMapperLogicFallbackResult.planningInput.handoffRequested,
+  true,
+  "task contract mapper logic smoke K should request planning input handoff",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.planningInput.handoffStatus,
+  "mapped",
+  "task contract mapper logic smoke K should represent handoff status",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.planningInput.runnerPlanningInputData
+    .kind,
+  "data",
+  "task contract mapper logic smoke K planning input handoff should be data only",
+);
+assert.equal(
+  typeof taskContractMapperLogicFallbackResult.planningInput
+    .runnerPlanningInputData.reference.id,
+  "string",
+  "task contract mapper logic smoke K planning input handoff should include reference only",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.planningInput.runnerPlanningExecuted,
+  false,
+  "task contract mapper logic smoke K should not run planAgenticRunner",
+);
+assert.equal(
+  Object.hasOwn(taskContractMapperLogicFallbackResult, "runnerPlanningResult"),
+  false,
+  "task contract mapper logic smoke K should not produce runner planning result",
+);
+
+const taskContractMapperLogicDeterministicFirst =
+  mapTaskContractToRunnerPlanningInput(taskContractMapperLogicFallbackInput);
+const taskContractMapperLogicDeterministicSecond =
+  mapTaskContractToRunnerPlanningInput(taskContractMapperLogicFallbackInput);
+
+assert.deepEqual(
+  taskContractMapperLogicDeterministicSecond,
+  taskContractMapperLogicDeterministicFirst,
+  "task contract mapper logic smoke L should produce equivalent results",
+);
+assert.deepEqual(
+  taskContractMapperLogicSignature(taskContractMapperLogicDeterministicSecond),
+  taskContractMapperLogicSignature(taskContractMapperLogicDeterministicFirst),
+  "task contract mapper logic smoke L ordering and summary should remain stable",
+);
+
+for (const [message, result] of [
+  ["task contract mapper logic smoke M minimal", taskContractMapperLogicMinimalResult],
+  ["task contract mapper logic smoke M fallback", taskContractMapperLogicFallbackResult],
+  ["task contract mapper logic smoke M explicit unsupported", taskContractMapperLogicExplicitResult],
+  ["task contract mapper logic smoke M duplicate invalid", taskContractMapperLogicDuplicateResult],
+  ["task contract mapper logic smoke M unsupported", taskContractMapperLogicUnsupportedResult],
+  ["task contract mapper logic smoke M policy", taskContractMapperLogicPolicyResult],
+  ["task contract mapper logic smoke M resume", taskContractMapperLogicResumeResult],
+]) {
+  assertTaskContractMappingResultShape(result, message);
+  assertTaskContractMappingSummaryConsistent(result, message);
+  assertTaskContractMappingNoRuntimeArtifacts(result, message);
 }
 
 assert.equal(
