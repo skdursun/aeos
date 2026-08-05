@@ -71,6 +71,7 @@ condition.
 - TASK-0236: Add task plan input parser logic examples.
 - TASK-0237: Add task plan input parser logic smoke tests.
 - TASK-0238: Add task plan input parser safety review.
+- TASK-0239: Add task plan input parser documentation.
 
 ## Do Not Load By Default
 
@@ -81,7 +82,7 @@ condition.
 
 ## Next Task
 
-TASK-0239 Add task plan input parser documentation.
+TASK-0240 Add task plan input parser final safety review.
 
 ## Current Plans
 
@@ -93,3 +94,4 @@ TASK-0239 Add task plan input parser documentation.
 - docs/AGENTIC_RUNNER_EXECUTION_LIFECYCLE.md
 - docs/AGENTIC_RUNNER_DRY_RUN_EXECUTION_LOGIC.md
 - docs/TASK_PLAN_INPUT_FILE_DESIGN.md
+- docs/TASK_PLAN_INPUT_PARSER_USAGE.md

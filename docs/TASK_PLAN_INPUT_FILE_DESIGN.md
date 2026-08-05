@@ -407,6 +407,22 @@ It must not:
 Future write-enabled behavior, if any, requires a separate command, explicit
 flag, safety review, and implementation task.
 
+## Implemented MVP Notes
+The current parser implementation is a read-only local JSON parser. It accepts
+explicit `.json` files, rejects unsupported extensions, enforces a maximum file
+size before parsing, and returns deterministic issue/result fields.
+
+Safety hardening now includes:
+
+- invalid JSON returns the deterministic parser message `Invalid JSON.`;
+- parent traversal and paths outside the working directory are denied by
+  default;
+- absolute paths are denied by default unless explicitly allowed by options;
+- unsupported task-to-runner mapping is explicit;
+- `noExecution` and `noWrites` remain true in summaries;
+- `runnerPlanningExecuted` remains false;
+- the parser does not run `planAgenticRunner()`.
+
 ## MVP Scope
 MVP includes:
 
