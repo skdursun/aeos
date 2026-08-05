@@ -77,6 +77,7 @@ condition.
 - TASK-0242: Add task plan file argument JSON safety review.
 - TASK-0243: Design task contract to runner planning mapping.
 - TASK-0244: Implement task contract mapping contracts.
+- TASK-0245: Add task contract mapping contract examples.
 
 ## Do Not Load By Default
 
@@ -87,7 +88,7 @@ condition.
 
 ## Next Task
 
-TASK-0245 Add task contract mapping contract examples.
+TASK-0246 Add task contract mapping contract smoke tests.
 
 ## Current Plans
 
