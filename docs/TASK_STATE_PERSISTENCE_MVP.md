@@ -99,6 +99,38 @@ model says "all complete"
 
 This must not produce authoritative persisted completion.
 
+## TASK-0279 Safety Review
+TASK-0279 reviewed the TASK-0278 persistence boundary for path confinement,
+state-root symlink behavior, corrupt JSON, schema validation, revision
+protection, atomic-ish writes, stale updates, and forged completion claims.
+
+The review kept persisted state as the only authoritative task state. Unsupported
+terminal proof remains rejected: completed or verified lifecycle states,
+approval, execution success, completed or verified work items, completed batch
+counts, verified verifier status, and satisfied completion gates all fail closed.
+
+Pending and retryable ids now must be authoritative references to represented
+work items. Duplicate pending or retryable ids, unknown ids, pending ids that do
+not reference pending work items, retryable ids that do not reference retryable
+work items, inconsistent batch references, and non-resumable next-batch
+references are rejected.
+
+## Resume Handoff Foundation
+`createTaskResumeHandoff` derives read-only resume handoff data from a validated
+persisted task state. `loadTaskResumeHandoff` loads the persisted state and then
+derives the same handoff without saving, mutating, creating cursors, incrementing
+revision, marking attempts, or changing work/batch state.
+
+The handoff carries the task id, source persisted revision, lifecycle state,
+pending ids, retryable ids, current/next batch ids when represented, remaining
+work count, verifier requirement, verifier completion gate, resume eligibility,
+blocked issues, and explicit `noExecution: true` / `noWrites: true` flags.
+
+Resume is allowed only for validated resumable persisted states with
+authoritative pending or retryable work. Invalid state, corrupt state, forged
+completion/verification, unknown lifecycle state, inconsistent work references,
+and zero remaining work without verifiable completion proof block the handoff.
+
 ## Plan And Dry-Run
 `aeos task plan` remains read-only.
 
@@ -115,6 +147,11 @@ CLI persistence commands.
 Atomic replacement uses dependency-free local temp-file write plus rename. This
 is the safest MVP approach here, but it is not a full cross-platform transaction
 or multi-writer locking mechanism.
+
+TASK-0279 does not implement automatic resume, retry execution, task status CLI,
+resume preview CLI, real task execution, verifier execution, audit runtime, or
+cross-process locking. A later executor must compare the handoff source revision
+against the then-current persisted revision before acting.
 
 ## Later Scope
 Future work should review the persistence safety boundary, then wire explicit

@@ -60,6 +60,8 @@ condition.
 - TASK-0276: Design CLI task dry-run integration.
 - TASK-0277: CLI task dry-run targeted regression and safety review.
 - TASK-0278: Design and implement task state persistence MVP foundation.
+- TASK-0279: Task state persistence targeted safety/regression review and resume
+  handoff foundation.
 
 ## Do Not Load By Default
 
@@ -70,7 +72,7 @@ condition.
 
 ## Next Task
 
-TASK-0279 Task state persistence targeted safety/regression review and resume handoff.
+TASK-0280 Implement read-only task status and resume preview CLI.
 
 ## Current Plans
 

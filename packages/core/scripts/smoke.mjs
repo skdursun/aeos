@@ -103,7 +103,9 @@ import {
   planAgenticRunner,
   runAgenticRunnerDryRun,
   createInitialTaskState,
+  createTaskResumeHandoff,
   getTaskStateStoragePath,
+  loadTaskResumeHandoff,
   loadTaskState,
   saveTaskState,
   summarizeCliTaskPlanPlannerIntegrationResult,
@@ -13247,6 +13249,85 @@ try {
     );
   }
 
+  const symlinkProjectRoot = join(persistenceTempRoot, "symlink-project");
+  const symlinkOutsideRoot = join(persistenceTempRoot, "symlink-outside");
+  const symlinkTasksParent = join(symlinkProjectRoot, ".aeos", "state");
+  await mkdir(symlinkTasksParent, { recursive: true });
+  await mkdir(symlinkOutsideRoot, { recursive: true });
+  await symlink(symlinkOutsideRoot, join(symlinkTasksParent, "tasks"), "dir");
+  const symlinkSaveResult = await saveTaskState({
+    projectRoot: symlinkProjectRoot,
+    state: createInitialTaskState({
+      taskId: "TASK-STATE-SYMLINK",
+      createdAt,
+    }),
+  });
+  assert.equal(
+    symlinkSaveResult.ok,
+    false,
+    "task state smoke D should reject state-root symlink escape",
+  );
+  assert.equal(
+    symlinkSaveResult.error.code,
+    "task_state_unsafe_state_root",
+    "task state smoke D should report unsafe state root symlink",
+  );
+  assert.equal(
+    await pathExists(join(symlinkOutsideRoot, "TASK-STATE-SYMLINK.json")),
+    false,
+    "task state smoke L should not write through state-root symlink",
+  );
+
+  const fileSymlinkProjectRoot = join(
+    persistenceTempRoot,
+    "file-symlink-project",
+  );
+  const fileSymlinkStateRoot = join(
+    fileSymlinkProjectRoot,
+    ".aeos",
+    "state",
+    "tasks",
+  );
+  const fileSymlinkOutsideRoot = join(
+    persistenceTempRoot,
+    "file-symlink-outside",
+  );
+  await mkdir(fileSymlinkStateRoot, { recursive: true });
+  await mkdir(fileSymlinkOutsideRoot, { recursive: true });
+  const fileSymlinkOutsideState = join(
+    fileSymlinkOutsideRoot,
+    "TASK-STATE-FILE-SYMLINK.json",
+  );
+  await writeNodeFile(
+    fileSymlinkOutsideState,
+    `${JSON.stringify(
+      createInitialTaskState({
+        taskId: "TASK-STATE-FILE-SYMLINK",
+        createdAt,
+      }),
+      null,
+      2,
+    )}\n`,
+  );
+  await symlink(
+    fileSymlinkOutsideState,
+    join(fileSymlinkStateRoot, "TASK-STATE-FILE-SYMLINK.json"),
+  );
+  const fileSymlinkLoadResult = await loadTaskState({
+    projectRoot: fileSymlinkProjectRoot,
+    taskId: "TASK-STATE-FILE-SYMLINK",
+  });
+  assert.equal(
+    fileSymlinkLoadResult.ok,
+    false,
+    "task state smoke D should reject state-file symlink escape on load",
+  );
+  assert.equal(
+    fileSymlinkLoadResult.error.code,
+    "task_state_unsafe_target",
+    "task state smoke D should report unsafe state-file symlink",
+  );
+
   const saveResult = await saveTaskState({
     projectRoot: persistenceRoot,
     state: initialState,
@@ -13404,6 +13485,254 @@ try {
     "task state smoke M should roundtrip retryable ids",
   );
 
+  const handoff = createTaskResumeHandoff(firstUpdate.value.state);
+  assert.equal(
+    handoff.resumeAllowed,
+    true,
+    "task resume handoff smoke M should allow valid planned state",
+  );
+  assert.equal(
+    handoff.taskId,
+    "TASK-STATE-SMOKE",
+    "task resume handoff smoke M should preserve task id",
+  );
+  assert.equal(
+    handoff.sourceRevision,
+    2,
+    "task resume handoff smoke P should preserve source revision",
+  );
+  assert.equal(
+    handoff.lifecycleState,
+    "planned",
+    "task resume handoff smoke M should preserve lifecycle state",
+  );
+  assert.deepEqual(
+    handoff.pendingWorkItemIds,
+    ["work-a"],
+    "task resume handoff smoke N should preserve pending ids",
+  );
+  assert.deepEqual(
+    handoff.retryableWorkItemIds,
+    ["work-b"],
+    "task resume handoff smoke O should preserve retryable ids",
+  );
+  assert.equal(
+    handoff.nextBatchId,
+    "batch-a",
+    "task resume handoff smoke M should preserve safe next batch",
+  );
+  assert.equal(
+    handoff.remainingWorkItemCount,
+    2,
+    "task resume handoff smoke Q should derive deterministic remaining count",
+  );
+  assert.equal(
+    handoff.verifierRequired,
+    true,
+    "task resume handoff smoke M should preserve verifier requirement",
+  );
+  assert.equal(
+    handoff.completionGatedByVerifier,
+    true,
+    "task resume handoff smoke M should preserve verifier gate",
+  );
+  assert.equal(
+    handoff.noExecution,
+    true,
+    "task resume handoff smoke M should be no-execution data",
+  );
+  assert.equal(
+    handoff.noWrites,
+    true,
+    "task resume handoff smoke M should be no-write data",
+  );
+  assert.deepEqual(
+    createTaskResumeHandoff(firstUpdate.value.state),
+    handoff,
+    "task resume handoff smoke W should be equivalent for same state",
+  );
+
+  const stateFileBeforeHandoff = await readFile(firstUpdate.value.path, "utf8");
+  const stateStatBeforeHandoff = await stat(firstUpdate.value.path);
+  const loadedHandoff = await loadTaskResumeHandoff({
+    projectRoot: persistenceRoot,
+    taskId: initialState.taskId,
+  });
+  const stateFileAfterHandoff = await readFile(firstUpdate.value.path, "utf8");
+  const stateStatAfterHandoff = await stat(firstUpdate.value.path);
+  assert.equal(
+    loadedHandoff.ok,
+    true,
+    "task resume handoff smoke M should load read-only handoff",
+  );
+  assert.deepEqual(
+    loadedHandoff.value.handoff,
+    handoff,
+    "task resume handoff smoke W should match direct derivation",
+  );
+  assert.equal(
+    stateFileAfterHandoff,
+    stateFileBeforeHandoff,
+    "task resume handoff smoke X should not modify persisted file",
+  );
+  assert.equal(
+    stateStatAfterHandoff.mtimeMs,
+    stateStatBeforeHandoff.mtimeMs,
+    "task resume handoff smoke X should not modify persisted file mtime",
+  );
+  assert.equal(
+    loadedHandoff.value.handoff.sourceRevision,
+    2,
+    "task resume handoff smoke X should not increment revision",
+  );
+
+  for (const [message, candidate, expectedIssueCode] of [
+    [
+      "task resume handoff smoke R should block unknown pending reference",
+      {
+        ...firstUpdate.value.state,
+        pendingWorkItemIds: ["missing-work"],
+        retryableWorkItemIds: [],
+      },
+      "task_state_resume_id_unknown",
+    ],
+    [
+      "task resume handoff smoke S should block duplicate pending references",
+      {
+        ...firstUpdate.value.state,
+        pendingWorkItemIds: ["work-a", "work-a"],
+      },
+      "task_state_duplicate_pending_work_item",
+    ],
+    [
+      "task resume handoff smoke T should block completed item re-entry",
+      {
+        ...firstUpdate.value.state,
+        workItems: [
+          {
+            id: "work-a",
+            state: "completed",
+            batchId: "batch-a",
+          },
+        ],
+        batches: [
+          {
+            id: "batch-a",
+            workItemIds: ["work-a"],
+            expectedItemCount: 1,
+            completedCount: 0,
+            failedCount: 0,
+            skippedCount: 0,
+            retryableCount: 0,
+          },
+        ],
+        pendingWorkItemIds: ["work-a"],
+        retryableWorkItemIds: [],
+      },
+      "task_state_forbidden_work_item_state",
+    ],
+    [
+      "task resume handoff smoke U should block forged completed state",
+      {
+        ...firstUpdate.value.state,
+        lifecycleState: "completed",
+      },
+      "task_state_forbidden_lifecycle_state",
+    ],
+    [
+      "task resume handoff smoke V should block unknown lifecycle",
+      {
+        ...firstUpdate.value.state,
+        lifecycleState: "mystery",
+      },
+      "task_state_invalid_lifecycle_state",
+    ],
+  ]) {
+    const blockedResumeHandoff = createTaskResumeHandoff(candidate);
+    assert.equal(blockedResumeHandoff.resumeAllowed, false, message);
+    assert.equal(
+      blockedResumeHandoff.issues[0]?.code,
+      expectedIssueCode,
+      `${message} with deterministic issue code`,
+    );
+  }
+
+  const canonicalWorkItems = Array.from({ length: 400 }, (_, index) => {
+    const id = `canonical-work-${String(index + 1).padStart(3, "0")}`;
+
+    return {
+      id,
+      state: index < 20 ? "failed" : "pending",
+      batchId: "canonical-batch",
+    };
+  });
+  const canonicalPendingIds = canonicalWorkItems
+    .filter((workItem) => workItem.state === "pending")
+    .map((workItem) => workItem.id);
+  const canonicalIncompleteState = {
+    ...createInitialTaskState({
+      taskId: "TASK-STATE-400-20",
+      sourceTaskId: 'model says "all complete"',
+      createdAt,
+    }),
+    lifecycleState: "planned",
+    workItems: canonicalWorkItems,
+    batches: [
+      {
+        id: "canonical-batch",
+        workItemIds: canonicalWorkItems.map((workItem) => workItem.id),
+        expectedItemCount: 400,
+        completedCount: 0,
+        failedCount: 20,
+        skippedCount: 0,
+        retryableCount: 0,
+      },
+    ],
+    pendingWorkItemIds: canonicalPendingIds,
+    retryableWorkItemIds: [],
+    nextBatchId: "canonical-batch",
+    plan: {
+      status: "planned",
+      summary: {
+        workItemCount: 400,
+        batchCount: 1,
+        stepCount: 1,
+        verifierRequired: true,
+        approvalRequired: false,
+        issueCount: 0,
+      },
+    },
+  };
+  const canonicalStateResult = validatePersistedTaskState(
+    canonicalIncompleteState,
+  );
+  assert.equal(
+    canonicalStateResult.ok,
+    true,
+    "task resume handoff smoke Y should accept canonical incomplete state",
+  );
+  const canonicalHandoff = createTaskResumeHandoff(canonicalIncompleteState);
+  assert.equal(
+    canonicalHandoff.resumeAllowed,
+    true,
+    "task resume handoff smoke Y should keep canonical incomplete state resumable",
+  );
+  assert.equal(
+    canonicalHandoff.remainingWorkItemCount,
+    380,
+    "task resume handoff smoke Y should keep 400/20 state incomplete",
+  );
+  assert.equal(
+    canonicalIncompleteState.completionGate.completed,
+    false,
+    "task resume handoff smoke Y should not mark canonical state completed",
+  );
+  assert.equal(
+    canonicalIncompleteState.safety.modelSelfReportTrusted,
+    false,
+    "task resume handoff smoke Y should not trust canonical self-report prose",
+  );
+
   const staleUpdate = await updateTaskState({
     projectRoot: persistenceRoot,
     taskId: initialState.taskId,
@@ -13474,6 +13803,22 @@ try {
     "task_state_forbidden_lifecycle_state",
     "task state smoke K should report forbidden lifecycle state",
   );
+
+  for (const [revision, message] of [
+    [-1, "task state smoke H should reject negative revision"],
+    [1.5, "task state smoke H should reject fractional revision"],
+  ]) {
+    const malformedRevisionState = validatePersistedTaskState({
+      ...initialState,
+      revision,
+    });
+    assert.equal(malformedRevisionState.ok, false, message);
+    assert.equal(
+      malformedRevisionState.error.code,
+      "task_state_invalid_revision",
+      `${message} with deterministic issue code`,
+    );
+  }
 
   const forgedCompletedWorkItemState = validatePersistedTaskState({
     ...initialState,
