@@ -56,6 +56,7 @@ condition.
 - TASK-0272: Add CLI task plan planner integration final safety review.
 - TASK-0273: Implement CLI task plan command planner integration.
 - TASK-0274: Fix AEOS global audit integration findings for task plan.
+- TASK-0275: Post-audit task plan regression review.
 
 ## Do Not Load By Default
 
@@ -66,7 +67,7 @@ condition.
 
 ## Next Task
 
-TASK-0275 Post-audit regression review.
+TASK-0276 Design CLI task dry-run integration.
 
 ## Current Plans
 
