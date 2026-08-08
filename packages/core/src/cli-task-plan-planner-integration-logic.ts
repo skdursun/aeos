@@ -662,12 +662,12 @@ function createMappingStage(
   const noExecution = mappingResultNoExecution(input) && unsafeIssues.length === 0;
   const noWrites = mappingResultNoWrites(input) && unsafeIssues.length === 0;
   const verifierRequired =
-    mappingResult?.verifier?.verifierRequired === true ||
-    mappingResult?.summary.verifierRequired === true ||
+    mappingResult?.verifier?.verifierRequired === true &&
+    mappingResult?.summary.verifierRequired === true &&
     rawRunnerPlanningInput?.verifierRequirements?.verifierRequired === true;
   const completionGatedByVerifier =
-    mappingResult?.verifier?.completionGatedByVerifier === true ||
-    mappingResult?.summary.completionGatedByVerifier === true ||
+    mappingResult?.verifier?.completionGatedByVerifier === true &&
+    mappingResult?.summary.completionGatedByVerifier === true &&
     rawRunnerPlanningInput?.verifierRequirements?.completionGatedByVerifier ===
       true;
   const sourceIssues =

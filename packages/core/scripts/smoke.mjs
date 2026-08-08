@@ -5728,6 +5728,110 @@ assert.equal(
   "CLI task plan integration logic smoke H strict proof case completed state should not be created",
 );
 
+const cliLogicStrictRunnerVerifierPlanner = createCliLogicCountingPlanner(
+  cliLogicScenarioA.planner.planningResult,
+);
+const cliLogicStrictRunnerVerifierMappingResult = {
+  ...cliLogicScenarioA.mapping.mappingResult,
+  verifier: {
+    ...cliLogicScenarioA.mapping.mappingResult.verifier,
+    verifierRequired: true,
+    completionGatedByVerifier: true,
+  },
+  planningInput: {
+    ...cliLogicScenarioA.mapping.mappingResult.planningInput,
+    runnerPlanningInput: {
+      ...cliLogicScenarioA.mapping.mappingResult.planningInput.runnerPlanningInput,
+      verifierRequirements: {
+        ...cliLogicScenarioA.mapping.mappingResult.planningInput
+          .runnerPlanningInput.verifierRequirements,
+        verifierRequired: false,
+        completionGatedByVerifier: false,
+      },
+    },
+    runnerPlanningInputData: undefined,
+  },
+  summary: {
+    ...cliLogicScenarioA.mapping.mappingResult.summary,
+    verifierRequired: true,
+    completionGatedByVerifier: true,
+  },
+};
+const cliLogicStrictRunnerVerifierResult =
+  createCliTaskPlanPlannerIntegrationResult(
+    createCliLogicInputFromResult(cliLogicScenarioA, {
+      mappingResult: cliLogicStrictRunnerVerifierMappingResult,
+    }),
+    {
+      planner: cliLogicStrictRunnerVerifierPlanner.planner,
+      planningResultReference: cliLogicScenarioA.planner.planningResultReference,
+    },
+  );
+assert.equal(
+  cliLogicStrictRunnerVerifierResult.mapping.runnerPlanningInputAvailable,
+  true,
+  "CLI task plan integration logic smoke H strict verifier case should represent runnerPlanningInput availability",
+);
+assert.equal(
+  cliLogicStrictRunnerVerifierResult.mapping.verifierRequired,
+  false,
+  "CLI task plan integration logic smoke H strict verifier case should reject contradictory runner verifierRequired proof",
+);
+assert.equal(
+  cliLogicStrictRunnerVerifierResult.mapping.completionGatedByVerifier,
+  false,
+  "CLI task plan integration logic smoke H strict verifier case should reject contradictory runner completion gate proof",
+);
+assert.equal(
+  cliLogicStrictRunnerVerifierResult.wiring.plannerInvocationAllowed,
+  false,
+  "CLI task plan integration logic smoke H strict verifier case planner invocation should be blocked",
+);
+assert.equal(
+  cliLogicStrictRunnerVerifierPlanner.calls(),
+  0,
+  "CLI task plan integration logic smoke H strict verifier case fake planner should not be invoked",
+);
+assertCliPlannerNotAttempted(
+  cliLogicStrictRunnerVerifierResult,
+  "CLI task plan integration logic smoke H strict verifier case",
+);
+assert.equal(
+  cliLogicStrictRunnerVerifierResult.ok,
+  false,
+  "CLI task plan integration logic smoke H strict verifier case should fail closed",
+);
+assert.equal(
+  cliLogicStrictRunnerVerifierResult.status,
+  "blocked",
+  "CLI task plan integration logic smoke H strict verifier case should report blocked",
+);
+assert.equal(
+  cliLogicStrictRunnerVerifierResult.issues.some((issue) =>
+    [
+      "mapping.verifierRequired",
+      "mapping.completionGatedByVerifier",
+    ].includes(issue.field),
+  ),
+  true,
+  "CLI task plan integration logic smoke H strict verifier case should represent deterministic verifier issue",
+);
+assert.equal(
+  cliLogicStrictRunnerVerifierResult.safety.executionEnabled,
+  false,
+  "CLI task plan integration logic smoke H strict verifier case execution should remain disabled",
+);
+assert.equal(
+  cliLogicStrictRunnerVerifierResult.safety.filesystemMutation,
+  false,
+  "CLI task plan integration logic smoke H strict verifier case filesystem mutation should remain false",
+);
+assert.equal(
+  cliLogicStrictRunnerVerifierResult.safety.completedStateCreated,
+  false,
+  "CLI task plan integration logic smoke H strict verifier case completed state should not be created",
+);
+
 for (const [check, passed] of Object.entries(cliLogicScenarioIChecks)) {
   assert.equal(
     passed,
@@ -5889,6 +5993,10 @@ for (const [message, result] of [
     "CLI task plan integration logic smoke N missing noExecution/noWrites",
     cliLogicScenarioH,
   ],
+  [
+    "CLI task plan integration logic smoke N contradictory runner verifier gate",
+    cliLogicStrictRunnerVerifierResult,
+  ],
   ["CLI task plan integration logic smoke N unsafe metadata", cliLogicScenarioI],
   ["CLI task plan integration logic smoke N planner failure", cliLogicScenarioJ],
 ]) {
@@ -6047,6 +6155,12 @@ const plannerGatedScenarios = [
     }),
   ],
   [
+    "contradictory runner verifier gate",
+    createCliLogicInputFromResult(cliLogicScenarioA, {
+      mappingResult: cliLogicStrictRunnerVerifierMappingResult,
+    }),
+  ],
+  [
     "unsafe represented metadata",
     createCliLogicInputFromResult(cliLogicScenarioA, {
       parserResult: {
@@ -6198,6 +6312,10 @@ for (const [message, result] of [
   [
     "CLI task plan integration logic smoke S missing strict noExecution/noWrites proof",
     cliLogicStrictNoExecutionNoWritesResult,
+  ],
+  [
+    "CLI task plan integration logic smoke S contradictory runner verifier gate",
+    cliLogicStrictRunnerVerifierResult,
   ],
   ["CLI task plan integration logic smoke S unsafe metadata", cliLogicScenarioI],
   ["CLI task plan integration logic smoke S planner failure", cliLogicScenarioJ],
