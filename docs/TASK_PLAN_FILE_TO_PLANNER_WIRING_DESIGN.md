@@ -387,6 +387,16 @@ contracts only when this is documented and smoke-tested. It must not pretend
 explicit `workItems` or `batches` are supported, and it must return
 `unsupported_mapping` for contracts that rely on those fields.
 
+## Implemented MVP Notes
+- Wiring logic is implemented as pure deterministic in-memory logic.
+- Direct `planAgenticRunner()` import/call is not used by the wiring logic.
+- Planner dependency injection is gate-protected and optional.
+- Fail-closed gates now block unsafe represented metadata.
+- Hostile side-effect or completed-state claims are deterministic blockers.
+- No CLI integration exists yet.
+- No filesystem IO is performed by the wiring logic.
+- No runner execution is performed.
+
 ## Smoke Test Requirements
 A. A valid minimal task file plans successfully if the single-work-item fallback
 mapping is supported.
