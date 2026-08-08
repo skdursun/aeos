@@ -54,6 +54,7 @@ condition.
 - TASK-0270: Add CLI task plan planner integration safety review.
 - TASK-0271: Add CLI task plan planner integration documentation.
 - TASK-0272: Add CLI task plan planner integration final safety review.
+- TASK-0273: Implement CLI task plan command planner integration.
 
 ## Do Not Load By Default
 
@@ -64,7 +65,7 @@ condition.
 
 ## Next Task
 
-TASK-0273 Implement CLI task plan command planner integration.
+TASK-0274 Add CLI task plan command planner integration safety review.
 
 ## Current Plans
 

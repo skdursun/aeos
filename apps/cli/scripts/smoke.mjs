@@ -575,81 +575,18 @@ function expectTaskPlanErrorJsonShape(message, value, result) {
 }
 
 function expectTaskPlanParsedJsonShape(message, value, result) {
-  const expectedKeys = [
-    "adapterCalls",
-    "auditWrites",
-    "executionEnabled",
-    "issues",
-    "mapping",
-    "mode",
-    "ok",
-    "parse",
-    "persistence",
-    "planningEnabled",
-    "sourceFile",
-    "status",
-    "summary",
-    "validation",
-    "verifierRun",
-  ];
+  expectTaskPlanInputErrorJsonShape(message, value, result);
 
   if (
-    typeof value !== "object" ||
-    value === null
-  ) {
-    fail(message, result);
-  }
-
-  const keys = Object.keys(value).sort();
-
-  if (
-    keys.length !== expectedKeys.length ||
-    keys.some((key, index) => key !== expectedKeys[index]) ||
-    value.ok !== false ||
-    value.status !== "parsed" ||
-    value.mode !== "plan" ||
-    typeof value.sourceFile !== "string" ||
-    typeof value.parse !== "object" ||
-    value.parse === null ||
     value.parse.ok !== true ||
-    typeof value.validation !== "object" ||
-    value.validation === null ||
-    value.validation.status !== "pass" ||
-    typeof value.mapping !== "object" ||
-    value.mapping === null ||
-    value.mapping.status !== "unsupported" ||
-    value.mapping.runnerPlanningExecuted !== false ||
-    value.planningEnabled !== false ||
-    value.executionEnabled !== false ||
-    value.adapterCalls !== false ||
-    value.auditWrites !== false ||
-    value.verifierRun !== false ||
-    value.persistence !== false ||
-    !Array.isArray(value.issues) ||
-    typeof value.summary !== "object" ||
-    value.summary === null ||
-    value.summary.noExecution !== true ||
-    value.summary.noWrites !== true ||
-    value.summary.runnerPlanningExecuted !== false ||
-    value.summary.taskPersistenceWritten !== false
+    value.parse.validationStatus !== "pass" ||
+    value.mapping.attempted !== true
   ) {
     fail(message, result);
   }
 }
 
 function expectTaskPlanInputErrorJsonShape(message, value, result) {
-  const expectedKeys = [
-    "error",
-    "issues",
-    "mapping",
-    "ok",
-    "parse",
-    "pathCheck",
-    "sourceFile",
-    "summary",
-    "validation",
-  ];
-
   if (
     typeof value !== "object" ||
     value === null
@@ -657,34 +594,42 @@ function expectTaskPlanInputErrorJsonShape(message, value, result) {
     fail(message, result);
   }
 
-  const keys = Object.keys(value).sort();
-
   if (
-    keys.length !== expectedKeys.length ||
-    keys.some((key, index) => key !== expectedKeys[index]) ||
-    value.ok !== false ||
-    typeof value.error !== "object" ||
-    value.error === null ||
-    typeof value.error.code !== "string" ||
-    value.error.code.length === 0 ||
-    typeof value.error.message !== "string" ||
-    value.error.message.length === 0 ||
-    typeof value.sourceFile !== "string" ||
-    typeof value.pathCheck !== "object" ||
-    value.pathCheck === null ||
+    typeof value.ok !== "boolean" ||
+    typeof value.status !== "string" ||
+    typeof value.exitCode !== "string" ||
+    value.mode !== "plan" ||
     typeof value.parse !== "object" ||
     value.parse === null ||
-    typeof value.validation !== "object" ||
-    value.validation === null ||
     typeof value.mapping !== "object" ||
     value.mapping === null ||
+    typeof value.wiring !== "object" ||
+    value.wiring === null ||
+    typeof value.plan !== "object" ||
+    value.plan === null ||
+    typeof value.safety !== "object" ||
+    value.safety === null ||
     !Array.isArray(value.issues) ||
     typeof value.summary !== "object" ||
     value.summary === null ||
+    value.safety.executionEnabled !== false ||
+    value.safety.adapterCalls !== false ||
+    value.safety.auditWrites !== false ||
+    value.safety.verifierRun !== false ||
+    value.safety.persistence !== false ||
+    value.safety.filesystemMutation !== false ||
+    value.safety.completedStateCreated !== false ||
+    value.safety.dependencyInjectedPlannerOnly !== true ||
+    value.safety.topLevelPlannerInputBypassAllowed !== false ||
     value.summary.noExecution !== true ||
     value.summary.noWrites !== true ||
-    value.summary.runnerPlanningExecuted !== false ||
-    value.summary.taskPersistenceWritten !== false
+    value.summary.executionEnabled !== false ||
+    value.summary.adapterCalls !== false ||
+    value.summary.auditWrites !== false ||
+    value.summary.verifierRun !== false ||
+    value.summary.persistence !== false ||
+    value.summary.filesystemMutation !== false ||
+    value.summary.completedStateCreated !== false
   ) {
     fail(message, result);
   }
@@ -735,22 +680,22 @@ function expectTaskPlanNoWrites(message, rootPath, before, result) {
 
 function expectTaskPlanParserOnlySafety(message, outputText, result) {
   for (const expectedText of [
-    "planningEnabled\":false",
     "executionEnabled\":false",
     "adapterCalls\":false",
     "auditWrites\":false",
     "verifierRun\":false",
     "persistence\":false",
-    "runnerPlanningExecuted\":false",
-    "taskPersistenceWritten\":false",
+    "filesystemMutation\":false",
+    "completedStateCreated\":false",
+    "dependencyInjectedPlannerOnly\":true",
+    "topLevelPlannerInputBypassAllowed\":false",
   ]) {
     if (!outputText.includes(expectedText)) {
-      fail(`${message}: missing parser-only safety marker ${expectedText}`, result);
+      fail(`${message}: missing task-plan safety marker ${expectedText}`, result);
     }
   }
 
   for (const unexpectedText of [
-    "planAgenticRunner",
     "runAgenticRunner",
     "runner execution invoked",
     "adapter call executed",
@@ -768,16 +713,21 @@ function expectTaskPlanSourceSafety() {
   const commandsSource = readFileSync(commandsSourcePath, "utf8");
 
   for (const forbiddenText of [
-    "planAgenticRunner",
     "runAgenticRunner",
-    "AgenticRunnerPlanning",
     "AgenticRunnerDryRun",
-    "agentic-runner-planning",
     "agentic-runner-dry-run",
   ]) {
     if (commandsSource.includes(forbiddenText)) {
-      fail(`task plan skeleton source referenced runner logic: ${forbiddenText}`);
+      fail(`task plan source referenced unsupported runner logic: ${forbiddenText}`);
     }
+  }
+
+  if (/planAgenticRunner\s*\(/.test(commandsSource)) {
+    fail("task plan source called planAgenticRunner directly");
+  }
+
+  if (!commandsSource.includes("planner: planAgenticRunner")) {
+    fail("task plan source did not inject planAgenticRunner as a planner dependency");
   }
 }
 
@@ -880,11 +830,17 @@ function createValidTaskPlanContract(id) {
   return {
     id,
     title: "Smoke valid task plan input",
-    purpose: "Verify parser-only task plan CLI integration.",
+    purpose: "Verify task plan CLI integration.",
     status: "draft",
-    executionMode: "manual",
+    executionMode: "planning",
     context: {
-      load: ["PROJECT_CONTEXT.md"],
+      load: [
+        {
+          path: "PROJECT_CONTEXT.md",
+          required: true,
+          reason: "Smoke task context.",
+        },
+      ],
       doNotLoad: [],
     },
     fileBoundary: {
@@ -895,10 +851,25 @@ function createValidTaskPlanContract(id) {
     },
     allowedOperations: [],
     forbiddenOperations: [],
-    steps: [],
-    verification: [],
+    steps: [
+      {
+        order: 1,
+        instruction: "Plan only.",
+        required: true,
+        expectedOutcome: "A deterministic plan result or fail-closed output.",
+      },
+    ],
+    verification: [
+      {
+        command: "pnpm --filter @aeos/cli smoke",
+        level: "smoke_test",
+        required: true,
+        scope: ["apps/cli"],
+        expectedEvidence: ["smoke passes"],
+      },
+    ],
     stopCondition: {
-      description: "Stop after parser-only task plan smoke validation.",
+      description: "Stop after task plan smoke validation.",
       stopAfterCompletion: true,
     },
   };
@@ -2979,6 +2950,7 @@ try {
   const invalidJsonPath = join(taskPlanNoWriteRoot, "invalid-task.json");
   const markdownTaskPath = join(taskPlanNoWriteRoot, "task.md");
   const directoryTaskPath = join(taskPlanNoWriteRoot, "task-directory");
+  const explicitWorkItemsPath = join(taskPlanNoWriteRoot, "explicit-work-items.json");
   const traversalChildRoot = join(taskPlanTraversalParentRoot, "cwd");
   const traversalTaskPath = join(taskPlanTraversalParentRoot, "outside.json");
 
@@ -2990,6 +2962,29 @@ try {
   );
   writeFileSync(invalidJsonPath, "{ invalid json");
   writeFileSync(markdownTaskPath, "# unsupported\n");
+  writeFileSync(
+    explicitWorkItemsPath,
+    `${JSON.stringify(
+      {
+        ...createValidTaskPlanContract("smoke-task-plan-explicit-work-items"),
+        workItems: [
+          {
+            id: "explicit-work-item",
+            state: "pending",
+          },
+        ],
+        batches: [
+          {
+            id: "explicit-batch",
+            workItemIds: ["explicit-work-item"],
+            expectedItemCount: 1,
+          },
+        ],
+      },
+      null,
+      2,
+    )}\n`,
+  );
   writeFileSync(
     traversalTaskPath,
     `${JSON.stringify(createValidTaskPlanContract("smoke-task-plan-traversal"), null, 2)}\n`,
@@ -3015,7 +3010,7 @@ try {
   expectOutputIncludes(
     "task plan missing file did not report missing file",
     taskPlanMissing,
-    "Task plan input file does not exist.",
+    "Task plan input file was not found.",
   );
   expectTaskPlanNoWrites(
     "task plan missing file created files in no-write fixture",
@@ -3055,7 +3050,7 @@ try {
   expectOutputIncludes(
     "task plan invalid JSON did not report invalid JSON",
     taskPlanInvalidJson,
-    "Task plan input file contains invalid JSON.",
+    "Task plan input file is not valid JSON.",
   );
   expectOutputExcludes(
     "task plan invalid JSON leaked raw JSON parser message",
@@ -3091,11 +3086,16 @@ try {
     parsedTaskPlanJsonInvalid,
     taskPlanJsonInvalid,
   );
-  if (parsedTaskPlanJsonInvalid.error.code !== "task_plan_invalid_json") {
-    fail("task plan invalid JSON --json did not use stable error code", taskPlanJsonInvalid);
+  if (
+    parsedTaskPlanJsonInvalid.status !== "parser_failed" ||
+    !parsedTaskPlanJsonInvalid.issues.some(
+      (issue) => issue.code === "task_plan_input_invalid_json",
+    )
+  ) {
+    fail("task plan invalid JSON --json did not use stable parser issue", taskPlanJsonInvalid);
   }
-  if (parsedTaskPlanJsonInvalid.parse.parseErrorMessage !== "Invalid JSON.") {
-    fail("task plan invalid JSON --json did not use normalized parse message", taskPlanJsonInvalid);
+  if (taskPlanJsonInvalid.stdout.includes("parseErrorMessage")) {
+    fail("task plan invalid JSON --json leaked parse internals", taskPlanJsonInvalid);
   }
   expectOutputExcludes(
     "task plan invalid JSON --json leaked raw JSON parser message",
@@ -3150,9 +3150,14 @@ try {
     parsedTaskPlanUnsupportedJson,
     taskPlanUnsupportedJson,
   );
-  if (parsedTaskPlanUnsupportedJson.error.code !== "task_plan_unsupported_extension") {
+  if (
+    parsedTaskPlanUnsupportedJson.status !== "parser_failed" ||
+    !parsedTaskPlanUnsupportedJson.issues.some(
+      (issue) => issue.code === "task_plan_input_unsupported_format",
+    )
+  ) {
     fail(
-      "task plan unsupported extension --json did not use stable error code",
+      "task plan unsupported extension --json did not use stable parser issue",
       taskPlanUnsupportedJson,
     );
   }
@@ -3161,6 +3166,49 @@ try {
     taskPlanNoWriteRoot,
     taskPlanUnsupportedJsonFilesBefore,
     taskPlanUnsupportedJson,
+  );
+
+  const explicitWorkItemsFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
+  const taskPlanExplicitWorkItemsJson = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "plan",
+    "explicit-work-items.json",
+    "--json",
+  ]);
+  expectNonzero(
+    "task plan explicit workItems/batches --json exited zero",
+    taskPlanExplicitWorkItemsJson,
+  );
+  const parsedTaskPlanExplicitWorkItemsJson = parseJsonOnlyStdout(
+    "task plan explicit workItems/batches --json output was not valid JSON only",
+    taskPlanExplicitWorkItemsJson,
+  );
+  expectTaskPlanInputErrorJsonShape(
+    "task plan explicit workItems/batches --json shape was invalid",
+    parsedTaskPlanExplicitWorkItemsJson,
+    taskPlanExplicitWorkItemsJson,
+  );
+  if (
+    parsedTaskPlanExplicitWorkItemsJson.status !== "unsupported_mapping" ||
+    parsedTaskPlanExplicitWorkItemsJson.mapping.status !== "unsupported" ||
+    !parsedTaskPlanExplicitWorkItemsJson.issues.some(
+      (issue) => issue.code === "task_contract_explicit_work_items_unsupported",
+    ) ||
+    !parsedTaskPlanExplicitWorkItemsJson.issues.some(
+      (issue) => issue.code === "task_contract_explicit_batches_unsupported",
+    ) ||
+    parsedTaskPlanExplicitWorkItemsJson.summary.plannerInvocationAllowed !== false
+  ) {
+    fail(
+      "task plan explicit workItems/batches --json did not fail closed as unsupported mapping",
+      taskPlanExplicitWorkItemsJson,
+    );
+  }
+  expectTaskPlanNoWrites(
+    "task plan explicit workItems/batches --json created files in no-write fixture",
+    taskPlanNoWriteRoot,
+    explicitWorkItemsFilesBefore,
+    taskPlanExplicitWorkItemsJson,
   );
 
   const taskPlanDirectoryJsonFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
@@ -3180,9 +3228,14 @@ try {
     parsedTaskPlanDirectoryJson,
     taskPlanDirectoryJson,
   );
-  if (parsedTaskPlanDirectoryJson.error.code !== "task_plan_directory_input") {
+  if (
+    parsedTaskPlanDirectoryJson.status !== "parser_failed" ||
+    !parsedTaskPlanDirectoryJson.issues.some(
+      (issue) => issue.code === "task_plan_input_path_is_directory",
+    )
+  ) {
     fail(
-      "task plan directory input --json did not use stable error code",
+      "task plan directory input --json did not use stable parser issue",
       taskPlanDirectoryJson,
     );
   }
@@ -3211,8 +3264,10 @@ try {
     taskPlanAbsoluteJson,
   );
   if (
-    parsedTaskPlanAbsoluteJson.error.code !==
-    "task_plan_input_absolute_path_disallowed"
+    parsedTaskPlanAbsoluteJson.status !== "parser_failed" ||
+    !parsedTaskPlanAbsoluteJson.issues.some(
+      (issue) => issue.code === "task_plan_input_absolute_path_disallowed",
+    )
   ) {
     fail("task plan absolute path --json was not denied by default", taskPlanAbsoluteJson);
   }
@@ -3241,8 +3296,10 @@ try {
     taskPlanTraversalJson,
   );
   if (
-    parsedTaskPlanTraversalJson.error.code !==
-    "task_plan_input_parent_traversal_disallowed"
+    parsedTaskPlanTraversalJson.status !== "parser_failed" ||
+    !parsedTaskPlanTraversalJson.issues.some(
+      (issue) => issue.code === "task_plan_input_parent_traversal_disallowed",
+    )
   ) {
     fail("task plan parent traversal --json was not denied", taskPlanTraversalJson);
   }
@@ -3261,23 +3318,30 @@ try {
     "plan",
     "valid-task.json",
   ]);
-  expectNonzero("task plan valid parse exited zero despite disabled planning", taskPlanValid);
+  expectNonzero("task plan valid fail-closed integration exited zero", taskPlanValid);
   for (const expectedText of [
     "Task Plan",
-    "Status: parsed",
+    "Task id: smoke-task-plan-valid",
     "Mode: plan",
+    "Parsed: true",
     "Source file: valid-task.json",
-    "Parse: ok",
-    "Validation: pass",
-    "Mapping: unsupported",
-    "Real planning: false",
+    "Mapping: mapped",
+    "Planning: not_attempted",
+    "Work items: 1",
+    "Batches: 1",
+    "Policy required: true",
+    "Verifier required: true",
+    "Completion gated by verifier: true",
     "Real execution: false",
     "Adapter calls: false",
     "Audit writes: false",
     "Verifier run: false",
     "Persistence: false",
-    "Issues",
-    "task file parsing is available; runner planning handoff is not implemented yet",
+    "Filesystem mutation: false",
+    "Completed state created: false",
+    "Issues:",
+    "cli_task_plan_no_execution_not_proven",
+    "cli_task_plan_no_writes_not_proven",
   ]) {
     expectOutputIncludes(
       `task plan valid parse output did not include ${expectedText}`,
@@ -3292,8 +3356,8 @@ try {
   );
   for (const unexpectedText of [
     "Smoke valid task plan input",
-    "Verify parser-only task plan CLI integration.",
-    "Stop after parser-only task plan smoke validation.",
+    "Verify task plan CLI integration.",
+    "Stop after task plan smoke validation.",
     "filesToModify",
     "filesNotToTouch",
   ]) {
@@ -3318,37 +3382,49 @@ try {
     "--json",
   ]);
   expectNonzero(
-    "task plan valid parse --json exited zero despite disabled planning",
+    "task plan valid fail-closed --json exited zero",
     taskPlanValidJson,
   );
   const parsedTaskPlanValidJson = parseJsonOnlyStdout(
-    "task plan valid parse --json output was not valid JSON only",
+    "task plan valid fail-closed --json output was not valid JSON only",
     taskPlanValidJson,
   );
   expectTaskPlanParsedJsonShape(
-    "task plan valid parse --json shape was invalid",
+    "task plan valid fail-closed --json shape was invalid",
     parsedTaskPlanValidJson,
     taskPlanValidJson,
   );
   if (
     parsedTaskPlanValidJson.sourceFile !== "valid-task.json" ||
+    parsedTaskPlanValidJson.ok !== false ||
+    parsedTaskPlanValidJson.status !== "blocked" ||
+    parsedTaskPlanValidJson.mapping.status !== "mapped" ||
+    parsedTaskPlanValidJson.mapping.runnerPlanningInputAvailable !== true ||
+    parsedTaskPlanValidJson.summary.verifierRequired !== true ||
+    parsedTaskPlanValidJson.summary.completionGatedByVerifier !== true ||
+    parsedTaskPlanValidJson.summary.plannerInvocationAllowed !== false ||
     !parsedTaskPlanValidJson.issues.some(
-      (issue) => issue.code === "task_plan_input_mapping_unsupported",
+      (issue) => issue.code === "cli_task_plan_no_execution_not_proven",
+    ) ||
+    !parsedTaskPlanValidJson.issues.some(
+      (issue) => issue.code === "cli_task_plan_no_writes_not_proven",
     )
   ) {
-    fail("task plan valid parse --json did not report unsupported mapping", taskPlanValidJson);
+    fail("task plan valid --json did not report fail-closed safety gates", taskPlanValidJson);
   }
   expectTaskPlanParserOnlySafety(
-    "task plan valid parse --json",
+    "task plan valid fail-closed --json",
     taskPlanValidJson.stdout,
     taskPlanValidJson,
   );
   for (const unexpectedText of [
     "Smoke valid task plan input",
-    "Verify parser-only task plan CLI integration.",
-    "Stop after parser-only task plan smoke validation.",
+    "Verify task plan CLI integration.",
+    "Stop after task plan smoke validation.",
     "filesToModify",
     "filesNotToTouch",
+    "taskSteps",
+    "verificationCommands",
   ]) {
     expectOutputExcludes(
       `task plan valid parse --json dumped parsed task content: ${unexpectedText}`,
@@ -3379,8 +3455,13 @@ try {
     parsedTaskPlanMissingJson,
     taskPlanMissingJson,
   );
-  if (parsedTaskPlanMissingJson.error.code !== "task_plan_file_missing") {
-    fail("task plan missing file --json did not use stable error code", taskPlanMissingJson);
+  if (
+    parsedTaskPlanMissingJson.status !== "parser_failed" ||
+    !parsedTaskPlanMissingJson.issues.some(
+      (issue) => issue.code === "task_plan_input_file_missing",
+    )
+  ) {
+    fail("task plan missing file --json did not use stable parser issue", taskPlanMissingJson);
   }
 
   const taskPlanUnknownWithJson = runCliFrom(taskPlanNoWriteRoot, [

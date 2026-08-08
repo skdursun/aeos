@@ -1,11 +1,19 @@
 import {
+  createCliTaskPlanPlannerIntegrationResult,
   createFilesystemGenerationAdapter,
+  mapTaskContractToRunnerPlanningInput,
   parseTaskPlanInputFile,
+  planAgenticRunner,
   runInitPipeline,
   validateAeosTask,
 } from "@aeos/core";
 import type {
   AeosTask,
+  CliTaskPlanHumanRenderModel,
+  CliTaskPlanJsonRenderModel,
+  CliTaskPlanPlannerIntegrationIssue,
+  CliTaskPlanPlannerIntegrationResult,
+  CliTaskPlanPlannerIntegrationStatus,
   InitIssue,
   InitResult,
   InitStage,
@@ -13,7 +21,8 @@ import type {
   MemorySearchResult,
   MemoryType,
   MemoryValidationIssue,
-  TaskPlanInputIssue,
+  TaskContractMappingOptions,
+  TaskContractMappingResult,
   TaskPlanInputResult,
   TaskValidationIssue,
 } from "@aeos/core";
@@ -135,43 +144,10 @@ type TaskPlanSkeletonJsonOutput = {
 type TaskPlanJsonErrorOutput = {
   readonly ok: false;
   readonly error: {
-    readonly code: "task_plan_unknown_option";
-    readonly message: string;
-  };
-  readonly issues: readonly [];
-};
-
-type TaskPlanParsedJsonOutput = {
-  readonly ok: false;
-  readonly status: "parsed";
-  readonly mode: "plan";
-  readonly sourceFile: string;
-  readonly parse: ReturnType<typeof createTaskPlanParseJsonField>;
-  readonly validation: ReturnType<typeof createTaskPlanValidationJsonField>;
-  readonly mapping: ReturnType<typeof createTaskPlanMappingJsonField>;
-  readonly planningEnabled: false;
-  readonly executionEnabled: false;
-  readonly adapterCalls: false;
-  readonly auditWrites: false;
-  readonly verifierRun: false;
-  readonly persistence: false;
-  readonly issues: readonly TaskPlanInputIssue[];
-  readonly summary: TaskPlanInputResult["summary"];
-};
-
-type TaskPlanFileJsonErrorOutput = {
-  readonly ok: false;
-  readonly error: {
     readonly code: string;
     readonly message: string;
   };
-  readonly sourceFile?: string;
-  readonly pathCheck?: TaskPlanInputResult["pathCheck"];
-  readonly parse?: ReturnType<typeof createTaskPlanParseJsonField>;
-  readonly validation?: ReturnType<typeof createTaskPlanValidationJsonField>;
-  readonly mapping?: ReturnType<typeof createTaskPlanMappingJsonField>;
-  readonly issues: readonly TaskPlanInputIssue[];
-  readonly summary?: TaskPlanInputResult["summary"];
+  readonly issues: readonly [];
 };
 
 type RememberJsonFailureReason =
@@ -723,8 +699,7 @@ function writeTaskPlanSkeletonJson(
   value:
     | TaskPlanSkeletonJsonOutput
     | TaskPlanJsonErrorOutput
-    | TaskPlanParsedJsonOutput
-    | TaskPlanFileJsonErrorOutput,
+    | ReturnType<typeof createSafeCliTaskPlanJsonOutput>,
 ): void {
   writeJsonLine(value);
 }
@@ -939,7 +914,7 @@ function createTaskPlanInputRequest(inputPath: string): Parameters<
       allowParentTraversal: false,
       requireJsonObject: true,
       validateContract: true,
-      createPlanningHandoff: true,
+      createPlanningHandoff: false,
       noExecution: true,
       noWrites: true,
       trustModelSelfReporting: false,
@@ -949,174 +924,215 @@ function createTaskPlanInputRequest(inputPath: string): Parameters<
   };
 }
 
-function createTaskPlanParseJsonField(result: TaskPlanInputResult) {
+function createTaskPlanMappingOptions(): Required<TaskContractMappingOptions> {
   return {
-    ok: result.parse.ok,
-    format: result.parse.format,
-    valueReference: result.parse.valueReference,
-    rawSizeBytes: result.parse.rawSizeBytes,
-    parseErrorMessage: result.parse.parseErrorMessage,
-    issues: result.parse.issues,
+    allowSingleWorkItemFallback: true,
+    requireExplicitWorkItems: false,
+    requireVerifier: true,
+    createDefaultBatch: true,
+    createAuditExpectations: true,
+    createPolicyBoundary: true,
+    createAdapterBoundary: true,
   };
 }
 
-function createTaskPlanValidationJsonField(result: TaskPlanInputResult) {
-  return {
-    requested: result.validation.requested,
-    status: result.validation.status,
-    taskId: result.validation.taskId,
-    issues: result.validation.issues,
-  };
-}
+function createTaskPlanMappingResult(
+  parserResult: TaskPlanInputResult,
+  mappingOptions: TaskContractMappingOptions,
+): TaskContractMappingResult | undefined {
+  if (
+    parserResult.summary.pathOk !== true ||
+    parserResult.summary.parseOk !== true ||
+    parserResult.validation.status !== "pass" ||
+    parserResult.validation.result?.valid !== true ||
+    parserResult.validation.task === undefined
+  ) {
+    return undefined;
+  }
 
-function createTaskPlanMappingJsonField(result: TaskPlanInputResult) {
-  return {
-    requested: result.mapping.requested,
-    status: result.mapping.status,
-    runnerPlanningExecuted: result.mapping.runnerPlanningExecuted,
-    unsupportedReason: result.mapping.unsupportedReason,
-    issues: result.mapping.issues,
-  };
-}
-
-function createTaskPlanParsedJsonOutput(
-  result: TaskPlanInputResult,
-): TaskPlanParsedJsonOutput {
-  return {
-    ok: false,
-    status: "parsed",
+  return mapTaskContractToRunnerPlanningInput({
+    task: parserResult.validation.task,
+    taskId: parserResult.validation.taskId,
+    sourceFile: parserResult.sourceFile,
     mode: "plan",
-    sourceFile: result.sourceFile ?? "",
-    parse: createTaskPlanParseJsonField(result),
-    validation: createTaskPlanValidationJsonField(result),
-    mapping: createTaskPlanMappingJsonField(result),
-    planningEnabled: false,
-    executionEnabled: false,
-    adapterCalls: false,
-    auditWrites: false,
-    verifierRun: false,
-    persistence: false,
-    issues: result.issues,
-    summary: result.summary,
-  };
-}
-
-function taskPlanInputErrorCode(result: TaskPlanInputResult): string {
-  const primaryIssue = result.issues[0];
-
-  if (primaryIssue === undefined) {
-    return "task_plan_input_failed";
-  }
-
-  switch (primaryIssue.code) {
-    case "task_plan_input_file_missing":
-      return "task_plan_file_missing";
-
-    case "task_plan_input_path_is_directory":
-      return "task_plan_directory_input";
-
-    case "task_plan_input_unsupported_format":
-      return "task_plan_unsupported_extension";
-
-    case "task_plan_input_invalid_json":
-      return "task_plan_invalid_json";
-
-    case "task_plan_input_contract_shape_invalid":
-      return "task_plan_invalid_task_contract";
-
-    default:
-      return primaryIssue.code;
-  }
-}
-
-function taskPlanInputErrorMessage(result: TaskPlanInputResult): string {
-  const code = taskPlanInputErrorCode(result);
-
-  switch (code) {
-    case "task_plan_file_missing":
-      return "Task plan input file does not exist.";
-
-    case "task_plan_directory_input":
-      return "Task plan input path must be a regular file.";
-
-    case "task_plan_unsupported_extension":
-      return "Task plan input file must be a .json file.";
-
-    case "task_plan_invalid_json":
-      return "Task plan input file contains invalid JSON.";
-
-    case "task_plan_invalid_task_contract":
-      return "Task plan input file is not a valid AEOS task contract.";
-
-    default:
-      return result.issues[0]?.message ?? "Task plan input failed.";
-  }
-}
-
-function createTaskPlanFileJsonErrorOutput(
-  result: TaskPlanInputResult,
-): TaskPlanFileJsonErrorOutput {
-  return {
-    ok: false,
-    error: {
-      code: taskPlanInputErrorCode(result),
-      message: taskPlanInputErrorMessage(result),
+    validation: {
+      status: "pass",
+      valid: true,
+      result: parserResult.validation.result,
+      issues: parserResult.validation.issues,
     },
-    sourceFile: result.sourceFile,
-    pathCheck: result.pathCheck,
-    parse: createTaskPlanParseJsonField(result),
-    validation: createTaskPlanValidationJsonField(result),
-    mapping: createTaskPlanMappingJsonField(result),
-    issues: result.issues,
-    summary: result.summary,
-  };
+    options: mappingOptions,
+    noExecution: true,
+    noWrites: true,
+  });
 }
 
-function formatTaskPlanInputIssue(issue: TaskPlanInputIssue): string {
-  const path = issue.path === undefined ? "" : ` (${issue.path})`;
-  return `- ${issue.code}: ${issue.message}${path}`;
-}
+function createTaskPlanIntegrationResult(input: {
+  readonly taskFile: string;
+  readonly json: boolean;
+  readonly argv: readonly string[];
+  readonly parserRequest: Parameters<typeof parseTaskPlanInputFile>[0];
+  readonly parserResult: TaskPlanInputResult;
+}): CliTaskPlanPlannerIntegrationResult {
+  const mappingOptions = createTaskPlanMappingOptions();
+  const mappingResult = createTaskPlanMappingResult(
+    input.parserResult,
+    mappingOptions,
+  );
 
-function printTaskPlanParsed(result: TaskPlanInputResult): void {
-  console.log("Task Plan");
-  console.log("");
-  console.log("Status: parsed");
-  console.log("Mode: plan");
-  console.log(`Source file: ${result.sourceFile ?? ""}`);
-  console.log(`Parse: ${result.parse.ok ? "ok" : "fail"}`);
-  console.log(`Validation: ${result.validation.status}`);
-  console.log(`Mapping: ${result.mapping.status}`);
-  console.log("Real planning: false");
-  console.log("Real execution: false");
-  console.log("Adapter calls: false");
-  console.log("Audit writes: false");
-  console.log("Verifier run: false");
-  console.log("Persistence: false");
-  console.log("Issues");
-
-  if (result.issues.length === 0) {
-    console.log("- none");
-  } else {
-    for (const issue of result.issues) {
-      console.log(formatTaskPlanInputIssue(issue));
-    }
-  }
-
-  console.log("");
-  console.log(
-    "Reason: task file parsing is available; runner planning handoff is not implemented yet.",
+  return createCliTaskPlanPlannerIntegrationResult(
+    {
+      argv: input.argv,
+      command: ["task", "plan"],
+      taskFile: input.taskFile,
+      json: input.json,
+      mode: "plan",
+      parserRequest: input.parserRequest,
+      parserResult: input.parserResult,
+      parserResultReference: {
+        id: `parser-result:${input.parserResult.validation.taskId ?? "unknown"}`,
+        path: input.parserResult.sourceFile,
+      },
+      mappingOptions,
+      mappingResult,
+      mappingResultReference:
+        mappingResult === undefined
+          ? undefined
+          : {
+              id: `mapping-result:${mappingResult.taskId ?? "unknown"}`,
+              path: mappingResult.sourceFile,
+            },
+      wiringResultReference: {
+        id: `cli-task-plan-wiring:${input.parserResult.validation.taskId ?? "unknown"}`,
+        path: input.parserResult.sourceFile,
+      },
+      plannerDependencyReference: {
+        id: "planner:planAgenticRunner",
+      },
+      noExecution: true,
+      noWrites: true,
+    },
+    {
+      planner: planAgenticRunner,
+      planningResultReference: {
+        id: `runner-planning-result:${input.parserResult.validation.taskId ?? "unknown"}`,
+        path: input.parserResult.sourceFile,
+      },
+    },
   );
 }
 
-function printTaskPlanInputError(result: TaskPlanInputResult): void {
-  console.error("Task Plan");
-  console.error(`Source file: ${result.sourceFile ?? ""}`);
-  console.error(`Error: ${taskPlanInputErrorMessage(result)}`);
-  console.error(`Issues: ${result.issues.length}`);
+function createSafeCliTaskPlanJsonOutput(
+  output: CliTaskPlanJsonRenderModel,
+) {
+  return {
+    ok: output.ok,
+    status: output.status,
+    exitCode: output.exitCode,
+    taskId: output.taskId,
+    mode: output.mode,
+    sourceFile: output.sourceFile,
+    parse: {
+      attempted: output.parse.attempted,
+      ok: output.parse.ok,
+      sourceFile: output.parse.sourceFile,
+      pathOk: output.parse.pathOk,
+      parseOk: output.parse.parseOk,
+      validationStatus: output.parse.validationStatus,
+      validationCompatible: output.parse.validationCompatible,
+      parserResultReference: output.parse.parserResultReference,
+      parsedTaskReference: output.parse.parsedTaskReference,
+      issues: output.parse.issues,
+    },
+    mapping: {
+      attempted: output.mapping.attempted,
+      ok: output.mapping.ok,
+      status: output.mapping.status,
+      mappingResultReference: output.mapping.mappingResultReference,
+      runnerPlanningInputReference: output.mapping.runnerPlanningInputReference,
+      runnerPlanningInputAvailable:
+        output.mapping.runnerPlanningInputAvailable,
+      noExecution: output.mapping.noExecution,
+      noWrites: output.mapping.noWrites,
+      verifierRequired: output.mapping.verifierRequired,
+      completionGatedByVerifier: output.mapping.completionGatedByVerifier,
+      issues: output.mapping.issues,
+    },
+    wiring: {
+      attempted: output.wiring.attempted,
+      ok: output.wiring.ok,
+      status: output.wiring.status,
+      wiringResultReference: output.wiring.wiringResultReference,
+      plannerDependencyInjected: output.wiring.plannerDependencyInjected,
+      plannerInvocationAllowed: output.wiring.plannerInvocationAllowed,
+      dependencyInjectedPlannerOnly:
+        output.wiring.dependencyInjectedPlannerOnly,
+      topLevelPlannerInputBypassAllowed:
+        output.wiring.topLevelPlannerInputBypassAllowed,
+      issues: output.wiring.issues,
+    },
+    plan: {
+      attempted: output.plan.attempted,
+      ok: output.plan.ok,
+      status: output.plan.status,
+      plannerDependencyReference: output.plan.plannerDependencyReference,
+      planningResultReference: output.plan.planningResultReference,
+      planStepCount: output.plan.planStepCount,
+      issues: output.plan.issues,
+    },
+    safety: output.safety,
+    issues: output.issues,
+    summary: output.summary,
+  };
+}
 
-  for (const issue of result.issues) {
-    console.error(formatTaskPlanInputIssue(issue));
+function formatCliTaskPlanIssue(
+  issue: CliTaskPlanPlannerIntegrationIssue,
+): string {
+  const field = issue.field === undefined ? "" : ` ${issue.field}`;
+  return `- ${issue.code}${field}: ${issue.message}`;
+}
+
+function printTaskPlanIntegrationOutput(
+  output: CliTaskPlanHumanRenderModel,
+): void {
+  console.log("Task Plan");
+  console.log(`Task id: ${output.taskId ?? ""}`);
+  console.log(`Source file: ${output.sourceFile ?? ""}`);
+  console.log(`Mode: ${output.mode}`);
+  console.log(`Parsed: ${String(output.parsed)}`);
+  console.log(`Mapping: ${output.mapping}`);
+  console.log(`Planning: ${output.planning}`);
+  console.log(`Work items: ${output.workItems}`);
+  console.log(`Batches: ${output.batches}`);
+  console.log(`Steps: ${output.steps}`);
+  console.log(`Policy required: ${String(output.policyRequired)}`);
+  console.log(`Approval required: ${String(output.approvalRequired)}`);
+  console.log(`Verifier required: ${String(output.verifierRequired)}`);
+  console.log(
+    `Completion gated by verifier: ${String(output.completionGatedByVerifier)}`,
+  );
+  console.log(`Audit expected: ${String(output.auditExpected)}`);
+  console.log(`Real execution: ${String(output.realExecution)}`);
+  console.log(`Adapter calls: ${String(output.adapterCalls)}`);
+  console.log(`Audit writes: ${String(output.auditWrites)}`);
+  console.log(`Verifier run: ${String(output.verifierRun)}`);
+  console.log(`Persistence: ${String(output.persistence)}`);
+  console.log(`Filesystem mutation: ${String(output.filesystemMutation)}`);
+  console.log(
+    `Completed state created: ${String(output.completedStateCreated)}`,
+  );
+  console.log(`Issues: ${output.issues.length}`);
+
+  for (const issue of output.issues) {
+    console.log(formatCliTaskPlanIssue(issue));
   }
+}
+
+function taskPlanStatusToProcessExitCode(
+  status: CliTaskPlanPlannerIntegrationStatus,
+): 0 | 1 {
+  return status === "planned" ? 0 : 1;
 }
 
 function printVersion(): void {
@@ -2527,33 +2543,72 @@ async function handleTask(args: readonly string[]): Promise<void> {
     const taskFile = positionalArgs[0];
 
     if (taskFile !== undefined) {
-      const result = await parseTaskPlanInputFile(
-        createTaskPlanInputRequest(taskFile),
-      );
+      try {
+        const parserRequest = createTaskPlanInputRequest(taskFile);
+        const parserResult = await parseTaskPlanInputFile(parserRequest);
+        const integrationResult = createTaskPlanIntegrationResult({
+          taskFile,
+          json,
+          argv: ["task", "plan", ...planArgs],
+          parserRequest,
+          parserResult,
+        });
 
-      if (
-        result.summary.pathOk &&
-        result.summary.parseOk &&
-        result.summary.validationOk
-      ) {
         if (json) {
-          writeTaskPlanSkeletonJson(createTaskPlanParsedJsonOutput(result));
+          writeTaskPlanSkeletonJson(
+            createSafeCliTaskPlanJsonOutput(
+              integrationResult.jsonOutput ??
+                createCliTaskPlanPlannerIntegrationResult(
+                  {
+                    taskFile,
+                    json: true,
+                    mode: "plan",
+                    parserRequest,
+                    parserResult,
+                    noExecution: true,
+                    noWrites: true,
+                  },
+                ).jsonOutput!,
+            ),
+          );
         } else {
-          printTaskPlanParsed(result);
+          printTaskPlanIntegrationOutput(
+            integrationResult.humanOutput ??
+              createCliTaskPlanPlannerIntegrationResult(
+                {
+                  taskFile,
+                  json: false,
+                  mode: "plan",
+                  parserRequest,
+                  parserResult,
+                  noExecution: true,
+                  noWrites: true,
+                },
+              ).humanOutput!,
+          );
         }
 
+        setExitCode(taskPlanStatusToProcessExitCode(integrationResult.status));
+        return;
+      } catch {
+        if (json) {
+          writeTaskPlanSkeletonJson({
+            ok: false,
+            error: {
+              code: "task_plan_integration_failed",
+              message: "Task plan integration failed.",
+            },
+            issues: [],
+          });
+          setExitCode(1);
+          return;
+        }
+
+        console.error("Task Plan");
+        console.error("Error: Task plan integration failed.");
         setExitCode(1);
         return;
       }
-
-      if (json) {
-        writeTaskPlanSkeletonJson(createTaskPlanFileJsonErrorOutput(result));
-      } else {
-        printTaskPlanInputError(result);
-      }
-
-      setExitCode(1);
-      return;
     }
 
     if (json) {
