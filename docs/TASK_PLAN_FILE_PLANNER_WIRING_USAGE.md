@@ -5,7 +5,8 @@ Document the implemented MVP behavior for task plan file planner wiring.
 
 The wiring layer turns already-produced parser and mapping stage data into a
 safe planner handoff result shape. It is a pure in-memory orchestration helper,
-not CLI integration and not task execution.
+not task execution. The CLI task plan command may call this helper with
+explicit parser, mapper, and dependency-injected planner inputs.
 
 ## Current MVP Behavior
 - The wiring logic is pure and deterministic.
@@ -98,14 +99,19 @@ The mapping stage is eligible only when:
 - mapping status is `mapped`;
 - mapping is supported;
 - runner planning input is available from the mapping handoff;
-- `noExecution` is proven;
-- `noWrites` is proven;
-- verifier is required;
-- completion is gated by verifier;
+- `noExecution` is strictly true on
+  `mappingResult.planningInput.runnerPlanningInput.metadata`;
+- `noWrites` is strictly true on
+  `mappingResult.planningInput.runnerPlanningInput.metadata`;
+- `verifierRequired` is strictly true on
+  `mappingResult.planningInput.runnerPlanningInput.verifierRequirements`;
+- `completionGatedByVerifier` is strictly true on
+  `mappingResult.planningInput.runnerPlanningInput.verifierRequirements`;
 - no unsafe represented runtime truth claims are present.
 
 Unsupported mapping is reported as `unsupported_mapping`. Failed, unknown, or
-unsafe mapping states fail closed.
+unsafe mapping states fail closed. Top-level mapping, summary, or verifier
+claims are diagnostic only and cannot authorize planning.
 
 ## Planner Stage
 The planner stage runs only when all parser, validation, mapping, planning, and
@@ -248,10 +254,12 @@ Successful planning handoff requires:
 - mapping ok;
 - supported mapping;
 - planning input available;
-- `noExecution` true;
-- `noWrites` true;
-- `verifierRequired` true;
-- `completionGatedByVerifier` true;
+- authoritative runner planning input `metadata.noExecution` true;
+- authoritative runner planning input `metadata.noWrites` true;
+- authoritative runner planning input `verifierRequirements.verifierRequired`
+  true;
+- authoritative runner planning input
+  `verifierRequirements.completionGatedByVerifier` true;
 - side-effect flags false;
 - injected planner success if supplied.
 
@@ -311,9 +319,8 @@ not trusted. Text claims do not create completion, approval, verifier evidence,
 or completed state.
 
 ## MVP Limitations
-- No CLI integration yet.
-- No filesystem parser integration in this wiring layer.
-- No filesystem mapper integration in this wiring layer.
+- No filesystem parser integration inside this wiring layer.
+- No filesystem mapper integration inside this wiring layer.
 - No direct `planAgenticRunner()` import or call.
 - No persistence.
 - No audit runtime.
@@ -323,9 +330,6 @@ or completed state.
 - Output helpers return payload shapes only.
 
 ## Later Scope
-- CLI command integration that calls parser and mapper from explicit files.
-- Direct production planner wiring only after a separate safety review.
-- Rendered human and JSON CLI output.
 - Optional plan persistence behind explicit write-enabled design.
 - Verifier runtime handoff in verify or execution flows.
 - Real execution only after separate execution safety review.

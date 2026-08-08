@@ -15,7 +15,10 @@ import {
   type TaskPlanInputSummary,
   type TaskPlanInputValidationHandoff,
 } from "./task-plan-input.js";
-import { validateAeosTask } from "./task-validation.js";
+import {
+  hasAeosTaskContractShape,
+  validateAeosTask,
+} from "./task-validation.js";
 
 export const DEFAULT_TASK_PLAN_INPUT_MAX_FILE_SIZE_BYTES = 64_000;
 
@@ -138,65 +141,6 @@ function createValidationIssue(
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function hasString(value: JsonRecord, key: string): boolean {
-  return typeof value[key] === "string";
-}
-
-function hasBoolean(value: JsonRecord, key: string): boolean {
-  return typeof value[key] === "boolean";
-}
-
-function hasArray(value: JsonRecord, key: string): boolean {
-  return Array.isArray(value[key]);
-}
-
-function hasRecord(value: JsonRecord, key: string): boolean {
-  return isRecord(value[key]);
-}
-
-function hasTaskContractShape(value: unknown): value is AeosTask {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  if (
-    !hasString(value, "id") ||
-    !hasString(value, "title") ||
-    !hasString(value, "purpose") ||
-    !hasString(value, "status") ||
-    !hasString(value, "executionMode")
-  ) {
-    return false;
-  }
-
-  const context = value.context;
-  const fileBoundary = value.fileBoundary;
-  const stopCondition = value.stopCondition;
-
-  if (
-    !isRecord(context) ||
-    !isRecord(fileBoundary) ||
-    !isRecord(stopCondition)
-  ) {
-    return false;
-  }
-
-  return (
-    hasArray(context, "load") &&
-    hasArray(context, "doNotLoad") &&
-    hasArray(fileBoundary, "filesToModify") &&
-    hasArray(fileBoundary, "filesNotToTouch") &&
-    hasBoolean(fileBoundary, "allowGeneratedFiles") &&
-    hasBoolean(fileBoundary, "requireStopOnBoundaryConflict") &&
-    hasString(stopCondition, "description") &&
-    hasBoolean(stopCondition, "stopAfterCompletion") &&
-    hasArray(value, "allowedOperations") &&
-    hasArray(value, "forbiddenOperations") &&
-    hasArray(value, "steps") &&
-    hasArray(value, "verification")
-  );
 }
 
 function isLocalUrlLike(inputPath: string): boolean {
@@ -689,7 +633,7 @@ export function createTaskPlanInputValidationHandoff(
     return notRequestedValidationHandoff();
   }
 
-  if (!hasTaskContractShape(parsedValue)) {
+  if (!hasAeosTaskContractShape(parsedValue)) {
     const issue = createValidationIssue(
       "task_plan_input_contract_shape_invalid",
       "Task plan input JSON does not match the AEOS task contract shape.",

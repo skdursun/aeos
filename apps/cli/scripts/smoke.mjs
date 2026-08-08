@@ -3318,7 +3318,7 @@ try {
     "plan",
     "valid-task.json",
   ]);
-  expectNonzero("task plan valid fail-closed integration exited zero", taskPlanValid);
+  expectExitCode("task plan valid planned integration exited nonzero", taskPlanValid, 0);
   for (const expectedText of [
     "Task Plan",
     "Task id: smoke-task-plan-valid",
@@ -3326,9 +3326,10 @@ try {
     "Parsed: true",
     "Source file: valid-task.json",
     "Mapping: mapped",
-    "Planning: not_attempted",
+    "Planning: planned",
     "Work items: 1",
     "Batches: 1",
+    "Steps:",
     "Policy required: true",
     "Verifier required: true",
     "Completion gated by verifier: true",
@@ -3339,14 +3340,24 @@ try {
     "Persistence: false",
     "Filesystem mutation: false",
     "Completed state created: false",
-    "Issues:",
-    "cli_task_plan_no_execution_not_proven",
-    "cli_task_plan_no_writes_not_proven",
+    "Issues: 0",
   ]) {
     expectOutputIncludes(
-      `task plan valid parse output did not include ${expectedText}`,
+      `task plan valid planned output did not include ${expectedText}`,
       taskPlanValid,
       expectedText,
+    );
+  }
+  for (const unexpectedIssueText of [
+    "cli_task_plan_no_execution_not_proven",
+    "cli_task_plan_no_writes_not_proven",
+    "cli_task_plan_verifier_not_required",
+    "cli_task_plan_completion_not_verifier_gated",
+  ]) {
+    expectOutputExcludes(
+      `task plan valid planned output unexpectedly included ${unexpectedIssueText}`,
+      taskPlanValid,
+      unexpectedIssueText,
     );
   }
   expectOutputExcludes(
@@ -3381,39 +3392,54 @@ try {
     "valid-task.json",
     "--json",
   ]);
-  expectNonzero(
-    "task plan valid fail-closed --json exited zero",
+  expectExitCode(
+    "task plan valid planned --json exited nonzero",
     taskPlanValidJson,
+    0,
   );
   const parsedTaskPlanValidJson = parseJsonOnlyStdout(
-    "task plan valid fail-closed --json output was not valid JSON only",
+    "task plan valid planned --json output was not valid JSON only",
     taskPlanValidJson,
   );
   expectTaskPlanParsedJsonShape(
-    "task plan valid fail-closed --json shape was invalid",
+    "task plan valid planned --json shape was invalid",
     parsedTaskPlanValidJson,
     taskPlanValidJson,
   );
   if (
     parsedTaskPlanValidJson.sourceFile !== "valid-task.json" ||
-    parsedTaskPlanValidJson.ok !== false ||
-    parsedTaskPlanValidJson.status !== "blocked" ||
+    parsedTaskPlanValidJson.ok !== true ||
+    parsedTaskPlanValidJson.status !== "planned" ||
+    parsedTaskPlanValidJson.exitCode !== "success" ||
+    parsedTaskPlanValidJson.plan.attempted !== true ||
+    parsedTaskPlanValidJson.plan.ok !== true ||
+    parsedTaskPlanValidJson.plan.status !== "planned" ||
     parsedTaskPlanValidJson.mapping.status !== "mapped" ||
     parsedTaskPlanValidJson.mapping.runnerPlanningInputAvailable !== true ||
+    parsedTaskPlanValidJson.mapping.noExecution !== true ||
+    parsedTaskPlanValidJson.mapping.noWrites !== true ||
+    parsedTaskPlanValidJson.wiring.plannerDependencyInjected !== true ||
+    parsedTaskPlanValidJson.wiring.plannerInvocationAllowed !== true ||
     parsedTaskPlanValidJson.summary.verifierRequired !== true ||
     parsedTaskPlanValidJson.summary.completionGatedByVerifier !== true ||
-    parsedTaskPlanValidJson.summary.plannerInvocationAllowed !== false ||
-    !parsedTaskPlanValidJson.issues.some(
-      (issue) => issue.code === "cli_task_plan_no_execution_not_proven",
-    ) ||
-    !parsedTaskPlanValidJson.issues.some(
-      (issue) => issue.code === "cli_task_plan_no_writes_not_proven",
-    )
+    parsedTaskPlanValidJson.summary.plannerInvocationAllowed !== true ||
+    parsedTaskPlanValidJson.summary.parsed !== true ||
+    parsedTaskPlanValidJson.summary.mapped !== true ||
+    parsedTaskPlanValidJson.summary.wired !== true ||
+    parsedTaskPlanValidJson.summary.planned !== true ||
+    parsedTaskPlanValidJson.summary.executionEnabled !== false ||
+    parsedTaskPlanValidJson.summary.adapterCalls !== false ||
+    parsedTaskPlanValidJson.summary.auditWrites !== false ||
+    parsedTaskPlanValidJson.summary.verifierRun !== false ||
+    parsedTaskPlanValidJson.summary.persistence !== false ||
+    parsedTaskPlanValidJson.summary.filesystemMutation !== false ||
+    parsedTaskPlanValidJson.summary.completedStateCreated !== false ||
+    parsedTaskPlanValidJson.issues.length !== 0
   ) {
-    fail("task plan valid --json did not report fail-closed safety gates", taskPlanValidJson);
+    fail("task plan valid --json did not report planned safe success", taskPlanValidJson);
   }
   expectTaskPlanParserOnlySafety(
-    "task plan valid fail-closed --json",
+    "task plan valid planned --json",
     taskPlanValidJson.stdout,
     taskPlanValidJson,
   );
@@ -3611,6 +3637,54 @@ try {
     fail("valid task --json output did not match expected pass", validTaskJson);
   }
   expectEmptyArray("valid task --json issues was not empty", parsedValidTask.issues);
+
+  const validTaskPlanJson = runCli([
+    "task",
+    "plan",
+    "apps/cli/fixtures/tasks/valid-task.json",
+    "--json",
+  ]);
+  expectExitCode(
+    "checked-in valid task plan --json exited nonzero",
+    validTaskPlanJson,
+    0,
+  );
+  const parsedValidTaskPlan = parseJsonOnlyStdout(
+    "checked-in valid task plan --json output was not valid JSON only",
+    validTaskPlanJson,
+  );
+  expectTaskPlanParsedJsonShape(
+    "checked-in valid task plan --json shape was invalid",
+    parsedValidTaskPlan,
+    validTaskPlanJson,
+  );
+  if (
+    parsedValidTaskPlan.ok !== true ||
+    parsedValidTaskPlan.status !== "planned" ||
+    parsedValidTaskPlan.exitCode !== "success" ||
+    parsedValidTaskPlan.summary.parsed !== true ||
+    parsedValidTaskPlan.summary.mapped !== true ||
+    parsedValidTaskPlan.summary.wired !== true ||
+    parsedValidTaskPlan.summary.planned !== true ||
+    parsedValidTaskPlan.mapping.runnerPlanningInputAvailable !== true ||
+    parsedValidTaskPlan.mapping.noExecution !== true ||
+    parsedValidTaskPlan.mapping.noWrites !== true ||
+    parsedValidTaskPlan.summary.verifierRequired !== true ||
+    parsedValidTaskPlan.summary.completionGatedByVerifier !== true ||
+    parsedValidTaskPlan.summary.executionEnabled !== false ||
+    parsedValidTaskPlan.summary.adapterCalls !== false ||
+    parsedValidTaskPlan.summary.auditWrites !== false ||
+    parsedValidTaskPlan.summary.verifierRun !== false ||
+    parsedValidTaskPlan.summary.persistence !== false ||
+    parsedValidTaskPlan.summary.filesystemMutation !== false ||
+    parsedValidTaskPlan.summary.completedStateCreated !== false ||
+    parsedValidTaskPlan.issues.length !== 0
+  ) {
+    fail(
+      "checked-in valid task plan --json did not reach planned safe success",
+      validTaskPlanJson,
+    );
+  }
 
   const invalidTask = runCli(["task", "validate", invalidTaskPath]);
   expectNonzero("invalid task validation exited zero", invalidTask);

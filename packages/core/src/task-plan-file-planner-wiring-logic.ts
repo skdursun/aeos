@@ -579,12 +579,8 @@ function createMappingStage(
   const noExecution = mappingResultNoExecution(input);
   const noWrites = mappingResultNoWrites(input);
   const verifierRequired =
-    mappingResult?.verifier?.verifierRequired === true ||
-    mappingResult?.summary.verifierRequired === true ||
     rawPlanningInput?.verifierRequirements?.verifierRequired === true;
   const completionGatedByVerifier =
-    mappingResult?.verifier?.completionGatedByVerifier === true ||
-    mappingResult?.summary.completionGatedByVerifier === true ||
     rawPlanningInput?.verifierRequirements?.completionGatedByVerifier === true;
   const sourceIssues =
     mappingResult === undefined
@@ -775,6 +771,7 @@ function mappingResultNoExecution(
     mappingResult !== undefined &&
     !hasUnsafeRuntimeTruth(mappingResult) &&
     booleanField(mappingResult.summary, "noExecution") === true &&
+    booleanField(planningInput?.metadata, "noExecution") === true &&
     booleanField(mappingResult.planningInput, "runnerPlanningExecuted") === false &&
     planningInput?.metadata?.runnerExecutionStarted !== true &&
     planningInput?.metadata?.adapterCallsMade !== true &&
@@ -794,6 +791,7 @@ function mappingResultNoWrites(input: TaskPlanFilePlannerWiringInput): boolean {
     mappingResult !== undefined &&
     !hasUnsafeRuntimeTruth(mappingResult) &&
     booleanField(mappingResult.summary, "noWrites") === true &&
+    booleanField(planningInput?.metadata, "noWrites") === true &&
     booleanField(mappingResult.planningInput, "taskPersistenceWritten") === false &&
     planningInput?.metadata?.auditEventsEmitted !== true &&
     planningInput?.metadata?.taskPersistenceWritten !== true &&

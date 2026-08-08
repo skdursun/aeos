@@ -1,12 +1,12 @@
 # CLI Task Plan Parser Mapper Planner Integration Design
 
 ## Purpose
-Design how `aeos task plan <task-file>` moves from the existing parser-only CLI
-path to a safe parser, mapper, wiring, and dependency-injected planner flow.
+Document how `aeos task plan <task-file>` moved from the earlier parser-only
+CLI path to a safe parser, mapper, wiring, and dependency-injected planner flow.
 
-This is design-only. It does not implement CLI integration, runner execution,
-adapter calls, audit writes, verifier runtime, persistence, package changes, or
-project mutation.
+This document is retained as the integration design record. The implemented
+path still does not add runner execution, adapter calls, audit writes, verifier
+runtime, persistence, package changes, or project mutation.
 
 ## Current Foundation Status
 - `parseTaskPlanInputFile()` safely parses one explicit local `.json` task file,
@@ -21,22 +21,24 @@ project mutation.
   and may call only a supplied planner dependency.
 - `planAgenticRunner()` is deterministic and side-effect-free over represented
   planning input.
-- No CLI task plan path currently runs the mapper, wiring helper with an
-  injected planner, or `planAgenticRunner()`.
+- `aeos task plan <task-file>` now runs the parser, core mapper, wiring helper,
+  and dependency-injected planner path after all safety gates pass.
 
-## Existing CLI Parser-Only Behavior
+## Implemented CLI Behavior
 Current `aeos task plan` behavior:
 
 - `aeos task plan` without a file prints a safe skeleton and exits non-zero.
 - `aeos task plan --json` emits JSON-only skeleton output and exits non-zero.
 - `aeos task plan <task-file>` accepts one positional file, calls
   `parseTaskPlanInputFile()`, and validates the task contract.
-- Valid parser output is still reported as `Status: parsed` with
-  `Mapping: unsupported`, `Real planning: false`, and a non-zero exit.
+- Valid supported parser output proceeds to the mapper, wiring helper, and
+  dependency-injected planner with real execution still disabled.
 - Parser errors such as missing file, invalid JSON, unsupported extension,
   unsafe path, and invalid contract fail with deterministic human or JSON output.
-- The current CLI intentionally does not import or call runner planning logic for
-  the task plan command.
+- Unsupported mapping shapes such as explicit work items or batches fail closed.
+- The command does not execute task work, call adapters, write audit events, run
+  verifier runtime, persist state, mutate project files, or create completed
+  state.
 
 ## Target CLI Behavior
 Target command:
@@ -325,8 +327,8 @@ and private reasoning traces.
 The implemented MVP integration helper layer is pure and deterministic over
 in-memory data and explicit dependencies.
 
-- No CLI command changes have been made yet.
-- No output rendering to stdout or stderr has been wired yet.
+- CLI task plan command integration has been wired through the reviewed helper
+  path.
 - No filesystem IO is performed by the integration logic.
 - A direct `planAgenticRunner()` call is not used.
 - Planner dependency injection is gate-protected.
@@ -561,8 +563,8 @@ Final review coverage proves:
   gates pass.
 
 ## Next Implementation Task
-TASK-0273 should implement CLI task plan command planner integration by wiring
-the existing command boundary to the already-reviewed core helper behavior.
-That task must preserve the same no-execution, no-write, JSON-only,
-verifier-gated completion, dependency-injected planner, and top-level bypass
-prevention guarantees.
+TASK-0275 should perform a post-audit regression review of the implemented CLI
+task plan parser, mapper, and planner integration. That task must preserve the
+same no-execution, no-write, JSON-only, verifier-gated completion,
+dependency-injected planner, authoritative runner-input proof, and top-level
+bypass prevention guarantees.

@@ -83,6 +83,8 @@ const plannerInput = {
     issues: [],
   },
   metadata: {
+    noExecution: true,
+    noWrites: true,
     runnerExecutionStarted: false,
     adapterCallsMade: false,
     auditEventsEmitted: false,

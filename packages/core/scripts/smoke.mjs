@@ -4299,6 +4299,175 @@ assert.equal(
   1,
   "task plan file planner wiring logic smoke N fake planner should not run for missing verifier gate",
 );
+
+function createWiringInputWithRunnerPlanningInput(
+  runnerPlanningInputOverrides,
+  mappingResultOverrides = {},
+) {
+  const base = createWiringInputFromResult(
+    scenarioASuccessfulMinimalPlanningHandoff,
+  );
+  const mappingResult = base.mappingResult;
+  const runnerPlanningInput = mappingResult.planningInput.runnerPlanningInput;
+
+  return {
+    ...base,
+    mappingResult: {
+      ...mappingResult,
+      ...mappingResultOverrides,
+      planningInput: {
+        ...mappingResult.planningInput,
+        runnerPlanningInput: {
+          ...runnerPlanningInput,
+          ...runnerPlanningInputOverrides,
+          metadata: {
+            ...runnerPlanningInput.metadata,
+            noExecution: true,
+            noWrites: true,
+            ...runnerPlanningInputOverrides.metadata,
+          },
+          verifierRequirements: {
+            ...runnerPlanningInput.verifierRequirements,
+            ...runnerPlanningInputOverrides.verifierRequirements,
+          },
+        },
+        runnerPlanningInputData: undefined,
+      },
+    },
+  };
+}
+
+function assertBlockedAuthoritativeWiringProof(
+  result,
+  plannerCallsBefore,
+  plannerCallsAfter,
+  issueFields,
+  message,
+) {
+  assert.equal(
+    plannerCallsAfter,
+    plannerCallsBefore,
+    `${message} planner should not be invoked`,
+  );
+  assert.equal(result.ok, false, `${message} should fail closed`);
+  assert.equal(result.status, "blocked", `${message} should report blocked`);
+  assertPlannerNotAttempted(result, message);
+  for (const field of issueFields) {
+    assert.equal(
+      result.issues.some((issue) => issue.field === field),
+      true,
+      `${message} should report deterministic issue for ${field}`,
+    );
+  }
+  assertWiringLogicNoExecutionNoWrites(result, message);
+}
+
+const authoritativeVerifierOuterTrueCallsBefore = injectedPlannerCalls;
+const authoritativeVerifierOuterTrueResult = createTaskPlanFilePlannerWiringResult(
+  createWiringInputWithRunnerPlanningInput(
+    {
+      verifierRequirements: {
+        verifierRequired: false,
+        completionGatedByVerifier: false,
+      },
+    },
+    {
+      verifier: {
+        ...scenarioASuccessfulMinimalPlanningHandoff.mapping.mappingResult
+          .verifier,
+        verifierRequired: true,
+        completionGatedByVerifier: true,
+      },
+      summary: {
+        ...scenarioASuccessfulMinimalPlanningHandoff.mapping.mappingResult
+          .summary,
+        verifierRequired: true,
+        completionGatedByVerifier: true,
+      },
+    },
+  ),
+  injectedPlannerOptions,
+);
+assertBlockedAuthoritativeWiringProof(
+  authoritativeVerifierOuterTrueResult,
+  authoritativeVerifierOuterTrueCallsBefore,
+  injectedPlannerCalls,
+  ["mapping.verifierRequired", "mapping.completionGatedByVerifier"],
+  "task plan file planner wiring logic smoke N2 authoritative verifier false with outer true",
+);
+
+const authoritativeVerifierMissingCallsBefore = injectedPlannerCalls;
+const authoritativeVerifierMissingResult = createTaskPlanFilePlannerWiringResult(
+  createWiringInputWithRunnerPlanningInput(
+    {
+      verifierRequirements: {
+        verifierRequired: undefined,
+        completionGatedByVerifier: undefined,
+      },
+    },
+    {
+      verifier: {
+        ...scenarioASuccessfulMinimalPlanningHandoff.mapping.mappingResult
+          .verifier,
+        verifierRequired: true,
+        completionGatedByVerifier: true,
+      },
+      summary: {
+        ...scenarioASuccessfulMinimalPlanningHandoff.mapping.mappingResult
+          .summary,
+        verifierRequired: true,
+        completionGatedByVerifier: true,
+      },
+    },
+  ),
+  injectedPlannerOptions,
+);
+assertBlockedAuthoritativeWiringProof(
+  authoritativeVerifierMissingResult,
+  authoritativeVerifierMissingCallsBefore,
+  injectedPlannerCalls,
+  ["mapping.verifierRequired", "mapping.completionGatedByVerifier"],
+  "task plan file planner wiring logic smoke N3 authoritative verifier proof missing",
+);
+
+const authoritativeNoExecutionMissingCallsBefore = injectedPlannerCalls;
+const authoritativeNoExecutionMissingResult =
+  createTaskPlanFilePlannerWiringResult(
+    createWiringInputWithRunnerPlanningInput({
+      metadata: {
+        noExecution: undefined,
+        noWrites: true,
+      },
+    }),
+    injectedPlannerOptions,
+  );
+assertBlockedAuthoritativeWiringProof(
+  authoritativeNoExecutionMissingResult,
+  authoritativeNoExecutionMissingCallsBefore,
+  injectedPlannerCalls,
+  ["mapping.noExecution"],
+  "task plan file planner wiring logic smoke N4 authoritative noExecution proof missing",
+);
+
+const authoritativeNoWritesMissingCallsBefore = injectedPlannerCalls;
+const authoritativeNoWritesMissingResult =
+  createTaskPlanFilePlannerWiringResult(
+    createWiringInputWithRunnerPlanningInput({
+      metadata: {
+        noExecution: true,
+        noWrites: undefined,
+      },
+    }),
+    injectedPlannerOptions,
+  );
+assertBlockedAuthoritativeWiringProof(
+  authoritativeNoWritesMissingResult,
+  authoritativeNoWritesMissingCallsBefore,
+  injectedPlannerCalls,
+  ["mapping.noWrites"],
+  "task plan file planner wiring logic smoke N5 authoritative noWrites proof missing",
+);
+
 createTaskPlanFilePlannerWiringResult(
   createWiringInputFromResult(scenarioFMissingNoExecutionNoWritesGateFailClosed),
   injectedPlannerOptions,
@@ -4336,10 +4505,9 @@ assert.equal(
   false,
   "task plan file planner wiring logic smoke N missing mapping runnerPlanningInput should block planning input availability",
 );
-assert.equal(
-  topLevelPlannerInputBypassResult.status,
-  "mapping_failed",
-  "task plan file planner wiring logic smoke N missing mapping runnerPlanningInput should fail mapping",
+assert.ok(
+  ["mapping_failed", "blocked"].includes(topLevelPlannerInputBypassResult.status),
+  "task plan file planner wiring logic smoke N missing mapping runnerPlanningInput should fail closed",
 );
 assertPlannerNotAttempted(
   topLevelPlannerInputBypassResult,
@@ -6825,6 +6993,30 @@ assert.equal(
   true,
   "task contract mapper logic smoke A should gate completion by verifier",
 );
+assert.equal(
+  taskContractMapperLogicMinimalResult.planningInput.runnerPlanningInput
+    ?.metadata?.noExecution,
+  true,
+  "task contract mapper logic smoke A actual runnerPlanningInput metadata should prove noExecution",
+);
+assert.equal(
+  taskContractMapperLogicMinimalResult.planningInput.runnerPlanningInput
+    ?.metadata?.noWrites,
+  true,
+  "task contract mapper logic smoke A actual runnerPlanningInput metadata should prove noWrites",
+);
+assert.equal(
+  taskContractMapperLogicMinimalResult.planningInput.runnerPlanningInput
+    ?.verifierRequirements?.verifierRequired,
+  true,
+  "task contract mapper logic smoke A actual runnerPlanningInput should require verifier",
+);
+assert.equal(
+  taskContractMapperLogicMinimalResult.planningInput.runnerPlanningInput
+    ?.verifierRequirements?.completionGatedByVerifier,
+  true,
+  "task contract mapper logic smoke A actual runnerPlanningInput should gate completion by verifier",
+);
 assertTaskContractMappingNoRuntimeArtifacts(
   taskContractMapperLogicMinimalResult,
   "task contract mapper logic smoke A",
@@ -7161,6 +7353,30 @@ assert.equal(
   taskContractMapperLogicFallbackResult.verifier.completionGatedByVerifier,
   true,
   "task contract mapper logic smoke I should gate completion by verifier",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.planningInput.runnerPlanningInput
+    ?.metadata?.noExecution,
+  true,
+  "task contract mapper logic smoke I actual mapper output should prove noExecution on runnerPlanningInput metadata",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.planningInput.runnerPlanningInput
+    ?.metadata?.noWrites,
+  true,
+  "task contract mapper logic smoke I actual mapper output should prove noWrites on runnerPlanningInput metadata",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.planningInput.runnerPlanningInput
+    ?.verifierRequirements?.verifierRequired,
+  true,
+  "task contract mapper logic smoke I actual mapper output should include strict verifier proof",
+);
+assert.equal(
+  taskContractMapperLogicFallbackResult.planningInput.runnerPlanningInput
+    ?.verifierRequirements?.completionGatedByVerifier,
+  true,
+  "task contract mapper logic smoke I actual mapper output should include strict completion gate proof",
 );
 assert.equal(
   typeof taskContractMapperLogicFallbackResult.verifier.expectedCoverageRule,

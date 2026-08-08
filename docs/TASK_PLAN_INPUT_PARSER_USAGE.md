@@ -149,8 +149,8 @@ When validation is requested:
 - compatible shapes are passed to existing AEOS task validation;
 - validation status and issues are copied from the validator result.
 
-Existing task validation may be reused where compatible. The parser must not
-invent validation success.
+Task validation and parser structural checks share the same plan-capable task
+contract shape. The parser must not invent validation success.
 
 ## Mapping Handoff Behavior
 Mapping is controlled by `options.createPlanningHandoff`.
@@ -174,8 +174,9 @@ When validation passes:
   mapped to runner planning input;
 - `runnerPlanningExecuted` remains false.
 
-The parser does not run `planAgenticRunner()`. Runner planning handoff is later
-scope.
+The parser does not run the mapper or `planAgenticRunner()`. The CLI task plan
+command performs parser-to-mapper-to-planner orchestration separately after
+parser validation succeeds.
 
 ## Result Shape
 The result exposes stable top-level fields:
@@ -198,8 +199,10 @@ The result exposes stable top-level fields:
 ```
 
 `ok` is true only when path and parse succeeded, requested validation succeeded,
-and requested mapping succeeded. Because mapping is unsupported in the MVP,
-requesting mapping currently makes the result fail closed after validation.
+and requested mapping succeeded. Parser-local mapping remains unsupported, so
+requesting parser-local mapping makes the parser result fail closed after
+validation. CLI task planning disables that parser-local mapping request and
+uses the core mapper/planner integration after parser validation.
 
 ## Error And Issue Behavior
 Expected parser errors are represented as deterministic issues with a stable
@@ -243,7 +246,7 @@ The summary includes:
 - Read-only parser behavior.
 - No file creation, modification, deletion, or directory creation.
 - No task execution.
-- No runner planning execution.
+- No runner planning execution inside the parser.
 - No adapter calls.
 - No audit writes.
 - No verifier run.
@@ -254,10 +257,9 @@ The summary includes:
 ## MVP Limitations
 - JSON only.
 - Local files only.
-- No CLI integration guarantee.
 - No Markdown, YAML, or TOML task parsing.
-- No task-to-runner planning adapter.
-- No runner planning result.
+- No parser-local task-to-runner planning adapter.
+- No parser-local runner planning result.
 - No persisted parser output.
 - No remote task loading.
 - No schema version negotiation.
@@ -265,11 +267,8 @@ The summary includes:
 ## Later Scope
 Later tasks may add:
 
-- CLI wiring for `aeos task plan <task-file>`;
 - Markdown, YAML, or TOML parsers;
 - richer task schema validation;
 - explicit task-contract versioning;
-- safe task-to-runner planning input mapping;
-- `planAgenticRunner()` invocation after mapping safety review;
 - optional persistence behind an explicit write-enabled design;
 - real execution only after a separate execution safety review.

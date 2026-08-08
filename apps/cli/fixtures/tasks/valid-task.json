@@ -1,15 +1,24 @@
 {
   "id": "TASK-FIXTURE-VALID",
   "title": "Valid task fixture",
-  "purpose": "Verify that aeos task validation accepts a minimal valid task.",
+  "purpose": "Verify that aeos task validation and task planning accept a minimal full task contract.",
+  "status": "pending",
+  "executionMode": "planning",
   "context": {
     "load": [
       {
         "path": "PROJECT_CONTEXT.md",
-        "required": true
+        "required": true,
+        "reason": "Required project context for a fresh task session."
       }
     ],
-    "doNotLoad": []
+    "doNotLoad": [
+      {
+        "path": "brain/",
+        "required": true,
+        "reason": "Avoid unlisted historical context."
+      }
+    ]
   },
   "fileBoundary": {
     "filesToModify": [
@@ -21,8 +30,66 @@
     "allowGeneratedFiles": false,
     "requireStopOnBoundaryConflict": true
   },
+  "allowedOperations": [
+    "read_context",
+    "run_verification",
+    "check_git_status"
+  ],
+  "forbiddenOperations": [
+    "read_unlisted_context",
+    "modify_unlisted_file",
+    "rename_file",
+    "delete_file",
+    "install_dependency",
+    "change_package_config",
+    "deploy",
+    "push_git",
+    "run_destructive_command",
+    "continue_next_task"
+  ],
+  "steps": [
+    {
+      "order": 1,
+      "instruction": "Validate the task fixture and produce a safe task plan.",
+      "required": true,
+      "expectedOutcome": "Validation and planning produce deterministic safe outputs."
+    }
+  ],
+  "verification": [
+    {
+      "command": "pnpm --filter @aeos/cli smoke",
+      "level": "smoke_test",
+      "required": true,
+      "scope": [
+        "apps/cli"
+      ],
+      "expectedEvidence": [
+        "CLI smoke passes."
+      ]
+    }
+  ],
   "stopCondition": {
-    "description": "Stop after fixture validation completes.",
+    "description": "Stop after fixture validation and task planning checks complete.",
     "stopAfterCompletion": true
+  },
+  "riskProfile": {
+    "riskClass": "low",
+    "permissionLevel": "read_only",
+    "requiresApproval": false,
+    "rationale": "The fixture is used for read-only validation and planning smoke checks."
+  },
+  "modelRecommendation": {
+    "purpose": "Plan a safe minimal task fixture.",
+    "requiredCapabilities": [
+      "typescript",
+      "static_analysis",
+      "planning"
+    ],
+    "preferredExecutionMode": "planning",
+    "constraints": [
+      "no_execution",
+      "no_writes",
+      "no_adapter_calls"
+    ]
   }
 }

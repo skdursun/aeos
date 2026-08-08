@@ -62,6 +62,17 @@ The mapper accepts a `TaskContractMappingInput`:
 If validation is missing or did not pass, mapping is blocked. If `mode` is not
 `plan`, the current MVP reports unsupported mapping.
 
+For mapped output, authoritative downstream planner proof is carried on
+`planningInput.runnerPlanningInput` itself:
+
+- `planningInput.runnerPlanningInput.metadata.noExecution === true`;
+- `planningInput.runnerPlanningInput.metadata.noWrites === true`;
+- `planningInput.runnerPlanningInput.verifierRequirements.verifierRequired === true`;
+- `planningInput.runnerPlanningInput.verifierRequirements.completionGatedByVerifier === true`.
+
+Top-level summary and mapper verifier fields are diagnostic consistency data.
+They do not authorize planning by themselves.
+
 ## Output/Result Shape
 The result is a mapping result, not a runner planning result:
 
@@ -288,7 +299,17 @@ The summary exposes:
   },
   "planningInput": {
     "runnerPlanningExecuted": false,
-    "taskPersistenceWritten": false
+    "taskPersistenceWritten": false,
+    "runnerPlanningInput": {
+      "metadata": {
+        "noExecution": true,
+        "noWrites": true
+      },
+      "verifierRequirements": {
+        "verifierRequired": true,
+        "completionGatedByVerifier": true
+      }
+    }
   },
   "summary": {
     "noExecution": true,
@@ -421,8 +442,10 @@ The handoff is data/reference only. `planAgenticRunner()` has not run.
 - Policy is represented, not evaluated.
 - Adapter boundaries are represented, not called.
 - Audit events are expected, not emitted.
-- Planning input handoff is created, but runner planning is not executed.
-- No CLI integration is promised by this mapper usage.
+- Planning input handoff is created, but runner planning is not executed by the
+  mapper.
+- CLI task planning may consume this mapper handoff through separate
+  fail-closed integration logic.
 
 ## Later Scope
 Later work may add typed task-contract work items, typed batches, typed resume

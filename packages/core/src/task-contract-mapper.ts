@@ -991,6 +991,8 @@ function createAgenticRunnerPlanningInput(
     verifierRequirements: createAgenticRunnerVerifierRequirementPlan(verifier),
     resumeData,
     metadata: {
+      noExecution: true,
+      noWrites: true,
       allowedOperations: adapterBoundary?.allowedOperations ?? [],
       deniedOperations: adapterBoundary?.deniedOperations ?? [],
       contextLoadPaths: resolved.task.context.load.map((rule) => rule.path),

@@ -4,14 +4,13 @@
 Document the implemented MVP behavior for CLI task plan planner integration.
 
 This layer models how parser, mapper, wiring, and planner handoff data combine
-for a future `aeos task plan <task-file>` command. It is a pure helper layer,
-not CLI command wiring, output printing, filesystem parsing, execution, or
-persistence.
+for `aeos task plan <task-file>`. It remains a pure helper layer for the CLI
+command boundary; it does not itself print output, parse files from disk,
+execute tasks, or persist state.
 
 ## Current MVP Behavior
 - The integration logic is pure and deterministic.
 - It operates on in-memory data and explicit dependencies.
-- It does not modify CLI commands.
 - It does not render or print output.
 - It does not read or write files.
 - It does not call `planAgenticRunner()` directly.
@@ -48,6 +47,7 @@ TASK-0272 final review keeps the MVP contract conservative:
 
 ## What The Integration Logic Does Not Do
 - It does not implement or change CLI commands.
+- It is called by the CLI task plan command boundary.
 - It does not parse argv beyond represented command data.
 - It does not render to stdout or stderr.
 - It does not read task files or write files.
@@ -352,7 +352,6 @@ The summary includes:
 ## Safety Guarantees
 The integration logic does not:
 
-- modify CLI commands;
 - render output to stdout/stderr;
 - read or write files;
 - mutate filesystem;
@@ -366,8 +365,7 @@ The integration logic does not:
 - trust task/model text claims of completion, approval, or verification.
 
 ## MVP Limitations
-- No CLI command changes yet.
-- No output printing yet.
+- No output printing inside this helper.
 - No filesystem parser execution here.
 - No filesystem mapper execution here.
 - No direct production planner import or direct call.
@@ -377,9 +375,9 @@ The integration logic does not:
 - No runner execution.
 - No completed state.
 
-## Later CLI Integration Scope
-Later CLI work may connect the command boundary to parser, mapper, wiring,
+## CLI Boundary Scope
+The CLI command boundary connects this helper to parser, mapper, wiring,
 dependency-injected `planAgenticRunner`, human rendering, JSON rendering, and
-process exit codes. That later work must preserve the same fail-closed gates and
+process exit codes. That boundary must preserve the same fail-closed gates and
 must not add execution, writes, persistence, verifier runtime, or completion
 claims without a separate safety-reviewed task.
