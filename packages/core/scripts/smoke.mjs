@@ -3798,6 +3798,231 @@ assert.equal(
   "task plan file planner wiring logic smoke N fake planner should not run for missing noExecution/noWrites",
 );
 
+function createUnsafePlanningMetadataInput(field) {
+  const base = createWiringInputFromResult(
+    scenarioASuccessfulMinimalPlanningHandoff,
+  );
+  const mappingResult = base.mappingResult;
+  const planningInputHandoff = mappingResult.planningInput;
+  const runnerPlanningInput = planningInputHandoff.runnerPlanningInput;
+
+  return {
+    ...base,
+    mappingResult: {
+      ...mappingResult,
+      planningInput: {
+        ...planningInputHandoff,
+        runnerPlanningInput: {
+          ...runnerPlanningInput,
+          metadata: {
+            ...runnerPlanningInput.metadata,
+            [field]: true,
+          },
+        },
+      },
+    },
+  };
+}
+
+for (const field of [
+  "executionEnabled",
+  "adapterCalls",
+  "auditWrites",
+  "verifierRun",
+  "persistence",
+  "filesystemMutation",
+  "completedStateCreated",
+]) {
+  const callsBeforeUnsafeGate = injectedPlannerCalls;
+  const unsafeResult = createTaskPlanFilePlannerWiringResult(
+    createUnsafePlanningMetadataInput(field),
+    injectedPlannerOptions,
+  );
+
+  assert.equal(
+    injectedPlannerCalls,
+    callsBeforeUnsafeGate,
+    `task plan file planner wiring logic smoke P fake planner should not run when ${field} is true`,
+  );
+  assert.equal(
+    unsafeResult.ok,
+    false,
+    `task plan file planner wiring logic smoke P should fail closed when ${field} is true`,
+  );
+  assert.equal(
+    unsafeResult.status,
+    "blocked",
+    `task plan file planner wiring logic smoke P should report blocked when ${field} is true`,
+  );
+  assertPlannerNotAttempted(
+    unsafeResult,
+    `task plan file planner wiring logic smoke P ${field}`,
+  );
+  assert.equal(
+    unsafeResult.issues.some(
+      (issue) =>
+        issue.code === "task_plan_file_unsafe_runtime_truth_claim" &&
+        issue.field?.endsWith(field),
+    ),
+    true,
+    `task plan file planner wiring logic smoke P should represent unsafe ${field} issue`,
+  );
+  assertWiringLogicNoExecutionNoWrites(
+    unsafeResult,
+    `task plan file planner wiring logic smoke P ${field}`,
+  );
+}
+
+const unsafeParserInput = {
+  ...createWiringInputFromResult(scenarioASuccessfulMinimalPlanningHandoff),
+  parserResult: {
+    ...scenarioASuccessfulMinimalPlanningHandoff.parse.parserResult,
+    summary: {
+      ...scenarioASuccessfulMinimalPlanningHandoff.parse.parserResult.summary,
+      runnerPlanningExecuted: true,
+    },
+  },
+};
+const parserUnsafeCallsBefore = injectedPlannerCalls;
+const unsafeParserResult = createTaskPlanFilePlannerWiringResult(
+  unsafeParserInput,
+  injectedPlannerOptions,
+);
+assert.equal(
+  injectedPlannerCalls,
+  parserUnsafeCallsBefore,
+  "task plan file planner wiring logic smoke Q fake planner should not run when parser claims runner planning executed",
+);
+assert.equal(
+  unsafeParserResult.ok,
+  false,
+  "task plan file planner wiring logic smoke Q should fail closed",
+);
+assert.equal(
+  unsafeParserResult.status,
+  "blocked",
+  "task plan file planner wiring logic smoke Q should report blocked",
+);
+assert.equal(
+  unsafeParserResult.parse.parserResult,
+  undefined,
+  "task plan file planner wiring logic smoke Q should not retain unsafe parser payload",
+);
+assertWiringLogicNoExecutionNoWrites(
+  unsafeParserResult,
+  "task plan file planner wiring logic smoke Q",
+);
+
+let unsafePlannerCalls = 0;
+const unsafePlanner = (input) => {
+  unsafePlannerCalls += 1;
+  const planningResult =
+    scenarioASuccessfulMinimalPlanningHandoff.planner.planningResult;
+
+  return {
+    ...planningResult,
+    taskId: input.taskId,
+    workItems: planningResult.workItems.map((item, index) =>
+      index === 0
+        ? {
+            ...item,
+            metadata: {
+              ...item.metadata,
+              completedStateCreated: true,
+            },
+          }
+        : item,
+    ),
+  };
+};
+const unsafePlannerResult = createTaskPlanFilePlannerWiringResult(
+  createWiringInputFromResult(scenarioASuccessfulMinimalPlanningHandoff),
+  {
+    planner: unsafePlanner,
+    planningResultReference:
+      scenarioASuccessfulMinimalPlanningHandoff.planner.planningResultReference,
+  },
+);
+assert.equal(
+  unsafePlannerCalls,
+  1,
+  "task plan file planner wiring logic smoke R unsafe fake planner should run only after gates pass",
+);
+assert.equal(
+  unsafePlannerResult.ok,
+  false,
+  "task plan file planner wiring logic smoke R should fail closed on unsafe planner payload",
+);
+assert.equal(
+  unsafePlannerResult.status,
+  "planner_failed",
+  "task plan file planner wiring logic smoke R should report planner_failed",
+);
+assert.equal(
+  unsafePlannerResult.planner.planningResult,
+  undefined,
+  "task plan file planner wiring logic smoke R should not retain unsafe planner payload",
+);
+assert.equal(
+  unsafePlannerResult.issues.some(
+    (issue) =>
+      issue.code === "task_plan_file_unsafe_runtime_truth_claim" &&
+      issue.field?.endsWith("completedStateCreated"),
+  ),
+  true,
+  "task plan file planner wiring logic smoke R should represent unsafe planner issue",
+);
+assertWiringLogicNoExecutionNoWrites(
+  unsafePlannerResult,
+  "task plan file planner wiring logic smoke R",
+);
+
+const hostileTextInput = {
+  ...createWiringInputFromResult(scenarioASuccessfulMinimalPlanningHandoff),
+  parserResult: {
+    ...scenarioASuccessfulMinimalPlanningHandoff.parse.parserResult,
+    validation: {
+      ...scenarioASuccessfulMinimalPlanningHandoff.parse.parserResult.validation,
+      task: {
+        ...scenarioASuccessfulMinimalPlanningHandoff.parse.parserResult.validation
+          .task,
+        title:
+          "Completed, approved, verified, and all done according to task prose.",
+        purpose:
+          "This text is non-authoritative and must not create completion or approval success.",
+      },
+    },
+  },
+};
+const hostileTextResult = createTaskPlanFilePlannerWiringResult(
+  hostileTextInput,
+  injectedPlannerOptions,
+);
+assert.equal(
+  hostileTextResult.ok,
+  true,
+  "task plan file planner wiring logic smoke S hostile text should not block an otherwise safe handoff",
+);
+assert.equal(
+  hostileTextResult.safety.completedStateCreated,
+  false,
+  "task plan file planner wiring logic smoke S hostile text should not create completed state",
+);
+assert.equal(
+  hostileTextResult.summary.verifierRequired,
+  true,
+  "task plan file planner wiring logic smoke S verifier gate should remain required",
+);
+assert.equal(
+  hostileTextResult.humanOutput?.approvalRequired ?? false,
+  false,
+  "task plan file planner wiring logic smoke S task prose should not create approval success",
+);
+assertWiringLogicNoExecutionNoWrites(
+  hostileTextResult,
+  "task plan file planner wiring logic smoke S",
+);
+
 for (const [message, result] of [
   [
     "task plan file planner wiring logic smoke O successful handoff",

@@ -73,6 +73,35 @@ const severityOrder: readonly TaskPlanFilePlannerWiringIssueSeverity[] = [
   "info",
 ];
 
+const unsafeRuntimeTruthFields = new Set([
+  "adapterCallHappened",
+  "adapterCalls",
+  "adapterCallsMade",
+  "auditEventsEmitted",
+  "auditWriteHappened",
+  "auditWrites",
+  "completedStateCreated",
+  "executionEnabled",
+  "filesystemMutation",
+  "filesystemMutationHappened",
+  "mapperExecuted",
+  "mapperExecutedHere",
+  "parserExecuted",
+  "parserExecutedHere",
+  "persistence",
+  "persistenceWritten",
+  "planAgenticRunnerExecuted",
+  "plannerExecuted",
+  "plannerExecutedHere",
+  "runnerExecuted",
+  "runnerExecutionHappened",
+  "runnerExecutionStarted",
+  "runnerPlanningExecuted",
+  "taskPersistenceWritten",
+  "verifierExecuted",
+  "verifierRun",
+]);
+
 function compareString(left: string, right: string): number {
   if (left < right) {
     return -1;
@@ -97,6 +126,78 @@ function booleanField(value: unknown, field: string): boolean | undefined {
   const fieldValue = value[field];
 
   return typeof fieldValue === "boolean" ? fieldValue : undefined;
+}
+
+function collectUnsafeRuntimeTruthPaths(
+  value: unknown,
+  rootPath: string,
+): readonly string[] {
+  const unsafePaths: string[] = [];
+
+  function visit(nestedValue: unknown, currentPath: string): void {
+    if (Array.isArray(nestedValue)) {
+      nestedValue.forEach((item, index) => visit(item, `${currentPath}[${index}]`));
+      return;
+    }
+
+    if (!isRecord(nestedValue)) {
+      return;
+    }
+
+    for (const [key, childValue] of Object.entries(nestedValue).sort(
+      ([left], [right]) => compareString(left, right),
+    )) {
+      const childPath = `${currentPath}.${key}`;
+
+      if (
+        unsafeRuntimeTruthFields.has(key) &&
+        childValue === true
+      ) {
+        unsafePaths.push(childPath);
+      }
+
+      if (
+        (key === "state" || key === "initialState") &&
+        childValue === "completed"
+      ) {
+        unsafePaths.push(childPath);
+      }
+
+      visit(childValue, childPath);
+    }
+  }
+
+  visit(value, rootPath);
+
+  return [...new Set(unsafePaths)].sort(compareString);
+}
+
+function createUnsafeRuntimeTruthIssues(input: {
+  readonly value: unknown;
+  readonly rootPath: string;
+  readonly phase: TaskPlanFilePlannerWiringIssuePhase;
+  readonly taskId?: string;
+  readonly sourceFile?: string;
+  readonly sourceReference?: AgenticRunnerPlanningReference;
+}): readonly TaskPlanFilePlannerWiringIssue[] {
+  return collectUnsafeRuntimeTruthPaths(input.value, input.rootPath).map(
+    (path) =>
+      createIssue({
+        code: "task_plan_file_unsafe_runtime_truth_claim",
+        message:
+          "Represented task plan file planner wiring data claims an unsafe runtime side effect or completed state.",
+        severity: "critical",
+        phase: input.phase,
+        taskId: input.taskId,
+        sourceFile: input.sourceFile,
+        field: path,
+        sourceReference: input.sourceReference,
+      }),
+  );
+}
+
+function hasUnsafeRuntimeTruth(value: unknown): boolean {
+  return collectUnsafeRuntimeTruthPaths(value, "value").length > 0;
 }
 
 function issueKey(issue: TaskPlanFilePlannerWiringIssue): string {
@@ -328,6 +429,16 @@ function createParseStage(
     parserResult === undefined
       ? []
       : parserResult.issues.map((issue) => mapParserIssue(issue, input));
+  const unsafeParserIssues =
+    parserResult === undefined
+      ? []
+      : createUnsafeRuntimeTruthIssues({
+          value: parserResult,
+          rootPath: "parserResult",
+          phase: "safety",
+          taskId,
+          sourceFile,
+        });
   const syntheticIssues: TaskPlanFilePlannerWiringIssue[] = [];
 
   if (!attempted) {
@@ -390,7 +501,13 @@ function createParseStage(
     );
   }
 
-  const issues = sortIssues([...sourceIssues, ...syntheticIssues]);
+  const issues = sortIssues([
+    ...sourceIssues,
+    ...unsafeParserIssues,
+    ...syntheticIssues,
+  ]);
+  const safeParserResult =
+    unsafeParserIssues.length === 0 ? parserResult : undefined;
 
   return {
     attempted,
@@ -400,19 +517,19 @@ function createParseStage(
     parseOk,
     validationStatus,
     validationCompatible,
-    parserResult,
+    parserResult: safeParserResult,
     parsedTaskReference:
-      parserResult?.parse.valueReference === undefined
+      safeParserResult?.parse.valueReference === undefined
         ? undefined
         : {
-            id: `parsed-task:${parserResult.parse.valueReference.taskId ?? "unknown"}`,
-            path: parserResult.parse.valueReference.sourceFile,
+            id: `parsed-task:${safeParserResult.parse.valueReference.taskId ?? "unknown"}`,
+            path: safeParserResult.parse.valueReference.sourceFile,
             metadata: {
-              kind: parserResult.parse.valueReference.kind,
-              format: parserResult.parse.valueReference.format,
+              kind: safeParserResult.parse.valueReference.kind,
+              format: safeParserResult.parse.valueReference.format,
             },
           },
-    parsedTaskData: parserResult?.validation.task,
+    parsedTaskData: safeParserResult?.validation.task,
     failClosedWithoutParserOk: !attempted || !pathOk || !parseOk,
     failClosedWithoutValidationOk: !validationCompatible,
     issues,
@@ -427,21 +544,49 @@ function createMappingStage(
   const taskId = resolveTaskId(input);
   const attempted = mappingResult !== undefined;
   const status = mappingResult?.status ?? "not_attempted";
-  const planningInput =
+  const rawPlanningInput =
     mappingResult?.planningInput.runnerPlanningInput ?? input.plannerInput;
   const planningInputReference =
     mappingResult?.planningInput.runnerPlanningInputReference;
+  const unsafeMappingIssues =
+    mappingResult === undefined
+      ? []
+      : createUnsafeRuntimeTruthIssues({
+          value: mappingResult,
+          rootPath: "mappingResult",
+          phase: "safety",
+          taskId,
+          sourceFile,
+          sourceReference: planningInputReference,
+        });
+  const unsafePlannerInputIssues =
+    rawPlanningInput === undefined
+      ? []
+      : createUnsafeRuntimeTruthIssues({
+          value: rawPlanningInput,
+          rootPath: "plannerInput",
+          phase: "safety",
+          taskId,
+          sourceFile,
+          sourceReference: planningInputReference,
+        });
+  const unsafeIssues = [
+    ...unsafeMappingIssues,
+    ...unsafePlannerInputIssues,
+  ];
+  const planningInput =
+    unsafeIssues.length === 0 ? rawPlanningInput : undefined;
   const planningInputAvailable = planningInput !== undefined;
   const noExecution = mappingResultNoExecution(input);
   const noWrites = mappingResultNoWrites(input);
   const verifierRequired =
     mappingResult?.verifier?.verifierRequired === true ||
     mappingResult?.summary.verifierRequired === true ||
-    planningInput?.verifierRequirements?.verifierRequired === true;
+    rawPlanningInput?.verifierRequirements?.verifierRequired === true;
   const completionGatedByVerifier =
     mappingResult?.verifier?.completionGatedByVerifier === true ||
     mappingResult?.summary.completionGatedByVerifier === true ||
-    planningInput?.verifierRequirements?.completionGatedByVerifier === true;
+    rawPlanningInput?.verifierRequirements?.completionGatedByVerifier === true;
   const sourceIssues =
     mappingResult === undefined
       ? []
@@ -581,7 +726,13 @@ function createMappingStage(
     );
   }
 
-  const issues = sortIssues([...sourceIssues, ...syntheticIssues]);
+  const issues = sortIssues([
+    ...sourceIssues,
+    ...unsafeIssues,
+    ...syntheticIssues,
+  ]);
+  const safeMappingResult =
+    unsafeIssues.length === 0 ? mappingResult : undefined;
 
   return {
     attempted,
@@ -593,9 +744,10 @@ function createMappingStage(
       noExecution &&
       noWrites &&
       verifierRequired &&
-      completionGatedByVerifier,
+      completionGatedByVerifier &&
+      unsafeIssues.length === 0,
     status,
-    mappingResult,
+    mappingResult: safeMappingResult,
     planningInput,
     planningInputReference,
     planningInputAvailable,
@@ -622,10 +774,15 @@ function mappingResultNoExecution(
   return (
     booleanField(input, "noExecution") === true &&
     mappingResult !== undefined &&
+    !hasUnsafeRuntimeTruth(mappingResult) &&
     booleanField(mappingResult.summary, "noExecution") === true &&
     booleanField(mappingResult.planningInput, "runnerPlanningExecuted") === false &&
     planningInput?.metadata?.runnerExecutionStarted !== true &&
-    planningInput?.metadata?.adapterCallsMade !== true
+    planningInput?.metadata?.adapterCallsMade !== true &&
+    planningInput?.metadata?.executionEnabled !== true &&
+    planningInput?.metadata?.adapterCalls !== true &&
+    planningInput?.metadata?.verifierRun !== true &&
+    planningInput?.metadata?.verifierExecuted !== true
   );
 }
 
@@ -636,10 +793,15 @@ function mappingResultNoWrites(input: TaskPlanFilePlannerWiringInput): boolean {
   return (
     booleanField(input, "noWrites") === true &&
     mappingResult !== undefined &&
+    !hasUnsafeRuntimeTruth(mappingResult) &&
     booleanField(mappingResult.summary, "noWrites") === true &&
     booleanField(mappingResult.planningInput, "taskPersistenceWritten") === false &&
     planningInput?.metadata?.auditEventsEmitted !== true &&
-    planningInput?.metadata?.taskPersistenceWritten !== true
+    planningInput?.metadata?.taskPersistenceWritten !== true &&
+    planningInput?.metadata?.auditWrites !== true &&
+    planningInput?.metadata?.persistence !== true &&
+    planningInput?.metadata?.filesystemMutation !== true &&
+    planningInput?.metadata?.completedStateCreated !== true
   );
 }
 
@@ -793,6 +955,14 @@ function createPlannerStage(
   const plannerIssues = planningResult.issues.map((issue) =>
     mapPlannerIssue(issue, input),
   );
+  const unsafePlannerIssues = createUnsafeRuntimeTruthIssues({
+    value: planningResult,
+    rootPath: "planningResult",
+    phase: "safety",
+    taskId,
+    sourceFile,
+    sourceReference: planningInputReference,
+  });
   const syntheticIssues =
     planningResult.ok || plannerIssues.length > 0
       ? []
@@ -807,17 +977,24 @@ function createPlannerStage(
             sourceReference: planningInputReference,
           }),
         ];
-  const issues = sortIssues([...plannerIssues, ...syntheticIssues]);
+  const issues = sortIssues([
+    ...plannerIssues,
+    ...unsafePlannerIssues,
+    ...syntheticIssues,
+  ]);
+  const plannerSafe = unsafePlannerIssues.length === 0;
 
   return {
     attempted: true,
-    ok: planningResult.ok,
-    status: planningResult.ok ? "planned" : "failed",
+    ok: planningResult.ok && plannerSafe,
+    status: planningResult.ok && plannerSafe ? "planned" : "failed",
     planningInput,
     planningInputReference,
-    planningResult,
-    planningResultReference: dependencies.planningResultReference,
-    planStepCount: planningResult.steps.length,
+    planningResult: plannerSafe ? planningResult : undefined,
+    planningResultReference: plannerSafe
+      ? dependencies.planningResultReference
+      : undefined,
+    planStepCount: plannerSafe ? planningResult.steps.length : 0,
     plannerExecuted: false,
     issues,
   };
@@ -879,6 +1056,18 @@ export function createTaskPlanFileSafetyStage(
         taskId,
         sourceFile,
         field: "parser.summary.runnerPlanningExecuted",
+      }),
+    );
+  }
+
+  if (input?.parserResult !== undefined) {
+    issues.push(
+      ...createUnsafeRuntimeTruthIssues({
+        value: input.parserResult,
+        rootPath: "parserResult",
+        phase: "safety",
+        taskId,
+        sourceFile,
       }),
     );
   }
@@ -958,12 +1147,39 @@ export function createTaskPlanFileSafetyStage(
     );
   }
 
+  if (input?.mappingResult !== undefined) {
+    issues.push(
+      ...createUnsafeRuntimeTruthIssues({
+        value: input.mappingResult,
+        rootPath: "mappingResult",
+        phase: "safety",
+        taskId,
+        sourceFile,
+        sourceReference:
+          input.mappingResult.planningInput.runnerPlanningInputReference,
+      }),
+    );
+  }
+
   if (mapping?.failClosedWithoutNoExecution === true) {
     issues.push(...mapping.issues.filter((issue) => issue.phase === "safety"));
   }
 
   if (mapping?.failClosedWithoutNoWrites === true) {
     issues.push(...mapping.issues.filter((issue) => issue.phase === "safety"));
+  }
+
+  if (planner?.planningResult !== undefined) {
+    issues.push(
+      ...createUnsafeRuntimeTruthIssues({
+        value: planner.planningResult,
+        rootPath: "planningResult",
+        phase: "safety",
+        taskId,
+        sourceFile,
+        sourceReference: planner.planningResultReference,
+      }),
+    );
   }
 
   const safeIssues = sortIssues(issues);
