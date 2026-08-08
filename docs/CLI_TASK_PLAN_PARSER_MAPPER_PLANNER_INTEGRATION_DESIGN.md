@@ -535,121 +535,34 @@ O. No-execution assertion proves:
 - no completed state;
 - no filesystem mutation.
 
-## Implementation Sequence
-Do not start these tasks from this design task.
+## Current Implementation Status
+TASK-0264 through TASK-0272 implemented and reviewed the core helper contracts,
+examples, logic, smoke coverage, and conservative usage documentation for this
+integration MVP.
 
-1. TASK-0264: Implement CLI task plan planner integration contracts.
-   Purpose: add CLI-local contracts for parser, mapper, wiring, planner output,
-   fail-closed statuses, JSON safety wrapper, and process exit-code mapping.
-   Likely files: `apps/cli/src/commands.ts`.
-   Verification command: `pnpm --filter @aeos/cli check`.
-   Recommended model effort: Medium.
-   Classification: Code.
+The implemented helper remains in `@aeos/core`. It is still not CLI command
+wiring: it does not parse argv from a process boundary, print output, read task
+files, write files, call `planAgenticRunner()` directly, run runner execution,
+run verifier logic, write audit events, persist state, or create completed
+state.
 
-2. TASK-0265: Add CLI task plan planner output examples.
-   Purpose: add representative success, parser failure, unsupported mapping,
-   blocked safety, missing planner input, and planner non-ok examples without
-   enabling runtime command behavior.
-   Likely files: `apps/cli/src/commands.ts`, `apps/cli/scripts/smoke.mjs`.
-   Verification command: `pnpm --filter @aeos/cli check`.
-   Recommended model effort: Low.
-   Classification: Code.
+Final review coverage proves:
 
-3. TASK-0266: Add parser result builder for planner-enabled task plan CLI.
-   Purpose: call `parseTaskPlanInputFile()` with the target parser settings and
-   expose a validation-compatible handoff without treating parser-local
-   unsupported mapping as planner-ready.
-   Likely files: `apps/cli/src/commands.ts`.
-   Verification command: `pnpm --filter @aeos/cli check`.
-   Recommended model effort: Medium.
-   Classification: Code.
+- strict `noExecution` and `noWrites` proof must exist on
+  `mappingResult.planningInput.runnerPlanningInput.metadata`;
+- strict verifier proof must exist on
+  `mappingResult.planningInput.runnerPlanningInput.verifierRequirements`;
+- top-level `plannerInput`, top-level safety claims, mapping summary claims, and
+  mapping verifier claims cannot bypass the actual runner planning input;
+- unsafe represented side-effect, completion, approval, verification, or
+  all-done claims fail closed;
+- dependency-injected planner invocation is allowed only after all parser,
+  validation, mapping, runner-input, verifier, wiring, dependency, and safety
+  gates pass.
 
-4. TASK-0267: Add parser-to-mapper CLI input builder.
-   Purpose: build `TaskContractMappingInput` from parser validation task data
-   with MVP-safe fallback, audit, policy, verifier, no-execution, and no-write
-   options.
-   Likely files: `apps/cli/src/commands.ts`.
-   Verification command: `pnpm --filter @aeos/cli check`.
-   Recommended model effort: Medium.
-   Classification: Code.
-
-5. TASK-0268: Wire CLI task plan to mapper fail-closed handling.
-   Purpose: call `mapTaskContractToRunnerPlanningInput()` after validation and
-   return deterministic unsupported, invalid, blocked, or mapped output without
-   invoking planner yet.
-   Likely files: `apps/cli/src/commands.ts`, `apps/cli/scripts/smoke.mjs`.
-   Verification command: `pnpm --filter @aeos/cli check`.
-   Recommended model effort: Medium.
-   Classification: Code.
-
-6. TASK-0269: Wire dependency-injected planner through task plan wiring helper.
-   Purpose: pass `planAgenticRunner` into
-   `createTaskPlanFilePlannerWiringResult()` and ensure planner input can only
-   come from `mappingResult.planningInput.runnerPlanningInput`.
-   Likely files: `apps/cli/src/commands.ts`.
-   Verification command: `pnpm --filter @aeos/cli check`.
-   Recommended model effort: High.
-   Classification: Code.
-
-7. TASK-0270: Render successful human task plan output.
-   Purpose: print task id, source file, mode, parsed, mapping, planning, counts,
-   policy, approval, verifier, audit, safety flags, and compact issues.
-   Likely files: `apps/cli/src/commands.ts`, `apps/cli/scripts/smoke.mjs`.
-   Verification command: `pnpm --filter @aeos/cli check`.
-   Recommended model effort: Medium.
-   Classification: Code.
-
-8. TASK-0271: Render successful JSON task plan output.
-   Purpose: emit the target JSON-only success object with parse, mapping, plan,
-   nested safety flags, issues, summary, and `exitCode: "success"`.
-   Likely files: `apps/cli/src/commands.ts`, `apps/cli/scripts/smoke.mjs`.
-   Verification command: `pnpm --filter @aeos/cli check`.
-   Recommended model effort: Medium.
-   Classification: Code.
-
-9. TASK-0272: Add fail-closed JSON output for parser and validation failures.
-   Purpose: preserve JSON-only deterministic output for missing file, unsafe
-   path, unsupported extension, oversized file, invalid JSON, and invalid task
-   contract.
-   Likely files: `apps/cli/src/commands.ts`, `apps/cli/scripts/smoke.mjs`.
-   Verification command: `pnpm --filter @aeos/cli smoke`.
-   Recommended model effort: High.
-   Classification: Code.
-
-10. TASK-0273: Add fail-closed mapping and safety smoke coverage.
-    Purpose: cover unsupported explicit work items, unsupported batches, missing
-    runner planning input, missing verifier gate, missing no-execution/no-write
-    proof, and hostile represented metadata.
-    Likely files: `apps/cli/scripts/smoke.mjs`.
-    Verification command: `pnpm --filter @aeos/cli smoke`.
-    Recommended model effort: High.
-    Classification: Code.
-
-11. TASK-0274: Add planner non-ok and dependency-injection smoke coverage.
-    Purpose: prove planner non-ok fails closed, planner is not called before
-    gates pass, and injected planner receives only mapped runner planning input.
-    Likely files: `apps/cli/scripts/smoke.mjs`.
-    Verification command: `pnpm --filter @aeos/cli smoke`.
-    Recommended model effort: High.
-    Classification: Code.
-
-12. TASK-0275: Add task plan no-write and no-execution smoke assertions.
-    Purpose: assert success and failure paths do not create files, call
-    adapters, write audit events, run verifier, persist state, create completed
-    state, or mutate the filesystem.
-    Likely files: `apps/cli/scripts/smoke.mjs`.
-    Verification command: `pnpm --filter @aeos/cli smoke`.
-    Recommended model effort: High.
-    Classification: Code.
-
-13. TASK-0276: Update task plan planner integration usage docs.
-    Purpose: document implemented CLI behavior, supported fallback limits,
-    JSON-only output, fail-closed statuses, and remaining non-goals after code
-    lands.
-    Likely files: `docs/TASK_PLAN_INPUT_PARSER_USAGE.md`,
-    `docs/TASK_CONTRACT_MAPPING_USAGE.md`,
-    `docs/TASK_PLAN_FILE_PLANNER_WIRING_USAGE.md`,
-    `docs/AGENTIC_RUNNER_PLANNING_USAGE.md`.
-    Verification command: `git status --short`.
-    Recommended model effort: Medium.
-    Classification: Docs.
+## Next Implementation Task
+TASK-0273 should implement CLI task plan command planner integration by wiring
+the existing command boundary to the already-reviewed core helper behavior.
+That task must preserve the same no-execution, no-write, JSON-only,
+verifier-gated completion, dependency-injected planner, and top-level bypass
+prevention guarantees.

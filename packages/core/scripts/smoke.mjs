@@ -5728,6 +5728,138 @@ assert.equal(
   "CLI task plan integration logic smoke H strict proof case completed state should not be created",
 );
 
+const cliLogicStrictNoExecutionOnlyOutsidePlanner = createCliLogicCountingPlanner(
+  cliLogicScenarioA.planner.planningResult,
+);
+const cliLogicStrictNoExecutionOnlyOutsideResult =
+  createCliTaskPlanPlannerIntegrationResult(
+    createCliLogicInputFromResult(cliLogicScenarioA, {
+      mappingResult: {
+        ...cliLogicScenarioA.mapping.mappingResult,
+        planningInput: {
+          ...cliLogicScenarioA.mapping.mappingResult.planningInput,
+          runnerPlanningInput: {
+            ...cliLogicScenarioA.mapping.mappingResult.planningInput
+              .runnerPlanningInput,
+            metadata: {
+              noWrites: true,
+              runnerExecutionStarted: false,
+              adapterCallsMade: false,
+              executionEnabled: false,
+              adapterCalls: false,
+              verifierRun: false,
+              verifierExecuted: false,
+              auditEventsEmitted: false,
+              taskPersistenceWritten: false,
+              auditWrites: false,
+              persistence: false,
+              filesystemMutation: false,
+              completedStateCreated: false,
+            },
+          },
+          runnerPlanningInputData: undefined,
+        },
+        summary: {
+          ...cliLogicScenarioA.mapping.mappingResult.summary,
+          noExecution: true,
+        },
+      },
+      noExecution: true,
+    }),
+    {
+      planner: cliLogicStrictNoExecutionOnlyOutsidePlanner.planner,
+      planningResultReference: cliLogicScenarioA.planner.planningResultReference,
+    },
+  );
+assert.equal(
+  cliLogicStrictNoExecutionOnlyOutsideResult.mapping.runnerPlanningInputAvailable,
+  true,
+  "CLI task plan integration logic smoke H strict outside-only noExecution should still have runnerPlanningInput",
+);
+assert.equal(
+  cliLogicStrictNoExecutionOnlyOutsideResult.mapping.ok,
+  false,
+  "CLI task plan integration logic smoke H strict outside-only noExecution should fail mapping gate",
+);
+assert.equal(
+  cliLogicStrictNoExecutionOnlyOutsideResult.wiring.plannerInvocationAllowed,
+  false,
+  "CLI task plan integration logic smoke H strict outside-only noExecution should block planner invocation",
+);
+assert.equal(
+  cliLogicStrictNoExecutionOnlyOutsidePlanner.calls(),
+  0,
+  "CLI task plan integration logic smoke H strict outside-only noExecution fake planner should not run",
+);
+assert.equal(
+  cliLogicStrictNoExecutionOnlyOutsideResult.issues.some(
+    (issue) => issue.field === "mapping.noExecution",
+  ),
+  true,
+  "CLI task plan integration logic smoke H strict outside-only noExecution should report deterministic issue",
+);
+assert.equal(
+  cliLogicStrictNoExecutionOnlyOutsideResult.ok,
+  false,
+  "CLI task plan integration logic smoke H strict outside-only noExecution should fail closed",
+);
+
+const cliLogicStrictNoWritesNonTruePlanner = createCliLogicCountingPlanner(
+  cliLogicScenarioA.planner.planningResult,
+);
+const cliLogicStrictNoWritesNonTrueResult =
+  createCliTaskPlanPlannerIntegrationResult(
+    createCliLogicInputFromResult(cliLogicScenarioA, {
+      mappingResult: {
+        ...cliLogicScenarioA.mapping.mappingResult,
+        planningInput: {
+          ...cliLogicScenarioA.mapping.mappingResult.planningInput,
+          runnerPlanningInput: {
+            ...cliLogicScenarioA.mapping.mappingResult.planningInput
+              .runnerPlanningInput,
+            metadata: {
+              ...cliLogicScenarioA.mapping.mappingResult.planningInput
+                .runnerPlanningInput.metadata,
+              noWrites: "true",
+            },
+          },
+          runnerPlanningInputData: undefined,
+        },
+        summary: {
+          ...cliLogicScenarioA.mapping.mappingResult.summary,
+          noWrites: true,
+        },
+      },
+      noWrites: true,
+    }),
+    {
+      planner: cliLogicStrictNoWritesNonTruePlanner.planner,
+      planningResultReference: cliLogicScenarioA.planner.planningResultReference,
+    },
+  );
+assert.equal(
+  cliLogicStrictNoWritesNonTrueResult.mapping.ok,
+  false,
+  "CLI task plan integration logic smoke H strict non-true noWrites should fail mapping gate",
+);
+assert.equal(
+  cliLogicStrictNoWritesNonTrueResult.wiring.plannerInvocationAllowed,
+  false,
+  "CLI task plan integration logic smoke H strict non-true noWrites should block planner invocation",
+);
+assert.equal(
+  cliLogicStrictNoWritesNonTruePlanner.calls(),
+  0,
+  "CLI task plan integration logic smoke H strict non-true noWrites fake planner should not run",
+);
+assert.equal(
+  cliLogicStrictNoWritesNonTrueResult.issues.some(
+    (issue) => issue.field === "mapping.noWrites",
+  ),
+  true,
+  "CLI task plan integration logic smoke H strict non-true noWrites should report deterministic issue",
+);
+
 const cliLogicStrictRunnerVerifierPlanner = createCliLogicCountingPlanner(
   cliLogicScenarioA.planner.planningResult,
 );
@@ -5832,6 +5964,77 @@ assert.equal(
   "CLI task plan integration logic smoke H strict verifier case completed state should not be created",
 );
 
+const cliLogicVerifierOnlyOutsidePlanner = createCliLogicCountingPlanner(
+  cliLogicScenarioA.planner.planningResult,
+);
+const cliLogicVerifierOnlyOutsideResult = createCliTaskPlanPlannerIntegrationResult(
+  createCliLogicInputFromResult(cliLogicScenarioA, {
+    mappingResult: {
+      ...cliLogicScenarioA.mapping.mappingResult,
+      verifier: {
+        ...cliLogicScenarioA.mapping.mappingResult.verifier,
+        verifierRequired: true,
+        completionGatedByVerifier: true,
+      },
+      planningInput: {
+        ...cliLogicScenarioA.mapping.mappingResult.planningInput,
+        runnerPlanningInput: {
+          ...cliLogicScenarioA.mapping.mappingResult.planningInput
+            .runnerPlanningInput,
+          verifierRequirements: {
+            issues: [],
+          },
+        },
+        runnerPlanningInputData: undefined,
+      },
+      summary: {
+        ...cliLogicScenarioA.mapping.mappingResult.summary,
+        verifierRequired: true,
+        completionGatedByVerifier: true,
+      },
+    },
+  }),
+  {
+    planner: cliLogicVerifierOnlyOutsidePlanner.planner,
+    planningResultReference: cliLogicScenarioA.planner.planningResultReference,
+  },
+);
+assert.equal(
+  cliLogicVerifierOnlyOutsideResult.mapping.runnerPlanningInputAvailable,
+  true,
+  "CLI task plan integration logic smoke H outside-only verifier proof should still have runnerPlanningInput",
+);
+assert.equal(
+  cliLogicVerifierOnlyOutsideResult.mapping.verifierRequired,
+  false,
+  "CLI task plan integration logic smoke H outside-only verifier proof should reject missing runner verifierRequired",
+);
+assert.equal(
+  cliLogicVerifierOnlyOutsideResult.mapping.completionGatedByVerifier,
+  false,
+  "CLI task plan integration logic smoke H outside-only verifier proof should reject missing runner completion gate",
+);
+assert.equal(
+  cliLogicVerifierOnlyOutsideResult.wiring.plannerInvocationAllowed,
+  false,
+  "CLI task plan integration logic smoke H outside-only verifier proof should block planner invocation",
+);
+assert.equal(
+  cliLogicVerifierOnlyOutsidePlanner.calls(),
+  0,
+  "CLI task plan integration logic smoke H outside-only verifier proof fake planner should not run",
+);
+assert.equal(
+  cliLogicVerifierOnlyOutsideResult.issues.some((issue) =>
+    [
+      "mapping.verifierRequired",
+      "mapping.completionGatedByVerifier",
+    ].includes(issue.field),
+  ),
+  true,
+  "CLI task plan integration logic smoke H outside-only verifier proof should report deterministic issue",
+);
+
 for (const [check, passed] of Object.entries(cliLogicScenarioIChecks)) {
   assert.equal(
     passed,
@@ -5856,6 +6059,78 @@ assertCliPlannerNotAttempted(
 assertCliIssueRepresented(
   cliLogicScenarioI,
   "CLI task plan integration logic smoke I",
+);
+
+const cliLogicHostileTextPlanner = createCliLogicCountingPlanner(
+  cliLogicScenarioA.planner.planningResult,
+);
+const cliLogicHostileTextResult = createCliTaskPlanPlannerIntegrationResult(
+  createCliLogicInputFromResult(cliLogicScenarioA, {
+    mappingResult: {
+      ...cliLogicScenarioA.mapping.mappingResult,
+      planningInput: {
+        ...cliLogicScenarioA.mapping.mappingResult.planningInput,
+        runnerPlanningInput: {
+          ...cliLogicScenarioA.mapping.mappingResult.planningInput
+            .runnerPlanningInput,
+          metadata: {
+            ...cliLogicScenarioA.mapping.mappingResult.planningInput
+              .runnerPlanningInput.metadata,
+            approvalClaim: "approved",
+            verifierClaim: "verified",
+            taskClaim: "all done",
+          },
+        },
+        runnerPlanningInputData: undefined,
+      },
+    },
+  }),
+  {
+    planner: cliLogicHostileTextPlanner.planner,
+    planningResultReference: cliLogicScenarioA.planner.planningResultReference,
+  },
+);
+assert.equal(
+  cliLogicHostileTextResult.ok,
+  false,
+  "CLI task plan integration logic smoke I hostile text claims should fail closed",
+);
+assert.equal(
+  cliLogicHostileTextResult.wiring.plannerInvocationAllowed,
+  false,
+  "CLI task plan integration logic smoke I hostile text claims should block planner invocation",
+);
+assert.equal(
+  cliLogicHostileTextPlanner.calls(),
+  0,
+  "CLI task plan integration logic smoke I hostile text claims fake planner should not run",
+);
+assert.equal(
+  cliLogicHostileTextResult.issues.some(
+    (issue) =>
+      issue.code === "cli_task_plan_unsafe_represented_metadata" &&
+      issue.field?.includes("approvalClaim"),
+  ),
+  true,
+  "CLI task plan integration logic smoke I hostile approved text should be represented as unsafe",
+);
+assert.equal(
+  cliLogicHostileTextResult.issues.some(
+    (issue) =>
+      issue.code === "cli_task_plan_unsafe_represented_metadata" &&
+      issue.field?.includes("verifierClaim"),
+  ),
+  true,
+  "CLI task plan integration logic smoke I hostile verified text should be represented as unsafe",
+);
+assert.equal(
+  cliLogicHostileTextResult.issues.some(
+    (issue) =>
+      issue.code === "cli_task_plan_unsafe_represented_metadata" &&
+      issue.field?.includes("taskClaim"),
+  ),
+  true,
+  "CLI task plan integration logic smoke I hostile all-done text should be represented as unsafe",
 );
 
 for (const [check, passed] of Object.entries(cliLogicScenarioJChecks)) {
@@ -5954,6 +6229,52 @@ assert.notEqual(
   "CLI task plan integration logic smoke M exit code should be non-success",
 );
 
+const cliLogicMissingPlannerDependencyResult =
+  createCliTaskPlanPlannerIntegrationResult(
+    createCliLogicInputFromResult(cliLogicScenarioA),
+  );
+assert.equal(
+  cliLogicMissingPlannerDependencyResult.wiring.attempted,
+  true,
+  "CLI task plan integration logic smoke Q missing dependency should attempt wiring after safety gates",
+);
+assert.equal(
+  cliLogicMissingPlannerDependencyResult.wiring.ok,
+  false,
+  "CLI task plan integration logic smoke Q missing dependency should fail wiring",
+);
+assert.equal(
+  cliLogicMissingPlannerDependencyResult.wiring.plannerDependencyInjected,
+  false,
+  "CLI task plan integration logic smoke Q missing dependency should report no injected planner",
+);
+assert.equal(
+  cliLogicMissingPlannerDependencyResult.wiring.plannerInvocationAllowed,
+  false,
+  "CLI task plan integration logic smoke Q missing dependency should block planner invocation",
+);
+assert.equal(
+  cliLogicMissingPlannerDependencyResult.issues.some(
+    (issue) => issue.code === "cli_task_plan_planner_dependency_missing",
+  ),
+  true,
+  "CLI task plan integration logic smoke Q missing dependency should report deterministic issue",
+);
+assert.equal(
+  cliLogicMissingPlannerDependencyResult.status,
+  "blocked",
+  "CLI task plan integration logic smoke Q missing dependency should report blocked",
+);
+assert.equal(
+  cliLogicMissingPlannerDependencyResult.exitCode,
+  "blocked",
+  "CLI task plan integration logic smoke Q missing dependency should use blocked exit code",
+);
+assertCliPlannerNotAttempted(
+  cliLogicMissingPlannerDependencyResult,
+  "CLI task plan integration logic smoke Q missing dependency",
+);
+
 assert.deepEqual(
   summarizeCliTaskPlanPlannerIntegrationResult(cliLogicScenarioA),
   cliLogicScenarioN,
@@ -5994,10 +6315,30 @@ for (const [message, result] of [
     cliLogicScenarioH,
   ],
   [
+    "CLI task plan integration logic smoke N outside-only noExecution proof",
+    cliLogicStrictNoExecutionOnlyOutsideResult,
+  ],
+  [
+    "CLI task plan integration logic smoke N non-true noWrites proof",
+    cliLogicStrictNoWritesNonTrueResult,
+  ],
+  [
     "CLI task plan integration logic smoke N contradictory runner verifier gate",
     cliLogicStrictRunnerVerifierResult,
   ],
+  [
+    "CLI task plan integration logic smoke N outside-only verifier proof",
+    cliLogicVerifierOnlyOutsideResult,
+  ],
   ["CLI task plan integration logic smoke N unsafe metadata", cliLogicScenarioI],
+  [
+    "CLI task plan integration logic smoke N hostile text claims",
+    cliLogicHostileTextResult,
+  ],
+  [
+    "CLI task plan integration logic smoke N missing planner dependency",
+    cliLogicMissingPlannerDependencyResult,
+  ],
   ["CLI task plan integration logic smoke N planner failure", cliLogicScenarioJ],
 ]) {
   assertCliLogicSummaryMatchesResult(result, message);
@@ -6155,9 +6496,28 @@ const plannerGatedScenarios = [
     }),
   ],
   [
+    "outside-only noExecution proof",
+    createCliLogicInputFromResult(cliLogicScenarioA, {
+      mappingResult: cliLogicStrictNoExecutionOnlyOutsideResult.mapping
+        .mappingResult,
+    }),
+  ],
+  [
+    "non-true noWrites proof",
+    createCliLogicInputFromResult(cliLogicScenarioA, {
+      mappingResult: cliLogicStrictNoWritesNonTrueResult.mapping.mappingResult,
+    }),
+  ],
+  [
     "contradictory runner verifier gate",
     createCliLogicInputFromResult(cliLogicScenarioA, {
       mappingResult: cliLogicStrictRunnerVerifierMappingResult,
+    }),
+  ],
+  [
+    "outside-only verifier proof",
+    createCliLogicInputFromResult(cliLogicScenarioA, {
+      mappingResult: cliLogicVerifierOnlyOutsideResult.mapping.mappingResult,
     }),
   ],
   [
@@ -6314,10 +6674,30 @@ for (const [message, result] of [
     cliLogicStrictNoExecutionNoWritesResult,
   ],
   [
+    "CLI task plan integration logic smoke S outside-only noExecution proof",
+    cliLogicStrictNoExecutionOnlyOutsideResult,
+  ],
+  [
+    "CLI task plan integration logic smoke S non-true noWrites proof",
+    cliLogicStrictNoWritesNonTrueResult,
+  ],
+  [
     "CLI task plan integration logic smoke S contradictory runner verifier gate",
     cliLogicStrictRunnerVerifierResult,
   ],
+  [
+    "CLI task plan integration logic smoke S outside-only verifier proof",
+    cliLogicVerifierOnlyOutsideResult,
+  ],
   ["CLI task plan integration logic smoke S unsafe metadata", cliLogicScenarioI],
+  [
+    "CLI task plan integration logic smoke S hostile text claims",
+    cliLogicHostileTextResult,
+  ],
+  [
+    "CLI task plan integration logic smoke S missing planner dependency",
+    cliLogicMissingPlannerDependencyResult,
+  ],
   ["CLI task plan integration logic smoke S planner failure", cliLogicScenarioJ],
   [
     "CLI task plan integration logic smoke S top-level bypass",

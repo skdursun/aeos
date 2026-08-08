@@ -53,6 +53,7 @@ condition.
 - TASK-0269: Add CLI task plan planner integration logic smoke tests.
 - TASK-0270: Add CLI task plan planner integration safety review.
 - TASK-0271: Add CLI task plan planner integration documentation.
+- TASK-0272: Add CLI task plan planner integration final safety review.
 
 ## Do Not Load By Default
 
@@ -63,7 +64,7 @@ condition.
 
 ## Next Task
 
-TASK-0272 Add CLI task plan planner integration final safety review.
+TASK-0273 Implement CLI task plan command planner integration.
 
 ## Current Plans
 

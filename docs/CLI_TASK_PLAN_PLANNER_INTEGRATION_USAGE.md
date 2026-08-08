@@ -20,6 +20,23 @@ persistence.
 - Output models are render payloads only.
 - JSON-only behavior is represented as a payload/model, not printed here.
 
+## Final Review Alignment
+TASK-0272 final review keeps the MVP contract conservative:
+
+- planner invocation is blocked unless strict `noExecution` and `noWrites`
+  proof exists on
+  `mappingResult.planningInput.runnerPlanningInput.metadata`;
+- planner invocation is blocked unless strict `verifierRequired` and
+  `completionGatedByVerifier` proof exists on
+  `mappingResult.planningInput.runnerPlanningInput.verifierRequirements`;
+- top-level `plannerInput`, top-level safety claims, mapping summary claims, and
+  mapping verifier claims are diagnostic only and cannot authorize planning;
+- unsafe represented side-effect, completion, approval, verification, or
+  all-done claims fail closed with deterministic issues;
+- JSON and human payloads remain render models only and do not prove that output
+  was printed or that CLI, filesystem, runner, adapter, audit, verifier,
+  persistence, or completion behavior occurred.
+
 ## What The Integration Logic Does
 - Builds parser, mapping, wiring, planner, safety, human render, JSON render,
   JSON-only, issue, exit-code, and summary models.
