@@ -44,6 +44,7 @@ condition.
 - TASK-0260: Add task plan file planner wiring safety review.
 - TASK-0261: Add task plan file planner wiring documentation.
 - TASK-0262: Add task plan file planner wiring final safety review.
+- TASK-0263: Design CLI task plan parser-mapper-planner integration.
 
 ## Do Not Load By Default
 
@@ -54,7 +55,7 @@ condition.
 
 ## Next Task
 
-TASK-0263 Design CLI task plan parser-mapper-planner integration.
+TASK-0264 Implement CLI task plan planner integration contracts.
 
 ## Current Plans
 
@@ -70,3 +71,4 @@ TASK-0263 Design CLI task plan parser-mapper-planner integration.
 - docs/TASK_CONTRACT_TO_RUNNER_PLANNING_MAPPING.md
 - docs/TASK_CONTRACT_MAPPING_USAGE.md
 - docs/TASK_PLAN_FILE_TO_PLANNER_WIRING_DESIGN.md
+- docs/CLI_TASK_PLAN_PARSER_MAPPER_PLANNER_INTEGRATION_DESIGN.md
