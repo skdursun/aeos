@@ -43,6 +43,7 @@ condition.
 - TASK-0259: Add task plan file planner wiring logic smoke tests.
 - TASK-0260: Add task plan file planner wiring safety review.
 - TASK-0261: Add task plan file planner wiring documentation.
+- TASK-0262: Add task plan file planner wiring final safety review.
 
 ## Do Not Load By Default
 
@@ -53,7 +54,7 @@ condition.
 
 ## Next Task
 
-TASK-0262 Add task plan file planner wiring final safety review.
+TASK-0263 Design CLI task plan parser-mapper-planner integration.
 
 ## Current Plans
 

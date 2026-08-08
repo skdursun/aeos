@@ -3798,6 +3798,43 @@ assert.equal(
   "task plan file planner wiring logic smoke N fake planner should not run for missing noExecution/noWrites",
 );
 
+const topLevelPlannerInputBypassBase = createWiringInputFromResult(
+  scenarioASuccessfulMinimalPlanningHandoff,
+);
+const { runnerPlanningInput, ...planningInputHandoffWithoutRunnerInput } =
+  topLevelPlannerInputBypassBase.mappingResult.planningInput;
+const topLevelPlannerInputBypassCallsBefore = injectedPlannerCalls;
+const topLevelPlannerInputBypassResult = createTaskPlanFilePlannerWiringResult(
+  {
+    ...topLevelPlannerInputBypassBase,
+    plannerInput: runnerPlanningInput,
+    mappingResult: {
+      ...topLevelPlannerInputBypassBase.mappingResult,
+      planningInput: planningInputHandoffWithoutRunnerInput,
+    },
+  },
+  injectedPlannerOptions,
+);
+assert.equal(
+  injectedPlannerCalls,
+  topLevelPlannerInputBypassCallsBefore,
+  "task plan file planner wiring logic smoke N top-level plannerInput should not bypass missing mapping handoff input",
+);
+assert.equal(
+  topLevelPlannerInputBypassResult.mapping.planningInputAvailable,
+  false,
+  "task plan file planner wiring logic smoke N missing mapping runnerPlanningInput should block planning input availability",
+);
+assert.equal(
+  topLevelPlannerInputBypassResult.status,
+  "mapping_failed",
+  "task plan file planner wiring logic smoke N missing mapping runnerPlanningInput should fail mapping",
+);
+assertPlannerNotAttempted(
+  topLevelPlannerInputBypassResult,
+  "task plan file planner wiring logic smoke N top-level plannerInput bypass",
+);
+
 function createUnsafePlanningMetadataInput(field) {
   const base = createWiringInputFromResult(
     scenarioASuccessfulMinimalPlanningHandoff,

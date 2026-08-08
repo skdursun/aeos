@@ -64,6 +64,11 @@ The wiring helper accepts `TaskPlanFilePlannerWiringInput`:
 Current safe planning behavior is for `mode: "plan"` with parser and mapping
 results already supplied by the caller.
 
+The top-level `plannerInput` field is represented contract data only. It does
+not substitute for `mappingResult.planningInput.runnerPlanningInput`; planner
+handoff remains blocked unless the mapping handoff itself provides runner
+planning input.
+
 ## Stage Model
 The result contains four stages:
 
@@ -92,7 +97,7 @@ The mapping stage is eligible only when:
 - mapping result is ok;
 - mapping status is `mapped`;
 - mapping is supported;
-- runner planning input is available;
+- runner planning input is available from the mapping handoff;
 - `noExecution` is proven;
 - `noWrites` is proven;
 - verifier is required;

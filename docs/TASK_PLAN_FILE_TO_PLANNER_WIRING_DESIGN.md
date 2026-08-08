@@ -4,7 +4,9 @@
 Design how future `aeos task plan <task-file>` wiring safely connects task plan
 input parsing, task contract mapping, and `planAgenticRunner()`.
 
-This is design-only. It does not implement CLI integration, mapper integration,
+This is design-only for CLI integration. The current core MVP implements a pure
+in-memory wiring helper with dependency-injected planner behavior only. It does
+not implement CLI integration, filesystem parser/mapper execution, direct
 planner execution, package changes, persistence, audit runtime, verifier
 runtime, adapter calls, or task execution.
 
@@ -22,6 +24,8 @@ runtime, adapter calls, or task execution.
 - `planAgenticRunner()` is deterministic and side-effect-free over represented
   planning input.
 - No task plan CLI path currently calls `planAgenticRunner()`.
+- The core wiring helper does not import or call `planAgenticRunner()` directly.
+  It can call only a supplied in-memory planner dependency after all gates pass.
 
 ## Why Wiring Is Needed
 The CLI needs a narrow orchestration layer between parser output and runner
@@ -34,14 +38,16 @@ Without this wiring, `aeos task plan <task-file>` can only report parsed input.
 With unsafe wiring, it could overstate support, skip verifier gates, or imply
 execution. The wiring must therefore fail closed at each handoff.
 
-## Wiring Responsibilities
+## Future CLI Wiring Responsibilities
 - Accept exactly one parser result from `parseTaskPlanInputFile()`.
 - Check parser path, parse, and validation handoff status before mapping.
 - Call `mapTaskContractToRunnerPlanningInput()` only with validated task data,
   `mode: "plan"`, `noExecution: true`, and `noWrites: true`.
 - Check mapping status, planning input availability, no-execution flags,
   no-write flags, verifier requirement, and completion gate before planning.
-- Call `planAgenticRunner()` only after all gates pass.
+- Call planner logic only after all gates pass. In the current core MVP this is
+  represented by a dependency-injected in-memory planner function, not a direct
+  `planAgenticRunner()` import or call.
 - Render honest human or JSON output from parser, mapping, and planner results.
 - Preserve JSON-only behavior for `--json` success and failure paths.
 - Return non-zero for parser failure, validation failure, unsupported mapping,
@@ -67,7 +73,7 @@ The wiring must not:
 
 ## Input Flow
 ```text
-aeos task plan <task-file>
+future aeos task plan <task-file>
    |
    v
 parseTaskPlanInputFile()
@@ -76,7 +82,7 @@ parseTaskPlanInputFile()
 mapTaskContractToRunnerPlanningInput()
    |
    v
-planAgenticRunner()
+planner dependency after gates pass
    |
    v
 Task Plan output
@@ -170,8 +176,10 @@ The CLI must not pretend explicit `workItems` or `batches` are supported.
 Contracts containing those unvalidated fields must produce unsupported mapping
 output and a non-zero exit.
 
-## Planner Execution Handoff
-The CLI may call `planAgenticRunner()` only when all gates pass:
+## Planner Handoff
+The current core wiring helper may call only a dependency-injected in-memory
+planner function, and future CLI wiring may call planner logic only when all
+gates pass:
 
 - parser result `summary.pathOk` is true;
 - parser result `summary.parseOk` is true;
@@ -183,11 +191,11 @@ The CLI may call `planAgenticRunner()` only when all gates pass:
 - mapping result `summary.verifierRequired` is true;
 - mapping result `summary.completionGatedByVerifier` is true.
 
-If any gate fails, the CLI must fail closed and must not call
-`planAgenticRunner()`.
+If any gate fails, the helper and future CLI must fail closed and must not call
+planner logic.
 
 ## Planner Output Handling
-`planAgenticRunner()` may run planning logic only. It must not execute the task.
+Planner logic may produce planning output only. It must not execute the task.
 
 After planner return:
 
@@ -391,8 +399,11 @@ explicit `workItems` or `batches` are supported, and it must return
 - Wiring logic is implemented as pure deterministic in-memory logic.
 - Direct `planAgenticRunner()` import/call is not used by the wiring logic.
 - Planner dependency injection is gate-protected and optional.
-- Fail-closed gates now block unsafe represented metadata.
+- Fail-closed gates now block unsafe represented metadata from TASK-0260
+  hostile metadata hardening.
 - Hostile side-effect or completed-state claims are deterministic blockers.
+- Top-level represented `plannerInput` cannot bypass a missing
+  `mappingResult.planningInput.runnerPlanningInput` handoff.
 - No CLI integration exists yet.
 - No filesystem IO is performed by the wiring logic.
 - No runner execution is performed.

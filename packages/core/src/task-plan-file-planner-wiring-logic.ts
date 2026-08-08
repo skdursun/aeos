@@ -544,8 +544,7 @@ function createMappingStage(
   const taskId = resolveTaskId(input);
   const attempted = mappingResult !== undefined;
   const status = mappingResult?.status ?? "not_attempted";
-  const rawPlanningInput =
-    mappingResult?.planningInput.runnerPlanningInput ?? input.plannerInput;
+  const rawPlanningInput = mappingResult?.planningInput.runnerPlanningInput;
   const planningInputReference =
     mappingResult?.planningInput.runnerPlanningInputReference;
   const unsafeMappingIssues =
