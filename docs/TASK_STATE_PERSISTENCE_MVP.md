@@ -57,6 +57,12 @@ guard. A successful persisted transition increments the revision exactly once.
 Stale transitions fail with `task_state_revision_conflict` and do not overwrite
 bytes.
 
+The CLI transition preview requires `--expected-revision <number>` even though
+it is read-only. The expected revision must be a positive integer. Missing,
+zero, negative, decimal, or non-number values fail closed before evaluation.
+If the loaded source revision differs from the expected revision, preview
+returns `task_state_revision_conflict` and preserves the state bytes.
+
 ## Load And Save
 `createInitialTaskState` creates safe in-memory state only.
 
@@ -280,8 +286,44 @@ Automatic plan/dry-run state persistence remains out of scope. The explicit
 write boundary is `aeos task state init <task-file>` only.
 
 The transition API is a core foundation for later orchestration wiring. It does
-not add `aeos task state set`, `task state patch`, `task state transition`,
-`task complete`, or `task verify`.
+not add `aeos task state set`, `task state patch`, `task complete`, or
+`task verify`. The only transition CLI surface in this MVP is the read-only
+preview:
+
+```text
+aeos task state transition --preview <task-id> --intent <intent> --expected-revision <number>
+```
+
+`--json` emits one deterministic JSON object only. Preview loads and validates
+the authoritative persisted state, compares the expected revision, derives only
+safe system evidence already available from persisted state, evaluates the core
+closed transition policy, and reports the target lifecycle, accepted evidence,
+blocking issues, and safety flags. A supported intent with insufficient
+evidence is a successful preview with `transitionAllowed: false`; malformed
+commands, unsafe state, corrupt state, and revision conflicts exit non-zero.
+
+Preview is strictly read-only. It does not save state, increment revision,
+mutate lifecycle, execute work, call adapters, write audit events, run
+verifiers, persist resume data, create completion, create verification, or
+create approval. State file bytes, revision, lifecycle, and mtime are preserved.
+
+The CLI accepts only the closed system-owned intents:
+
+- `mark_dry_run_ready`
+- `require_verification`
+- `mark_blocked`
+
+It accepts no arbitrary target lifecycle such as `--to`, `--target`, `--state`,
+or user-provided evidence JSON. `mark_dry_run_ready` is not authorized unless
+authoritative dry-run evidence already exists. `require_verification` may use
+persisted verifier-gate evidence. `mark_blocked` requires authoritative
+persisted blocking issues. Terminal-style intents such as `completed`,
+`verified`, `approved`, `execution_success`, `mark_completed`, and
+`mark_verified` fail closed. There is no `--force`.
+
+`aeos task state transition <task-id> ...` without `--preview` fails closed with
+`task_state_transition_apply_not_implemented`. Persisted transition apply is
+reserved for a later explicit revision-guarded task.
 
 ## MVP Limitations
 The MVP does not implement real task execution, adapter runtime, audit runtime,

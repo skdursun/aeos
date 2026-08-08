@@ -1171,6 +1171,62 @@ function expectTaskResumePreviewJsonShape(message, value, result) {
   }
 }
 
+function expectTaskStateTransitionPreviewJsonShape(message, value, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== true ||
+    value.status !== "transition_preview_ready" ||
+    typeof value.taskId !== "string" ||
+    typeof value.sourceRevision !== "number" ||
+    typeof value.expectedRevision !== "number" ||
+    typeof value.currentLifecycle !== "string" ||
+    typeof value.intent !== "string" ||
+    typeof value.transitionAllowed !== "boolean" ||
+    typeof value.evidence !== "object" ||
+    value.evidence === null ||
+    !Array.isArray(value.evidence.required) ||
+    !Array.isArray(value.evidence.accepted) ||
+    typeof value.evidence.authorizable !== "boolean" ||
+    value.safety?.readOnly !== true ||
+    value.safety?.writePerformed !== false ||
+    value.safety?.revisionChanged !== false ||
+    value.safety?.executionPerformed !== false ||
+    value.safety?.stateModified !== false ||
+    value.safety?.completedStateCreated !== false ||
+    value.safety?.verifiedStateCreated !== false ||
+    !Array.isArray(value.issues)
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectTaskStateTransitionPreviewErrorJsonShape(message, value, expectedCode, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== false ||
+    value.transitionAllowed !== false ||
+    value.transition !== null ||
+    typeof value.error !== "object" ||
+    value.error === null ||
+    value.error.code !== expectedCode ||
+    typeof value.error.message !== "string" ||
+    value.error.message.length === 0 ||
+    value.safety?.readOnly !== true ||
+    value.safety?.writePerformed !== false ||
+    value.safety?.revisionChanged !== false ||
+    value.safety?.executionPerformed !== false ||
+    value.safety?.stateModified !== false ||
+    value.safety?.completedStateCreated !== false ||
+    value.safety?.verifiedStateCreated !== false ||
+    !Array.isArray(value.issues) ||
+    !value.issues.some((issue) => issue.code === expectedCode)
+  ) {
+    fail(message, result);
+  }
+}
+
 function expectTaskStateInitSuccessJsonShape(message, value, result) {
   if (
     typeof value !== "object" ||
@@ -1345,6 +1401,16 @@ expectOutputIncludes(
   'help output did not include "task state init <task-file> --json"',
   helpCommand,
   "task state init <task-file> --json",
+);
+expectOutputIncludes(
+  'help output did not include "task state transition --preview <task-id> --intent <intent> --expected-revision <number>"',
+  helpCommand,
+  "task state transition --preview <task-id> --intent <intent> --expected-revision <number>",
+);
+expectOutputIncludes(
+  'help output did not include "task state transition --preview <task-id> --intent <intent> --expected-revision <number> --json"',
+  helpCommand,
+  "task state transition --preview <task-id> --intent <intent> --expected-revision <number> --json",
 );
 expectOutputIncludes(
   'help output did not include "task status <task-id>"',
@@ -4936,6 +5002,361 @@ try {
     );
   }
 
+  const transitionFilesBefore = listRelativeFiles(taskStateCliRoot);
+  const taskTransitionPreview = runCliFrom(taskStateCliRoot, [
+    "task",
+    "state",
+    "transition",
+    "--preview",
+    statusTaskId,
+    "--intent",
+    "require_verification",
+    "--expected-revision",
+    "1",
+  ]);
+  expectExitCode("task state transition preview exited nonzero", taskTransitionPreview, 0);
+  for (const expectedText of [
+    "Task State Transition Preview",
+    "Task id: TASK-STATUS-SMOKE",
+    "Source revision: 1",
+    "Expected revision: 1",
+    "Current lifecycle: planned",
+    "Intent: require_verification",
+    "Target lifecycle: verification_required",
+    "Transition allowed: true",
+    "Write performed: false",
+    "Revision changed: false",
+    "Execution performed: false",
+    "State modified: false",
+    "Completed state created: false",
+    "Verified state created: false",
+  ]) {
+    expectOutputIncludes(
+      `task state transition preview human output missing ${expectedText}`,
+      taskTransitionPreview,
+      expectedText,
+    );
+  }
+  expectStateFileSnapshotSame(
+    "task state transition preview modified persisted state",
+    statusStatePath,
+    statusSnapshotBefore,
+    taskTransitionPreview,
+  );
+  expectSameFiles(
+    "task state transition preview created unexpected files",
+    transitionFilesBefore,
+    listRelativeFiles(taskStateCliRoot),
+  );
+
+  const taskTransitionPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "state",
+    "transition",
+    "--preview",
+    statusTaskId,
+    "--intent",
+    "require_verification",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectExitCode(
+    "task state transition preview --json exited nonzero",
+    taskTransitionPreviewJson,
+    0,
+  );
+  const parsedTaskTransitionPreviewJson = parseJsonOnlyStdout(
+    "task state transition preview --json output was not valid JSON only",
+    taskTransitionPreviewJson,
+  );
+  expectTaskStateTransitionPreviewJsonShape(
+    "task state transition preview --json shape was invalid",
+    parsedTaskTransitionPreviewJson,
+    taskTransitionPreviewJson,
+  );
+  if (
+    parsedTaskTransitionPreviewJson.taskId !== statusTaskId ||
+    parsedTaskTransitionPreviewJson.sourceRevision !== 1 ||
+    parsedTaskTransitionPreviewJson.expectedRevision !== 1 ||
+    parsedTaskTransitionPreviewJson.currentLifecycle !== "planned" ||
+    parsedTaskTransitionPreviewJson.intent !== "require_verification" ||
+    parsedTaskTransitionPreviewJson.targetLifecycle !== "verification_required" ||
+    parsedTaskTransitionPreviewJson.transitionAllowed !== true ||
+    parsedTaskTransitionPreviewJson.transition?.from !== "planned" ||
+    parsedTaskTransitionPreviewJson.transition?.to !== "verification_required" ||
+    parsedTaskTransitionPreviewJson.transition?.evidenceKind !==
+      "verification_requirement" ||
+    parsedTaskTransitionPreviewJson.evidence.provided !==
+      "verification_requirement" ||
+    parsedTaskTransitionPreviewJson.issues.length !== 0
+  ) {
+    fail(
+      "task state transition preview --json did not expose authoritative evaluation",
+      taskTransitionPreviewJson,
+    );
+  }
+  expectStateFileSnapshotSame(
+    "task state transition preview --json modified persisted state",
+    statusStatePath,
+    statusSnapshotBefore,
+    taskTransitionPreviewJson,
+  );
+
+  const repeatedTaskTransitionPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "state",
+    "transition",
+    "--preview",
+    statusTaskId,
+    "--intent",
+    "require_verification",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectExitCode(
+    "repeated task state transition preview --json exited nonzero",
+    repeatedTaskTransitionPreviewJson,
+    0,
+  );
+  if (repeatedTaskTransitionPreviewJson.stdout !== taskTransitionPreviewJson.stdout) {
+    fail(
+      "repeated task state transition preview --json was not equivalent",
+      repeatedTaskTransitionPreviewJson,
+    );
+  }
+
+  const insufficientEvidencePreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "state",
+    "transition",
+    "--preview",
+    statusTaskId,
+    "--intent",
+    "mark_dry_run_ready",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectExitCode(
+    "task state transition preview insufficient evidence exited nonzero",
+    insufficientEvidencePreviewJson,
+    0,
+  );
+  const parsedInsufficientEvidencePreviewJson = parseJsonOnlyStdout(
+    "task state transition preview insufficient evidence output was not valid JSON only",
+    insufficientEvidencePreviewJson,
+  );
+  expectTaskStateTransitionPreviewJsonShape(
+    "task state transition preview insufficient evidence shape was invalid",
+    parsedInsufficientEvidencePreviewJson,
+    insufficientEvidencePreviewJson,
+  );
+  if (
+    parsedInsufficientEvidencePreviewJson.transitionAllowed !== false ||
+    parsedInsufficientEvidencePreviewJson.transition !== null ||
+    parsedInsufficientEvidencePreviewJson.evidence.provided !== null ||
+    !parsedInsufficientEvidencePreviewJson.issues.some(
+      (issue) => issue.code === "task_state_transition_dry_run_evidence_invalid",
+    )
+  ) {
+    fail(
+      "task state transition preview fabricated dry-run evidence",
+      insufficientEvidencePreviewJson,
+    );
+  }
+  expectStateFileSnapshotSame(
+    "task state transition preview insufficient evidence modified state",
+    statusStatePath,
+    statusSnapshotBefore,
+    insufficientEvidencePreviewJson,
+  );
+
+  const staleRevisionPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "state",
+    "transition",
+    "--preview",
+    statusTaskId,
+    "--intent",
+    "require_verification",
+    "--expected-revision",
+    "2",
+    "--json",
+  ]);
+  expectNonzero("task state transition stale revision exited zero", staleRevisionPreviewJson);
+  const parsedStaleRevisionPreviewJson = parseJsonOnlyStdout(
+    "task state transition stale revision output was not valid JSON only",
+    staleRevisionPreviewJson,
+  );
+  expectTaskStateTransitionPreviewErrorJsonShape(
+    "task state transition stale revision did not fail closed",
+    parsedStaleRevisionPreviewJson,
+    "task_state_revision_conflict",
+    staleRevisionPreviewJson,
+  );
+  expectStateFileSnapshotSame(
+    "task state transition stale revision modified state",
+    statusStatePath,
+    statusSnapshotBefore,
+    staleRevisionPreviewJson,
+  );
+
+  for (const malformedRevision of ["0", "-1", "1.5", "abc"]) {
+    const malformedRevisionPreviewJson = runCliFrom(taskStateCliRoot, [
+      "task",
+      "state",
+      "transition",
+      "--preview",
+      statusTaskId,
+      "--intent",
+      "require_verification",
+      "--expected-revision",
+      malformedRevision,
+      "--json",
+    ]);
+    expectNonzero(
+      `task state transition malformed revision ${malformedRevision} exited zero`,
+      malformedRevisionPreviewJson,
+    );
+    const parsedMalformedRevisionPreviewJson = parseJsonOnlyStdout(
+      `task state transition malformed revision ${malformedRevision} output was not valid JSON only`,
+      malformedRevisionPreviewJson,
+    );
+    expectTaskStateTransitionPreviewErrorJsonShape(
+      `task state transition malformed revision ${malformedRevision} did not fail closed`,
+      parsedMalformedRevisionPreviewJson,
+      "task_state_transition_expected_revision_invalid",
+      malformedRevisionPreviewJson,
+    );
+    expectStateFileSnapshotSame(
+      `task state transition malformed revision ${malformedRevision} modified state`,
+      statusStatePath,
+      statusSnapshotBefore,
+      malformedRevisionPreviewJson,
+    );
+  }
+
+  const unknownIntentPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "state",
+    "transition",
+    "--preview",
+    statusTaskId,
+    "--intent",
+    "unknown_intent",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task state transition unknown intent exited zero", unknownIntentPreviewJson);
+  const parsedUnknownIntentPreviewJson = parseJsonOnlyStdout(
+    "task state transition unknown intent output was not valid JSON only",
+    unknownIntentPreviewJson,
+  );
+  expectTaskStateTransitionPreviewErrorJsonShape(
+    "task state transition unknown intent did not fail closed",
+    parsedUnknownIntentPreviewJson,
+    "task_state_transition_unknown_intent",
+    unknownIntentPreviewJson,
+  );
+
+  for (const terminalIntent of [
+    "completed",
+    "verified",
+    "approved",
+    "execution_success",
+    "mark_completed",
+    "mark_verified",
+  ]) {
+    const terminalPreviewJson = runCliFrom(taskStateCliRoot, [
+      "task",
+      "state",
+      "transition",
+      "--preview",
+      statusTaskId,
+      "--intent",
+      terminalIntent,
+      "--expected-revision",
+      "1",
+      "--json",
+    ]);
+    expectNonzero(
+      `task state transition terminal intent ${terminalIntent} exited zero`,
+      terminalPreviewJson,
+    );
+    const parsedTerminalPreviewJson = parseJsonOnlyStdout(
+      `task state transition terminal intent ${terminalIntent} output was not valid JSON only`,
+      terminalPreviewJson,
+    );
+    expectTaskStateTransitionPreviewErrorJsonShape(
+      `task state transition terminal intent ${terminalIntent} did not fail closed`,
+      parsedTerminalPreviewJson,
+      "task_state_transition_terminal_forbidden",
+      terminalPreviewJson,
+    );
+    expectStateFileSnapshotSame(
+      `task state transition terminal intent ${terminalIntent} modified state`,
+      statusStatePath,
+      statusSnapshotBefore,
+      terminalPreviewJson,
+    );
+  }
+
+  const arbitraryTargetPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "state",
+    "transition",
+    "--preview",
+    statusTaskId,
+    "--to",
+    "dry_run_ready",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task state transition arbitrary target exited zero", arbitraryTargetPreviewJson);
+  const parsedArbitraryTargetPreviewJson = parseJsonOnlyStdout(
+    "task state transition arbitrary target output was not valid JSON only",
+    arbitraryTargetPreviewJson,
+  );
+  expectTaskStateTransitionPreviewErrorJsonShape(
+    "task state transition arbitrary target did not fail closed",
+    parsedArbitraryTargetPreviewJson,
+    "task_state_transition_arbitrary_target_forbidden",
+    arbitraryTargetPreviewJson,
+  );
+
+  const transitionApplyJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "state",
+    "transition",
+    statusTaskId,
+    "--intent",
+    "require_verification",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task state transition without --preview exited zero", transitionApplyJson);
+  const parsedTransitionApplyJson = parseJsonOnlyStdout(
+    "task state transition without --preview output was not valid JSON only",
+    transitionApplyJson,
+  );
+  expectTaskStateTransitionPreviewErrorJsonShape(
+    "task state transition without --preview did not use stable error",
+    parsedTransitionApplyJson,
+    "task_state_transition_apply_not_implemented",
+    transitionApplyJson,
+  );
+  expectStateFileSnapshotSame(
+    "task state transition without --preview modified state",
+    statusStatePath,
+    statusSnapshotBefore,
+    transitionApplyJson,
+  );
+
   const taskResumeExecutionJson = runCliFrom(taskStateCliRoot, [
     "task",
     "resume",
@@ -4987,6 +5408,38 @@ try {
   if (existsSync(join(missingRoot, ".aeos"))) {
     fail("task status missing state created .aeos directory", missingStatusJson);
   }
+  const missingTransitionJson = runCliFrom(missingRoot, [
+    "task",
+    "state",
+    "transition",
+    "--preview",
+    "TASK-MISSING",
+    "--intent",
+    "require_verification",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task state transition missing state exited zero", missingTransitionJson);
+  const parsedMissingTransitionJson = parseJsonOnlyStdout(
+    "task state transition missing state output was not valid JSON only",
+    missingTransitionJson,
+  );
+  expectTaskStateTransitionPreviewErrorJsonShape(
+    "task state transition missing state did not fail closed",
+    parsedMissingTransitionJson,
+    "task_state_not_found",
+    missingTransitionJson,
+  );
+  expectNoTaskStateCreated(
+    "task state transition missing state created a state file",
+    missingRoot,
+    "TASK-MISSING",
+    missingTransitionJson,
+  );
+  if (existsSync(join(missingRoot, ".aeos"))) {
+    fail("task state transition missing state created .aeos directory", missingTransitionJson);
+  }
   rmSync(missingRoot, { recursive: true, force: true });
 
   const corruptTaskId = "TASK-CORRUPT";
@@ -5009,6 +5462,29 @@ try {
     parsedCorruptStatusJson,
     "task_state_corrupt_json",
     corruptStatusJson,
+  );
+  const corruptTransitionJson = runCliFrom(corruptRoot, [
+    "task",
+    "state",
+    "transition",
+    "--preview",
+    corruptTaskId,
+    "--intent",
+    "require_verification",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task state transition corrupt state exited zero", corruptTransitionJson);
+  const parsedCorruptTransitionJson = parseJsonOnlyStdout(
+    "task state transition corrupt state output was not valid JSON only",
+    corruptTransitionJson,
+  );
+  expectTaskStateTransitionPreviewErrorJsonShape(
+    "task state transition corrupt state did not fail closed",
+    parsedCorruptTransitionJson,
+    "task_state_corrupt_json",
+    corruptTransitionJson,
   );
   rmSync(corruptRoot, { recursive: true, force: true });
 
@@ -5066,6 +5542,29 @@ try {
       expectedCode,
       invalidPreviewJson,
     );
+    const invalidTransitionJson = runCliFrom(invalidRoot, [
+      "task",
+      "state",
+      "transition",
+      "--preview",
+      taskId,
+      "--intent",
+      "require_verification",
+      "--expected-revision",
+      "1",
+      "--json",
+    ]);
+    expectNonzero(`${taskId} transition preview exited zero`, invalidTransitionJson);
+    const parsedInvalidTransitionJson = parseJsonOnlyStdout(
+      `${taskId} transition preview output was not valid JSON only`,
+      invalidTransitionJson,
+    );
+    expectTaskStateTransitionPreviewErrorJsonShape(
+      `${taskId} transition preview did not fail closed`,
+      parsedInvalidTransitionJson,
+      expectedCode,
+      invalidTransitionJson,
+    );
     rmSync(invalidRoot, { recursive: true, force: true });
   }
 
@@ -5098,8 +5597,31 @@ try {
     "task_state_unsafe_target",
     symlinkStatusJson,
   );
+  const symlinkTransitionJson = runCliFrom(symlinkFileRoot, [
+    "task",
+    "state",
+    "transition",
+    "--preview",
+    symlinkFileTaskId,
+    "--intent",
+    "require_verification",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task state transition state-file symlink exited zero", symlinkTransitionJson);
+  const parsedSymlinkTransitionJson = parseJsonOnlyStdout(
+    "task state transition state-file symlink output was not valid JSON only",
+    symlinkTransitionJson,
+  );
+  expectTaskStateTransitionPreviewErrorJsonShape(
+    "task state transition state-file symlink did not fail closed",
+    parsedSymlinkTransitionJson,
+    "task_state_unsafe_target",
+    symlinkTransitionJson,
+  );
   if (!lstatSync(taskStatePath(symlinkFileRoot, symlinkFileTaskId)).isSymbolicLink()) {
-    fail("task status changed state-file symlink", symlinkStatusJson);
+    fail("task state transition changed state-file symlink", symlinkTransitionJson);
   }
   rmSync(symlinkFileRoot, { recursive: true, force: true });
 
@@ -5122,6 +5644,29 @@ try {
     parsedSymlinkRootStatusJson,
     "task_state_unsafe_state_root",
     symlinkRootStatusJson,
+  );
+  const symlinkRootTransitionJson = runCliFrom(symlinkRootProject, [
+    "task",
+    "state",
+    "transition",
+    "--preview",
+    "TASK-SYMLINK-ROOT",
+    "--intent",
+    "require_verification",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task state transition state-root symlink exited zero", symlinkRootTransitionJson);
+  const parsedSymlinkRootTransitionJson = parseJsonOnlyStdout(
+    "task state transition state-root symlink output was not valid JSON only",
+    symlinkRootTransitionJson,
+  );
+  expectTaskStateTransitionPreviewErrorJsonShape(
+    "task state transition state-root symlink did not fail closed",
+    parsedSymlinkRootTransitionJson,
+    "task_state_unsafe_state_root",
+    symlinkRootTransitionJson,
   );
   rmSync(symlinkRootProject, { recursive: true, force: true });
   rmSync(symlinkOutsideRoot, { recursive: true, force: true });
@@ -5150,6 +5695,32 @@ try {
     "task_state_unsafe_target",
     directoryTargetStatusJson,
   );
+  const directoryTargetTransitionJson = runCliFrom(directoryTargetRoot, [
+    "task",
+    "state",
+    "transition",
+    "--preview",
+    "TASK-DIRECTORY-TARGET",
+    "--intent",
+    "require_verification",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero(
+    "task state transition directory state target exited zero",
+    directoryTargetTransitionJson,
+  );
+  const parsedDirectoryTargetTransitionJson = parseJsonOnlyStdout(
+    "task state transition directory state target output was not valid JSON only",
+    directoryTargetTransitionJson,
+  );
+  expectTaskStateTransitionPreviewErrorJsonShape(
+    "task state transition directory state target did not fail closed",
+    parsedDirectoryTargetTransitionJson,
+    "task_state_unsafe_target",
+    directoryTargetTransitionJson,
+  );
   rmSync(directoryTargetRoot, { recursive: true, force: true });
 
   const traversalStatusJson = runCliFrom(taskStateCliRoot, [
@@ -5170,6 +5741,30 @@ try {
     traversalStatusJson,
   );
 
+  const traversalTransitionJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "state",
+    "transition",
+    "--preview",
+    "../TASK-STATUS-SMOKE",
+    "--intent",
+    "require_verification",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task state transition traversal id exited zero", traversalTransitionJson);
+  const parsedTraversalTransitionJson = parseJsonOnlyStdout(
+    "task state transition traversal id output was not valid JSON only",
+    traversalTransitionJson,
+  );
+  expectTaskStateTransitionPreviewErrorJsonShape(
+    "task state transition traversal id did not fail closed",
+    parsedTraversalTransitionJson,
+    "task_state_unsafe_task_id",
+    traversalTransitionJson,
+  );
+
   const pathLikePreviewJson = runCliFrom(taskStateCliRoot, [
     "task",
     "resume",
@@ -5187,6 +5782,30 @@ try {
     parsedPathLikePreviewJson,
     "task_state_unsafe_task_id",
     pathLikePreviewJson,
+  );
+
+  const pathLikeTransitionJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "state",
+    "transition",
+    "--preview",
+    "path/like",
+    "--intent",
+    "require_verification",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task state transition path-like id exited zero", pathLikeTransitionJson);
+  const parsedPathLikeTransitionJson = parseJsonOnlyStdout(
+    "task state transition path-like id output was not valid JSON only",
+    pathLikeTransitionJson,
+  );
+  expectTaskStateTransitionPreviewErrorJsonShape(
+    "task state transition path-like id did not fail closed",
+    parsedPathLikeTransitionJson,
+    "task_state_unsafe_task_id",
+    pathLikeTransitionJson,
   );
 
   const canonicalWorkItems = Array.from({ length: 400 }, (_, index) => {
@@ -5300,6 +5919,85 @@ try {
     canonicalStatePath,
     canonicalSnapshotBefore,
     canonicalPreviewJson,
+  );
+
+  const canonicalTerminalTransitionJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "state",
+    "transition",
+    "--preview",
+    canonicalTaskId,
+    "--intent",
+    "completed",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("400/20 terminal transition preview exited zero", canonicalTerminalTransitionJson);
+  const parsedCanonicalTerminalTransitionJson = parseJsonOnlyStdout(
+    "400/20 terminal transition preview output was not valid JSON only",
+    canonicalTerminalTransitionJson,
+  );
+  expectTaskStateTransitionPreviewErrorJsonShape(
+    "400/20 terminal transition preview did not fail closed",
+    parsedCanonicalTerminalTransitionJson,
+    "task_state_transition_terminal_forbidden",
+    canonicalTerminalTransitionJson,
+  );
+  expectOutputExcludes(
+    "400/20 terminal transition preview reported completion",
+    canonicalTerminalTransitionJson,
+    "\"completed\":true",
+  );
+  expectStateFileSnapshotSame(
+    "400/20 terminal transition preview modified persisted state",
+    canonicalStatePath,
+    canonicalSnapshotBefore,
+    canonicalTerminalTransitionJson,
+  );
+
+  const selfReportTransitionTaskId = "TASK-TRANSITION-SELF-REPORT";
+  const selfReportTransitionStatePath = await savePersistedTaskState(
+    taskStateCliRoot,
+    createPersistedTaskState(selfReportTransitionTaskId, {
+      sourceTask: {
+        kind: "reference",
+        id: "completed approved verified all done",
+      },
+    }),
+  );
+  const selfReportTransitionSnapshot = stateFileSnapshot(selfReportTransitionStatePath);
+  const selfReportTerminalTransitionJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "state",
+    "transition",
+    "--preview",
+    selfReportTransitionTaskId,
+    "--intent",
+    "verified",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero(
+    "self-report terminal transition preview exited zero",
+    selfReportTerminalTransitionJson,
+  );
+  const parsedSelfReportTerminalTransitionJson = parseJsonOnlyStdout(
+    "self-report terminal transition preview output was not valid JSON only",
+    selfReportTerminalTransitionJson,
+  );
+  expectTaskStateTransitionPreviewErrorJsonShape(
+    "self-report terminal transition preview did not fail closed",
+    parsedSelfReportTerminalTransitionJson,
+    "task_state_transition_terminal_forbidden",
+    selfReportTerminalTransitionJson,
+  );
+  expectStateFileSnapshotSame(
+    "self-report terminal transition preview modified persisted state",
+    selfReportTransitionStatePath,
+    selfReportTransitionSnapshot,
+    selfReportTerminalTransitionJson,
   );
 } finally {
   rmSync(taskStateCliRoot, { recursive: true, force: true });

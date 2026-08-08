@@ -21,6 +21,9 @@ Current foundation:
   preview over the existing parser, mapper, planner, and dry-run contracts.
 - `aeos task state init <task-file>` exists as the explicit persisted
   task-state initialization command.
+- `aeos task state transition --preview <task-id> --intent <intent>
+  --expected-revision <number>` exists as a read-only persisted-state transition
+  evaluation command.
 - `aeos task status <task-id>` exists as a read-only persisted-state inspection
   command.
 - `aeos task resume --preview <task-id>` exists as a read-only resume handoff
@@ -140,6 +143,55 @@ state. Completion remains verifier-gated and unsatisfied.
 Same initialization behavior as human mode, but stdout is exactly one JSON
 object. Failures are JSON-only with deterministic issue codes and no raw runtime
 stack traces.
+
+### `aeos task state transition --preview`
+Loads authoritative persisted task state by task id and evaluates a closed
+system-owned lifecycle transition without writing:
+
+```text
+aeos task state transition --preview <task-id> --intent <intent> --expected-revision <number>
+```
+
+The command reports the source revision, current lifecycle, intent, target
+lifecycle, whether the transition is allowed, required/accepted evidence,
+blocking issues, and explicit read-only safety markers.
+
+It must not save state, increment revision, mutate lifecycle state, execute
+work, call adapters, write audit events, run verifiers, persist resume data, or
+create completed, verified, approval, or verification state.
+
+Supported intents are closed and system-owned:
+
+- `mark_dry_run_ready`
+- `require_verification`
+- `mark_blocked`
+
+No arbitrary target state is accepted. Flags or values such as `--to`,
+`--target`, `--state`, `completed`, `verified`, `approved`,
+`execution_success`, `mark_completed`, or `mark_verified` fail closed. No
+operator override or `--force` exists.
+
+`--expected-revision` is required and must be a positive integer. Stale
+expected revisions fail with `task_state_revision_conflict`; malformed,
+negative, zero, decimal, or non-number revisions fail before evaluation.
+
+Preview does not accept arbitrary JSON evidence. Evidence must be typed and
+system-derived from authoritative persisted state. If required evidence is not
+available, the preview completes with `transitionAllowed: false` and reports the
+core transition issue instead of inventing evidence. Task prose and model
+self-report text remain non-authoritative.
+
+### `aeos task state transition --preview --json`
+Same preview behavior as human mode, but stdout is exactly one JSON object.
+A supported intent with insufficient evidence is a successful preview object
+with `transitionAllowed: false`. Malformed commands, unsafe task ids, missing or
+corrupt state, forged terminal state, and revision conflicts exit non-zero with
+deterministic JSON errors.
+
+### `aeos task state transition`
+Transition apply is not implemented. Running the transition command without
+`--preview` fails closed with `task_state_transition_apply_not_implemented` and
+performs no writes.
 
 ### `aeos task status`
 Loads authoritative persisted task state by task id from the project-local state

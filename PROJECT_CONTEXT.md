@@ -67,6 +67,7 @@ condition.
   CLI.
 - TASK-0282: Design and implement revision-guarded task-state transition/update
   foundation.
+- TASK-0283: Design and implement read-only task-state transition preview CLI.
 
 ## Do Not Load By Default
 
@@ -77,10 +78,11 @@ condition.
 
 ## Next Task
 
-TASK-0283 Design and implement task transition preview / operator-safe
-transition CLI foundation.
+TASK-0284 Design and implement explicit revision-guarded transition apply CLI.
 
-Purpose: expose transition preview first, without arbitrary mutation.
+Purpose: add operator-safe persisted transition apply after the read-only
+transition preview proved revision, evidence, terminal-state, and no-write
+safety boundaries.
 
 ## Current Plans
 
