@@ -59,6 +59,7 @@ condition.
 - TASK-0275: Post-audit task plan regression review.
 - TASK-0276: Design CLI task dry-run integration.
 - TASK-0277: CLI task dry-run targeted regression and safety review.
+- TASK-0278: Design and implement task state persistence MVP foundation.
 
 ## Do Not Load By Default
 
@@ -69,7 +70,7 @@ condition.
 
 ## Next Task
 
-TASK-0278 Design and implement task state persistence MVP foundation.
+TASK-0279 Task state persistence targeted safety/regression review and resume handoff.
 
 ## Current Plans
 
@@ -80,6 +81,7 @@ TASK-0278 Design and implement task state persistence MVP foundation.
 - docs/AGENTIC_RUNNER_PLANNING_USAGE.md
 - docs/AGENTIC_RUNNER_EXECUTION_LIFECYCLE.md
 - docs/AGENTIC_RUNNER_DRY_RUN_EXECUTION_LOGIC.md
+- docs/TASK_STATE_PERSISTENCE_MVP.md
 - docs/TASK_PLAN_INPUT_FILE_DESIGN.md
 - docs/TASK_PLAN_INPUT_PARSER_USAGE.md
 - docs/TASK_CONTRACT_TO_RUNNER_PLANNING_MAPPING.md

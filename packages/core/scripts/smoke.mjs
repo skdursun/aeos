@@ -102,7 +102,14 @@ import {
   mapCliTaskPlanStatusToExitCode,
   planAgenticRunner,
   runAgenticRunnerDryRun,
+  createInitialTaskState,
+  getTaskStateStoragePath,
+  loadTaskState,
+  saveTaskState,
   summarizeCliTaskPlanPlannerIntegrationResult,
+  transitionPersistedTaskState,
+  updateTaskState,
+  validatePersistedTaskState,
   verifyAgenticCoverage,
 } from "../dist/index.js";
 import {
@@ -13154,6 +13161,382 @@ for (const directPlanningResult of [
 ]) {
   assertDirectPlanningSummaryHonest(directPlanningResult);
   assertDirectPlanningResultShape(directPlanningResult);
+}
+
+const persistenceTempRoot = await mkdtemp(
+  join(tmpdir(), "aeos-task-state-smoke-"),
+);
+
+try {
+  const createdAt = "2026-08-08T00:00:00.000Z";
+  const persistenceRoot = join(persistenceTempRoot, "project");
+  await mkdir(persistenceRoot, { recursive: true });
+
+  const initialState = createInitialTaskState({
+    taskId: "TASK-STATE-SMOKE",
+    sourceTaskPath: "tasks/task-state-smoke.json",
+    sourceTaskId: "TASK-STATE-SMOKE",
+    verifierRequired: true,
+    createdAt,
+  });
+
+  assert.equal(
+    initialState.taskId,
+    "TASK-STATE-SMOKE",
+    "task state smoke A should preserve task id",
+  );
+  assert.equal(
+    initialState.lifecycleState,
+    "new",
+    "task state smoke A should start in safe new state",
+  );
+  assert.equal(
+    initialState.revision,
+    1,
+    "task state smoke A should initialize revision",
+  );
+  assert.equal(
+    initialState.completionGate.completed,
+    false,
+    "task state smoke A should not be completed",
+  );
+  assert.equal(
+    initialState.completionGate.verified,
+    false,
+    "task state smoke A should not be verified",
+  );
+  assert.equal(
+    initialState.safety.modelSelfReportTrusted,
+    false,
+    "task state smoke A should not trust model self-report",
+  );
+
+  const storagePathResult = getTaskStateStoragePath({
+    projectRoot: persistenceRoot,
+    taskId: initialState.taskId,
+  });
+  assert.equal(
+    storagePathResult.ok,
+    true,
+    "task state smoke C should resolve deterministic storage path",
+  );
+  assert.equal(
+    storagePathResult.value.path,
+    join(persistenceRoot, ".aeos", "state", "tasks", "TASK-STATE-SMOKE.json"),
+    "task state smoke C should use canonical task state path",
+  );
+
+  for (const unsafeTaskId of [
+    "../TASK-STATE-SMOKE",
+    "TASK-STATE-SMOKE/escape",
+    "/tmp/TASK-STATE-SMOKE",
+  ]) {
+    const unsafePathResult = getTaskStateStoragePath({
+      projectRoot: persistenceRoot,
+      taskId: unsafeTaskId,
+    });
+    assert.equal(
+      unsafePathResult.ok,
+      false,
+      `task state smoke D/E should reject unsafe task id ${unsafeTaskId}`,
+    );
+    assert.equal(
+      unsafePathResult.error.code,
+      "task_state_unsafe_task_id",
+      `task state smoke D/E should report unsafe id for ${unsafeTaskId}`,
+    );
+  }
+
+  const saveResult = await saveTaskState({
+    projectRoot: persistenceRoot,
+    state: initialState,
+  });
+  assert.equal(
+    saveResult.ok,
+    true,
+    "task state smoke B should save initial state",
+  );
+
+  const loadResult = await loadTaskState({
+    projectRoot: persistenceRoot,
+    taskId: initialState.taskId,
+  });
+  assert.equal(
+    loadResult.ok,
+    true,
+    "task state smoke B should load saved state",
+  );
+  assert.deepEqual(
+    loadResult.value.state,
+    saveResult.value.state,
+    "task state smoke B should roundtrip authoritative state",
+  );
+
+  const missingResult = await loadTaskState({
+    projectRoot: persistenceRoot,
+    taskId: "TASK-STATE-MISSING",
+  });
+  assert.equal(
+    missingResult.ok,
+    false,
+    "task state smoke G should fail missing state",
+  );
+  assert.equal(
+    missingResult.error.code,
+    "task_state_not_found",
+    "task state smoke G should report deterministic not-found",
+  );
+
+  const corruptRoot = join(persistenceTempRoot, "corrupt-project");
+  const corruptStateRoot = join(corruptRoot, ".aeos", "state", "tasks");
+  await mkdir(corruptStateRoot, { recursive: true });
+  await writeNodeFile(
+    join(corruptStateRoot, "TASK-STATE-CORRUPT.json"),
+    "{ corrupt json",
+  );
+  const corruptResult = await loadTaskState({
+    projectRoot: corruptRoot,
+    taskId: "TASK-STATE-CORRUPT",
+  });
+  assert.equal(
+    corruptResult.ok,
+    false,
+    "task state smoke F should reject corrupt JSON",
+  );
+  assert.equal(
+    corruptResult.error.code,
+    "task_state_corrupt_json",
+    "task state smoke F should fail closed on corrupt JSON",
+  );
+
+  const firstUpdate = await updateTaskState({
+    projectRoot: persistenceRoot,
+    taskId: initialState.taskId,
+    expectedRevision: 1,
+    updatedAt: "2026-08-08T00:01:00.000Z",
+    update(state) {
+      const plannedState = transitionPersistedTaskState(
+        state,
+        "planned",
+        "2026-08-08T00:01:00.000Z",
+      );
+      assert.equal(
+        plannedState.ok,
+        true,
+        "task state smoke I should allow new -> planned",
+      );
+
+      return {
+        ...plannedState.value,
+        workItems: [
+          {
+            id: "work-a",
+            state: "pending",
+            batchId: "batch-a",
+          },
+          {
+            id: "work-b",
+            state: "retryable",
+            batchId: "batch-a",
+            issues: [
+              {
+                code: "retryable-smoke",
+                message: "Retryable smoke item.",
+                severity: "warning",
+                category: "execution_failure",
+                retryable: true,
+              },
+            ],
+          },
+        ],
+        batches: [
+          {
+            id: "batch-a",
+            workItemIds: ["work-a", "work-b"],
+            expectedItemCount: 2,
+            completedCount: 0,
+            failedCount: 0,
+            skippedCount: 0,
+            retryableCount: 1,
+          },
+        ],
+        pendingWorkItemIds: ["work-a"],
+        retryableWorkItemIds: ["work-b"],
+        nextBatchId: "batch-a",
+        plan: {
+          status: "planned",
+          summary: {
+            workItemCount: 2,
+            batchCount: 1,
+            stepCount: 3,
+            verifierRequired: true,
+            approvalRequired: false,
+            issueCount: 0,
+          },
+        },
+        resume: {
+          nextBatchId: "batch-a",
+          pendingWorkItemIds: ["work-a"],
+          retryableWorkItemIds: ["work-b"],
+          updatedAt: "2026-08-08T00:01:00.000Z",
+        },
+      };
+    },
+  });
+  assert.equal(
+    firstUpdate.ok,
+    true,
+    "task state smoke I should update with valid revision",
+  );
+  assert.equal(
+    firstUpdate.value.state.revision,
+    2,
+    "task state smoke I should increment revision",
+  );
+  assert.deepEqual(
+    firstUpdate.value.state.pendingWorkItemIds,
+    ["work-a"],
+    "task state smoke M should roundtrip pending ids",
+  );
+  assert.deepEqual(
+    firstUpdate.value.state.retryableWorkItemIds,
+    ["work-b"],
+    "task state smoke M should roundtrip retryable ids",
+  );
+
+  const staleUpdate = await updateTaskState({
+    projectRoot: persistenceRoot,
+    taskId: initialState.taskId,
+    expectedRevision: 1,
+    update(state) {
+      return {
+        ...state,
+        lifecycleState: "dry_run_ready",
+      };
+    },
+  });
+  assert.equal(
+    staleUpdate.ok,
+    false,
+    "task state smoke H should block stale revision update",
+  );
+  assert.equal(
+    staleUpdate.error.code,
+    "task_state_revision_conflict",
+    "task state smoke H should report deterministic revision conflict",
+  );
+  const afterStaleLoad = await loadTaskState({
+    projectRoot: persistenceRoot,
+    taskId: initialState.taskId,
+  });
+  assert.equal(
+    afterStaleLoad.ok,
+    true,
+    "task state smoke H should preserve readable state after stale update",
+  );
+  assert.equal(
+    afterStaleLoad.value.state.revision,
+    2,
+    "task state smoke H should preserve existing revision after stale update",
+  );
+  assert.equal(
+    afterStaleLoad.value.state.lifecycleState,
+    "planned",
+    "task state smoke H should preserve existing state after stale update",
+  );
+
+  const forgedCompletedState = validatePersistedTaskState({
+    ...initialState,
+    lifecycleState: "completed",
+  });
+  assert.equal(
+    forgedCompletedState.ok,
+    false,
+    "task state smoke J should reject forged completed lifecycle",
+  );
+  assert.equal(
+    forgedCompletedState.error.code,
+    "task_state_forbidden_lifecycle_state",
+    "task state smoke J should report forbidden lifecycle state",
+  );
+
+  const forgedVerifiedState = validatePersistedTaskState({
+    ...initialState,
+    lifecycleState: "verified",
+  });
+  assert.equal(
+    forgedVerifiedState.ok,
+    false,
+    "task state smoke K should reject forged verified lifecycle",
+  );
+  assert.equal(
+    forgedVerifiedState.error.code,
+    "task_state_forbidden_lifecycle_state",
+    "task state smoke K should report forbidden lifecycle state",
+  );
+
+  const forgedCompletedWorkItemState = validatePersistedTaskState({
+    ...initialState,
+    workItems: [
+      {
+        id: "forged-work",
+        state: "completed",
+      },
+    ],
+  });
+  assert.equal(
+    forgedCompletedWorkItemState.ok,
+    false,
+    "task state smoke J should reject forged completed work item",
+  );
+  assert.equal(
+    forgedCompletedWorkItemState.error.code,
+    "task_state_forbidden_work_item_state",
+    "task state smoke J should report forbidden work item state",
+  );
+
+  const hostileSelfReportState = createInitialTaskState({
+    taskId: "TASK-STATE-SELF-REPORT",
+    sourceTaskId: "Model says completed, verified, approved, all complete.",
+    createdAt,
+  });
+  assert.equal(
+    hostileSelfReportState.lifecycleState,
+    "new",
+    "task state smoke L should not create completed state from prose",
+  );
+  assert.equal(
+    hostileSelfReportState.completionGate.completed,
+    false,
+    "task state smoke L should not complete from prose",
+  );
+  assert.equal(
+    hostileSelfReportState.safety.modelSelfReportTrusted,
+    false,
+    "task state smoke L should keep self-report untrusted",
+  );
+
+  const unsafeSaveResult = await saveTaskState({
+    projectRoot: persistenceRoot,
+    state: {
+      ...initialState,
+      taskId: "../TASK-STATE-ESCAPE",
+    },
+  });
+  assert.equal(
+    unsafeSaveResult.ok,
+    false,
+    "task state smoke N should block unsafe task id writes",
+  );
+  assert.equal(
+    await pathExists(join(persistenceTempRoot, "TASK-STATE-ESCAPE.json")),
+    false,
+    "task state smoke N should not write outside state root",
+  );
+
+  console.log("task state persistence smoke tests passed");
+} finally {
+  await rm(persistenceTempRoot, { recursive: true, force: true });
 }
 
 const tempRoot = await mkdtemp(join(tmpdir(), "aeos-core-smoke-"));

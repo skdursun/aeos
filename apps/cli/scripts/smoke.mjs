@@ -670,12 +670,33 @@ function expectTaskPlanNoWrites(message, rootPath, before, result) {
     ".aeos/task-plan.json",
     ".aeos/task-state.json",
     ".aeos/tasks",
+    ".aeos/state",
+    ".aeos/state/tasks",
     ".aeos/audit",
   ]) {
     if (existsSync(join(rootPath, unexpectedPath))) {
       fail(`${message}: created ${unexpectedPath}`, result);
     }
   }
+}
+
+function taskStateSnapshot(rootPath) {
+  const stateRoot = join(rootPath, ".aeos", "state", "tasks");
+
+  return {
+    exists: existsSync(stateRoot),
+    files: listRelativeFiles(stateRoot),
+  };
+}
+
+function expectTaskStateSnapshotSame(message, rootPath, before, result) {
+  const after = taskStateSnapshot(rootPath);
+
+  if (before.exists !== after.exists) {
+    fail(`${message}: task state root existence changed`, result);
+  }
+
+  expectSameFiles(`${message}: task state files changed`, before.files, after.files);
 }
 
 function expectTaskPlanParserOnlySafety(message, outputText, result) {
@@ -4101,6 +4122,7 @@ try {
   }
   expectEmptyArray("valid task --json issues was not empty", parsedValidTask.issues);
 
+  const validTaskPlanStateBefore = taskStateSnapshot(projectRoot);
   const validTaskPlanJson = runCli([
     "task",
     "plan",
@@ -4148,7 +4170,14 @@ try {
       validTaskPlanJson,
     );
   }
+  expectTaskStateSnapshotSame(
+    "checked-in valid task plan --json must remain no-write for task state",
+    projectRoot,
+    validTaskPlanStateBefore,
+    validTaskPlanJson,
+  );
 
+  const validTaskDryRunStateBefore = taskStateSnapshot(projectRoot);
   const validTaskDryRunJson = runCli([
     "task",
     "run",
@@ -4189,6 +4218,12 @@ try {
   }
   expectTaskDryRunNoRuntimeClaims(
     "checked-in valid task dry-run --json output",
+    validTaskDryRunJson,
+  );
+  expectTaskStateSnapshotSame(
+    "checked-in valid task dry-run --json must remain no-write for task state",
+    projectRoot,
+    validTaskDryRunStateBefore,
     validTaskDryRunJson,
   );
 
