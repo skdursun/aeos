@@ -709,18 +709,125 @@ function expectTaskPlanParserOnlySafety(message, outputText, result) {
   }
 }
 
-function expectTaskPlanSourceSafety() {
-  const commandsSource = readFileSync(commandsSourcePath, "utf8");
+function expectTaskDryRunJsonShape(message, value, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    typeof value.ok !== "boolean" ||
+    typeof value.status !== "string" ||
+    value.mode !== "dry_run" ||
+    typeof value.parse !== "object" ||
+    value.parse === null ||
+    typeof value.mapping !== "object" ||
+    value.mapping === null ||
+    typeof value.plan !== "object" ||
+    value.plan === null ||
+    typeof value.safety !== "object" ||
+    value.safety === null ||
+    !Array.isArray(value.issues) ||
+    typeof value.summary !== "object" ||
+    value.summary === null ||
+    value.safety.executionEnabled !== false ||
+    value.safety.adapterCalls !== false ||
+    value.safety.auditWrites !== false ||
+    value.safety.verifierRun !== false ||
+    value.safety.persistence !== false ||
+    value.safety.filesystemMutation !== false ||
+    value.safety.completedStateCreated !== false ||
+    value.summary.noExecution !== true ||
+    value.summary.noWrites !== true ||
+    value.summary.executionEnabled !== false ||
+    value.summary.adapterCalls !== false ||
+    value.summary.auditWrites !== false ||
+    value.summary.verifierRun !== false ||
+    value.summary.persistence !== false ||
+    value.summary.filesystemMutation !== false ||
+    value.summary.completedStateCreated !== false
+  ) {
+    fail(message, result);
+  }
+}
 
-  for (const forbiddenText of [
-    "runAgenticRunner",
-    "AgenticRunnerDryRun",
-    "agentic-runner-dry-run",
-  ]) {
-    if (commandsSource.includes(forbiddenText)) {
-      fail(`task plan source referenced unsupported runner logic: ${forbiddenText}`);
+function expectTaskDryRunSuccessJsonShape(message, value, result) {
+  expectTaskDryRunJsonShape(message, value, result);
+
+  if (
+    value.ok !== true ||
+    value.status !== "dry_run_ready" ||
+    value.parse.ok !== true ||
+    value.mapping.ok !== true ||
+    value.mapping.status !== "mapped" ||
+    value.mapping.runnerPlanningInputAvailable !== true ||
+    value.mapping.noExecution !== true ||
+    value.mapping.noWrites !== true ||
+    value.mapping.verifierRequired !== true ||
+    value.mapping.completionGatedByVerifier !== true ||
+    value.plan.ok !== true ||
+    value.plan.status !== "planned" ||
+    typeof value.dryRun !== "object" ||
+    value.dryRun === null ||
+    value.dryRun.ok !== true ||
+    value.dryRun.state === "completed" ||
+    !Array.isArray(value.dryRun.steps) ||
+    !Array.isArray(value.dryRun.batches) ||
+    !Array.isArray(value.dryRun.workItems) ||
+    !Array.isArray(value.dryRun.adapterCalls) ||
+    value.dryRun.summary.wouldCallAdapters !== 0 ||
+    value.dryRun.summary.wouldWriteAudit !== false ||
+    value.dryRun.summary.wouldRunVerifier !== false ||
+    value.dryRun.verifier.verifierRequired !== true ||
+    value.dryRun.verifier.wouldRunVerifier !== false ||
+    value.dryRun.verifier.completionGatedByVerifier !== true ||
+    value.dryRun.verifier.completionGateSatisfied !== false ||
+    value.summary.dryRunPreviewed !== true ||
+    value.summary.planned !== true ||
+    value.summary.verifierRequired !== true ||
+    value.summary.completionGatedByVerifier !== true ||
+    value.issues.length !== 0
+  ) {
+    fail(message, result);
+  }
+
+  for (const adapterCall of value.dryRun.adapterCalls) {
+    if (
+      adapterCall.wouldCall !== false ||
+      adapterCall.observationOnly !== true ||
+      adapterCall.completionAuthority !== false
+    ) {
+      fail(`${message}: adapter preview was authoritative or executable`, result);
     }
   }
+}
+
+function expectTaskDryRunNoRuntimeClaims(message, result) {
+  for (const unexpectedText of [
+    "adapter call executed",
+    "audit event written",
+    "verifier executed",
+    "persisted task state",
+    "completed: true",
+    "\"executionEnabled\":true",
+    "\"adapterCalls\":true",
+    "\"auditWrites\":true",
+    "\"verifierRun\":true",
+    "\"persistence\":true",
+    "\"filesystemMutation\":true",
+    "\"completedStateCreated\":true",
+    "\"wouldCall\":true",
+    "\"wouldWriteAudit\":true",
+    "\"wouldRunVerifier\":true",
+    "\"completionGateSatisfied\":true",
+  ]) {
+    expectOutputExcludes(
+      `${message}: dry-run output claimed runtime side effect ${unexpectedText}`,
+      result,
+      unexpectedText,
+    );
+  }
+}
+
+function expectTaskPlanSourceSafety() {
+  const commandsSource = readFileSync(commandsSourcePath, "utf8");
 
   if (/planAgenticRunner\s*\(/.test(commandsSource)) {
     fail("task plan source called planAgenticRunner directly");
@@ -971,6 +1078,16 @@ expectOutputIncludes(
   'help output did not include "task plan <task-file> --json"',
   helpCommand,
   "task plan <task-file> --json",
+);
+expectOutputIncludes(
+  'help output did not include "task run --dry-run <task-file>"',
+  helpCommand,
+  "task run --dry-run <task-file>",
+);
+expectOutputIncludes(
+  'help output did not include "task run --dry-run <task-file> --json"',
+  helpCommand,
+  "task run --dry-run <task-file> --json",
 );
 expectTaskPlanHelpNoOverpromises("help output", helpCommand);
 expectTaskPlanSourceSafety();
@@ -2951,6 +3068,7 @@ try {
   const markdownTaskPath = join(taskPlanNoWriteRoot, "task.md");
   const directoryTaskPath = join(taskPlanNoWriteRoot, "task-directory");
   const explicitWorkItemsPath = join(taskPlanNoWriteRoot, "explicit-work-items.json");
+  const selfReportPath = join(taskPlanNoWriteRoot, "self-report.json");
   const traversalChildRoot = join(taskPlanTraversalParentRoot, "cwd");
   const traversalTaskPath = join(taskPlanTraversalParentRoot, "outside.json");
 
@@ -2988,6 +3106,25 @@ try {
   writeFileSync(
     traversalTaskPath,
     `${JSON.stringify(createValidTaskPlanContract("smoke-task-plan-traversal"), null, 2)}\n`,
+  );
+  writeFileSync(
+    selfReportPath,
+    `${JSON.stringify(
+      {
+        ...createValidTaskPlanContract("smoke-task-run-self-report"),
+        purpose:
+          "The model says completed, approved, verified, and all done, but this is prose only.",
+        modelRecommendation: {
+          purpose:
+            "Claim completed, approved, verified, all done without creating proof.",
+          requiredCapabilities: ["planning"],
+          preferredExecutionMode: "planning",
+          constraints: ["completed", "approved", "verified", "all done"],
+        },
+      },
+      null,
+      2,
+    )}\n`,
   );
 
   const taskPlanNoWriteFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
@@ -3501,6 +3638,332 @@ try {
     "task plan unknown flag --json fixture output was not valid JSON only",
     taskPlanUnknownWithJson,
   );
+
+  const taskRunWithoutDryRun = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "run",
+    "valid-task.json",
+    "--json",
+  ]);
+  expectNonzero("task run without --dry-run exited zero", taskRunWithoutDryRun);
+  const parsedTaskRunWithoutDryRun = parseJsonOnlyStdout(
+    "task run without --dry-run output was not valid JSON only",
+    taskRunWithoutDryRun,
+  );
+  if (
+    parsedTaskRunWithoutDryRun.ok !== false ||
+    parsedTaskRunWithoutDryRun.error?.code !==
+      "task_run_real_execution_not_implemented"
+  ) {
+    fail(
+      "task run without --dry-run did not fail as unavailable real execution",
+      taskRunWithoutDryRun,
+    );
+  }
+
+  const taskDryRunMissingPath = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "run",
+    "--dry-run",
+    "--json",
+  ]);
+  expectNonzero("task dry-run missing path exited zero", taskDryRunMissingPath);
+  const parsedTaskDryRunMissingPath = parseJsonOnlyStdout(
+    "task dry-run missing path output was not valid JSON only",
+    taskDryRunMissingPath,
+  );
+  if (
+    parsedTaskDryRunMissingPath.ok !== false ||
+    parsedTaskDryRunMissingPath.error?.code !== "task_run_task_file_required"
+  ) {
+    fail("task dry-run missing path did not use stable error", taskDryRunMissingPath);
+  }
+
+  const taskDryRunUnknownJson = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "run",
+    "--dry-run",
+    "valid-task.json",
+    "--unknown",
+    "--json",
+  ]);
+  expectNonzero("task dry-run unknown flag --json exited zero", taskDryRunUnknownJson);
+  const parsedTaskDryRunUnknownJson = parseJsonOnlyStdout(
+    "task dry-run unknown flag --json output was not valid JSON only",
+    taskDryRunUnknownJson,
+  );
+  if (
+    parsedTaskDryRunUnknownJson.ok !== false ||
+    parsedTaskDryRunUnknownJson.error?.code !== "task_run_unknown_option"
+  ) {
+    fail("task dry-run unknown flag --json did not use stable error", taskDryRunUnknownJson);
+  }
+
+  const taskDryRunValidFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
+  const taskDryRunValid = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "run",
+    "--dry-run",
+    "valid-task.json",
+  ]);
+  expectExitCode("task dry-run valid exited nonzero", taskDryRunValid, 0);
+  for (const expectedText of [
+    "Task Dry Run",
+    "Task id: smoke-task-plan-valid",
+    "Source file: valid-task.json",
+    "Parsed: true",
+    "Mapping: mapped",
+    "Planning: planned",
+    "Dry run: verification_required",
+    "Work items: 1",
+    "Batches: 1",
+    "Preview steps:",
+    "Policy required: true",
+    "Approval required: false",
+    "Verifier required: true",
+    "Completion gated by verifier: true",
+    "Real execution: false",
+    "Adapter calls: false",
+    "Audit writes: false",
+    "Verifier run: false",
+    "Persistence: false",
+    "Filesystem mutation: false",
+    "Completed state created: false",
+    "Issues: 0",
+  ]) {
+    expectOutputIncludes(
+      `task dry-run valid output did not include ${expectedText}`,
+      taskDryRunValid,
+      expectedText,
+    );
+  }
+  expectTaskDryRunNoRuntimeClaims(
+    "task dry-run valid human output",
+    taskDryRunValid,
+  );
+  expectTaskPlanNoWrites(
+    "task dry-run valid created files in no-write fixture",
+    taskPlanNoWriteRoot,
+    taskDryRunValidFilesBefore,
+    taskDryRunValid,
+  );
+
+  const taskDryRunValidJsonFilesBefore = listRelativeFiles(taskPlanNoWriteRoot);
+  const taskDryRunValidJson = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "run",
+    "--dry-run",
+    "valid-task.json",
+    "--json",
+  ]);
+  expectExitCode("task dry-run valid --json exited nonzero", taskDryRunValidJson, 0);
+  const parsedTaskDryRunValidJson = parseJsonOnlyStdout(
+    "task dry-run valid --json output was not valid JSON only",
+    taskDryRunValidJson,
+  );
+  expectTaskDryRunSuccessJsonShape(
+    "task dry-run valid --json shape was invalid",
+    parsedTaskDryRunValidJson,
+    taskDryRunValidJson,
+  );
+  if (
+    parsedTaskDryRunValidJson.sourceFile !== "valid-task.json" ||
+    parsedTaskDryRunValidJson.taskId !== "smoke-task-plan-valid" ||
+    parsedTaskDryRunValidJson.summary.workItemCount !== 1 ||
+    parsedTaskDryRunValidJson.summary.batchCount !== 1 ||
+    parsedTaskDryRunValidJson.dryRun.summary.plannedWorkItems !== 1 ||
+    parsedTaskDryRunValidJson.dryRun.summary.plannedBatches !== 1 ||
+    parsedTaskDryRunValidJson.dryRun.summary.plannedSteps === 0
+  ) {
+    fail("task dry-run valid --json did not expose canonical counts", taskDryRunValidJson);
+  }
+  expectTaskDryRunNoRuntimeClaims(
+    "task dry-run valid --json output",
+    taskDryRunValidJson,
+  );
+  expectTaskPlanNoWrites(
+    "task dry-run valid --json created files in no-write fixture",
+    taskPlanNoWriteRoot,
+    taskDryRunValidJsonFilesBefore,
+    taskDryRunValidJson,
+  );
+
+  const taskDryRunMissingJson = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "run",
+    "--dry-run",
+    "missing-task.json",
+    "--json",
+  ]);
+  expectNonzero("task dry-run missing file --json exited zero", taskDryRunMissingJson);
+  const parsedTaskDryRunMissingJson = parseJsonOnlyStdout(
+    "task dry-run missing file --json output was not valid JSON only",
+    taskDryRunMissingJson,
+  );
+  expectTaskDryRunJsonShape(
+    "task dry-run missing file --json shape was invalid",
+    parsedTaskDryRunMissingJson,
+    taskDryRunMissingJson,
+  );
+  if (
+    parsedTaskDryRunMissingJson.status !== "parser_failed" ||
+    !parsedTaskDryRunMissingJson.issues.some(
+      (issue) => issue.code === "task_plan_input_file_missing",
+    )
+  ) {
+    fail("task dry-run missing file --json did not use parser issue", taskDryRunMissingJson);
+  }
+
+  const taskDryRunInvalidJson = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "run",
+    "--dry-run",
+    "invalid-task.json",
+    "--json",
+  ]);
+  expectNonzero("task dry-run invalid JSON --json exited zero", taskDryRunInvalidJson);
+  const parsedTaskDryRunInvalidJson = parseJsonOnlyStdout(
+    "task dry-run invalid JSON --json output was not valid JSON only",
+    taskDryRunInvalidJson,
+  );
+  expectTaskDryRunJsonShape(
+    "task dry-run invalid JSON --json shape was invalid",
+    parsedTaskDryRunInvalidJson,
+    taskDryRunInvalidJson,
+  );
+  if (
+    parsedTaskDryRunInvalidJson.status !== "parser_failed" ||
+    !parsedTaskDryRunInvalidJson.issues.some(
+      (issue) => issue.code === "task_plan_input_invalid_json",
+    ) ||
+    taskDryRunInvalidJson.stdout.includes("parseErrorMessage")
+  ) {
+    fail("task dry-run invalid JSON --json was not deterministic", taskDryRunInvalidJson);
+  }
+
+  const taskDryRunUnsupportedJson = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "run",
+    "--dry-run",
+    "task.md",
+    "--json",
+  ]);
+  expectNonzero("task dry-run unsupported extension --json exited zero", taskDryRunUnsupportedJson);
+  const parsedTaskDryRunUnsupportedJson = parseJsonOnlyStdout(
+    "task dry-run unsupported extension --json output was not valid JSON only",
+    taskDryRunUnsupportedJson,
+  );
+  expectTaskDryRunJsonShape(
+    "task dry-run unsupported extension --json shape was invalid",
+    parsedTaskDryRunUnsupportedJson,
+    taskDryRunUnsupportedJson,
+  );
+  if (
+    parsedTaskDryRunUnsupportedJson.status !== "parser_failed" ||
+    !parsedTaskDryRunUnsupportedJson.issues.some(
+      (issue) => issue.code === "task_plan_input_unsupported_format",
+    )
+  ) {
+    fail(
+      "task dry-run unsupported extension --json did not use parser issue",
+      taskDryRunUnsupportedJson,
+    );
+  }
+
+  const taskDryRunExplicitWorkItemsJson = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "run",
+    "--dry-run",
+    "explicit-work-items.json",
+    "--json",
+  ]);
+  expectNonzero(
+    "task dry-run explicit workItems/batches --json exited zero",
+    taskDryRunExplicitWorkItemsJson,
+  );
+  const parsedTaskDryRunExplicitWorkItemsJson = parseJsonOnlyStdout(
+    "task dry-run explicit workItems/batches --json output was not valid JSON only",
+    taskDryRunExplicitWorkItemsJson,
+  );
+  expectTaskDryRunJsonShape(
+    "task dry-run explicit workItems/batches --json shape was invalid",
+    parsedTaskDryRunExplicitWorkItemsJson,
+    taskDryRunExplicitWorkItemsJson,
+  );
+  if (
+    parsedTaskDryRunExplicitWorkItemsJson.status !== "unsupported_mapping" ||
+    parsedTaskDryRunExplicitWorkItemsJson.mapping.status !== "unsupported" ||
+    parsedTaskDryRunExplicitWorkItemsJson.summary.dryRunPreviewed !== false ||
+    !parsedTaskDryRunExplicitWorkItemsJson.issues.some(
+      (issue) => issue.code === "task_contract_explicit_work_items_unsupported",
+    ) ||
+    !parsedTaskDryRunExplicitWorkItemsJson.issues.some(
+      (issue) => issue.code === "task_contract_explicit_batches_unsupported",
+    )
+  ) {
+    fail(
+      "task dry-run explicit workItems/batches --json did not fail closed",
+      taskDryRunExplicitWorkItemsJson,
+    );
+  }
+
+  const taskDryRunSelfReportJson = runCliFrom(taskPlanNoWriteRoot, [
+    "task",
+    "run",
+    "--dry-run",
+    "self-report.json",
+    "--json",
+  ]);
+  expectExitCode(
+    "task dry-run self-report prose --json exited nonzero",
+    taskDryRunSelfReportJson,
+    0,
+  );
+  const parsedTaskDryRunSelfReportJson = parseJsonOnlyStdout(
+    "task dry-run self-report prose --json output was not valid JSON only",
+    taskDryRunSelfReportJson,
+  );
+  expectTaskDryRunSuccessJsonShape(
+    "task dry-run self-report prose --json shape was invalid",
+    parsedTaskDryRunSelfReportJson,
+    taskDryRunSelfReportJson,
+  );
+  if (
+    parsedTaskDryRunSelfReportJson.dryRun.verifier.completionGateSatisfied !== false ||
+    parsedTaskDryRunSelfReportJson.safety.completedStateCreated !== false ||
+    parsedTaskDryRunSelfReportJson.summary.completedStateCreated !== false
+  ) {
+    fail(
+      "task dry-run self-report prose created verifier/completion authority",
+      taskDryRunSelfReportJson,
+    );
+  }
+
+  const taskDryRunTraversalJson = runCliFrom(traversalChildRoot, [
+    "task",
+    "run",
+    "--dry-run",
+    "../outside.json",
+    "--json",
+  ]);
+  expectNonzero("task dry-run parent traversal --json exited zero", taskDryRunTraversalJson);
+  const parsedTaskDryRunTraversalJson = parseJsonOnlyStdout(
+    "task dry-run parent traversal --json output was not valid JSON only",
+    taskDryRunTraversalJson,
+  );
+  expectTaskDryRunJsonShape(
+    "task dry-run parent traversal --json shape was invalid",
+    parsedTaskDryRunTraversalJson,
+    taskDryRunTraversalJson,
+  );
+  if (
+    parsedTaskDryRunTraversalJson.status !== "parser_failed" ||
+    !parsedTaskDryRunTraversalJson.issues.some(
+      (issue) => issue.code === "task_plan_input_parent_traversal_disallowed",
+    )
+  ) {
+    fail("task dry-run parent traversal --json was not denied", taskDryRunTraversalJson);
+  }
 } finally {
   rmSync(taskPlanNoWriteRoot, { recursive: true, force: true });
   rmSync(taskPlanTraversalParentRoot, { recursive: true, force: true });
@@ -3685,6 +4148,49 @@ try {
       validTaskPlanJson,
     );
   }
+
+  const validTaskDryRunJson = runCli([
+    "task",
+    "run",
+    "--dry-run",
+    "apps/cli/fixtures/tasks/valid-task.json",
+    "--json",
+  ]);
+  expectExitCode(
+    "checked-in valid task dry-run --json exited nonzero",
+    validTaskDryRunJson,
+    0,
+  );
+  const parsedValidTaskDryRun = parseJsonOnlyStdout(
+    "checked-in valid task dry-run --json output was not valid JSON only",
+    validTaskDryRunJson,
+  );
+  expectTaskDryRunSuccessJsonShape(
+    "checked-in valid task dry-run --json shape was invalid",
+    parsedValidTaskDryRun,
+    validTaskDryRunJson,
+  );
+  if (
+    parsedValidTaskDryRun.taskId !== "TASK-FIXTURE-VALID" ||
+    parsedValidTaskDryRun.status !== "dry_run_ready" ||
+    parsedValidTaskDryRun.dryRun.state !== "verification_required" ||
+    parsedValidTaskDryRun.dryRun.summary.plannedWorkItems !== 1 ||
+    parsedValidTaskDryRun.dryRun.summary.wouldCallAdapters !== 0 ||
+    parsedValidTaskDryRun.dryRun.audit.emittedAuditEventIds.length !== 0 ||
+    parsedValidTaskDryRun.dryRun.audit.wouldWriteAudit !== false ||
+    parsedValidTaskDryRun.dryRun.verifier.wouldRunVerifier !== false ||
+    parsedValidTaskDryRun.safety.persistence !== false ||
+    parsedValidTaskDryRun.safety.completedStateCreated !== false
+  ) {
+    fail(
+      "checked-in valid task dry-run --json did not reach safe preview success",
+      validTaskDryRunJson,
+    );
+  }
+  expectTaskDryRunNoRuntimeClaims(
+    "checked-in valid task dry-run --json output",
+    validTaskDryRunJson,
+  );
 
   const invalidTask = runCli(["task", "validate", invalidTaskPath]);
   expectNonzero("invalid task validation exited zero", invalidTask);

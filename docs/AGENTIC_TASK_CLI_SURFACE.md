@@ -16,6 +16,9 @@ contracts, and dry-run previews.
 Current foundation:
 
 - `aeos task validate <path>` exists as task contract validation.
+- `aeos task plan <task-file>` exists as parser-mapper-planner integration.
+- `aeos task run --dry-run <task-file>` exists as a non-executing dry-run
+  preview over the existing parser, mapper, planner, and dry-run contracts.
 - Runner planning logic is side-effect-free and creates planning results from
   represented input.
 - Dry-run runner logic is side-effect-free and creates execution-shaped previews
@@ -23,8 +26,8 @@ Current foundation:
   completion.
 - Coverage verifier logic is deterministic and rejects incomplete work coverage.
 - Policy, audit, and verification documents define required safety boundaries.
-- No agentic task CLI runtime exists yet for `plan`, `run --dry-run`, `status`,
-  `verify`, or `resume`.
+- No agentic task CLI runtime exists yet for `status`, `verify`, `resume`, or
+  real task execution.
 - No command currently performs real agentic runner execution.
 
 ## CLI Design Principles
@@ -80,10 +83,24 @@ Same behavior as `aeos task plan`, but stdout is exactly one JSON object and no
 human text. Unknown flags and validation errors must also be JSON-only.
 
 ### `aeos task run --dry-run`
-Creates an execution preview from a represented plan or planning result.
+Reads a local JSON task file, validates it, maps the task contract to
+authoritative runner planning input, runs the dependency-injected planner after
+strict safety/verifier gates pass, and creates an execution preview from the
+resulting planning result.
 
 It must not call model/tool adapters, write audit events, run verifier logic,
 mutate lifecycle state, persist resume state, or mark the task completed.
+
+Current MVP limitations:
+
+- JSON task files only.
+- No persistence and no audit writes.
+- No real task execution without `--dry-run`.
+- Explicit `workItems` and `batches` remain unsupported and fail closed.
+- Planning must prove `metadata.noExecution === true`,
+  `metadata.noWrites === true`, `verifierRequired === true`, and
+  `completionGatedByVerifier === true` on the mapper-produced
+  `runnerPlanningInput`; top-level or prose claims are not authority.
 
 ### `aeos task run --dry-run --json`
 Same behavior as `aeos task run --dry-run`, but stdout is exactly one JSON
@@ -141,6 +158,9 @@ Later commands require a separate safety review and implementation plan:
 Real `aeos task run` and `aeos agent run` must remain unavailable until policy,
 approval, audit, verifier, adapter, persistence, and resume behavior are
 implemented and reviewed.
+
+`aeos task run <task-file>` without `--dry-run` fails closed with real execution
+reported as unavailable.
 
 ## Human Output Principles
 Human output should be compact, stable, and explicit about non-execution.

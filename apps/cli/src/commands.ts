@@ -4,16 +4,23 @@ import {
   mapTaskContractToRunnerPlanningInput,
   parseTaskPlanInputFile,
   planAgenticRunner,
+  runAgenticRunnerDryRun,
   runInitPipeline,
   validateAeosTask,
 } from "@aeos/core";
 import type {
+  AgenticRunnerDryRunInput,
+  AgenticRunnerDryRunIssue,
+  AgenticRunnerDryRunResult,
+  AgenticRunnerDryRunState,
   AeosTask,
   CliTaskPlanHumanRenderModel,
   CliTaskPlanJsonRenderModel,
   CliTaskPlanPlannerIntegrationIssue,
   CliTaskPlanPlannerIntegrationResult,
   CliTaskPlanPlannerIntegrationStatus,
+  AgenticRunnerPlanningIssue,
+  AgenticRunnerPlanningResult,
   InitIssue,
   InitResult,
   InitStage,
@@ -65,6 +72,8 @@ Commands:
   task plan --json (skeleton)
   task plan <task-file>
   task plan <task-file> --json
+  task run --dry-run <task-file>
+  task run --dry-run <task-file> --json
   version
   help`;
 
@@ -148,6 +157,63 @@ type TaskPlanJsonErrorOutput = {
     readonly message: string;
   };
   readonly issues: readonly [];
+};
+
+type TaskDryRunJsonErrorOutput = {
+  readonly ok: false;
+  readonly error: {
+    readonly code: string;
+    readonly message: string;
+  };
+  readonly issues: readonly [];
+};
+
+type TaskDryRunSafety = {
+  readonly executionEnabled: false;
+  readonly adapterCalls: false;
+  readonly auditWrites: false;
+  readonly verifierRun: false;
+  readonly persistence: false;
+  readonly filesystemMutation: false;
+  readonly completedStateCreated: false;
+};
+
+type TaskDryRunJsonOutput = {
+  readonly ok: boolean;
+  readonly status:
+    | "dry_run_ready"
+    | "dry_run_failed"
+    | CliTaskPlanPlannerIntegrationStatus;
+  readonly mode: "dry_run";
+  readonly taskId?: string;
+  readonly sourceFile?: string;
+  readonly parse: ReturnType<typeof createSafeCliTaskPlanJsonOutput>["parse"];
+  readonly mapping: ReturnType<typeof createSafeCliTaskPlanJsonOutput>["mapping"];
+  readonly plan: ReturnType<typeof createSafeCliTaskPlanJsonOutput>["plan"];
+  readonly dryRun?: ReturnType<typeof createSafeAgenticDryRunJsonOutput>;
+  readonly safety: TaskDryRunSafety;
+  readonly issues: readonly (
+    | CliTaskPlanPlannerIntegrationIssue
+    | AgenticRunnerDryRunIssue
+  )[];
+  readonly summary: {
+    readonly parsed: boolean;
+    readonly mapped: boolean;
+    readonly planned: boolean;
+    readonly dryRunPreviewed: boolean;
+    readonly workItemCount: number;
+    readonly batchCount: number;
+    readonly planStepCount: number;
+    readonly previewStepCount: number;
+    readonly policyRequired: boolean;
+    readonly approvalRequired: boolean;
+    readonly verifierRequired: boolean;
+    readonly completionGatedByVerifier: boolean;
+    readonly issueCount: number;
+  } & TaskDryRunSafety & {
+      readonly noExecution: true;
+      readonly noWrites: true;
+    };
 };
 
 type RememberJsonFailureReason =
@@ -704,6 +770,12 @@ function writeTaskPlanSkeletonJson(
   writeJsonLine(value);
 }
 
+function writeTaskDryRunJson(
+  value: TaskDryRunJsonOutput | TaskDryRunJsonErrorOutput,
+): void {
+  writeJsonLine(value);
+}
+
 function writeRememberJson(value: RememberJsonOutput): void {
   writeJsonLine(value);
 }
@@ -901,13 +973,14 @@ function printTaskPlanSkeleton(output: TaskPlanSkeletonJsonOutput): void {
   );
 }
 
-function createTaskPlanInputRequest(inputPath: string): Parameters<
-  typeof parseTaskPlanInputFile
->[0] {
+function createTaskPlanInputRequest(
+  inputPath: string,
+  mode: "plan" | "dry_run" = "plan",
+): Parameters<typeof parseTaskPlanInputFile>[0] {
   return {
     inputPath,
     currentWorkingDirectory: getCwd(),
-    mode: "plan",
+    mode,
     expectedFormat: "json",
     options: {
       allowAbsolutePath: false,
@@ -971,6 +1044,8 @@ function createTaskPlanIntegrationResult(input: {
   readonly taskFile: string;
   readonly json: boolean;
   readonly argv: readonly string[];
+  readonly mode?: "plan" | "dry_run";
+  readonly command?: readonly string[];
   readonly parserRequest: Parameters<typeof parseTaskPlanInputFile>[0];
   readonly parserResult: TaskPlanInputResult;
 }): CliTaskPlanPlannerIntegrationResult {
@@ -983,10 +1058,10 @@ function createTaskPlanIntegrationResult(input: {
   return createCliTaskPlanPlannerIntegrationResult(
     {
       argv: input.argv,
-      command: ["task", "plan"],
+      command: input.command ?? ["task", "plan"],
       taskFile: input.taskFile,
       json: input.json,
-      mode: "plan",
+      mode: input.mode ?? "plan",
       parserRequest: input.parserRequest,
       parserResult: input.parserResult,
       parserResultReference: {
@@ -1084,6 +1159,450 @@ function createSafeCliTaskPlanJsonOutput(
     issues: output.issues,
     summary: output.summary,
   };
+}
+
+const taskDryRunSafety: TaskDryRunSafety = {
+  executionEnabled: false,
+  adapterCalls: false,
+  auditWrites: false,
+  verifierRun: false,
+  persistence: false,
+  filesystemMutation: false,
+  completedStateCreated: false,
+};
+
+const dryRunIssueCategories = new Set<string>([
+  "scope_failure",
+  "policy_failure",
+  "execution_failure",
+  "verification_failure",
+  "coverage_failure",
+  "artifact_failure",
+  "adapter_failure",
+  "audit_failure",
+  "inventory_failure",
+  "resume_failure",
+  "approval_failure",
+  "dry_run_safety",
+  "unknown",
+]);
+
+function mapPlanningIssueToDryRunIssue(
+  issue: AgenticRunnerPlanningIssue,
+): AgenticRunnerDryRunIssue {
+  return {
+    code: issue.code,
+    message: issue.message,
+    severity: issue.severity,
+    category: dryRunIssueCategories.has(issue.category)
+      ? issue.category as AgenticRunnerDryRunIssue["category"]
+      : "unknown",
+    stepId: issue.stepId,
+    batchId: issue.batchId,
+    workItemId: issue.workItemId,
+    auditEventIds: issue.auditEventIds,
+    retryable: issue.retryable,
+    createdAt: issue.createdAt,
+    metadata: issue.metadata,
+  };
+}
+
+function mapStepStateToDryRunPreviewState(
+  state: string,
+): AgenticRunnerDryRunState {
+  if (state === "blocked") {
+    return "blocked";
+  }
+
+  if (state === "failed") {
+    return "failed";
+  }
+
+  if (state === "skipped") {
+    return "blocked";
+  }
+
+  if (state === "completed" || state === "verified") {
+    return state as unknown as AgenticRunnerDryRunState;
+  }
+
+  return "preview_ready";
+}
+
+function createDryRunInputFromPlan(input: {
+  readonly taskFile: string;
+  readonly json: boolean;
+  readonly integrationResult: CliTaskPlanPlannerIntegrationResult;
+}): AgenticRunnerDryRunInput | undefined {
+  const planningResult = input.integrationResult.planner.planningResult;
+
+  if (
+    planningResult === undefined ||
+    input.integrationResult.status !== "planned"
+  ) {
+    return undefined;
+  }
+
+  const approvalRequired =
+    planningResult.summary.approvalRequired ||
+    input.integrationResult.summary.verifierRequired === false;
+  const adapterReferences = [
+    ...planningResult.adapterBoundary.modelAdapterReferences,
+    ...planningResult.adapterBoundary.toolAdapterReferences,
+  ];
+
+  return {
+    taskId: planningResult.taskId,
+    mode: "dry_run",
+    planningResult: {
+      kind: "reference",
+      reference:
+        input.integrationResult.planner.planningResultReference ?? {
+          id: `runner-planning-result:${planningResult.taskId}`,
+          path: input.taskFile,
+        },
+    },
+    plannedSteps: planningResult.steps.map((step) => {
+      const previewState = mapStepStateToDryRunPreviewState(step.state);
+
+      return {
+        stepId: step.id,
+        stepKind: step.kind,
+        previewState,
+        wouldRun: previewState === "preview_ready",
+        blockedReason:
+          previewState === "blocked"
+            ? "Planning represented this step as blocked."
+            : undefined,
+        approvalRequired,
+        plannedAdapterCallIds:
+          step.requiredAdapterReferenceId === undefined
+            ? []
+            : [`adapter-call:reference:${step.requiredAdapterReferenceId}`],
+        expectedAuditEventIds: step.expectedAuditEventIds,
+        verifierRequired: step.verifierRequired,
+        issues: step.issues.map(mapPlanningIssueToDryRunIssue),
+        metadata: {
+          sourcePlannerStepState: step.state,
+        },
+      };
+    }),
+    plannedBatches: planningResult.batches.map((batch) => ({
+      batchId: batch.id,
+      workItemIds: batch.workItemIds,
+      expectedItemCount: batch.expectedItemCount,
+      previewState: batch.issues.length > 0 ? "blocked" : "preview_ready",
+      wouldRun: batch.issues.length === 0 && !approvalRequired,
+      issues: batch.issues.map(mapPlanningIssueToDryRunIssue),
+      metadata: {
+        deterministicOrder: batch.deterministicOrder,
+      },
+    })),
+    plannedWorkItems: planningResult.workItems.map((workItem) => {
+      const previewState = mapStepStateToDryRunPreviewState(
+        workItem.initialState,
+      );
+
+      return {
+        workItemId: workItem.id,
+        batchId: workItem.batchId,
+        previewState,
+        wouldProcess: previewState === "preview_ready" && !approvalRequired,
+        expectedArtifactIds: workItem.expectedArtifactIds,
+        issues: workItem.issues.map(mapPlanningIssueToDryRunIssue),
+        metadata: {
+          sourcePlannerInitialState: workItem.initialState,
+        },
+      };
+    }),
+    adapterCalls: adapterReferences.map((adapterReference) => ({
+      callId: `adapter-call:reference:${adapterReference.adapterId}`,
+      kind: adapterReference.kind === "model" ? "model" : "tool",
+      adapterId: adapterReference.adapterId,
+      operation: "planned_reference",
+      wouldCall: false,
+      approvalRequired,
+      inputReference: {
+        id: `adapter-input:${adapterReference.adapterId}`,
+      },
+      outputReference: null,
+      issues: [],
+      observationOnly: true,
+      completionAuthority: false,
+      metadata: {
+        sourceAdapterStatus: adapterReference.status,
+      },
+    })),
+    policyPreview: {
+      kind: "data",
+      data: {
+        status: planningResult.policy[0]?.status ?? "not_evaluated",
+        approvalRequired,
+        required: planningResult.policy.length > 0,
+      },
+      reference: {
+        id: `policy-preview:${planningResult.taskId}`,
+      },
+    },
+    auditPreviewInput: {
+      kind: "data",
+      data: {
+        expectedAuditEventIds: planningResult.audit.expectedAuditEventIds,
+        emittedAuditEventIds: [],
+        wouldWriteAudit: false,
+        auditStatus: "pending",
+      },
+      reference: {
+        id: `audit-preview:${planningResult.taskId}`,
+      },
+    },
+    verifierPreviewInput: {
+      kind: "data",
+      data: {
+        verifierRequired: planningResult.verifier.verifierRequired,
+        completionGatedByVerifier:
+          planningResult.verifier.completionGatedByVerifier,
+        wouldRunVerifier: false,
+        verifierStatus: planningResult.verifier.verifierRequired
+          ? "required_not_run"
+          : "not_required",
+        coverageStatus: planningResult.verifier.verifierRequired
+          ? "incomplete"
+          : "unknown",
+      },
+      reference: {
+        id: `verifier-preview:${planningResult.taskId}`,
+      },
+    },
+    resumePreviewInput: {
+      kind: "data",
+      data: {
+        pendingWorkItemIds:
+          planningResult.resume?.pendingWorkItemIds ??
+          planningResult.workItems.map((workItem) => workItem.id),
+        retryableWorkItemIds: planningResult.resume?.retryableWorkItemIds ?? [],
+        wouldUpdateResume: false,
+      },
+      reference: {
+        id: `resume-preview:${planningResult.taskId}`,
+      },
+    },
+    options: {
+      requirePolicy: planningResult.policy.length > 0,
+      requireApproval: approvalRequired,
+      requireAudit: planningResult.audit.auditRequired,
+      requireVerifier: planningResult.verifier.verifierRequired,
+      completionGatedByVerifier:
+        planningResult.verifier.completionGatedByVerifier,
+      outputMode: input.json ? "json" : "human",
+      metadata: {
+        noExecution: true,
+        noWrites: true,
+      },
+    },
+    metadata: {
+      sourceFile: input.taskFile,
+      noExecution: true,
+      noWrites: true,
+      executionEnabled: false,
+      adapterCalls: false,
+      auditWrites: false,
+      verifierRun: false,
+      persistence: false,
+      filesystemMutation: false,
+      completedStateCreated: false,
+    },
+  };
+}
+
+function createSafeAgenticDryRunJsonOutput(
+  result: AgenticRunnerDryRunResult,
+) {
+  return {
+    ok: result.ok,
+    state: result.state,
+    steps: result.steps.map((step) => ({
+      stepId: step.stepId,
+      stepKind: step.stepKind,
+      previewState: step.previewState,
+      wouldRun: step.wouldRun,
+      approvalRequired: step.approvalRequired,
+      plannedAdapterCallIds: step.plannedAdapterCallIds,
+      expectedAuditEventIds: step.expectedAuditEventIds,
+      verifierRequired: step.verifierRequired,
+      issueCount: step.issues.length,
+    })),
+    batches: result.batches.map((batch) => ({
+      batchId: batch.batchId,
+      workItemIds: batch.workItemIds,
+      expectedItemCount: batch.expectedItemCount,
+      previewState: batch.previewState,
+      wouldRun: batch.wouldRun,
+      issueCount: batch.issues.length,
+    })),
+    workItems: result.workItems.map((workItem) => ({
+      workItemId: workItem.workItemId,
+      batchId: workItem.batchId,
+      previewState: workItem.previewState,
+      wouldProcess: workItem.wouldProcess,
+      issueCount: workItem.issues.length,
+    })),
+    adapterCalls: result.adapterCalls.map((adapterCall) => ({
+      callId: adapterCall.callId,
+      kind: adapterCall.kind,
+      adapterId: adapterCall.adapterId,
+      operation: adapterCall.operation,
+      wouldCall: adapterCall.wouldCall,
+      approvalRequired: adapterCall.approvalRequired,
+      observationOnly: adapterCall.observationOnly,
+      completionAuthority: adapterCall.completionAuthority,
+      issueCount: adapterCall.issues.length,
+    })),
+    audit: {
+      expectedAuditEventIds: result.audit.expectedAuditEventIds,
+      emittedAuditEventIds: result.audit.emittedAuditEventIds,
+      missingAuditEventIds: result.audit.missingAuditEventIds,
+      wouldWriteAudit: result.audit.wouldWriteAudit,
+      auditStatus: result.audit.auditStatus,
+      issueCount: result.audit.issues.length,
+    },
+    verifier: {
+      verifierRequired: result.verifier.verifierRequired,
+      wouldRunVerifier: result.verifier.wouldRunVerifier,
+      verifierStatus: result.verifier.verifierStatus,
+      coverageStatus: result.verifier.coverageStatus,
+      completionGatedByVerifier: result.verifier.completionGatedByVerifier,
+      completionGateSatisfied: result.verifier.completionGateSatisfied,
+      issueCount: result.verifier.issues.length,
+    },
+    resume:
+      result.resume === undefined
+        ? undefined
+        : {
+            wouldUpdateResume: result.resume.wouldUpdateResume,
+            nextStepId: result.resume.nextStepId,
+            nextBatchId: result.resume.nextBatchId,
+            pendingWorkItemIds: result.resume.pendingWorkItemIds,
+            retryableWorkItemIds: result.resume.retryableWorkItemIds,
+            issueCount: result.resume.issues.length,
+          },
+    issues: result.issues,
+    summary: result.summary,
+  };
+}
+
+function createTaskDryRunJsonOutput(input: {
+  readonly integrationResult: CliTaskPlanPlannerIntegrationResult;
+  readonly safePlanOutput: ReturnType<typeof createSafeCliTaskPlanJsonOutput>;
+  readonly dryRunResult?: AgenticRunnerDryRunResult;
+}): TaskDryRunJsonOutput {
+  const safeDryRun =
+    input.dryRunResult === undefined
+      ? undefined
+      : createSafeAgenticDryRunJsonOutput(input.dryRunResult);
+  const dryRunOk = input.dryRunResult?.ok === true;
+  const issues = [
+    ...input.integrationResult.issues,
+    ...(input.dryRunResult?.issues ?? []),
+  ];
+
+  return {
+    ok: input.integrationResult.ok && dryRunOk,
+    status:
+      input.integrationResult.status === "planned"
+        ? dryRunOk
+          ? "dry_run_ready"
+          : "dry_run_failed"
+        : input.integrationResult.status,
+    mode: "dry_run",
+    taskId: input.integrationResult.taskId,
+    sourceFile: input.integrationResult.sourceFile,
+    parse: input.safePlanOutput.parse,
+    mapping: input.safePlanOutput.mapping,
+    plan: input.safePlanOutput.plan,
+    dryRun: safeDryRun,
+    safety: taskDryRunSafety,
+    issues,
+    summary: {
+      parsed: input.integrationResult.summary.parsed,
+      mapped: input.integrationResult.summary.mapped,
+      planned: input.integrationResult.summary.planned,
+      dryRunPreviewed: input.dryRunResult !== undefined,
+      workItemCount: input.integrationResult.summary.workItemCount,
+      batchCount: input.integrationResult.summary.batchCount,
+      planStepCount: input.integrationResult.summary.planStepCount,
+      previewStepCount: input.dryRunResult?.summary.plannedSteps ?? 0,
+      policyRequired:
+        (input.integrationResult.planner.planningResult?.policy.length ?? 0) > 0,
+      approvalRequired:
+        input.integrationResult.planner.planningResult?.summary
+          .approvalRequired ?? false,
+      verifierRequired: input.integrationResult.summary.verifierRequired,
+      completionGatedByVerifier:
+        input.integrationResult.summary.completionGatedByVerifier,
+      issueCount: issues.length,
+      noExecution: true,
+      noWrites: true,
+      ...taskDryRunSafety,
+    },
+  };
+}
+
+function printTaskDryRunOutput(input: {
+  readonly integrationResult: CliTaskPlanPlannerIntegrationResult;
+  readonly dryRunResult?: AgenticRunnerDryRunResult;
+}): void {
+  const output = input.integrationResult.humanOutput;
+  const dryRun = input.dryRunResult;
+
+  console.log("Task Dry Run");
+  console.log(`Task id: ${input.integrationResult.taskId ?? ""}`);
+  console.log(`Source file: ${input.integrationResult.sourceFile ?? ""}`);
+  console.log(`Parsed: ${String(input.integrationResult.summary.parsed)}`);
+  console.log(`Mapping: ${input.integrationResult.mapping.status}`);
+  console.log(`Planning: ${input.integrationResult.planner.status}`);
+  console.log(
+    `Dry run: ${dryRun === undefined ? "not_attempted" : dryRun.state}`,
+  );
+  console.log(`Work items: ${input.integrationResult.summary.workItemCount}`);
+  console.log(`Batches: ${input.integrationResult.summary.batchCount}`);
+  console.log(`Preview steps: ${dryRun?.summary.plannedSteps ?? 0}`);
+  console.log(`Policy required: ${String(output?.policyRequired ?? false)}`);
+  console.log(`Approval required: ${String(output?.approvalRequired ?? false)}`);
+  console.log(
+    `Verifier required: ${String(input.integrationResult.summary.verifierRequired)}`,
+  );
+  console.log(
+    `Completion gated by verifier: ${String(
+      input.integrationResult.summary.completionGatedByVerifier,
+    )}`,
+  );
+  console.log(`Real execution: ${String(taskDryRunSafety.executionEnabled)}`);
+  console.log(`Adapter calls: ${String(taskDryRunSafety.adapterCalls)}`);
+  console.log(`Audit writes: ${String(taskDryRunSafety.auditWrites)}`);
+  console.log(`Verifier run: ${String(taskDryRunSafety.verifierRun)}`);
+  console.log(`Persistence: ${String(taskDryRunSafety.persistence)}`);
+  console.log(
+    `Filesystem mutation: ${String(taskDryRunSafety.filesystemMutation)}`,
+  );
+  console.log(
+    `Completed state created: ${String(
+      taskDryRunSafety.completedStateCreated,
+    )}`,
+  );
+  console.log(
+    `Issues: ${
+      input.integrationResult.issues.length + (dryRun?.issues.length ?? 0)
+    }`,
+  );
+
+  for (const issue of input.integrationResult.issues) {
+    console.log(formatCliTaskPlanIssue(issue));
+  }
+
+  for (const issue of dryRun?.issues ?? []) {
+    console.log(`- ${issue.code}: ${issue.message}`);
+  }
 }
 
 function formatCliTaskPlanIssue(
@@ -2511,6 +3030,159 @@ async function handleSearch(args: readonly string[]): Promise<void> {
 }
 
 async function handleTask(args: readonly string[]): Promise<void> {
+  if (args[0] === "run") {
+    const runArgs = args.slice(1);
+    const json = runArgs.includes("--json");
+    const dryRun = runArgs.includes("--dry-run");
+    const positionalArgs = runArgs.filter((arg) => !arg.startsWith("--"));
+    const unknownArgs = runArgs.filter(
+      (arg) => arg !== "--json" && arg !== "--dry-run" && arg.startsWith("--"),
+    );
+
+    if (unknownArgs.length > 0 || positionalArgs.length > 1) {
+      if (json) {
+        writeTaskDryRunJson({
+          ok: false,
+          error: {
+            code: "task_run_unknown_option",
+            message: "Unknown task run option.",
+          },
+          issues: [],
+        });
+        setExitCode(1);
+        return;
+      }
+
+      console.error("Error: unknown task run option.");
+      console.error("Usage: aeos task run --dry-run <task-file> [--json]");
+      setExitCode(1);
+      return;
+    }
+
+    if (!dryRun) {
+      if (json) {
+        writeTaskDryRunJson({
+          ok: false,
+          error: {
+            code: "task_run_real_execution_not_implemented",
+            message:
+              "Real task execution is not implemented; use --dry-run for a non-executing preview.",
+          },
+          issues: [],
+        });
+        setExitCode(1);
+        return;
+      }
+
+      console.error("Task Run");
+      console.error(
+        "Error: real task execution is not implemented; use --dry-run for a non-executing preview.",
+      );
+      setExitCode(1);
+      return;
+    }
+
+    const taskFile = positionalArgs[0];
+
+    if (taskFile === undefined || taskFile.trim().length === 0) {
+      if (json) {
+        writeTaskDryRunJson({
+          ok: false,
+          error: {
+            code: "task_run_task_file_required",
+            message: "Task run dry-run requires a task file path.",
+          },
+          issues: [],
+        });
+        setExitCode(1);
+        return;
+      }
+
+      console.error("Task Dry Run");
+      console.error("Error: task file path is required.");
+      console.error("Usage: aeos task run --dry-run <task-file> [--json]");
+      setExitCode(1);
+      return;
+    }
+
+    try {
+      const parserRequest = createTaskPlanInputRequest(taskFile, "dry_run");
+      const parserResult = await parseTaskPlanInputFile(parserRequest);
+      const integrationResult = createTaskPlanIntegrationResult({
+        taskFile,
+        json,
+        argv: ["task", "run", ...runArgs],
+        command: ["task", "run"],
+        mode: "dry_run",
+        parserRequest,
+        parserResult,
+      });
+      const dryRunInput = createDryRunInputFromPlan({
+        taskFile,
+        json,
+        integrationResult,
+      });
+      const dryRunResult =
+        dryRunInput === undefined
+          ? undefined
+          : runAgenticRunnerDryRun(dryRunInput);
+
+      if (json) {
+        const jsonOutput =
+          integrationResult.jsonOutput ??
+          createCliTaskPlanPlannerIntegrationResult(
+            {
+              taskFile,
+              json: true,
+              mode: "dry_run",
+              parserRequest,
+              parserResult,
+              noExecution: true,
+              noWrites: true,
+            },
+          ).jsonOutput!;
+
+        writeTaskDryRunJson(
+          createTaskDryRunJsonOutput({
+            integrationResult,
+            safePlanOutput: createSafeCliTaskPlanJsonOutput(jsonOutput),
+            dryRunResult,
+          }),
+        );
+      } else {
+        printTaskDryRunOutput({
+          integrationResult,
+          dryRunResult,
+        });
+      }
+
+      setExitCode(
+        integrationResult.status === "planned" && dryRunResult?.ok === true
+          ? 0
+          : 1,
+      );
+      return;
+    } catch {
+      if (json) {
+        writeTaskDryRunJson({
+          ok: false,
+          error: {
+            code: "task_dry_run_integration_failed",
+            message: "Task dry-run integration failed.",
+          },
+          issues: [],
+        });
+        setExitCode(1);
+        return;
+      }
+
+      console.error("Task Dry Run");
+      console.error("Error: Task dry-run integration failed.");
+      setExitCode(1);
+      return;
+    }
+  }
+
   if (args[0] === "plan") {
     const planArgs = args.slice(1);
     const json = planArgs.includes("--json");
@@ -2625,6 +3297,7 @@ async function handleTask(args: readonly string[]): Promise<void> {
     console.error("Error: unknown task command.");
     console.error("Usage: aeos task validate <path>");
     console.error("Usage: aeos task plan [<task-file>] [--json]");
+    console.error("Usage: aeos task run --dry-run <task-file> [--json]");
     setExitCode(1);
     return;
   }
