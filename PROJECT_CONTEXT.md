@@ -65,6 +65,8 @@ condition.
 - TASK-0280: Implement read-only task status and resume preview CLI.
 - TASK-0281: Design and implement explicit task-state initialization/persistence
   CLI.
+- TASK-0282: Design and implement revision-guarded task-state transition/update
+  foundation.
 
 ## Do Not Load By Default
 
@@ -75,11 +77,10 @@ condition.
 
 ## Next Task
 
-TASK-0282 Design and implement revision-guarded task-state transition/update
-foundation.
+TASK-0283 Design and implement task transition preview / operator-safe
+transition CLI foundation.
 
-Purpose: define system-owned safe persisted-state transitions without exposing
-arbitrary state mutation.
+Purpose: expose transition preview first, without arbitrary mutation.
 
 ## Current Plans
 

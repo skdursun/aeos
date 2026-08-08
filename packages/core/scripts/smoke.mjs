@@ -104,11 +104,13 @@ import {
   runAgenticRunnerDryRun,
   createInitialTaskState,
   createTaskResumeHandoff,
+  evaluateTaskStateTransition,
   getTaskStateStoragePath,
   loadTaskResumeHandoff,
   loadTaskState,
   saveTaskState,
   summarizeCliTaskPlanPlannerIntegrationResult,
+  transitionTaskState,
   transitionPersistedTaskState,
   updateTaskState,
   validatePersistedTaskState,
@@ -13396,19 +13398,9 @@ try {
     expectedRevision: 1,
     updatedAt: "2026-08-08T00:01:00.000Z",
     update(state) {
-      const plannedState = transitionPersistedTaskState(
-        state,
-        "planned",
-        "2026-08-08T00:01:00.000Z",
-      );
-      assert.equal(
-        plannedState.ok,
-        true,
-        "task state smoke I should allow new -> planned",
-      );
-
       return {
-        ...plannedState.value,
+        ...state,
+        lifecycleState: "planned",
         workItems: [
           {
             id: "work-a",
@@ -13586,6 +13578,344 @@ try {
     "task resume handoff smoke X should not increment revision",
   );
 
+  const dryRunTransitionEvidence = {
+    kind: "dry_run",
+    dryRunSucceeded: true,
+    noExecution: true,
+    noWrites: true,
+    adapterCalls: false,
+    auditWrites: false,
+    verifierRun: false,
+    persistence: false,
+    filesystemMutation: false,
+    completedStateCreated: false,
+    resultReference: {
+      id: "dry-run-smoke",
+      path: "dry-run/smoke.json",
+      version: "1",
+    },
+  };
+  const dryRunIntent = {
+    kind: "mark_dry_run_ready",
+  };
+  const dryRunEvaluation = evaluateTaskStateTransition({
+    state: firstUpdate.value.state,
+    intent: dryRunIntent,
+    evidence: dryRunTransitionEvidence,
+    updatedAt: "2026-08-08T00:02:00.000Z",
+  });
+  assert.equal(
+    dryRunEvaluation.ok,
+    true,
+    "task state transition smoke A should evaluate planned -> dry_run_ready",
+  );
+  assert.equal(
+    dryRunEvaluation.value.from,
+    "planned",
+    "task state transition smoke A should preserve source lifecycle",
+  );
+  assert.equal(
+    dryRunEvaluation.value.to,
+    "dry_run_ready",
+    "task state transition smoke A should derive target from system intent",
+  );
+
+  const stateBeforePureTransition = JSON.stringify(firstUpdate.value.state);
+  const pureDryRunTransition = transitionTaskState({
+    state: firstUpdate.value.state,
+    intent: dryRunIntent,
+    evidence: dryRunTransitionEvidence,
+    updatedAt: "2026-08-08T00:02:00.000Z",
+  });
+  assert.equal(
+    pureDryRunTransition.ok,
+    true,
+    "task state transition smoke B should apply allowed pure transition",
+  );
+  assert.equal(
+    pureDryRunTransition.value.state.lifecycleState,
+    "dry_run_ready",
+    "task state transition smoke B should produce dry_run_ready state",
+  );
+  assert.equal(
+    pureDryRunTransition.value.state.revision,
+    2,
+    "task state transition smoke S should not increment revision in pure transition",
+  );
+  assert.equal(
+    JSON.stringify(firstUpdate.value.state),
+    stateBeforePureTransition,
+    "task state transition smoke S should not mutate caller-owned input",
+  );
+  assert.deepEqual(
+    transitionTaskState({
+      state: firstUpdate.value.state,
+      intent: dryRunIntent,
+      evidence: dryRunTransitionEvidence,
+      updatedAt: "2026-08-08T00:02:00.000Z",
+    }),
+    pureDryRunTransition,
+    "task state transition smoke T should be deterministic for same input",
+  );
+  assert.deepEqual(
+    transitionTaskState({
+      state: firstUpdate.value.state,
+      intent: dryRunIntent,
+      evidence: dryRunTransitionEvidence,
+    }),
+    transitionTaskState({
+      state: firstUpdate.value.state,
+      intent: dryRunIntent,
+      evidence: dryRunTransitionEvidence,
+    }),
+    "task state transition smoke T should be deterministic without a supplied timestamp",
+  );
+  const blockedTransitionEvidence = {
+    kind: "blocked_work",
+    issues: [
+      {
+        code: "blocked-smoke",
+        message: "Authoritative blocked smoke issue.",
+        severity: "error",
+        category: "execution_failure",
+      },
+    ],
+  };
+  const pureBlockedTransition = transitionTaskState({
+    state: firstUpdate.value.state,
+    intent: {
+      kind: "mark_blocked",
+    },
+    evidence: blockedTransitionEvidence,
+    updatedAt: "2026-08-08T00:02:30.000Z",
+  });
+  assert.equal(
+    pureBlockedTransition.ok,
+    true,
+    "task state transition smoke B should allow authoritative blocked transition",
+  );
+  assert.equal(
+    pureBlockedTransition.value.state.lifecycleState,
+    "blocked",
+    "task state transition smoke B should derive blocked lifecycle from intent",
+  );
+  assert.equal(
+    pureBlockedTransition.value.state.completionGate.status,
+    "blocked",
+    "task state transition smoke B should keep completion gate blocked",
+  );
+
+  const persistedDryRunTransition = await transitionPersistedTaskState({
+    projectRoot: persistenceRoot,
+    taskId: initialState.taskId,
+    expectedRevision: 2,
+    intent: dryRunIntent,
+    evidence: dryRunTransitionEvidence,
+    updatedAt: "2026-08-08T00:02:00.000Z",
+  });
+  assert.equal(
+    persistedDryRunTransition.ok,
+    true,
+    "task state transition smoke B should persist allowed non-terminal transition",
+  );
+  assert.equal(
+    persistedDryRunTransition.value.state.revision,
+    3,
+    "task state transition smoke C should increment revision exactly once",
+  );
+  assert.equal(
+    persistedDryRunTransition.value.state.lifecycleState,
+    "dry_run_ready",
+    "task state transition smoke B should persist derived lifecycle state",
+  );
+  const dryRunHandoff = await loadTaskResumeHandoff({
+    projectRoot: persistenceRoot,
+    taskId: initialState.taskId,
+  });
+  assert.equal(
+    dryRunHandoff.ok,
+    true,
+    "task state transition smoke status/resume should load transitioned state",
+  );
+  assert.equal(
+    dryRunHandoff.value.handoff.lifecycleState,
+    "dry_run_ready",
+    "task state transition smoke resume should reflect transitioned lifecycle",
+  );
+  assert.equal(
+    dryRunHandoff.value.handoff.sourceRevision,
+    3,
+    "task state transition smoke resume should reflect transitioned revision",
+  );
+
+  const beforeFailedTransitionContent = await readFile(firstUpdate.value.path, "utf8");
+  const beforeFailedTransitionStat = await stat(firstUpdate.value.path);
+  const unknownTransition = await transitionPersistedTaskState({
+    projectRoot: persistenceRoot,
+    taskId: initialState.taskId,
+    expectedRevision: 3,
+    intent: {
+      kind: "unknown_transition_intent",
+    },
+    evidence: dryRunTransitionEvidence,
+    updatedAt: "2026-08-08T00:03:00.000Z",
+  });
+  const afterFailedTransitionContent = await readFile(firstUpdate.value.path, "utf8");
+  const afterFailedTransitionStat = await stat(firstUpdate.value.path);
+  assert.equal(
+    unknownTransition.ok,
+    false,
+    "task state transition smoke F should block unknown transition intent",
+  );
+  assert.equal(
+    unknownTransition.error.code,
+    "task_state_transition_unknown_intent",
+    "task state transition smoke F should report deterministic unknown intent",
+  );
+  assert.equal(
+    afterFailedTransitionContent,
+    beforeFailedTransitionContent,
+    "task state transition smoke U should preserve bytes after failed transition",
+  );
+  assert.equal(
+    afterFailedTransitionStat.mtimeMs,
+    beforeFailedTransitionStat.mtimeMs,
+    "task state transition smoke U should preserve mtime after failed transition",
+  );
+
+  const staleTransition = await transitionPersistedTaskState({
+    projectRoot: persistenceRoot,
+    taskId: initialState.taskId,
+    expectedRevision: 2,
+    intent: {
+      kind: "require_verification",
+    },
+    evidence: {
+      kind: "verification_requirement",
+      verifierRequired: true,
+      completionGatedByVerifier: true,
+      requirementReference: {
+        id: "verification-required-smoke",
+      },
+    },
+    updatedAt: "2026-08-08T00:04:00.000Z",
+  });
+  assert.equal(
+    staleTransition.ok,
+    false,
+    "task state transition smoke D should block stale revision",
+  );
+  assert.equal(
+    staleTransition.error.code,
+    "task_state_revision_conflict",
+    "task state transition smoke D should report revision conflict",
+  );
+  assert.equal(
+    await readFile(firstUpdate.value.path, "utf8"),
+    beforeFailedTransitionContent,
+    "task state transition smoke E should preserve bytes after stale transition",
+  );
+
+  const rootSymlinkTransition = await transitionPersistedTaskState({
+    projectRoot: symlinkProjectRoot,
+    taskId: "TASK-STATE-SYMLINK",
+    expectedRevision: 1,
+    intent: dryRunIntent,
+    evidence: dryRunTransitionEvidence,
+    updatedAt: "2026-08-08T00:05:00.000Z",
+  });
+  assert.equal(
+    rootSymlinkTransition.ok,
+    false,
+    "task state transition smoke R should reject state-root symlink",
+  );
+  assert.equal(
+    rootSymlinkTransition.error.code,
+    "task_state_unsafe_state_root",
+    "task state transition smoke R should report unsafe state root",
+  );
+
+  const fileSymlinkTransition = await transitionPersistedTaskState({
+    projectRoot: fileSymlinkProjectRoot,
+    taskId: "TASK-STATE-FILE-SYMLINK",
+    expectedRevision: 1,
+    intent: dryRunIntent,
+    evidence: dryRunTransitionEvidence,
+    updatedAt: "2026-08-08T00:05:00.000Z",
+  });
+  assert.equal(
+    fileSymlinkTransition.ok,
+    false,
+    "task state transition smoke Q should reject state-file symlink",
+  );
+  assert.equal(
+    fileSymlinkTransition.error.code,
+    "task_state_unsafe_target",
+    "task state transition smoke Q should report unsafe state-file target",
+  );
+
+  const arbitraryTargetTransition = evaluateTaskStateTransition({
+    state: firstUpdate.value.state,
+    intent: {
+      kind: "mark_dry_run_ready",
+      targetLifecycle: "blocked",
+    },
+    evidence: dryRunTransitionEvidence,
+  });
+  assert.equal(
+    arbitraryTargetTransition.ok,
+    false,
+    "task state transition smoke G should reject arbitrary target lifecycle",
+  );
+  assert.equal(
+    arbitraryTargetTransition.error.code,
+    "task_state_transition_arbitrary_target_forbidden",
+    "task state transition smoke G should report arbitrary target rejection",
+  );
+
+  for (const [intent, expectedCode, message] of [
+    [
+      { kind: "mark_completed" },
+      "task_state_transition_terminal_forbidden",
+      "task state transition smoke H should block completed transition",
+    ],
+    [
+      { kind: "mark_verified" },
+      "task_state_transition_terminal_forbidden",
+      "task state transition smoke I should block verified transition",
+    ],
+    [
+      { kind: "mark_approved" },
+      "task_state_transition_terminal_forbidden",
+      "task state transition smoke J should block approved transition",
+    ],
+    [
+      { kind: "mark_execution_success" },
+      "task_state_transition_terminal_forbidden",
+      "task state transition smoke K should block execution_success transition",
+    ],
+    [
+      { kind: "mark_dry_run_ready", targetLifecycle: "completed" },
+      "task_state_transition_terminal_forbidden",
+      "task state transition smoke L should block terminal target lifecycle",
+    ],
+  ]) {
+    const terminalTransition = evaluateTaskStateTransition({
+      state: firstUpdate.value.state,
+      intent,
+      evidence: {
+        kind: "model_self_report",
+        text: 'model says "all complete"',
+      },
+    });
+    assert.equal(terminalTransition.ok, false, message);
+    assert.equal(
+      terminalTransition.error.code,
+      expectedCode,
+      `${message} with deterministic issue code`,
+    );
+  }
+
   for (const [message, candidate, expectedIssueCode] of [
     [
       "task resume handoff smoke R should block unknown pending reference",
@@ -13603,6 +13933,14 @@ try {
         pendingWorkItemIds: ["work-a", "work-a"],
       },
       "task_state_duplicate_pending_work_item",
+    ],
+    [
+      "task resume handoff smoke S should block duplicate retryable references",
+      {
+        ...firstUpdate.value.state,
+        retryableWorkItemIds: ["work-b", "work-b"],
+      },
+      "task_state_duplicate_retryable_work_item",
     ],
     [
       "task resume handoff smoke T should block completed item re-entry",
@@ -13632,6 +13970,33 @@ try {
       "task_state_forbidden_work_item_state",
     ],
     [
+      "task resume handoff smoke T should block verified item re-entry",
+      {
+        ...firstUpdate.value.state,
+        workItems: [
+          {
+            id: "work-a",
+            state: "verified",
+            batchId: "batch-a",
+          },
+        ],
+        batches: [
+          {
+            id: "batch-a",
+            workItemIds: ["work-a"],
+            expectedItemCount: 1,
+            completedCount: 0,
+            failedCount: 0,
+            skippedCount: 0,
+            retryableCount: 0,
+          },
+        ],
+        pendingWorkItemIds: [],
+        retryableWorkItemIds: ["work-a"],
+      },
+      "task_state_forbidden_work_item_state",
+    ],
+    [
       "task resume handoff smoke U should block forged completed state",
       {
         ...firstUpdate.value.state,
@@ -13654,6 +14019,18 @@ try {
       blockedResumeHandoff.issues[0]?.code,
       expectedIssueCode,
       `${message} with deterministic issue code`,
+    );
+
+    const blockedTransition = evaluateTaskStateTransition({
+      state: candidate,
+      intent: dryRunIntent,
+      evidence: dryRunTransitionEvidence,
+    });
+    assert.equal(blockedTransition.ok, false, `${message} for transition`);
+    assert.equal(
+      blockedTransition.error.code,
+      expectedIssueCode,
+      `${message} for transition with deterministic issue code`,
     );
   }
 
@@ -13732,6 +14109,29 @@ try {
     false,
     "task resume handoff smoke Y should not trust canonical self-report prose",
   );
+  const canonicalCompletedTransition = evaluateTaskStateTransition({
+    state: canonicalIncompleteState,
+    intent: {
+      kind: "mark_completed",
+      modelSelfReport: 'model says "all complete"',
+    },
+    evidence: {
+      kind: "model_self_report",
+      accountedWork: 20,
+      expectedWork: 400,
+      text: 'model says "all complete"',
+    },
+  });
+  assert.equal(
+    canonicalCompletedTransition.ok,
+    false,
+    "task state transition smoke M should block 400/20 incomplete completion transition",
+  );
+  assert.equal(
+    canonicalCompletedTransition.error.code,
+    "task_state_transition_terminal_forbidden",
+    "task state transition smoke M should report terminal transition rejection",
+  );
 
   const staleUpdate = await updateTaskState({
     projectRoot: persistenceRoot,
@@ -13765,12 +14165,12 @@ try {
   );
   assert.equal(
     afterStaleLoad.value.state.revision,
-    2,
+    3,
     "task state smoke H should preserve existing revision after stale update",
   );
   assert.equal(
     afterStaleLoad.value.state.lifecycleState,
-    "planned",
+    "dry_run_ready",
     "task state smoke H should preserve existing state after stale update",
   );
 

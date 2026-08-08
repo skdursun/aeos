@@ -50,6 +50,13 @@ Updates require the caller's expected revision. If the on-disk revision differs,
 the update returns `task_state_revision_conflict` and preserves the existing
 state. Successful updates increment the revision by one.
 
+Revision-guarded transition writes load and validate the persisted state,
+compare the caller's `expectedRevision`, evaluate the closed transition policy
+against typed evidence, then save the derived state with the existing revision
+guard. A successful persisted transition increments the revision exactly once.
+Stale transitions fail with `task_state_revision_conflict` and do not overwrite
+bytes.
+
 ## Load And Save
 `createInitialTaskState` creates safe in-memory state only.
 
@@ -132,6 +139,73 @@ model says "all complete"
 
 This must not produce authoritative persisted completion.
 
+## System-Owned Transitions
+Task-state transitions are system-owned. The transition API accepts a closed
+intent, not an arbitrary target lifecycle string. Task prose, model output,
+top-level metadata claims, and arbitrary CLI JSON cannot choose authoritative
+lifecycle, completion, approval, execution-success, or verification state.
+
+The current MVP transition intents are:
+
+- `mark_dry_run_ready`
+- `require_verification`
+- `mark_blocked`
+
+Same-state transitions are rejected deterministically instead of silently
+rewriting state. Unknown intents fail closed. Retryability remains represented
+at work-item and retryable-id level; there is no persisted lifecycle state named
+`retryable`.
+
+The current allowlist is:
+
+- `planned -> mark_dry_run_ready -> dry_run_ready`
+- `planned -> require_verification -> verification_required`
+- `planned -> mark_blocked -> blocked`
+- `dry_run_ready -> require_verification -> verification_required`
+- `dry_run_ready -> mark_blocked -> blocked`
+- `verification_required -> mark_blocked -> blocked`
+
+Initialization already owns the persisted `planned` state. The transition API
+does not expose a redundant `mark_planned` intent.
+
+Terminal transition intents are explicitly forbidden:
+
+- `mark_completed`
+- `mark_verified`
+- `mark_approved`
+- `mark_execution_success`
+
+There is no operator override or `allowTerminal` shortcut.
+
+## Typed Evidence
+Each transition intent requires only the evidence needed for that transition.
+
+`mark_dry_run_ready` requires authoritative dry-run evidence proving the dry-run
+succeeded and that execution, writes, adapter calls, audit writes, verifier run,
+persistence, filesystem mutation, and completed-state creation were all absent.
+The CLI `aeos task run --dry-run` remains no-write and is not wired to persist
+this transition.
+
+`require_verification` requires authoritative verifier-requirement evidence with
+`verifierRequired: true` and `completionGatedByVerifier: true`. It does not run
+the verifier and does not mark anything verified.
+
+`mark_blocked` requires authoritative blocking issue evidence. It may append the
+system issue and move the completion gate to blocked, but it does not complete,
+verify, approve, execute, retry, or mutate arbitrary work state.
+
+Before any transition policy is evaluated, the persisted state must validate.
+Corrupt JSON, unsafe task ids, invalid lifecycle values, inconsistent work item
+ids, duplicate pending or retryable ids, pending/retryable conflicts, unknown
+batch references, non-resumable next-batch references, completed/verified work
+items, completed batch counts, forged completion gates, and forbidden safety
+metadata all fail closed.
+
+Pure transition evaluation and pure state transition functions do not mutate
+caller-owned input objects. Repeated evaluation with the same input is
+deterministic. Only `transitionPersistedTaskState` performs a controlled
+write.
+
 ## TASK-0279 Safety Review
 TASK-0279 reviewed the TASK-0278 persistence boundary for path confinement,
 state-root symlink behavior, corrupt JSON, schema validation, revision
@@ -204,6 +278,10 @@ resume state, audit state, verifier state, or completion state.
 
 Automatic plan/dry-run state persistence remains out of scope. The explicit
 write boundary is `aeos task state init <task-file>` only.
+
+The transition API is a core foundation for later orchestration wiring. It does
+not add `aeos task state set`, `task state patch`, `task state transition`,
+`task complete`, or `task verify`.
 
 ## MVP Limitations
 The MVP does not implement real task execution, adapter runtime, audit runtime,

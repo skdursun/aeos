@@ -198,17 +198,6 @@ const forbiddenLifecycleStates = new Set<string>([
   "execution_success",
 ]);
 
-const allowedTransitions: Readonly<
-  Record<PersistedTaskLifecycleState, readonly PersistedTaskLifecycleState[]>
-> = {
-  new: ["planned", "blocked", "failed"],
-  planned: ["dry_run_ready", "verification_required", "blocked", "failed"],
-  dry_run_ready: ["planned", "verification_required", "blocked", "failed"],
-  verification_required: ["planned", "dry_run_ready", "blocked", "failed"],
-  blocked: ["planned", "failed"],
-  failed: [],
-};
-
 function ok<T>(value: T): Result<T, never> {
   return { ok: true, value };
 }
@@ -378,55 +367,6 @@ export function createInitialTaskState(
     createdAt,
     updatedAt: createdAt,
   };
-}
-
-export function isSafeTaskStateTransition(
-  from: PersistedTaskLifecycleState,
-  to: PersistedTaskLifecycleState,
-): boolean {
-  return allowedTransitions[from]?.includes(to) ?? false;
-}
-
-export function transitionPersistedTaskState(
-  state: PersistedTaskState,
-  lifecycleState: PersistedTaskLifecycleState,
-  updatedAt = new Date().toISOString(),
-): Result<PersistedTaskState, TaskStatePersistenceError> {
-  const stateResult = validatePersistedTaskState(state);
-
-  if (!stateResult.ok) {
-    return stateResult;
-  }
-
-  if (!allowedLifecycleStates.has(lifecycleState)) {
-    return err(
-      createError(
-        "task_state_invalid_lifecycle_state",
-        "Persisted task state transition target is invalid.",
-        "validation",
-      ),
-    );
-  }
-
-  if (!isSafeTaskStateTransition(state.lifecycleState, lifecycleState)) {
-    return err(
-      createError(
-        "task_state_invalid_transition",
-        "Persisted task state transition is not allowed.",
-        "validation",
-        {
-          from: state.lifecycleState,
-          to: lifecycleState,
-        },
-      ),
-    );
-  }
-
-  return ok({
-    ...state,
-    lifecycleState,
-    updatedAt,
-  });
 }
 
 function validateLifecycleState(
