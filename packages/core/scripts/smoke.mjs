@@ -165,6 +165,26 @@ import {
   scenarioLExitCodeMapping,
   scenarioMDeterministicOutput,
 } from "../dist/task-plan-file-planner-wiring-logic.example.js";
+import {
+  cliTaskPlanPlannerIntegrationInputExample,
+  cliTaskPlanPlannerIntegrationOptionsExample,
+  scenarioASuccessfulCliTaskPlanIntegration,
+  scenarioBJsonSuccessModel,
+  scenarioCParserFailure,
+  scenarioDValidationFailure,
+  scenarioEUnsupportedMapping,
+  scenarioFMissingRunnerPlanningInput,
+  scenarioGMissingVerifierGate,
+  scenarioHMissingNoExecutionNoWrites,
+  scenarioIUnsafeRepresentedMetadata,
+  scenarioJPlannerFailure,
+  scenarioKHumanRenderModel,
+  scenarioLJsonRenderModel,
+  scenarioMJsonOnlyFailureBehavior,
+  scenarioNSummaryShape,
+  scenarioOExitCodeExamples,
+  scenarioPSafetyStage,
+} from "../dist/cli-task-plan-planner-integration.example.js";
 
 async function pathExists(path) {
   try {
@@ -2261,16 +2281,22 @@ function assertWiringSummaryHonest(result, message) {
     result.issues.length,
     `${message} summary issue count should match issues array`,
   );
-  assert.equal(
-    result.summary.verifierRequired,
-    result.mapping.verifierRequired,
-    `${message} summary verifierRequired should match mapping stage`,
+  const missingVerifierGateRepresented = result.issues.some(
+    (issue) => issue.code === "cli_task_plan_verifier_gate_missing",
   );
-  assert.equal(
-    result.summary.completionGatedByVerifier,
-    result.mapping.completionGatedByVerifier,
-    `${message} summary completion gate should match mapping stage`,
-  );
+
+  if (result.mapping.attempted && !missingVerifierGateRepresented) {
+    assert.equal(
+      result.summary.verifierRequired,
+      result.mapping.verifierRequired,
+      `${message} summary verifierRequired should match attempted mapping stage`,
+    );
+    assert.equal(
+      result.summary.completionGatedByVerifier,
+      result.mapping.completionGatedByVerifier,
+      `${message} summary completion gate should match attempted mapping stage`,
+    );
+  }
   assert.equal(
     result.summary.mappingSupported,
     result.mapping.status === "mapped",
@@ -2360,6 +2386,268 @@ function assertNoRuntimeTruth(value, message) {
   };
 
   visit(value);
+}
+
+function assertCliIssueRepresented(result, message) {
+  assert.ok(result.issues.length > 0, `${message} should expose issues`);
+  for (const issue of result.issues) {
+    assert.equal(typeof issue.code, "string", `${message} issue code`);
+    assert.ok(issue.code.length > 0, `${message} issue code should not be empty`);
+    assert.equal(typeof issue.message, "string", `${message} issue message`);
+    assert.ok(
+      issue.message.length > 0,
+      `${message} issue message should not be empty`,
+    );
+    assert.ok(
+      ["error", "warning", "info", "critical"].includes(issue.severity),
+      `${message} issue severity should be known`,
+    );
+    assert.ok(
+      [
+        "cli",
+        "input",
+        "parse",
+        "validation",
+        "mapping",
+        "wiring",
+        "planner",
+        "safety",
+        "output",
+        "unknown",
+      ].includes(issue.phase),
+      `${message} issue phase should be known`,
+    );
+  }
+}
+
+function assertCliFields(value, fields, message) {
+  for (const field of fields) {
+    assert.ok(
+      Object.hasOwn(value, field),
+      `${message} should expose stable field ${field}`,
+    );
+  }
+}
+
+function assertCliSideEffectFalseFields(value, message) {
+  for (const field of [
+    "executionEnabled",
+    "adapterCalls",
+    "auditWrites",
+    "verifierRun",
+    "persistence",
+    "filesystemMutation",
+    "completedStateCreated",
+  ]) {
+    if (Object.hasOwn(value, field)) {
+      assert.equal(value[field], false, `${message} ${field} should be false`);
+    }
+  }
+}
+
+function assertCliSafetyExplicit(result, message) {
+  assertCliSideEffectFalseFields(result.safety, `${message} safety`);
+  assert.equal(
+    result.safety.noExecution,
+    true,
+    `${message} safety noExecution should be true`,
+  );
+  assert.equal(
+    result.safety.noWrites,
+    true,
+    `${message} safety noWrites should be true`,
+  );
+  assert.equal(
+    result.safety.dependencyInjectedPlannerOnly,
+    true,
+    `${message} safety should require dependency-injected planner`,
+  );
+  assert.equal(
+    result.safety.topLevelPlannerInputBypassAllowed,
+    false,
+    `${message} safety should forbid top-level planner input bypass`,
+  );
+}
+
+function assertCliNoExecutionNoWrites(result, message) {
+  assertCliSafetyExplicit(result, message);
+  assert.equal(
+    result.mapping.noExecution,
+    true,
+    `${message} mapping noExecution should be explicit`,
+  );
+  assert.equal(
+    result.mapping.noWrites,
+    true,
+    `${message} mapping noWrites should be explicit`,
+  );
+  assert.equal(
+    result.summary.noExecution,
+    true,
+    `${message} summary noExecution should be explicit`,
+  );
+  assert.equal(
+    result.summary.noWrites,
+    true,
+    `${message} summary noWrites should be explicit`,
+  );
+  assertCliSideEffectFalseFields(result.summary, `${message} summary`);
+}
+
+function assertCliPlannerNotAttempted(result, message) {
+  assert.equal(
+    result.planner.attempted,
+    false,
+    `${message} planner should not be attempted`,
+  );
+  assert.equal(result.planner.ok, false, `${message} planner should not be ok`);
+  assert.equal(
+    result.planner.status,
+    "not_attempted",
+    `${message} planner status should be not_attempted`,
+  );
+}
+
+function assertCliSummaryHonest(result, message) {
+  assert.equal(
+    result.summary.parsed,
+    result.parser.ok || result.parser.validationStatus === "fail",
+    `${message} summary parsed should match represented parser stage`,
+  );
+  assert.equal(
+    result.summary.mapped,
+    result.mapping.ok,
+    `${message} summary mapped should match mapping stage`,
+  );
+  assert.equal(
+    result.summary.wired,
+    result.wiring.ok,
+    `${message} summary wired should match wiring stage`,
+  );
+  assert.equal(
+    result.summary.planned,
+    result.planner.ok && result.planner.status === "planned",
+    `${message} summary planned should match planner stage`,
+  );
+  assert.equal(
+    result.summary.planStepCount,
+    result.planner.planStepCount ?? 0,
+    `${message} summary step count should match planner stage`,
+  );
+  assert.equal(
+    result.summary.issueCount,
+    result.issues.length,
+    `${message} summary issue count should match issues array`,
+  );
+  assert.equal(
+    result.summary.json,
+    result.jsonOnly.jsonRequested,
+    `${message} summary json should match JSON option`,
+  );
+  assert.equal(
+    result.summary.executionEnabled,
+    result.safety.executionEnabled,
+    `${message} summary executionEnabled should match safety`,
+  );
+  assert.equal(
+    result.summary.adapterCalls,
+    result.safety.adapterCalls,
+    `${message} summary adapterCalls should match safety`,
+  );
+  assert.equal(
+    result.summary.auditWrites,
+    result.safety.auditWrites,
+    `${message} summary auditWrites should match safety`,
+  );
+  assert.equal(
+    result.summary.verifierRun,
+    result.safety.verifierRun,
+    `${message} summary verifierRun should match safety`,
+  );
+  assert.equal(
+    result.summary.persistence,
+    result.safety.persistence,
+    `${message} summary persistence should match safety`,
+  );
+  assert.equal(
+    result.summary.filesystemMutation,
+    result.safety.filesystemMutation,
+    `${message} summary filesystemMutation should match safety`,
+  );
+  assert.equal(
+    result.summary.completedStateCreated,
+    result.safety.completedStateCreated,
+    `${message} summary completedStateCreated should match safety`,
+  );
+  const missingVerifierGateRepresented = result.issues.some(
+    (issue) => issue.code === "cli_task_plan_verifier_gate_missing",
+  );
+
+  if (result.mapping.attempted && !missingVerifierGateRepresented) {
+    assert.equal(
+      result.summary.verifierRequired,
+      result.mapping.verifierRequired,
+      `${message} summary verifierRequired should match attempted mapping stage`,
+    );
+    assert.equal(
+      result.summary.completionGatedByVerifier,
+      result.mapping.completionGatedByVerifier,
+      `${message} summary completion gate should match attempted mapping stage`,
+    );
+  }
+  assert.equal(
+    result.summary.runnerPlanningInputAvailable,
+    result.mapping.runnerPlanningInputAvailable,
+    `${message} summary runner planning input should match mapping stage`,
+  );
+  if (result.wiring.attempted) {
+    assert.equal(
+      result.summary.plannerDependencyInjected,
+      result.wiring.plannerDependencyInjected,
+      `${message} summary dependency injection should match attempted wiring stage`,
+    );
+    assert.equal(
+      result.summary.plannerInvocationAllowed,
+      result.wiring.plannerInvocationAllowed,
+      `${message} summary planner allowance should match attempted wiring stage`,
+    );
+  }
+}
+
+function assertCliJsonOnlyBehavior(result, message) {
+  assert.equal(result.jsonOnly.jsonRequested, true, `${message} JSON requested`);
+  assert.equal(
+    result.jsonOnly.suppressHumanOutput,
+    true,
+    `${message} human output should be suppressed`,
+  );
+  assert.equal(result.jsonOnly.validJsonOnly, true, `${message} JSON only`);
+  assert.equal(
+    result.jsonOnly.noProsePrefix,
+    true,
+    `${message} no prose prefix`,
+  );
+  assert.equal(
+    result.jsonOnly.noProseSuffix,
+    true,
+    `${message} no prose suffix`,
+  );
+  assert.equal(
+    result.jsonOnly.noStackTraces,
+    true,
+    `${message} no stack traces`,
+  );
+  assert.equal(
+    result.jsonOnly.noRawEngineErrors,
+    true,
+    `${message} no raw engine errors`,
+  );
+  assert.equal(
+    result.jsonOnly.deterministicIssues,
+    true,
+    `${message} deterministic issues`,
+  );
+  assert.ok(result.jsonOutput, `${message} should expose JSON output`);
 }
 
 function assertWiringLogicSummaryMatchesResult(result, message) {
@@ -4114,6 +4402,783 @@ for (const [message, result] of [
 }
 
 console.log("task plan file planner wiring logic smoke tests passed");
+
+assert.deepEqual(
+  cliTaskPlanPlannerIntegrationInputExample.argv,
+  ["plan", "TASKS/TASK-0265.json"],
+  "CLI task plan integration smoke input should represent taskFile argument",
+);
+assert.equal(
+  cliTaskPlanPlannerIntegrationInputExample.taskFile,
+  "TASKS/TASK-0265.json",
+  "CLI task plan integration smoke input should represent task file",
+);
+assert.equal(
+  cliTaskPlanPlannerIntegrationInputExample.json,
+  false,
+  "CLI task plan integration smoke input should default JSON to false",
+);
+assert.equal(
+  cliTaskPlanPlannerIntegrationInputExample.mode,
+  "plan",
+  "CLI task plan integration smoke input should represent plan mode",
+);
+assert.equal(
+  cliTaskPlanPlannerIntegrationOptionsExample.json,
+  false,
+  "CLI task plan integration smoke options should represent json false",
+);
+assert.equal(
+  cliTaskPlanPlannerIntegrationOptionsExample.failClosedOnParserFailure,
+  true,
+  "CLI task plan integration smoke options should fail closed on parser failure",
+);
+assert.equal(
+  cliTaskPlanPlannerIntegrationOptionsExample.failClosedWithoutRunnerPlanningInput,
+  true,
+  "CLI task plan integration smoke options should fail closed without runner planning input",
+);
+assert.equal(
+  cliTaskPlanPlannerIntegrationOptionsExample.failClosedWithoutVerifier,
+  true,
+  "CLI task plan integration smoke options should fail closed without verifier",
+);
+assert.equal(
+  cliTaskPlanPlannerIntegrationOptionsExample.suppressHumanOutputInJsonMode,
+  true,
+  "CLI task plan integration smoke options should suppress human JSON output",
+);
+assert.equal(
+  cliTaskPlanPlannerIntegrationOptionsExample.deterministicIssues,
+  true,
+  "CLI task plan integration smoke options should keep issues deterministic",
+);
+
+assert.equal(
+  scenarioASuccessfulCliTaskPlanIntegration.parser.attempted,
+  true,
+  "CLI task plan integration smoke A parser should be attempted",
+);
+assert.equal(
+  scenarioASuccessfulCliTaskPlanIntegration.parser.ok,
+  true,
+  "CLI task plan integration smoke A parser should be ok",
+);
+assert.equal(
+  scenarioASuccessfulCliTaskPlanIntegration.parser.pathOk,
+  true,
+  "CLI task plan integration smoke A path should be ok",
+);
+assert.equal(
+  scenarioASuccessfulCliTaskPlanIntegration.parser.parseOk,
+  true,
+  "CLI task plan integration smoke A parse should be ok",
+);
+assert.equal(
+  scenarioASuccessfulCliTaskPlanIntegration.mapping.attempted,
+  true,
+  "CLI task plan integration smoke A mapping should be attempted",
+);
+assert.equal(
+  scenarioASuccessfulCliTaskPlanIntegration.mapping.ok,
+  true,
+  "CLI task plan integration smoke A mapping should be ok",
+);
+assert.equal(
+  scenarioASuccessfulCliTaskPlanIntegration.mapping.runnerPlanningInputAvailable,
+  true,
+  "CLI task plan integration smoke A runner planning input should be available",
+);
+assert.equal(
+  scenarioASuccessfulCliTaskPlanIntegration.mapping.noExecution,
+  true,
+  "CLI task plan integration smoke A noExecution should be explicit",
+);
+assert.equal(
+  scenarioASuccessfulCliTaskPlanIntegration.mapping.noWrites,
+  true,
+  "CLI task plan integration smoke A noWrites should be explicit",
+);
+assert.equal(
+  scenarioASuccessfulCliTaskPlanIntegration.mapping.verifierRequired,
+  true,
+  "CLI task plan integration smoke A should require verifier",
+);
+assert.equal(
+  scenarioASuccessfulCliTaskPlanIntegration.mapping.completionGatedByVerifier,
+  true,
+  "CLI task plan integration smoke A should gate completion by verifier",
+);
+assert.equal(
+  scenarioASuccessfulCliTaskPlanIntegration.wiring.attempted,
+  true,
+  "CLI task plan integration smoke A wiring should be attempted",
+);
+assert.equal(
+  scenarioASuccessfulCliTaskPlanIntegration.wiring.ok,
+  true,
+  "CLI task plan integration smoke A wiring should be ok",
+);
+assert.equal(
+  scenarioASuccessfulCliTaskPlanIntegration.wiring.plannerDependencyInjected,
+  true,
+  "CLI task plan integration smoke A planner dependency should be injected",
+);
+assert.equal(
+  scenarioASuccessfulCliTaskPlanIntegration.wiring.plannerInvocationAllowed,
+  true,
+  "CLI task plan integration smoke A planner invocation should be allowed",
+);
+assert.equal(
+  scenarioASuccessfulCliTaskPlanIntegration.ok,
+  true,
+  "CLI task plan integration smoke A should be ok",
+);
+assert.equal(
+  scenarioASuccessfulCliTaskPlanIntegration.status,
+  "planned",
+  "CLI task plan integration smoke A should report planned",
+);
+assert.equal(
+  scenarioASuccessfulCliTaskPlanIntegration.exitCode,
+  "success",
+  "CLI task plan integration smoke A should report success exit code",
+);
+assertCliNoExecutionNoWrites(
+  scenarioASuccessfulCliTaskPlanIntegration,
+  "CLI task plan integration smoke A",
+);
+
+assertCliJsonOnlyBehavior(
+  scenarioBJsonSuccessModel,
+  "CLI task plan integration smoke B",
+);
+assert.equal(
+  scenarioBJsonSuccessModel.ok,
+  true,
+  "CLI task plan integration smoke B should be ok",
+);
+assert.equal(
+  scenarioBJsonSuccessModel.status,
+  "planned",
+  "CLI task plan integration smoke B should report planned",
+);
+assert.equal(
+  scenarioBJsonSuccessModel.exitCode,
+  "success",
+  "CLI task plan integration smoke B should report success",
+);
+assert.equal(
+  Object.hasOwn(scenarioBJsonSuccessModel, "humanOutput"),
+  false,
+  "CLI task plan integration smoke B should suppress human output",
+);
+
+assert.equal(
+  scenarioCParserFailure.ok,
+  false,
+  "CLI task plan integration smoke C should fail",
+);
+assert.equal(
+  scenarioCParserFailure.status,
+  "parser_failed",
+  "CLI task plan integration smoke C should report parser_failed",
+);
+assert.equal(
+  scenarioCParserFailure.exitCode,
+  "parser_failure",
+  "CLI task plan integration smoke C should report parser failure",
+);
+assert.equal(
+  scenarioCParserFailure.parser.attempted,
+  true,
+  "CLI task plan integration smoke C parser should be attempted",
+);
+assert.equal(
+  scenarioCParserFailure.parser.ok,
+  false,
+  "CLI task plan integration smoke C parser should fail",
+);
+assert.equal(
+  scenarioCParserFailure.mapping.attempted,
+  false,
+  "CLI task plan integration smoke C mapping should not be attempted",
+);
+assert.equal(
+  scenarioCParserFailure.wiring.attempted,
+  false,
+  "CLI task plan integration smoke C wiring should not be attempted",
+);
+assertCliPlannerNotAttempted(
+  scenarioCParserFailure,
+  "CLI task plan integration smoke C",
+);
+assert.equal(
+  scenarioCParserFailure.safety.executionEnabled,
+  false,
+  "CLI task plan integration smoke C execution should be disabled",
+);
+assertCliIssueRepresented(scenarioCParserFailure, "CLI task plan integration smoke C");
+
+assert.equal(
+  scenarioDValidationFailure.parser.parseOk,
+  true,
+  "CLI task plan integration smoke D parse should be ok",
+);
+assert.equal(
+  scenarioDValidationFailure.parser.validationStatus,
+  "fail",
+  "CLI task plan integration smoke D validation should fail",
+);
+assert.equal(
+  scenarioDValidationFailure.parser.validationCompatible,
+  false,
+  "CLI task plan integration smoke D validation should be incompatible",
+);
+assert.equal(
+  scenarioDValidationFailure.mapping.attempted,
+  false,
+  "CLI task plan integration smoke D mapping should not be attempted",
+);
+assert.equal(
+  scenarioDValidationFailure.wiring.attempted,
+  false,
+  "CLI task plan integration smoke D wiring should not be attempted",
+);
+assertCliPlannerNotAttempted(
+  scenarioDValidationFailure,
+  "CLI task plan integration smoke D",
+);
+assert.equal(
+  scenarioDValidationFailure.status,
+  "validation_failed",
+  "CLI task plan integration smoke D should report validation_failed",
+);
+assert.equal(
+  scenarioDValidationFailure.exitCode,
+  "validation_failure",
+  "CLI task plan integration smoke D should report validation failure",
+);
+assert.equal(
+  scenarioDValidationFailure.ok,
+  false,
+  "CLI task plan integration smoke D should fail closed",
+);
+assertCliIssueRepresented(
+  scenarioDValidationFailure,
+  "CLI task plan integration smoke D",
+);
+
+assert.equal(
+  scenarioEUnsupportedMapping.mapping.attempted,
+  true,
+  "CLI task plan integration smoke E mapping should be attempted",
+);
+assert.equal(
+  scenarioEUnsupportedMapping.mapping.ok,
+  false,
+  "CLI task plan integration smoke E mapping should fail",
+);
+assert.equal(
+  scenarioEUnsupportedMapping.mapping.status,
+  "unsupported",
+  "CLI task plan integration smoke E should represent unsupported mapping",
+);
+assert.equal(
+  scenarioEUnsupportedMapping.mapping.runnerPlanningInputAvailable,
+  false,
+  "CLI task plan integration smoke E runner planning input should be unavailable",
+);
+assert.equal(
+  scenarioEUnsupportedMapping.wiring.attempted,
+  false,
+  "CLI task plan integration smoke E wiring should not be attempted",
+);
+assertCliPlannerNotAttempted(
+  scenarioEUnsupportedMapping,
+  "CLI task plan integration smoke E",
+);
+assert.equal(
+  scenarioEUnsupportedMapping.status,
+  "unsupported_mapping",
+  "CLI task plan integration smoke E should report unsupported_mapping",
+);
+assert.equal(
+  scenarioEUnsupportedMapping.exitCode,
+  "unsupported_mapping",
+  "CLI task plan integration smoke E should report unsupported mapping exit code",
+);
+assert.notEqual(
+  scenarioEUnsupportedMapping.ok,
+  true,
+  "CLI task plan integration smoke E should not fake success",
+);
+assertCliIssueRepresented(
+  scenarioEUnsupportedMapping,
+  "CLI task plan integration smoke E",
+);
+
+assert.equal(
+  scenarioFMissingRunnerPlanningInput.mapping.attempted,
+  true,
+  "CLI task plan integration smoke F mapping should be attempted",
+);
+assert.equal(
+  scenarioFMissingRunnerPlanningInput.mapping.runnerPlanningInputAvailable,
+  false,
+  "CLI task plan integration smoke F runner planning input should be missing",
+);
+assert.equal(
+  scenarioFMissingRunnerPlanningInput.wiring.ok,
+  false,
+  "CLI task plan integration smoke F wiring should be blocked",
+);
+assertCliPlannerNotAttempted(
+  scenarioFMissingRunnerPlanningInput,
+  "CLI task plan integration smoke F",
+);
+assert.ok(
+  ["mapping_failed", "blocked"].includes(scenarioFMissingRunnerPlanningInput.status),
+  "CLI task plan integration smoke F should report blocked or mapping_failed",
+);
+assert.equal(
+  scenarioFMissingRunnerPlanningInput.ok,
+  false,
+  "CLI task plan integration smoke F should fail",
+);
+assert.equal(
+  scenarioFMissingRunnerPlanningInput.wiring.topLevelPlannerInputBypassAllowed,
+  false,
+  "CLI task plan integration smoke F should not imply top-level planner input bypass",
+);
+assert.equal(
+  scenarioFMissingRunnerPlanningInput.wiring.plannerInvocationAllowed,
+  false,
+  "CLI task plan integration smoke F planner invocation should be disallowed",
+);
+assertCliIssueRepresented(
+  scenarioFMissingRunnerPlanningInput,
+  "CLI task plan integration smoke F",
+);
+
+assert.equal(
+  scenarioGMissingVerifierGate.mapping.verifierRequired === false ||
+    scenarioGMissingVerifierGate.mapping.completionGatedByVerifier === false,
+  true,
+  "CLI task plan integration smoke G should represent missing verifier gate",
+);
+assert.equal(
+  scenarioGMissingVerifierGate.wiring.ok,
+  false,
+  "CLI task plan integration smoke G wiring should be blocked",
+);
+assertCliPlannerNotAttempted(
+  scenarioGMissingVerifierGate,
+  "CLI task plan integration smoke G",
+);
+assert.equal(
+  scenarioGMissingVerifierGate.ok,
+  false,
+  "CLI task plan integration smoke G should fail",
+);
+assert.ok(
+  ["mapping_failed", "blocked"].includes(scenarioGMissingVerifierGate.status),
+  "CLI task plan integration smoke G should report blocked or mapping_failed",
+);
+assert.equal(
+  scenarioGMissingVerifierGate.safety.executionEnabled,
+  false,
+  "CLI task plan integration smoke G execution should be disabled",
+);
+assertCliIssueRepresented(
+  scenarioGMissingVerifierGate,
+  "CLI task plan integration smoke G",
+);
+
+assert.equal(
+  scenarioHMissingNoExecutionNoWrites.issues.some(
+    (issue) =>
+      issue.metadata?.representedNoExecution === false ||
+      issue.metadata?.representedNoWrites === false,
+  ),
+  true,
+  "CLI task plan integration smoke H should represent missing noExecution/noWrites",
+);
+assert.equal(
+  scenarioHMissingNoExecutionNoWrites.wiring.ok,
+  false,
+  "CLI task plan integration smoke H wiring should be blocked",
+);
+assertCliPlannerNotAttempted(
+  scenarioHMissingNoExecutionNoWrites,
+  "CLI task plan integration smoke H",
+);
+assert.equal(
+  scenarioHMissingNoExecutionNoWrites.ok,
+  false,
+  "CLI task plan integration smoke H should fail",
+);
+assert.ok(
+  ["mapping_failed", "blocked"].includes(scenarioHMissingNoExecutionNoWrites.status),
+  "CLI task plan integration smoke H should report blocked or mapping_failed",
+);
+assert.equal(
+  scenarioHMissingNoExecutionNoWrites.safety.filesystemMutation,
+  false,
+  "CLI task plan integration smoke H filesystem mutation should remain false",
+);
+assert.equal(
+  scenarioHMissingNoExecutionNoWrites.safety.executionEnabled,
+  false,
+  "CLI task plan integration smoke H execution should be disabled",
+);
+assertCliIssueRepresented(
+  scenarioHMissingNoExecutionNoWrites,
+  "CLI task plan integration smoke H",
+);
+
+assert.equal(
+  scenarioIUnsafeRepresentedMetadata.issues.some((issue) =>
+    issue.metadata?.representedUnsafeTruths?.includes("verifierRun"),
+  ),
+  true,
+  "CLI task plan integration smoke I should represent unsafe verifier metadata",
+);
+assert.equal(
+  scenarioIUnsafeRepresentedMetadata.issues.some((issue) =>
+    issue.metadata?.representedUnsafeTruths?.includes("filesystemMutation"),
+  ),
+  true,
+  "CLI task plan integration smoke I should represent unsafe filesystem metadata",
+);
+assert.equal(
+  scenarioIUnsafeRepresentedMetadata.issues.some((issue) =>
+    issue.metadata?.representedUnsafeTruths?.includes("completedStateCreated"),
+  ),
+  true,
+  "CLI task plan integration smoke I should represent unsafe completed-state metadata",
+);
+assert.equal(
+  scenarioIUnsafeRepresentedMetadata.ok,
+  false,
+  "CLI task plan integration smoke I should fail",
+);
+assert.equal(
+  scenarioIUnsafeRepresentedMetadata.status,
+  "blocked",
+  "CLI task plan integration smoke I should report blocked",
+);
+assert.equal(
+  scenarioIUnsafeRepresentedMetadata.wiring.plannerInvocationAllowed,
+  false,
+  "CLI task plan integration smoke I planner invocation should be disallowed",
+);
+assert.equal(
+  scenarioIUnsafeRepresentedMetadata.safety.failClosedOnUnsafeMetadata,
+  true,
+  "CLI task plan integration smoke I should fail closed on unsafe metadata",
+);
+assertCliIssueRepresented(
+  scenarioIUnsafeRepresentedMetadata,
+  "CLI task plan integration smoke I",
+);
+
+assert.equal(
+  scenarioJPlannerFailure.parser.ok,
+  true,
+  "CLI task plan integration smoke J parser should be ok",
+);
+assert.equal(
+  scenarioJPlannerFailure.mapping.ok,
+  true,
+  "CLI task plan integration smoke J mapping should be ok",
+);
+assert.equal(
+  scenarioJPlannerFailure.mapping.runnerPlanningInputAvailable,
+  true,
+  "CLI task plan integration smoke J runner planning input should be available",
+);
+assert.equal(
+  scenarioJPlannerFailure.wiring.ok,
+  true,
+  "CLI task plan integration smoke J wiring should be ok",
+);
+assert.equal(
+  scenarioJPlannerFailure.planner.attempted,
+  true,
+  "CLI task plan integration smoke J planner should be attempted",
+);
+assert.equal(
+  scenarioJPlannerFailure.planner.ok,
+  false,
+  "CLI task plan integration smoke J planner should fail",
+);
+assert.equal(
+  scenarioJPlannerFailure.status,
+  "planner_failed",
+  "CLI task plan integration smoke J should report planner_failed",
+);
+assert.equal(
+  scenarioJPlannerFailure.exitCode,
+  "planner_failure",
+  "CLI task plan integration smoke J should report planner failure",
+);
+assert.equal(
+  scenarioJPlannerFailure.ok,
+  false,
+  "CLI task plan integration smoke J should fail",
+);
+assert.equal(
+  scenarioJPlannerFailure.safety.executionEnabled,
+  false,
+  "CLI task plan integration smoke J execution should be disabled",
+);
+assertCliIssueRepresented(scenarioJPlannerFailure, "CLI task plan integration smoke J");
+
+assertCliFields(
+  scenarioKHumanRenderModel,
+  [
+    "title",
+    "taskId",
+    "sourceFile",
+    "mode",
+    "parsed",
+    "mapping",
+    "planning",
+    "workItems",
+    "batches",
+    "steps",
+    "policyRequired",
+    "approvalRequired",
+    "verifierRequired",
+    "completionGatedByVerifier",
+    "auditExpected",
+    "realExecution",
+    "adapterCalls",
+    "auditWrites",
+    "verifierRun",
+    "persistence",
+    "filesystemMutation",
+    "completedStateCreated",
+    "issues",
+  ],
+  "CLI task plan integration smoke K human render model",
+);
+assertCliSideEffectFalseFields(
+  scenarioKHumanRenderModel,
+  "CLI task plan integration smoke K human render model",
+);
+assert.equal(
+  scenarioKHumanRenderModel.realExecution,
+  false,
+  "CLI task plan integration smoke K real execution should be false",
+);
+
+assertCliFields(
+  scenarioLJsonRenderModel,
+  [
+    "ok",
+    "status",
+    "exitCode",
+    "taskId",
+    "mode",
+    "sourceFile",
+    "parse",
+    "mapping",
+    "wiring",
+    "plan",
+    "safety",
+    "issues",
+    "summary",
+  ],
+  "CLI task plan integration smoke L JSON render model",
+);
+assertCliSideEffectFalseFields(
+  scenarioLJsonRenderModel.safety,
+  "CLI task plan integration smoke L JSON render model safety",
+);
+
+assertCliJsonOnlyBehavior(
+  scenarioMJsonOnlyFailureBehavior,
+  "CLI task plan integration smoke M",
+);
+assert.equal(
+  scenarioMJsonOnlyFailureBehavior.ok,
+  false,
+  "CLI task plan integration smoke M should fail",
+);
+assert.ok(
+  ["parser_failed", "blocked"].includes(scenarioMJsonOnlyFailureBehavior.status),
+  "CLI task plan integration smoke M should report parser_failed or blocked",
+);
+assert.notEqual(
+  scenarioMJsonOnlyFailureBehavior.exitCode,
+  "success",
+  "CLI task plan integration smoke M exit code should be non-success",
+);
+
+assertCliFields(
+  scenarioNSummaryShape,
+  [
+    "parsed",
+    "mapped",
+    "wired",
+    "planned",
+    "workItemCount",
+    "batchCount",
+    "planStepCount",
+    "issueCount",
+    "json",
+    "noExecution",
+    "noWrites",
+    "executionEnabled",
+    "adapterCalls",
+    "auditWrites",
+    "verifierRun",
+    "persistence",
+    "filesystemMutation",
+    "completedStateCreated",
+    "verifierRequired",
+    "completionGatedByVerifier",
+    "runnerPlanningInputAvailable",
+    "plannerDependencyInjected",
+    "plannerInvocationAllowed",
+  ],
+  "CLI task plan integration smoke N summary",
+);
+assert.deepEqual(
+  scenarioNSummaryShape,
+  scenarioASuccessfulCliTaskPlanIntegration.summary,
+  "CLI task plan integration smoke N summary should match successful result summary",
+);
+for (const [message, result] of [
+  ["CLI task plan integration smoke N success", scenarioASuccessfulCliTaskPlanIntegration],
+  ["CLI task plan integration smoke N parser failure", scenarioCParserFailure],
+  ["CLI task plan integration smoke N validation failure", scenarioDValidationFailure],
+  ["CLI task plan integration smoke N unsupported mapping", scenarioEUnsupportedMapping],
+  [
+    "CLI task plan integration smoke N missing runner planning input",
+    scenarioFMissingRunnerPlanningInput,
+  ],
+  ["CLI task plan integration smoke N missing verifier gate", scenarioGMissingVerifierGate],
+  [
+    "CLI task plan integration smoke N missing noExecution/noWrites",
+    scenarioHMissingNoExecutionNoWrites,
+  ],
+  ["CLI task plan integration smoke N planner failure", scenarioJPlannerFailure],
+]) {
+  assertCliSummaryHonest(result, message);
+}
+
+assert.deepEqual(
+  scenarioOExitCodeExamples,
+  {
+    planned: "success",
+    parser_failed: "parser_failure",
+    validation_failed: "validation_failure",
+    unsupported_mapping: "unsupported_mapping",
+    mapping_failed: "mapping_failure",
+    wiring_failed: "wiring_failure",
+    planner_failed: "planner_failure",
+    blocked: "blocked",
+    failed: "unknown_failure",
+    unknown: "unknown_failure",
+  },
+  "CLI task plan integration smoke O exit code mapping should remain stable",
+);
+
+assert.equal(
+  scenarioPSafetyStage.executionEnabled,
+  false,
+  "CLI task plan integration smoke P executionEnabled should be false",
+);
+assert.equal(
+  scenarioPSafetyStage.adapterCalls,
+  false,
+  "CLI task plan integration smoke P adapterCalls should be false",
+);
+assert.equal(
+  scenarioPSafetyStage.auditWrites,
+  false,
+  "CLI task plan integration smoke P auditWrites should be false",
+);
+assert.equal(
+  scenarioPSafetyStage.verifierRun,
+  false,
+  "CLI task plan integration smoke P verifierRun should be false",
+);
+assert.equal(
+  scenarioPSafetyStage.persistence,
+  false,
+  "CLI task plan integration smoke P persistence should be false",
+);
+assert.equal(
+  scenarioPSafetyStage.filesystemMutation,
+  false,
+  "CLI task plan integration smoke P filesystemMutation should be false",
+);
+assert.equal(
+  scenarioPSafetyStage.completedStateCreated,
+  false,
+  "CLI task plan integration smoke P completedStateCreated should be false",
+);
+assert.equal(
+  scenarioPSafetyStage.noExecution,
+  true,
+  "CLI task plan integration smoke P noExecution should be true",
+);
+assert.equal(
+  scenarioPSafetyStage.noWrites,
+  true,
+  "CLI task plan integration smoke P noWrites should be true",
+);
+
+for (const [message, result] of [
+  ["CLI task plan integration smoke Q success", scenarioASuccessfulCliTaskPlanIntegration],
+  ["CLI task plan integration smoke Q JSON success", scenarioBJsonSuccessModel],
+  ["CLI task plan integration smoke Q parser failure", scenarioCParserFailure],
+  ["CLI task plan integration smoke Q validation failure", scenarioDValidationFailure],
+  ["CLI task plan integration smoke Q unsupported mapping", scenarioEUnsupportedMapping],
+  [
+    "CLI task plan integration smoke Q missing runner planning input",
+    scenarioFMissingRunnerPlanningInput,
+  ],
+  ["CLI task plan integration smoke Q missing verifier gate", scenarioGMissingVerifierGate],
+  [
+    "CLI task plan integration smoke Q missing noExecution/noWrites",
+    scenarioHMissingNoExecutionNoWrites,
+  ],
+  ["CLI task plan integration smoke Q unsafe metadata", scenarioIUnsafeRepresentedMetadata],
+  ["CLI task plan integration smoke Q planner failure", scenarioJPlannerFailure],
+]) {
+  assertCliNoExecutionNoWrites(result, message);
+  assertNoRuntimeTruth(result, message);
+  for (const field of [
+    "cliCommandExecuted",
+    "cliRan",
+    "parserExecutionHappened",
+    "mapperExecutionHappened",
+    "wiringLogicExecuted",
+    "plannerExecutionHappened",
+    "directPlanAgenticRunnerCall",
+    "runnerExecutionHappened",
+    "adapterCallHappened",
+    "auditWriteHappened",
+    "verifierExecutionHappened",
+    "persistenceHappened",
+    "filesystemIoHappened",
+    "filesystemMutationHappened",
+    "completedStateCreated",
+  ]) {
+    assert.equal(
+      Object.hasOwn(result, field),
+      false,
+      `${message} must not expose ${field}`,
+    );
+  }
+}
+
+console.log("CLI task plan planner integration contract smoke tests passed");
 
 const taskContractMapperLogicMinimalInput =
   createTaskContractMapperLogicSmokeInput();
