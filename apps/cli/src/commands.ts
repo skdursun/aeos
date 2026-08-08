@@ -1,6 +1,9 @@
 import {
   createCliTaskPlanPlannerIntegrationResult,
   createFilesystemGenerationAdapter,
+  createTaskResumeHandoff,
+  loadTaskResumeHandoff,
+  loadTaskState,
   mapTaskContractToRunnerPlanningInput,
   parseTaskPlanInputFile,
   planAgenticRunner,
@@ -28,10 +31,13 @@ import type {
   MemorySearchResult,
   MemoryType,
   MemoryValidationIssue,
+  PersistedTaskState,
   TaskContractMappingOptions,
+  TaskResumeHandoff,
   TaskContractMappingResult,
   TaskPlanInputResult,
   TaskValidationIssue,
+  AeosError,
 } from "@aeos/core";
 import { handleContext } from "./context.js";
 import { getCwd, getFs, setExitCode, writeJsonLine } from "./output.js";
@@ -74,6 +80,10 @@ Commands:
   task plan <task-file> --json
   task run --dry-run <task-file>
   task run --dry-run <task-file> --json
+  task status <task-id>
+  task status <task-id> --json
+  task resume --preview <task-id>
+  task resume --preview <task-id> --json
   version
   help`;
 
@@ -215,6 +225,104 @@ type TaskDryRunJsonOutput = {
       readonly noWrites: true;
     };
 };
+
+type TaskStateCliIssue = {
+  readonly code: string;
+  readonly message: string;
+  readonly severity: string;
+  readonly category: string;
+};
+
+type TaskStatusJsonOutput =
+  | {
+      readonly ok: true;
+      readonly status: "loaded";
+      readonly taskId: string;
+      readonly revision: number;
+      readonly lifecycle: string;
+      readonly state: PersistedTaskState;
+      readonly summary: {
+        readonly workItemCount: number;
+        readonly batchCount: number;
+        readonly pendingCount: number;
+        readonly retryableCount: number;
+        readonly currentBatchId: string | null;
+        readonly nextBatchId: string | null;
+        readonly verifierRequired: boolean;
+        readonly completionGatedByVerifier: boolean;
+        readonly resumeAvailable: boolean;
+        readonly issueCount: number;
+      };
+      readonly safety: {
+        readonly readOnly: true;
+        readonly authoritativePersistedState: true;
+        readonly executionPerformed: false;
+        readonly stateModified: false;
+      };
+      readonly issues: readonly TaskStateCliIssue[];
+    }
+  | {
+      readonly ok: false;
+      readonly status: "failed_to_load";
+      readonly taskId: string;
+      readonly error: {
+        readonly code: string;
+        readonly message: string;
+        readonly category: string;
+      };
+      readonly safety: {
+        readonly readOnly: true;
+        readonly authoritativePersistedState: false;
+        readonly executionPerformed: false;
+        readonly stateModified: false;
+      };
+      readonly issues: readonly TaskStateCliIssue[];
+    };
+
+type TaskResumePreviewJsonOutput =
+  | {
+      readonly ok: true;
+      readonly status: "resume_preview_ready";
+      readonly taskId: string;
+      readonly sourceRevision: number;
+      readonly lifecycle: string;
+      readonly resume: {
+        readonly allowed: boolean;
+        readonly pendingWorkItemIds: readonly string[];
+        readonly retryableWorkItemIds: readonly string[];
+        readonly remainingWorkCount: number;
+        readonly currentBatchId: string | null;
+        readonly nextBatchId: string | null;
+        readonly verifierRequired: boolean;
+        readonly completionGatedByVerifier: boolean;
+        readonly blockedReason: string | null;
+      };
+      readonly safety: {
+        readonly noExecution: true;
+        readonly noWrites: true;
+        readonly stateModified: false;
+      };
+      readonly issues: readonly TaskStateCliIssue[];
+    }
+  | {
+      readonly ok: false;
+      readonly status:
+        | "failed_to_load"
+        | "task_resume_execution_not_implemented"
+        | "invalid_arguments";
+      readonly taskId: string;
+      readonly error: {
+        readonly code: string;
+        readonly message: string;
+        readonly category: string;
+      };
+      readonly safety: {
+        readonly noExecution: true;
+        readonly noWrites: true;
+        readonly stateModified: false;
+      };
+      readonly issues: readonly TaskStateCliIssue[];
+    };
 
 type RememberJsonFailureReason =
   | "missing_title"
@@ -773,6 +881,14 @@ function writeTaskPlanSkeletonJson(
 function writeTaskDryRunJson(
   value: TaskDryRunJsonOutput | TaskDryRunJsonErrorOutput,
 ): void {
+  writeJsonLine(value);
+}
+
+function writeTaskStatusJson(value: TaskStatusJsonOutput): void {
+  writeJsonLine(value);
+}
+
+function writeTaskResumePreviewJson(value: TaskResumePreviewJsonOutput): void {
   writeJsonLine(value);
 }
 
@@ -1652,6 +1768,457 @@ function taskPlanStatusToProcessExitCode(
   status: CliTaskPlanPlannerIntegrationStatus,
 ): 0 | 1 {
   return status === "planned" ? 0 : 1;
+}
+
+function createTaskStateCliIssue(input: {
+  readonly code: string;
+  readonly message: string;
+  readonly severity?: string;
+  readonly category?: string;
+}): TaskStateCliIssue {
+  return {
+    code: input.code,
+    message: input.message,
+    severity: input.severity ?? "error",
+    category: input.category ?? "validation",
+  };
+}
+
+function createTaskStateCliIssueFromError(error: AeosError): TaskStateCliIssue {
+  return createTaskStateCliIssue({
+    code: error.code,
+    message: error.message,
+    category: error.category,
+  });
+}
+
+function createTaskStateCliError(input: {
+  readonly code: string;
+  readonly message: string;
+  readonly category?: AeosError["category"];
+}): AeosError {
+  return {
+    code: input.code,
+    message: input.message,
+    category: input.category ?? "validation",
+    retryable: false,
+  };
+}
+
+function getPersistedStateIssues(
+  state: PersistedTaskState,
+): readonly TaskStateCliIssue[] {
+  return state.issues.map((issue) =>
+    createTaskStateCliIssue({
+      code: issue.code,
+      message: issue.message,
+      severity: issue.severity,
+      category: issue.category,
+    }),
+  );
+}
+
+function formatTaskSource(state: PersistedTaskState): string {
+  const source = state.sourceTask;
+
+  if (source.path !== undefined && source.id !== undefined) {
+    return `${source.kind} ${source.id} (${source.path})`;
+  }
+
+  if (source.path !== undefined) {
+    return `${source.kind} ${source.path}`;
+  }
+
+  if (source.id !== undefined) {
+    return `${source.kind} ${source.id}`;
+  }
+
+  return source.kind;
+}
+
+function createTaskStatusJsonOutput(
+  state: PersistedTaskState,
+): TaskStatusJsonOutput {
+  const resume = createTaskResumeHandoff(state);
+
+  return {
+    ok: true,
+    status: "loaded",
+    taskId: state.taskId,
+    revision: state.revision,
+    lifecycle: state.lifecycleState,
+    state,
+    summary: {
+      workItemCount: state.workItems.length,
+      batchCount: state.batches.length,
+      pendingCount: state.pendingWorkItemIds.length,
+      retryableCount: state.retryableWorkItemIds.length,
+      currentBatchId: state.currentBatchId ?? null,
+      nextBatchId: state.nextBatchId ?? null,
+      verifierRequired: state.verifier.required,
+      completionGatedByVerifier: state.verifier.completionGatedByVerifier,
+      resumeAvailable: resume.resumeAllowed,
+      issueCount: state.issues.length + resume.issues.length,
+    },
+    safety: {
+      readOnly: true,
+      authoritativePersistedState: true,
+      executionPerformed: false,
+      stateModified: false,
+    },
+    issues: [...getPersistedStateIssues(state), ...resume.issues.map((issue) =>
+      createTaskStateCliIssue({
+        code: issue.code,
+        message: issue.message,
+        severity: issue.severity,
+        category: issue.category,
+      }),
+    )],
+  };
+}
+
+function createTaskStatusErrorJsonOutput(
+  taskId: string,
+  error: AeosError,
+): TaskStatusJsonOutput {
+  return {
+    ok: false,
+    status: "failed_to_load",
+    taskId,
+    error: {
+      code: error.code,
+      message: error.message,
+      category: error.category,
+    },
+    safety: {
+      readOnly: true,
+      authoritativePersistedState: false,
+      executionPerformed: false,
+      stateModified: false,
+    },
+    issues: [createTaskStateCliIssueFromError(error)],
+  };
+}
+
+function printTaskStatusOutput(state: PersistedTaskState): void {
+  const output = createTaskStatusJsonOutput(state);
+  const resumeAvailable = createTaskResumeHandoff(state).resumeAllowed;
+
+  console.log("Task Status");
+  console.log(`Task id: ${state.taskId}`);
+  console.log(`Revision: ${state.revision}`);
+  console.log(`Lifecycle: ${state.lifecycleState}`);
+  console.log(`Source: ${formatTaskSource(state)}`);
+  console.log(`Work items: ${state.workItems.length}`);
+  console.log(`Batches: ${state.batches.length}`);
+  console.log(`Pending: ${state.pendingWorkItemIds.length}`);
+  console.log(`Retryable: ${state.retryableWorkItemIds.length}`);
+  console.log(`Current batch: ${state.currentBatchId ?? "none"}`);
+  console.log(`Next batch: ${state.nextBatchId ?? "none"}`);
+  console.log(`Verifier required: ${String(state.verifier.required)}`);
+  console.log(
+    `Completion gated by verifier: ${String(
+      state.verifier.completionGatedByVerifier,
+    )}`,
+  );
+  console.log(`Resume available: ${String(resumeAvailable)}`);
+  console.log(`Issues: ${output.issues.length}`);
+
+  for (const issue of output.issues) {
+    console.log(`- ${issue.code}: ${issue.message}`);
+  }
+
+  console.log("");
+  console.log("Safety:");
+  console.log("Authoritative persisted state: true");
+  console.log("Execution performed: false");
+  console.log("State modified: false");
+}
+
+function printTaskStatusError(taskId: string, error: AeosError): void {
+  console.error("Task Status");
+  console.error(`Task id: ${taskId}`);
+  console.error("Status: failed_to_load");
+  console.error(`Error: ${error.code}`);
+  console.error(`Message: ${error.message}`);
+  console.error("Safety:");
+  console.error("Authoritative persisted state: false");
+  console.error("Execution performed: false");
+  console.error("State modified: false");
+}
+
+function createTaskResumePreviewJsonOutput(
+  handoff: TaskResumeHandoff,
+): TaskResumePreviewJsonOutput {
+  return {
+    ok: true,
+    status: "resume_preview_ready",
+    taskId: handoff.taskId,
+    sourceRevision: handoff.sourceRevision,
+    lifecycle: handoff.lifecycleState,
+    resume: {
+      allowed: handoff.resumeAllowed,
+      pendingWorkItemIds: handoff.pendingWorkItemIds,
+      retryableWorkItemIds: handoff.retryableWorkItemIds,
+      remainingWorkCount: handoff.remainingWorkItemCount,
+      currentBatchId: handoff.currentBatchId ?? null,
+      nextBatchId: handoff.nextBatchId ?? null,
+      verifierRequired: handoff.verifierRequired,
+      completionGatedByVerifier: handoff.completionGatedByVerifier,
+      blockedReason: handoff.blockedReason ?? null,
+    },
+    safety: {
+      noExecution: true,
+      noWrites: true,
+      stateModified: false,
+    },
+    issues: handoff.issues.map((issue) =>
+      createTaskStateCliIssue({
+        code: issue.code,
+        message: issue.message,
+        severity: issue.severity,
+        category: issue.category,
+      }),
+    ),
+  };
+}
+
+function createTaskResumePreviewErrorJsonOutput(
+  taskId: string,
+  error: AeosError,
+  status: Extract<
+    TaskResumePreviewJsonOutput,
+    { readonly ok: false }
+  >["status"] = "failed_to_load",
+): TaskResumePreviewJsonOutput {
+  return {
+    ok: false,
+    status,
+    taskId,
+    error: {
+      code: error.code,
+      message: error.message,
+      category: error.category,
+    },
+    safety: {
+      noExecution: true,
+      noWrites: true,
+      stateModified: false,
+    },
+    issues: [createTaskStateCliIssueFromError(error)],
+  };
+}
+
+function printTaskResumePreviewOutput(handoff: TaskResumeHandoff): void {
+  console.log("Task Resume Preview");
+  console.log(`Task id: ${handoff.taskId}`);
+  console.log(`Source revision: ${handoff.sourceRevision}`);
+  console.log(`Lifecycle: ${handoff.lifecycleState}`);
+  console.log(`Resume allowed: ${String(handoff.resumeAllowed)}`);
+  console.log(`Pending: ${handoff.pendingWorkItemIds.length}`);
+  console.log(`Retryable: ${handoff.retryableWorkItemIds.length}`);
+  console.log(`Remaining work: ${handoff.remainingWorkItemCount}`);
+  console.log(`Current batch: ${handoff.currentBatchId ?? "none"}`);
+  console.log(`Next batch: ${handoff.nextBatchId ?? "none"}`);
+  console.log(`Verifier required: ${String(handoff.verifierRequired)}`);
+  console.log(
+    `Completion gated by verifier: ${String(
+      handoff.completionGatedByVerifier,
+    )}`,
+  );
+  console.log(`No execution: ${String(handoff.noExecution)}`);
+  console.log(`No writes: ${String(handoff.noWrites)}`);
+  console.log(`Blocked reason: ${handoff.blockedReason ?? "none"}`);
+  console.log(`Issues: ${handoff.issues.length}`);
+
+  for (const issue of handoff.issues) {
+    console.log(`- ${issue.code}: ${issue.message}`);
+  }
+}
+
+function printTaskResumePreviewError(taskId: string, error: AeosError): void {
+  console.error("Task Resume Preview");
+  console.error(`Task id: ${taskId}`);
+  console.error("Status: failed_to_load");
+  console.error(`Error: ${error.code}`);
+  console.error(`Message: ${error.message}`);
+  console.error("No execution: true");
+  console.error("No writes: true");
+}
+
+async function handleTaskStatus(args: readonly string[]): Promise<void> {
+  const json = args.includes("--json");
+  const positionalArgs = args.filter((arg) => !arg.startsWith("--"));
+  const unknownArgs = args.filter((arg) => arg !== "--json" && arg.startsWith("--"));
+
+  if (unknownArgs.length > 0 || positionalArgs.length > 1) {
+    const error = createTaskStateCliError({
+      code: "task_status_unknown_option",
+      message: "Unknown task status option.",
+    });
+
+    if (json) {
+      writeTaskStatusJson(createTaskStatusErrorJsonOutput(positionalArgs[0] ?? "", error));
+      setExitCode(1);
+      return;
+    }
+
+    console.error("Error: unknown task status option.");
+    console.error("Usage: aeos task status <task-id> [--json]");
+    setExitCode(1);
+    return;
+  }
+
+  const taskId = positionalArgs[0];
+
+  if (taskId === undefined || taskId.trim().length === 0) {
+    const error = createTaskStateCliError({
+      code: "task_status_task_id_required",
+      message: "Task status requires a task id.",
+    });
+
+    if (json) {
+      writeTaskStatusJson(createTaskStatusErrorJsonOutput("", error));
+      setExitCode(1);
+      return;
+    }
+
+    console.error("Task Status");
+    console.error("Error: task id is required.");
+    console.error("Usage: aeos task status <task-id> [--json]");
+    setExitCode(1);
+    return;
+  }
+
+  const loadResult = await loadTaskState({
+    projectRoot: getCwd(),
+    taskId,
+  });
+
+  if (!loadResult.ok) {
+    if (json) {
+      writeTaskStatusJson(createTaskStatusErrorJsonOutput(taskId, loadResult.error));
+    } else {
+      printTaskStatusError(taskId, loadResult.error);
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  if (json) {
+    writeTaskStatusJson(createTaskStatusJsonOutput(loadResult.value.state));
+  } else {
+    printTaskStatusOutput(loadResult.value.state);
+  }
+}
+
+async function handleTaskResume(args: readonly string[]): Promise<void> {
+  const json = args.includes("--json");
+  const preview = args.includes("--preview");
+  const positionalArgs = args.filter((arg) => !arg.startsWith("--"));
+  const unknownArgs = args.filter(
+    (arg) => arg !== "--json" && arg !== "--preview" && arg.startsWith("--"),
+  );
+
+  if (unknownArgs.length > 0 || positionalArgs.length > 1) {
+    const error = createTaskStateCliError({
+      code: "task_resume_unknown_option",
+      message: "Unknown task resume option.",
+    });
+
+    if (json) {
+      writeTaskResumePreviewJson(
+        createTaskResumePreviewErrorJsonOutput(
+          positionalArgs[0] ?? "",
+          error,
+          "invalid_arguments",
+        ),
+      );
+      setExitCode(1);
+      return;
+    }
+
+    console.error("Error: unknown task resume option.");
+    console.error("Usage: aeos task resume --preview <task-id> [--json]");
+    setExitCode(1);
+    return;
+  }
+
+  const taskId = positionalArgs[0];
+
+  if (taskId === undefined || taskId.trim().length === 0) {
+    const error = createTaskStateCliError({
+      code: "task_resume_task_id_required",
+      message: "Task resume preview requires a task id.",
+    });
+
+    if (json) {
+      writeTaskResumePreviewJson(
+        createTaskResumePreviewErrorJsonOutput("", error, "invalid_arguments"),
+      );
+      setExitCode(1);
+      return;
+    }
+
+    console.error("Task Resume Preview");
+    console.error("Error: task id is required.");
+    console.error("Usage: aeos task resume --preview <task-id> [--json]");
+    setExitCode(1);
+    return;
+  }
+
+  if (!preview) {
+    const error = createTaskStateCliError({
+      code: "task_resume_execution_not_implemented",
+      message:
+        "Task resume execution is not implemented; use --preview for a read-only persisted-state preview.",
+    });
+
+    if (json) {
+      writeTaskResumePreviewJson(
+        createTaskResumePreviewErrorJsonOutput(
+          taskId,
+          error,
+          "task_resume_execution_not_implemented",
+        ),
+      );
+      setExitCode(1);
+      return;
+    }
+
+    console.error("Task Resume");
+    console.error("Error: task_resume_execution_not_implemented");
+    console.error(error.message);
+    setExitCode(1);
+    return;
+  }
+
+  const handoffResult = await loadTaskResumeHandoff({
+    projectRoot: getCwd(),
+    taskId,
+  });
+
+  if (!handoffResult.ok) {
+    if (json) {
+      writeTaskResumePreviewJson(
+        createTaskResumePreviewErrorJsonOutput(taskId, handoffResult.error),
+      );
+    } else {
+      printTaskResumePreviewError(taskId, handoffResult.error);
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  if (json) {
+    writeTaskResumePreviewJson(
+      createTaskResumePreviewJsonOutput(handoffResult.value.handoff),
+    );
+  } else {
+    printTaskResumePreviewOutput(handoffResult.value.handoff);
+  }
 }
 
 function printVersion(): void {
@@ -3030,6 +3597,16 @@ async function handleSearch(args: readonly string[]): Promise<void> {
 }
 
 async function handleTask(args: readonly string[]): Promise<void> {
+  if (args[0] === "status") {
+    await handleTaskStatus(args.slice(1));
+    return;
+  }
+
+  if (args[0] === "resume") {
+    await handleTaskResume(args.slice(1));
+    return;
+  }
+
   if (args[0] === "run") {
     const runArgs = args.slice(1);
     const json = runArgs.includes("--json");
@@ -3298,6 +3875,8 @@ async function handleTask(args: readonly string[]): Promise<void> {
     console.error("Usage: aeos task validate <path>");
     console.error("Usage: aeos task plan [<task-file>] [--json]");
     console.error("Usage: aeos task run --dry-run <task-file> [--json]");
+    console.error("Usage: aeos task status <task-id> [--json]");
+    console.error("Usage: aeos task resume --preview <task-id> [--json]");
     setExitCode(1);
     return;
   }

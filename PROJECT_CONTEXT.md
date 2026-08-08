@@ -62,6 +62,7 @@ condition.
 - TASK-0278: Design and implement task state persistence MVP foundation.
 - TASK-0279: Task state persistence targeted safety/regression review and resume
   handoff foundation.
+- TASK-0280: Implement read-only task status and resume preview CLI.
 
 ## Do Not Load By Default
 
@@ -72,7 +73,11 @@ condition.
 
 ## Next Task
 
-TASK-0280 Implement read-only task status and resume preview CLI.
+TASK-0281 Design and implement explicit task-state initialization/persistence
+CLI.
+
+Purpose: allow an operator to deliberately create/persist authoritative task
+state without making plan/dry-run automatically write.
 
 ## Current Plans
 

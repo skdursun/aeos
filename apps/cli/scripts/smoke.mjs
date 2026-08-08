@@ -1,18 +1,25 @@
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   readdirSync,
   rmSync,
+  statSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  createInitialTaskState,
+  saveTaskState,
+} from "../../../packages/core/dist/index.js";
 
 const cliPath = fileURLToPath(new URL("../dist/index.js", import.meta.url));
 const projectRoot = fileURLToPath(new URL("../../..", import.meta.url));
@@ -1003,6 +1010,173 @@ function createValidTaskPlanContract(id) {
   };
 }
 
+function createPersistedTaskState(id, overrides = {}) {
+  const createdAt = "2026-08-08T00:00:00.000Z";
+
+  return {
+    ...createInitialTaskState({
+      taskId: id,
+      sourceTaskId: id,
+      sourceTaskPath: `tasks/${id}.json`,
+      verifierRequired: true,
+      createdAt,
+    }),
+    lifecycleState: "planned",
+    workItems: [
+      {
+        id: "work-pending",
+        state: "pending",
+        batchId: "batch-main",
+      },
+      {
+        id: "work-retryable",
+        state: "retryable",
+        batchId: "batch-main",
+      },
+    ],
+    batches: [
+      {
+        id: "batch-main",
+        workItemIds: ["work-pending", "work-retryable"],
+        expectedItemCount: 2,
+        completedCount: 0,
+        failedCount: 0,
+        skippedCount: 0,
+        retryableCount: 1,
+      },
+    ],
+    pendingWorkItemIds: ["work-pending"],
+    retryableWorkItemIds: ["work-retryable"],
+    currentBatchId: "batch-main",
+    nextBatchId: "batch-main",
+    plan: {
+      status: "planned",
+      summary: {
+        workItemCount: 2,
+        batchCount: 1,
+        stepCount: 2,
+        verifierRequired: true,
+        approvalRequired: false,
+        issueCount: 0,
+      },
+    },
+    ...overrides,
+  };
+}
+
+async function savePersistedTaskState(projectRootPath, state) {
+  const saveResult = await saveTaskState({
+    projectRoot: projectRootPath,
+    state,
+  });
+
+  if (!saveResult.ok) {
+    fail(`could not create persisted task state fixture: ${saveResult.error.code}`);
+  }
+
+  return saveResult.value.path;
+}
+
+function taskStatePath(rootPath, taskId) {
+  return join(rootPath, ".aeos", "state", "tasks", `${taskId}.json`);
+}
+
+function writePersistedTaskStateFixture(rootPath, taskId, state) {
+  const stateRoot = join(rootPath, ".aeos", "state", "tasks");
+  mkdirSync(stateRoot, { recursive: true });
+  writeFileSync(taskStatePath(rootPath, taskId), `${JSON.stringify(state, null, 2)}\n`);
+}
+
+function stateFileSnapshot(path) {
+  return {
+    content: readFileSync(path, "utf8"),
+    mtimeMs: statSync(path).mtimeMs,
+    revision: JSON.parse(readFileSync(path, "utf8")).revision,
+  };
+}
+
+function expectStateFileSnapshotSame(message, path, before, result) {
+  const after = stateFileSnapshot(path);
+
+  if (
+    after.content !== before.content ||
+    after.revision !== before.revision ||
+    after.mtimeMs !== before.mtimeMs
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectTaskStatusJsonShape(message, value, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== true ||
+    value.status !== "loaded" ||
+    typeof value.taskId !== "string" ||
+    typeof value.revision !== "number" ||
+    typeof value.lifecycle !== "string" ||
+    typeof value.state !== "object" ||
+    value.state === null ||
+    typeof value.summary !== "object" ||
+    value.summary === null ||
+    value.safety?.readOnly !== true ||
+    value.safety?.authoritativePersistedState !== true ||
+    value.safety?.executionPerformed !== false ||
+    value.safety?.stateModified !== false ||
+    !Array.isArray(value.issues)
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectTaskStateErrorJsonShape(message, value, expectedCode, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== false ||
+    typeof value.error !== "object" ||
+    value.error === null ||
+    value.error.code !== expectedCode ||
+    typeof value.error.message !== "string" ||
+    value.error.message.length === 0 ||
+    !Array.isArray(value.issues) ||
+    !value.issues.some((issue) => issue.code === expectedCode)
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectTaskResumePreviewJsonShape(message, value, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== true ||
+    value.status !== "resume_preview_ready" ||
+    typeof value.taskId !== "string" ||
+    typeof value.sourceRevision !== "number" ||
+    typeof value.lifecycle !== "string" ||
+    typeof value.resume !== "object" ||
+    value.resume === null ||
+    typeof value.resume.allowed !== "boolean" ||
+    !Array.isArray(value.resume.pendingWorkItemIds) ||
+    !Array.isArray(value.resume.retryableWorkItemIds) ||
+    typeof value.resume.remainingWorkCount !== "number" ||
+    value.safety?.noExecution !== true ||
+    value.safety?.noWrites !== true ||
+    value.safety?.stateModified !== false ||
+    !Array.isArray(value.issues)
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectNoTaskStateCreated(message, rootPath, taskId, result) {
+  if (existsSync(taskStatePath(rootPath, taskId))) {
+    fail(message, result);
+  }
+}
+
 const smokeRunId = String(Date.now());
 const createdMemoryPaths = new Set();
 
@@ -1109,6 +1283,26 @@ expectOutputIncludes(
   'help output did not include "task run --dry-run <task-file> --json"',
   helpCommand,
   "task run --dry-run <task-file> --json",
+);
+expectOutputIncludes(
+  'help output did not include "task status <task-id>"',
+  helpCommand,
+  "task status <task-id>",
+);
+expectOutputIncludes(
+  'help output did not include "task status <task-id> --json"',
+  helpCommand,
+  "task status <task-id> --json",
+);
+expectOutputIncludes(
+  'help output did not include "task resume --preview <task-id>"',
+  helpCommand,
+  "task resume --preview <task-id>",
+);
+expectOutputIncludes(
+  'help output did not include "task resume --preview <task-id> --json"',
+  helpCommand,
+  "task resume --preview <task-id> --json",
 );
 expectTaskPlanHelpNoOverpromises("help output", helpCommand);
 expectTaskPlanSourceSafety();
@@ -3988,6 +4182,561 @@ try {
 } finally {
   rmSync(taskPlanNoWriteRoot, { recursive: true, force: true });
   rmSync(taskPlanTraversalParentRoot, { recursive: true, force: true });
+}
+
+const taskStateCliRoot = mkdtempSync(join(tmpdir(), "aeos-cli-task-state-"));
+
+try {
+  const statusTaskId = "TASK-STATUS-SMOKE";
+  const statusStatePath = await savePersistedTaskState(
+    taskStateCliRoot,
+    createPersistedTaskState(statusTaskId),
+  );
+  const statusSnapshotBefore = stateFileSnapshot(statusStatePath);
+
+  const taskStatus = runCliFrom(taskStateCliRoot, [
+    "task",
+    "status",
+    statusTaskId,
+  ]);
+  expectExitCode("task status exited nonzero", taskStatus, 0);
+  for (const expectedText of [
+    "Task Status",
+    "Task id: TASK-STATUS-SMOKE",
+    "Revision: 1",
+    "Lifecycle: planned",
+    "Work items: 2",
+    "Batches: 1",
+    "Pending: 1",
+    "Retryable: 1",
+    "Current batch: batch-main",
+    "Next batch: batch-main",
+    "Verifier required: true",
+    "Completion gated by verifier: true",
+    "Resume available: true",
+    "Authoritative persisted state: true",
+    "Execution performed: false",
+    "State modified: false",
+  ]) {
+    expectOutputIncludes(
+      `task status human output missing ${expectedText}`,
+      taskStatus,
+      expectedText,
+    );
+  }
+  expectStateFileSnapshotSame(
+    "task status modified persisted state",
+    statusStatePath,
+    statusSnapshotBefore,
+    taskStatus,
+  );
+
+  const taskStatusJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "status",
+    statusTaskId,
+    "--json",
+  ]);
+  expectExitCode("task status --json exited nonzero", taskStatusJson, 0);
+  const parsedTaskStatusJson = parseJsonOnlyStdout(
+    "task status --json output was not valid JSON only",
+    taskStatusJson,
+  );
+  expectTaskStatusJsonShape(
+    "task status --json shape was invalid",
+    parsedTaskStatusJson,
+    taskStatusJson,
+  );
+  if (
+    parsedTaskStatusJson.taskId !== statusTaskId ||
+    parsedTaskStatusJson.revision !== 1 ||
+    parsedTaskStatusJson.lifecycle !== "planned" ||
+    parsedTaskStatusJson.summary.workItemCount !== 2 ||
+    parsedTaskStatusJson.summary.batchCount !== 1 ||
+    parsedTaskStatusJson.summary.pendingCount !== 1 ||
+    parsedTaskStatusJson.summary.retryableCount !== 1 ||
+    parsedTaskStatusJson.summary.currentBatchId !== "batch-main" ||
+    parsedTaskStatusJson.summary.nextBatchId !== "batch-main" ||
+    parsedTaskStatusJson.summary.resumeAvailable !== true ||
+    parsedTaskStatusJson.issues.length !== 0
+  ) {
+    fail("task status --json did not expose authoritative state", taskStatusJson);
+  }
+  expectStateFileSnapshotSame(
+    "task status --json modified persisted state",
+    statusStatePath,
+    statusSnapshotBefore,
+    taskStatusJson,
+  );
+
+  const taskResumePreview = runCliFrom(taskStateCliRoot, [
+    "task",
+    "resume",
+    "--preview",
+    statusTaskId,
+  ]);
+  expectExitCode("task resume --preview exited nonzero", taskResumePreview, 0);
+  for (const expectedText of [
+    "Task Resume Preview",
+    "Task id: TASK-STATUS-SMOKE",
+    "Source revision: 1",
+    "Lifecycle: planned",
+    "Resume allowed: true",
+    "Pending: 1",
+    "Retryable: 1",
+    "Remaining work: 2",
+    "Current batch: batch-main",
+    "Next batch: batch-main",
+    "Verifier required: true",
+    "Completion gated by verifier: true",
+    "No execution: true",
+    "No writes: true",
+  ]) {
+    expectOutputIncludes(
+      `task resume preview human output missing ${expectedText}`,
+      taskResumePreview,
+      expectedText,
+    );
+  }
+  expectStateFileSnapshotSame(
+    "task resume --preview modified persisted state",
+    statusStatePath,
+    statusSnapshotBefore,
+    taskResumePreview,
+  );
+
+  const taskResumePreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "resume",
+    "--preview",
+    statusTaskId,
+    "--json",
+  ]);
+  expectExitCode(
+    "task resume --preview --json exited nonzero",
+    taskResumePreviewJson,
+    0,
+  );
+  const parsedTaskResumePreviewJson = parseJsonOnlyStdout(
+    "task resume --preview --json output was not valid JSON only",
+    taskResumePreviewJson,
+  );
+  expectTaskResumePreviewJsonShape(
+    "task resume --preview --json shape was invalid",
+    parsedTaskResumePreviewJson,
+    taskResumePreviewJson,
+  );
+  if (
+    parsedTaskResumePreviewJson.taskId !== statusTaskId ||
+    parsedTaskResumePreviewJson.sourceRevision !== 1 ||
+    parsedTaskResumePreviewJson.resume.allowed !== true ||
+    parsedTaskResumePreviewJson.resume.remainingWorkCount !== 2 ||
+    parsedTaskResumePreviewJson.resume.currentBatchId !== "batch-main" ||
+    parsedTaskResumePreviewJson.resume.nextBatchId !== "batch-main" ||
+    parsedTaskResumePreviewJson.resume.pendingWorkItemIds.join(",") !==
+      "work-pending" ||
+    parsedTaskResumePreviewJson.resume.retryableWorkItemIds.join(",") !==
+      "work-retryable" ||
+    parsedTaskResumePreviewJson.issues.length !== 0
+  ) {
+    fail(
+      "task resume --preview --json did not expose authoritative handoff",
+      taskResumePreviewJson,
+    );
+  }
+  expectStateFileSnapshotSame(
+    "task resume --preview --json modified persisted state",
+    statusStatePath,
+    statusSnapshotBefore,
+    taskResumePreviewJson,
+  );
+
+  const repeatedTaskResumePreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "resume",
+    "--preview",
+    statusTaskId,
+    "--json",
+  ]);
+  expectExitCode(
+    "repeated task resume --preview --json exited nonzero",
+    repeatedTaskResumePreviewJson,
+    0,
+  );
+  if (repeatedTaskResumePreviewJson.stdout !== taskResumePreviewJson.stdout) {
+    fail(
+      "repeated task resume --preview --json was not equivalent",
+      repeatedTaskResumePreviewJson,
+    );
+  }
+
+  const taskResumeExecutionJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "resume",
+    statusTaskId,
+    "--json",
+  ]);
+  expectNonzero("task resume without --preview exited zero", taskResumeExecutionJson);
+  const parsedTaskResumeExecutionJson = parseJsonOnlyStdout(
+    "task resume without --preview output was not valid JSON only",
+    taskResumeExecutionJson,
+  );
+  expectTaskStateErrorJsonShape(
+    "task resume without --preview did not use stable error",
+    parsedTaskResumeExecutionJson,
+    "task_resume_execution_not_implemented",
+    taskResumeExecutionJson,
+  );
+  expectStateFileSnapshotSame(
+    "task resume without --preview modified persisted state",
+    statusStatePath,
+    statusSnapshotBefore,
+    taskResumeExecutionJson,
+  );
+
+  const missingRoot = mkdtempSync(join(tmpdir(), "aeos-cli-task-state-missing-"));
+  const missingStatusJson = runCliFrom(missingRoot, [
+    "task",
+    "status",
+    "TASK-MISSING",
+    "--json",
+  ]);
+  expectNonzero("task status missing state exited zero", missingStatusJson);
+  const parsedMissingStatusJson = parseJsonOnlyStdout(
+    "task status missing state output was not valid JSON only",
+    missingStatusJson,
+  );
+  expectTaskStateErrorJsonShape(
+    "task status missing state did not fail closed",
+    parsedMissingStatusJson,
+    "task_state_not_found",
+    missingStatusJson,
+  );
+  expectNoTaskStateCreated(
+    "task status missing state created a state file",
+    missingRoot,
+    "TASK-MISSING",
+    missingStatusJson,
+  );
+  if (existsSync(join(missingRoot, ".aeos"))) {
+    fail("task status missing state created .aeos directory", missingStatusJson);
+  }
+  rmSync(missingRoot, { recursive: true, force: true });
+
+  const corruptTaskId = "TASK-CORRUPT";
+  const corruptRoot = mkdtempSync(join(tmpdir(), "aeos-cli-task-state-corrupt-"));
+  mkdirSync(join(corruptRoot, ".aeos", "state", "tasks"), { recursive: true });
+  writeFileSync(taskStatePath(corruptRoot, corruptTaskId), "{ corrupt json");
+  const corruptStatusJson = runCliFrom(corruptRoot, [
+    "task",
+    "status",
+    corruptTaskId,
+    "--json",
+  ]);
+  expectNonzero("task status corrupt state exited zero", corruptStatusJson);
+  const parsedCorruptStatusJson = parseJsonOnlyStdout(
+    "task status corrupt state output was not valid JSON only",
+    corruptStatusJson,
+  );
+  expectTaskStateErrorJsonShape(
+    "task status corrupt state did not fail closed",
+    parsedCorruptStatusJson,
+    "task_state_corrupt_json",
+    corruptStatusJson,
+  );
+  rmSync(corruptRoot, { recursive: true, force: true });
+
+  for (const [taskId, candidate, expectedCode] of [
+    [
+      "TASK-INVALID-SCHEMA",
+      createPersistedTaskState("TASK-INVALID-SCHEMA", { schemaVersion: 999 }),
+      "task_state_schema_version_unsupported",
+    ],
+    [
+      "TASK-INVALID-REVISION",
+      createPersistedTaskState("TASK-INVALID-REVISION", { revision: 0 }),
+      "task_state_invalid_revision",
+    ],
+    [
+      "TASK-INVALID-PENDING",
+      createPersistedTaskState("TASK-INVALID-PENDING", {
+        pendingWorkItemIds: ["missing-work"],
+        retryableWorkItemIds: [],
+      }),
+      "task_state_resume_id_unknown",
+    ],
+    [
+      "TASK-INVALID-BATCH",
+      createPersistedTaskState("TASK-INVALID-BATCH", {
+        nextBatchId: "missing-batch",
+      }),
+      "task_state_batch_reference_unknown",
+    ],
+    [
+      "TASK-FORGED-COMPLETED",
+      createPersistedTaskState("TASK-FORGED-COMPLETED", {
+        lifecycleState: "completed",
+      }),
+      "task_state_forbidden_lifecycle_state",
+    ],
+  ]) {
+    const invalidRoot = mkdtempSync(join(tmpdir(), "aeos-cli-task-state-invalid-"));
+    writePersistedTaskStateFixture(invalidRoot, taskId, candidate);
+    const invalidPreviewJson = runCliFrom(invalidRoot, [
+      "task",
+      "resume",
+      "--preview",
+      taskId,
+      "--json",
+    ]);
+    expectNonzero(`${taskId} resume preview exited zero`, invalidPreviewJson);
+    const parsedInvalidPreviewJson = parseJsonOnlyStdout(
+      `${taskId} resume preview output was not valid JSON only`,
+      invalidPreviewJson,
+    );
+    expectTaskStateErrorJsonShape(
+      `${taskId} resume preview did not fail closed`,
+      parsedInvalidPreviewJson,
+      expectedCode,
+      invalidPreviewJson,
+    );
+    rmSync(invalidRoot, { recursive: true, force: true });
+  }
+
+  const symlinkOutsideRoot = mkdtempSync(join(tmpdir(), "aeos-cli-task-state-outside-"));
+  const symlinkFileRoot = mkdtempSync(join(tmpdir(), "aeos-cli-task-state-file-link-"));
+  const symlinkFileTaskId = "TASK-SYMLINK-FILE";
+  mkdirSync(join(symlinkFileRoot, ".aeos", "state", "tasks"), { recursive: true });
+  writeFileSync(
+    join(symlinkOutsideRoot, `${symlinkFileTaskId}.json`),
+    `${JSON.stringify(createPersistedTaskState(symlinkFileTaskId), null, 2)}\n`,
+  );
+  symlinkSync(
+    join(symlinkOutsideRoot, `${symlinkFileTaskId}.json`),
+    taskStatePath(symlinkFileRoot, symlinkFileTaskId),
+  );
+  const symlinkStatusJson = runCliFrom(symlinkFileRoot, [
+    "task",
+    "status",
+    symlinkFileTaskId,
+    "--json",
+  ]);
+  expectNonzero("task status state-file symlink exited zero", symlinkStatusJson);
+  const parsedSymlinkStatusJson = parseJsonOnlyStdout(
+    "task status state-file symlink output was not valid JSON only",
+    symlinkStatusJson,
+  );
+  expectTaskStateErrorJsonShape(
+    "task status state-file symlink did not fail closed",
+    parsedSymlinkStatusJson,
+    "task_state_unsafe_target",
+    symlinkStatusJson,
+  );
+  if (!lstatSync(taskStatePath(symlinkFileRoot, symlinkFileTaskId)).isSymbolicLink()) {
+    fail("task status changed state-file symlink", symlinkStatusJson);
+  }
+  rmSync(symlinkFileRoot, { recursive: true, force: true });
+
+  const symlinkRootProject = mkdtempSync(join(tmpdir(), "aeos-cli-task-state-root-link-"));
+  mkdirSync(join(symlinkRootProject, ".aeos", "state"), { recursive: true });
+  symlinkSync(symlinkOutsideRoot, join(symlinkRootProject, ".aeos", "state", "tasks"), "dir");
+  const symlinkRootStatusJson = runCliFrom(symlinkRootProject, [
+    "task",
+    "status",
+    "TASK-SYMLINK-ROOT",
+    "--json",
+  ]);
+  expectNonzero("task status state-root symlink exited zero", symlinkRootStatusJson);
+  const parsedSymlinkRootStatusJson = parseJsonOnlyStdout(
+    "task status state-root symlink output was not valid JSON only",
+    symlinkRootStatusJson,
+  );
+  expectTaskStateErrorJsonShape(
+    "task status state-root symlink did not fail closed",
+    parsedSymlinkRootStatusJson,
+    "task_state_unsafe_state_root",
+    symlinkRootStatusJson,
+  );
+  rmSync(symlinkRootProject, { recursive: true, force: true });
+  rmSync(symlinkOutsideRoot, { recursive: true, force: true });
+
+  const directoryTargetRoot = mkdtempSync(join(tmpdir(), "aeos-cli-task-state-directory-"));
+  mkdirSync(taskStatePath(directoryTargetRoot, "TASK-DIRECTORY-TARGET"), {
+    recursive: true,
+  });
+  const directoryTargetStatusJson = runCliFrom(directoryTargetRoot, [
+    "task",
+    "status",
+    "TASK-DIRECTORY-TARGET",
+    "--json",
+  ]);
+  expectNonzero(
+    "task status directory state target exited zero",
+    directoryTargetStatusJson,
+  );
+  const parsedDirectoryTargetStatusJson = parseJsonOnlyStdout(
+    "task status directory state target output was not valid JSON only",
+    directoryTargetStatusJson,
+  );
+  expectTaskStateErrorJsonShape(
+    "task status directory state target did not fail closed",
+    parsedDirectoryTargetStatusJson,
+    "task_state_unsafe_target",
+    directoryTargetStatusJson,
+  );
+  rmSync(directoryTargetRoot, { recursive: true, force: true });
+
+  const traversalStatusJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "status",
+    "../TASK-STATUS-SMOKE",
+    "--json",
+  ]);
+  expectNonzero("task status traversal id exited zero", traversalStatusJson);
+  const parsedTraversalStatusJson = parseJsonOnlyStdout(
+    "task status traversal id output was not valid JSON only",
+    traversalStatusJson,
+  );
+  expectTaskStateErrorJsonShape(
+    "task status traversal id did not fail closed",
+    parsedTraversalStatusJson,
+    "task_state_unsafe_task_id",
+    traversalStatusJson,
+  );
+
+  const pathLikePreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "resume",
+    "--preview",
+    "path/like",
+    "--json",
+  ]);
+  expectNonzero("task resume preview path-like id exited zero", pathLikePreviewJson);
+  const parsedPathLikePreviewJson = parseJsonOnlyStdout(
+    "task resume preview path-like id output was not valid JSON only",
+    pathLikePreviewJson,
+  );
+  expectTaskStateErrorJsonShape(
+    "task resume preview path-like id did not fail closed",
+    parsedPathLikePreviewJson,
+    "task_state_unsafe_task_id",
+    pathLikePreviewJson,
+  );
+
+  const canonicalWorkItems = Array.from({ length: 400 }, (_, index) => {
+    const id = `canonical-work-${String(index + 1).padStart(3, "0")}`;
+
+    return {
+      id,
+      state: index < 20 ? "failed" : "pending",
+      batchId: "canonical-batch",
+    };
+  });
+  const canonicalTaskId = "TASK-400-20-CLI";
+  const canonicalStatePath = await savePersistedTaskState(
+    taskStateCliRoot,
+    createPersistedTaskState(canonicalTaskId, {
+      sourceTask: {
+        kind: "reference",
+        id: 'model says "all complete"',
+      },
+      workItems: canonicalWorkItems,
+      batches: [
+        {
+          id: "canonical-batch",
+          workItemIds: canonicalWorkItems.map((workItem) => workItem.id),
+          expectedItemCount: 400,
+          completedCount: 0,
+          failedCount: 20,
+          skippedCount: 0,
+          retryableCount: 0,
+        },
+      ],
+      pendingWorkItemIds: canonicalWorkItems
+        .filter((workItem) => workItem.state === "pending")
+        .map((workItem) => workItem.id),
+      retryableWorkItemIds: [],
+      currentBatchId: "canonical-batch",
+      nextBatchId: "canonical-batch",
+      plan: {
+        status: "planned",
+        summary: {
+          workItemCount: 400,
+          batchCount: 1,
+          stepCount: 1,
+          verifierRequired: true,
+          approvalRequired: false,
+          issueCount: 0,
+        },
+      },
+    }),
+  );
+  const canonicalSnapshotBefore = stateFileSnapshot(canonicalStatePath);
+  const canonicalStatusJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "status",
+    canonicalTaskId,
+    "--json",
+  ]);
+  expectExitCode("400/20 task status exited nonzero", canonicalStatusJson, 0);
+  const parsedCanonicalStatusJson = parseJsonOnlyStdout(
+    "400/20 task status output was not valid JSON only",
+    canonicalStatusJson,
+  );
+  expectTaskStatusJsonShape(
+    "400/20 task status shape was invalid",
+    parsedCanonicalStatusJson,
+    canonicalStatusJson,
+  );
+  if (
+    parsedCanonicalStatusJson.summary.workItemCount !== 400 ||
+    parsedCanonicalStatusJson.summary.pendingCount !== 380 ||
+    parsedCanonicalStatusJson.state.completionGate.completed !== false ||
+    parsedCanonicalStatusJson.state.completionGate.verified !== false ||
+    parsedCanonicalStatusJson.state.safety.modelSelfReportTrusted !== false ||
+    parsedCanonicalStatusJson.state.safety.completed !== false ||
+    parsedCanonicalStatusJson.state.safety.verified !== false
+  ) {
+    fail("400/20 task status trusted incomplete self-report", canonicalStatusJson);
+  }
+
+  const canonicalPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "resume",
+    "--preview",
+    canonicalTaskId,
+    "--json",
+  ]);
+  expectExitCode("400/20 task resume preview exited nonzero", canonicalPreviewJson, 0);
+  const parsedCanonicalPreviewJson = parseJsonOnlyStdout(
+    "400/20 task resume preview output was not valid JSON only",
+    canonicalPreviewJson,
+  );
+  expectTaskResumePreviewJsonShape(
+    "400/20 task resume preview shape was invalid",
+    parsedCanonicalPreviewJson,
+    canonicalPreviewJson,
+  );
+  if (
+    parsedCanonicalPreviewJson.resume.allowed !== true ||
+    parsedCanonicalPreviewJson.resume.remainingWorkCount !== 380 ||
+    parsedCanonicalPreviewJson.resume.pendingWorkItemIds.length !== 380
+  ) {
+    fail("400/20 task resume preview lost remaining work", canonicalPreviewJson);
+  }
+  expectOutputExcludes(
+    "400/20 task resume preview reported completion",
+    canonicalPreviewJson,
+    "\"completed\":true",
+  );
+  expectStateFileSnapshotSame(
+    "400/20 status/preview modified persisted state",
+    canonicalStatePath,
+    canonicalSnapshotBefore,
+    canonicalPreviewJson,
+  );
+} finally {
+  rmSync(taskStateCliRoot, { recursive: true, force: true });
 }
 
 const validTaskPath = fileURLToPath(

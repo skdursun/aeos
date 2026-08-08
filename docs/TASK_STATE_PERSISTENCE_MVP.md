@@ -131,13 +131,46 @@ authoritative pending or retryable work. Invalid state, corrupt state, forged
 completion/verification, unknown lifecycle state, inconsistent work references,
 and zero remaining work without verifiable completion proof block the handoff.
 
+## Read-Only CLI Inspection
+`aeos task status <task-id>` reads the authoritative persisted state from:
+
+```text
+.aeos/state/tasks/<task-id>.json
+```
+
+It prints the source revision, lifecycle, work and batch counts, pending and
+retryable counts, current/next batch references, verifier gate, resume
+availability, issues, and explicit safety markers. `--json` emits one
+deterministic JSON object only.
+
+`aeos task resume --preview <task-id>` loads the same persisted state and
+derives a read-only resume handoff. It exposes the source revision, resume
+eligibility, pending and retryable ids, remaining work count, batch references,
+verifier gate, blocked reason, issues, and explicit no-execution/no-write
+markers. `--json` emits one deterministic JSON object only.
+
+Both commands preserve the persisted revision and file contents. They do not
+create task state, save task state, increment revision, persist a resume cursor,
+write audit events, run verifiers, call adapters, execute work, retry work, or
+create completed state.
+
+Missing state, corrupt JSON, invalid schema, malformed revision, unsafe task
+ids, state-root symlinks, state-file symlinks, non-file state targets, forged
+completion/verification, and invalid pending/retryable/batch references fail
+closed. JSON errors expose deterministic codes and messages without raw runtime
+errors.
+
+`aeos task resume <task-id>` without `--preview` remains unavailable and fails
+closed with `task_resume_execution_not_implemented`.
+
 ## Plan And Dry-Run
 `aeos task plan` remains read-only.
 
 `aeos task run --dry-run` remains read-only and does not persist task state,
 resume state, audit state, verifier state, or completion state.
 
-Persistence integration with CLI commands is later scope.
+Automatic state initialization, state update CLI commands, and plan/dry-run
+state persistence remain later scope.
 
 ## MVP Limitations
 The MVP does not implement real task execution, adapter runtime, audit runtime,

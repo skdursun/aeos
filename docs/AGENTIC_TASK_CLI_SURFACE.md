@@ -19,6 +19,10 @@ Current foundation:
 - `aeos task plan <task-file>` exists as parser-mapper-planner integration.
 - `aeos task run --dry-run <task-file>` exists as a non-executing dry-run
   preview over the existing parser, mapper, planner, and dry-run contracts.
+- `aeos task status <task-id>` exists as a read-only persisted-state inspection
+  command.
+- `aeos task resume --preview <task-id>` exists as a read-only resume handoff
+  preview.
 - Runner planning logic is side-effect-free and creates planning results from
   represented input.
 - Dry-run runner logic is side-effect-free and creates execution-shaped previews
@@ -26,7 +30,7 @@ Current foundation:
   completion.
 - Coverage verifier logic is deterministic and rejects incomplete work coverage.
 - Policy, audit, and verification documents define required safety boundaries.
-- No agentic task CLI runtime exists yet for `status`, `verify`, `resume`, or
+- No agentic task CLI runtime exists yet for `verify`, non-preview `resume`, or
   real task execution.
 - No command currently performs real agentic runner execution.
 
@@ -107,15 +111,26 @@ Same behavior as `aeos task run --dry-run`, but stdout is exactly one JSON
 object and no human text. Adapter calls must be represented as not executed.
 
 ### `aeos task status`
-Shows persisted or planned task state if a state store exists later.
+Loads authoritative persisted task state by task id from the project-local state
+store:
 
-MVP may report `unavailable` or `not_implemented` until persistence exists. It
-must not infer status from model output, recent CLI text, or unstored files.
+```text
+.aeos/state/tasks/<task-id>.json
+```
+
+It shows task id, source revision, lifecycle, source reference, work item and
+batch counts, pending and retryable counts, current and next batch references,
+verifier requirement, completion gate, resume availability, issues, and explicit
+read-only safety markers.
+
+It must not create state, save state, increment revision, persist a cursor,
+execute work, retry work, call adapters, write audit events, run verifiers,
+mutate files, or create completed state. Missing, corrupt, invalid, forged, and
+unsafe path/symlink state fails closed.
 
 ### `aeos task status --json`
-Same status behavior as human mode, but stdout is JSON-only. When persistence is
-not implemented, it should return an explicit unavailable shape rather than
-guessing.
+Same status behavior as human mode, but stdout is exactly one JSON object.
+Errors are JSON-only with deterministic codes and no raw runtime stack traces.
 
 ### `aeos task verify`
 Future verifier command that uses the coverage verifier against structured
@@ -128,21 +143,26 @@ loading exist.
 Same verifier behavior as human mode, with JSON-only output.
 
 ### `aeos task resume`
-Uses persisted lifecycle state and a resume cursor. It must not ask a model what
-remains, duplicate prior completion, rerun verified work by default, or complete
-without verifier success.
+Non-preview resume execution is not implemented. `aeos task resume <task-id>`
+fails closed with `task_resume_execution_not_implemented` and performs no
+execution or writes.
 
-MVP resume should present a dry-run resume preview first and may report
-unavailable until persistence exists.
+### `aeos task resume --preview`
+Loads authoritative persisted task state by task id and derives a read-only
+resume handoff. It shows source revision, lifecycle, resume eligibility,
+pending and retryable work, remaining work count, current and next batch
+references, verifier gate, blocked reason, issues, and no-execution/no-write
+safety markers.
 
-### `aeos task resume --dry-run`
-Shows where resume would continue from known pending and retryable work without
-adapter calls, audit writes, verifier runs, lifecycle mutation, or cursor
-persistence.
+The preview may succeed with `resumeAllowed: false` when the persisted state is
+valid but not structurally resumable. Invalid or corrupt state exits non-zero.
+The command does not execute work, call adapters, write audit events, run
+verifiers, mutate lifecycle state, increment revision, save state, or persist a
+resume cursor.
 
-### `aeos task resume --json`
-JSON-only resume output. In the first MVP this should either emit the dry-run
-resume preview or a JSON-only unavailable result.
+### `aeos task resume --preview --json`
+Same preview behavior as human mode, but stdout is exactly one JSON object.
+Errors are JSON-only with deterministic codes and no raw runtime stack traces.
 
 ## Later Command Surface
 Later commands require a separate safety review and implementation plan:
@@ -260,13 +280,13 @@ Dry-run JSON concept:
 ## State Persistence Expectations
 MVP planning and dry-run commands should not write state by default.
 
-Future persistence should store task contract reference, planning result,
-lifecycle state, work item state, batch state, attempts, verifier evidence, audit
-references, and resume cursor. Status, verify, and resume commands must read
-from this persisted evidence rather than model output or terminal history.
+Persisted task state stores task contract reference, planning summary, lifecycle
+state, work item state, batch state, verifier gate, completion gate, issues,
+revision, and resume metadata. Status and resume preview commands read this
+persisted evidence rather than model output or terminal history.
 
-Until persistence exists, `status`, `verify`, and non-dry-run `resume` must be
-honest about unavailable state.
+`verify` and non-preview `resume` remain honest about unavailable runtime
+behavior.
 
 ## No-Write / Default Behavior
 The first MVP is read-only by default:
@@ -375,8 +395,9 @@ clear non-execution language.
 - Design and implement command parsing for the MVP surface.
 - Render safe human and JSON output for plan and dry-run.
 - Wire plan and dry-run to existing side-effect-free core helpers.
-- Return explicit unavailable results for status, verify, and resume until
-  persistence/evidence loading exists.
+- Render read-only persisted-state status and resume preview output.
+- Return explicit unavailable results for verify and non-preview resume until
+  evidence loading and execution runtime exist.
 - Add smoke tests for no-write behavior, JSON-only output, unknown flags, and
   no overpromised help text.
 
@@ -473,9 +494,10 @@ Future CLI smoke tests should prove:
 - dry-run reports verifier run false.
 - dry-run reports completed false.
 - dry-run creates no lifecycle or resume persistence.
-- status reports unavailable instead of guessing when persistence is absent.
+- status reads persisted state only and fails closed when state is absent.
 - verify reports unavailable until evidence loading exists.
-- resume defaults to dry-run preview and does not duplicate completion.
+- resume preview reads persisted state only, preserves revision, writes no
+  cursor, and does not duplicate completion.
 - help does not overpromise real execution, autonomous agent runs, audit runtime,
   verifier runtime, persistence, remote sources, or production orchestration.
 
@@ -581,8 +603,10 @@ Do not start these tasks from this design task.
     Classification: Code.
 
 13. TASK-0240: Add unavailable status command behavior.
-    Purpose: implement `aeos task status [--json]` as explicit unavailable or
-    not-implemented output until persisted state exists.
+    Historical purpose: implement `aeos task status [--json]` as explicit
+    unavailable or not-implemented output until persisted state exists.
+    Current status: superseded by TASK-0280 read-only
+    `aeos task status <task-id>`.
     Likely files: `apps/cli/src/commands.ts`, `apps/cli/src/output.ts`.
     Verification command: `pnpm --filter @aeos/cli check`.
     Recommended model effort: Low.
@@ -597,9 +621,11 @@ Do not start these tasks from this design task.
     Classification: Code.
 
 15. TASK-0242: Add resume dry-run/unavailable behavior.
-    Purpose: implement `aeos task resume`, `aeos task resume --dry-run`, and
-    `aeos task resume --json` as dry-run-first or unavailable output without
-    duplicate completion or cursor writes.
+    Historical purpose: implement `aeos task resume`, resume dry-run, and JSON
+    unavailable output without duplicate completion or cursor writes.
+    Current status: superseded by TASK-0280 read-only
+    `aeos task resume --preview <task-id>`; non-preview resume still fails
+    closed.
     Likely files: `apps/cli/src/commands.ts`, `apps/cli/src/output.ts`.
     Verification command: `pnpm --filter @aeos/cli check`.
     Recommended model effort: Medium.
@@ -607,7 +633,7 @@ Do not start these tasks from this design task.
 
 16. TASK-0243: Add agentic task CLI smoke tests.
     Purpose: prove JSON-only output, no-write behavior, no adapter calls, no
-    audit writes, verifier not run, completed false, unavailable persistence,
+    audit writes, verifier not run, completed false, read-only persistence,
     unknown flag handling, and help guardrails.
     Likely files: `apps/cli/scripts/smoke.mjs`.
     Verification command: `pnpm --filter @aeos/cli smoke`.
