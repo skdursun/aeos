@@ -321,6 +321,25 @@ JSON output must avoid raw prompts, full model outputs, broad file contents, raw
 command logs, provider SDK objects, hidden tool arguments, stack traces, secrets,
 and private reasoning traces.
 
+## Implemented MVP Notes
+The implemented MVP integration helper layer is pure and deterministic over
+in-memory data and explicit dependencies.
+
+- No CLI command changes have been made yet.
+- No output rendering to stdout or stderr has been wired yet.
+- No filesystem IO is performed by the integration logic.
+- A direct `planAgenticRunner()` call is not used.
+- Planner dependency injection is gate-protected.
+- TASK-0269-FIX requires strict `noExecution` and `noWrites` proof on
+  `mappingResult.planningInput.runnerPlanningInput.metadata`.
+- TASK-0270 requires strict verifier proof on the actual
+  `mappingResult.planningInput.runnerPlanningInput.verifierRequirements`.
+- Top-level `plannerInput` cannot bypass
+  `mappingResult.planningInput.runnerPlanningInput`.
+- Unsafe represented metadata remains fail-closed, including claims of
+  execution, adapter calls, audit writes, verifier run, persistence, filesystem
+  mutation, completed state, approval, verification, or completion.
+
 ## Error Behavior
 Expected error cases:
 
