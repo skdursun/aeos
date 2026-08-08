@@ -381,3 +381,9 @@ dependency-injected `planAgenticRunner`, human rendering, JSON rendering, and
 process exit codes. That boundary must preserve the same fail-closed gates and
 must not add execution, writes, persistence, verifier runtime, or completion
 claims without a separate safety-reviewed task.
+
+`aeos task state init <task-file>` is that separate explicit persistence
+boundary. It reuses this parser-mapper-planner integration and may persist only
+after the actual mapper-produced `runnerPlanningInput` proves `noExecution`,
+`noWrites`, `verifierRequired`, and `completionGatedByVerifier`. The integration
+helper itself remains pure and does not write state.

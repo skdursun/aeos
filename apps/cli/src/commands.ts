@@ -1,4 +1,5 @@
 import {
+  createInitialTaskState,
   createCliTaskPlanPlannerIntegrationResult,
   createFilesystemGenerationAdapter,
   createTaskResumeHandoff,
@@ -9,6 +10,7 @@ import {
   planAgenticRunner,
   runAgenticRunnerDryRun,
   runInitPipeline,
+  saveTaskState,
   validateAeosTask,
 } from "@aeos/core";
 import type {
@@ -80,6 +82,8 @@ Commands:
   task plan <task-file> --json
   task run --dry-run <task-file>
   task run --dry-run <task-file> --json
+  task state init <task-file>
+  task state init <task-file> --json
   task status <task-id>
   task status <task-id> --json
   task resume --preview <task-id>
@@ -321,6 +325,44 @@ type TaskResumePreviewJsonOutput =
         readonly noWrites: true;
         readonly stateModified: false;
       };
+      readonly issues: readonly TaskStateCliIssue[];
+    };
+
+type TaskStateInitSafety = {
+  readonly taskExecution: false;
+  readonly adapterCalls: false;
+  readonly auditWrites: false;
+  readonly verifierRun: false;
+  readonly completedStateCreated: false;
+};
+
+type TaskStateInitJsonOutput =
+  | {
+      readonly ok: true;
+      readonly status: "task_state_initialized";
+      readonly taskId: string;
+      readonly revision: number;
+      readonly lifecycle: string;
+      readonly statePath: string;
+      readonly pending: number;
+      readonly retryable: number;
+      readonly verifierRequired: boolean;
+      readonly completionGatedByVerifier: boolean;
+      readonly completionGateSatisfied: false;
+      readonly safety: TaskStateInitSafety;
+      readonly issues: readonly TaskStateCliIssue[];
+    }
+  | {
+      readonly ok: false;
+      readonly status: "task_state_initialization_failed";
+      readonly taskId: string;
+      readonly statePath: null;
+      readonly error: {
+        readonly code: string;
+        readonly message: string;
+        readonly category: string;
+      };
+      readonly safety: TaskStateInitSafety;
       readonly issues: readonly TaskStateCliIssue[];
     };
 
@@ -889,6 +931,10 @@ function writeTaskStatusJson(value: TaskStatusJsonOutput): void {
 }
 
 function writeTaskResumePreviewJson(value: TaskResumePreviewJsonOutput): void {
+  writeJsonLine(value);
+}
+
+function writeTaskStateInitJson(value: TaskStateInitJsonOutput): void {
   writeJsonLine(value);
 }
 
@@ -1805,6 +1851,39 @@ function createTaskStateCliError(input: {
   };
 }
 
+const taskStateInitSafety: TaskStateInitSafety = {
+  taskExecution: false,
+  adapterCalls: false,
+  auditWrites: false,
+  verifierRun: false,
+  completedStateCreated: false,
+};
+
+function persistedPathForDisplay(path: string): string {
+  const cwd = getCwd().replace(/\/+$/, "");
+
+  if (path === cwd) {
+    return ".";
+  }
+
+  if (path.startsWith(`${cwd}/`)) {
+    return path.slice(cwd.length + 1);
+  }
+
+  return path;
+}
+
+function mapCliTaskPlanIssueToTaskStateIssue(
+  issue: CliTaskPlanPlannerIntegrationIssue,
+): TaskStateCliIssue {
+  return createTaskStateCliIssue({
+    code: issue.code,
+    message: issue.message,
+    severity: issue.severity,
+    category: issue.phase,
+  });
+}
+
 function getPersistedStateIssues(
   state: PersistedTaskState,
 ): readonly TaskStateCliIssue[] {
@@ -1834,6 +1913,312 @@ function formatTaskSource(state: PersistedTaskState): string {
   }
 
   return source.kind;
+}
+
+function createTaskStateInitializationFailure(input: {
+  readonly taskId?: string;
+  readonly error: AeosError;
+  readonly issues?: readonly TaskStateCliIssue[];
+}): Extract<TaskStateInitJsonOutput, { readonly ok: false }> {
+  const errorIssue = createTaskStateCliIssueFromError(input.error);
+  const issues = input.issues ?? [errorIssue];
+
+  return {
+    ok: false,
+    status: "task_state_initialization_failed",
+    taskId: input.taskId ?? "",
+    statePath: null,
+    error: {
+      code: input.error.code,
+      message: input.error.message,
+      category: input.error.category,
+    },
+    safety: taskStateInitSafety,
+    issues: issues.some((issue) => issue.code === input.error.code)
+      ? issues
+      : [errorIssue, ...issues],
+  };
+}
+
+function createTaskStateAlreadyExistsError(): AeosError {
+  return createTaskStateCliError({
+    code: "task_state_already_exists",
+    message: "Persisted task state already exists and was not overwritten.",
+    category: "conflict",
+  });
+}
+
+function createTaskStateInitProofIssues(input: {
+  readonly integrationResult: CliTaskPlanPlannerIntegrationResult;
+  readonly mappingResult?: TaskContractMappingResult;
+  readonly planningResult?: AgenticRunnerPlanningResult;
+}): readonly TaskStateCliIssue[] {
+  const issues: TaskStateCliIssue[] =
+    input.integrationResult.issues.map(mapCliTaskPlanIssueToTaskStateIssue);
+  const runnerPlanningInput =
+    input.mappingResult?.planningInput.runnerPlanningInput;
+  const metadata = runnerPlanningInput?.metadata;
+  const verifierRequirements = runnerPlanningInput?.verifierRequirements;
+
+  if (
+    input.integrationResult.status !== "planned" ||
+    input.planningResult === undefined ||
+    input.planningResult.ok !== true
+  ) {
+    issues.push(
+      createTaskStateCliIssue({
+        code: "task_state_initialization_planning_not_ready",
+        message:
+          "Task state initialization requires a successful planned runner result.",
+        category: "planner",
+      }),
+    );
+  }
+
+  if (metadata?.noExecution !== true) {
+    issues.push(
+      createTaskStateCliIssue({
+        code: "task_state_initialization_no_execution_not_proven",
+        message:
+          "Task state initialization requires noExecution proof on the mapped runnerPlanningInput metadata.",
+        severity: "critical",
+        category: "safety",
+      }),
+    );
+  }
+
+  if (metadata?.noWrites !== true) {
+    issues.push(
+      createTaskStateCliIssue({
+        code: "task_state_initialization_no_writes_not_proven",
+        message:
+          "Task state initialization requires noWrites proof on the mapped runnerPlanningInput metadata.",
+        severity: "critical",
+        category: "safety",
+      }),
+    );
+  }
+
+  if (verifierRequirements?.verifierRequired !== true) {
+    issues.push(
+      createTaskStateCliIssue({
+        code: "task_state_initialization_verifier_not_required",
+        message:
+          "Task state initialization requires verifierRequired proof on the mapped runnerPlanningInput verifier requirements.",
+        severity: "critical",
+        category: "safety",
+      }),
+    );
+  }
+
+  if (verifierRequirements?.completionGatedByVerifier !== true) {
+    issues.push(
+      createTaskStateCliIssue({
+        code: "task_state_initialization_completion_not_verifier_gated",
+        message:
+          "Task state initialization requires completionGatedByVerifier proof on the mapped runnerPlanningInput verifier requirements.",
+        severity: "critical",
+        category: "safety",
+      }),
+    );
+  }
+
+  return issues;
+}
+
+function selectTaskStateInitPrimaryIssue(
+  issues: readonly TaskStateCliIssue[],
+): TaskStateCliIssue | undefined {
+  return (
+    issues.find(
+      (issue) =>
+        !issue.code.startsWith("cli_task_plan_") &&
+        !issue.code.startsWith("task_state_initialization_"),
+    ) ?? issues[0]
+  );
+}
+
+function mapPlanningIssuesToLifecycleIssues(
+  issues: readonly AgenticRunnerPlanningIssue[],
+): PersistedTaskState["issues"] {
+  return issues.map((issue) => ({
+    code: issue.code,
+    message: issue.message,
+    severity: issue.severity,
+    category: issue.category,
+    workItemId: issue.workItemId,
+    batchId: issue.batchId,
+    retryable: issue.retryable,
+    createdAt: issue.createdAt,
+    metadata: issue.metadata,
+  }));
+}
+
+function createPlannedInitialTaskState(input: {
+  readonly taskFile: string;
+  readonly taskId: string;
+  readonly planningResult: AgenticRunnerPlanningResult;
+  readonly planningResultReference?: PersistedTaskState["plan"]["reference"];
+}): PersistedTaskState {
+  const createdAt = new Date().toISOString();
+  const baseState = createInitialTaskState({
+    taskId: input.taskId,
+    sourceTaskId: input.taskId,
+    sourceTaskPath: input.taskFile,
+    verifierRequired: true,
+    createdAt,
+  });
+  const workItems: PersistedTaskState["workItems"] =
+    input.planningResult.workItems.map((workItem) => ({
+      id: workItem.id,
+      source: workItem.sourceId,
+      state: workItem.initialState,
+      batchId: workItem.batchId,
+      expectedArtifacts: workItem.expectedArtifactIds,
+      issues: mapPlanningIssuesToLifecycleIssues(workItem.issues),
+    }));
+  const workItemsById = new Map(workItems.map((workItem) => [workItem.id, workItem]));
+  const batches: PersistedTaskState["batches"] =
+    input.planningResult.batches.map((batch) => {
+      const batchWorkItems = batch.workItemIds
+        .map((workItemId) => workItemsById.get(workItemId))
+        .filter((workItem): workItem is PersistedTaskState["workItems"][number] =>
+          workItem !== undefined,
+        );
+
+      return {
+        id: batch.id,
+        workItemIds: batch.workItemIds,
+        expectedItemCount: batch.expectedItemCount,
+        completedCount: 0,
+        failedCount: batchWorkItems.filter((workItem) => workItem.state === "failed")
+          .length,
+        skippedCount: batchWorkItems.filter((workItem) => workItem.state === "skipped")
+          .length,
+        retryableCount: batchWorkItems.filter(
+          (workItem) => workItem.state === "retryable",
+        ).length,
+        issues: mapPlanningIssuesToLifecycleIssues(batch.issues),
+      };
+    });
+  const pendingWorkItemIds = workItems
+    .filter((workItem) => workItem.state === "pending")
+    .map((workItem) => workItem.id);
+  const retryableWorkItemIds = workItems
+    .filter((workItem) => workItem.state === "retryable")
+    .map((workItem) => workItem.id);
+  const remainingIds = new Set([...pendingWorkItemIds, ...retryableWorkItemIds]);
+  const nextBatchId =
+    input.planningResult.resume?.nextBatchId ??
+    batches.find((batch) =>
+      batch.workItemIds.some((workItemId) => remainingIds.has(workItemId)),
+    )?.id;
+
+  return {
+    ...baseState,
+    lifecycleState: "planned",
+    workItems,
+    batches,
+    pendingWorkItemIds,
+    retryableWorkItemIds,
+    nextBatchId,
+    plan: {
+      status: "planned",
+      reference: input.planningResultReference,
+      summary: {
+        workItemCount: input.planningResult.summary.workItemCount,
+        batchCount: input.planningResult.summary.batchCount,
+        stepCount: input.planningResult.summary.stepCount,
+        verifierRequired: input.planningResult.summary.verifierRequired,
+        approvalRequired: input.planningResult.summary.approvalRequired,
+        issueCount: input.planningResult.summary.issueCount,
+      },
+    },
+    verifier: {
+      required: true,
+      status: "required_not_run",
+      completionGatedByVerifier: true,
+      resultReference: input.planningResultReference,
+    },
+    completionGate: {
+      status: "verification_required",
+      satisfied: false,
+      completed: false,
+      verified: false,
+      authority: "system",
+      evidenceReferences: [],
+    },
+    issues: mapPlanningIssuesToLifecycleIssues(input.planningResult.issues),
+    updatedAt: createdAt,
+  };
+}
+
+function createTaskStateInitSuccessJsonOutput(input: {
+  readonly state: PersistedTaskState;
+  readonly statePath: string;
+}): Extract<TaskStateInitJsonOutput, { readonly ok: true }> {
+  return {
+    ok: true,
+    status: "task_state_initialized",
+    taskId: input.state.taskId,
+    revision: input.state.revision,
+    lifecycle: input.state.lifecycleState,
+    statePath: persistedPathForDisplay(input.statePath),
+    pending: input.state.pendingWorkItemIds.length,
+    retryable: input.state.retryableWorkItemIds.length,
+    verifierRequired: input.state.verifier.required,
+    completionGatedByVerifier: input.state.verifier.completionGatedByVerifier,
+    completionGateSatisfied: input.state.completionGate.satisfied,
+    safety: taskStateInitSafety,
+    issues: [],
+  };
+}
+
+function printTaskStateInitOutput(output: Extract<TaskStateInitJsonOutput, { ok: true }>): void {
+  console.log("Task State Initialized");
+  console.log("");
+  console.log(`Task id: ${output.taskId}`);
+  console.log(`Revision: ${output.revision}`);
+  console.log(`Lifecycle: ${output.lifecycle}`);
+  console.log(`State: ${output.statePath}`);
+  console.log(`Pending: ${output.pending}`);
+  console.log(`Retryable: ${output.retryable}`);
+  console.log(`Verifier required: ${String(output.verifierRequired)}`);
+  console.log(
+    `Completion gated by verifier: ${String(output.completionGatedByVerifier)}`,
+  );
+  console.log("");
+  console.log(`Task execution: ${String(output.safety.taskExecution)}`);
+  console.log(`Adapter calls: ${String(output.safety.adapterCalls)}`);
+  console.log(`Audit writes: ${String(output.safety.auditWrites)}`);
+  console.log(`Verifier run: ${String(output.safety.verifierRun)}`);
+  console.log(
+    `Completed state created: ${String(output.safety.completedStateCreated)}`,
+  );
+  console.log("");
+  console.log(`Issues: ${output.issues.length}`);
+}
+
+function printTaskStateInitError(output: Extract<TaskStateInitJsonOutput, { ok: false }>): void {
+  console.error("Task State Initialization");
+  console.error("Status: failed");
+  console.error(`Task id: ${output.taskId}`);
+  console.error(`Error: ${output.error.code}`);
+  console.error(`Message: ${output.error.message}`);
+  console.error("");
+  console.error(`Task execution: ${String(output.safety.taskExecution)}`);
+  console.error(`Adapter calls: ${String(output.safety.adapterCalls)}`);
+  console.error(`Audit writes: ${String(output.safety.auditWrites)}`);
+  console.error(`Verifier run: ${String(output.safety.verifierRun)}`);
+  console.error(
+    `Completed state created: ${String(output.safety.completedStateCreated)}`,
+  );
+  console.error("");
+  console.error(`Issues: ${output.issues.length}`);
+
+  for (const issue of output.issues) {
+    console.error(`- ${issue.code}: ${issue.message}`);
+  }
 }
 
 function createTaskStatusJsonOutput(
@@ -2218,6 +2603,226 @@ async function handleTaskResume(args: readonly string[]): Promise<void> {
     );
   } else {
     printTaskResumePreviewOutput(handoffResult.value.handoff);
+  }
+}
+
+async function handleTaskState(args: readonly string[]): Promise<void> {
+  const subcommand = args[0];
+  const initArgs = args.slice(1);
+  const json = initArgs.includes("--json");
+
+  if (subcommand !== "init") {
+    const error = createTaskStateCliError({
+      code: "task_state_unknown_command",
+      message: "Unknown task state command.",
+    });
+    const output = createTaskStateInitializationFailure({ error });
+
+    if (json) {
+      writeTaskStateInitJson(output);
+      setExitCode(1);
+      return;
+    }
+
+    console.error("Error: unknown task state command.");
+    console.error("Usage: aeos task state init <task-file> [--json]");
+    setExitCode(1);
+    return;
+  }
+
+  const positionalArgs = initArgs.filter((arg) => !arg.startsWith("--"));
+  const unknownArgs = initArgs.filter((arg) => arg !== "--json" && arg.startsWith("--"));
+
+  if (unknownArgs.length > 0 || positionalArgs.length > 1) {
+    const error = createTaskStateCliError({
+      code: "task_state_init_unknown_option",
+      message: "Unknown task state init option.",
+    });
+    const output = createTaskStateInitializationFailure({
+      taskId: "",
+      error,
+    });
+
+    if (json) {
+      writeTaskStateInitJson(output);
+      setExitCode(1);
+      return;
+    }
+
+    printTaskStateInitError(output);
+    console.error("Usage: aeos task state init <task-file> [--json]");
+    setExitCode(1);
+    return;
+  }
+
+  const taskFile = positionalArgs[0];
+
+  if (taskFile === undefined || taskFile.trim().length === 0) {
+    const error = createTaskStateCliError({
+      code: "task_state_init_task_file_required",
+      message: "Task state initialization requires a task file path.",
+    });
+    const output = createTaskStateInitializationFailure({
+      taskId: "",
+      error,
+    });
+
+    if (json) {
+      writeTaskStateInitJson(output);
+      setExitCode(1);
+      return;
+    }
+
+    printTaskStateInitError(output);
+    console.error("Usage: aeos task state init <task-file> [--json]");
+    setExitCode(1);
+    return;
+  }
+
+  try {
+    const parserRequest = createTaskPlanInputRequest(taskFile);
+    const parserResult = await parseTaskPlanInputFile(parserRequest);
+    const integrationResult = createTaskPlanIntegrationResult({
+      taskFile,
+      json,
+      argv: ["task", "state", "init", ...initArgs],
+      command: ["task", "state", "init"],
+      parserRequest,
+      parserResult,
+    });
+    const mappingResult = integrationResult.mapping.mappingResult;
+    const planningResult = integrationResult.planner.planningResult;
+    const proofIssues = createTaskStateInitProofIssues({
+      integrationResult,
+      mappingResult,
+      planningResult,
+    });
+    const taskId =
+      integrationResult.taskId ??
+      mappingResult?.taskId ??
+      parserResult.validation.taskId ??
+      "";
+
+    if (proofIssues.length > 0 || planningResult === undefined) {
+      const primaryIssue = selectTaskStateInitPrimaryIssue(proofIssues);
+      const error = createTaskStateCliError({
+        code: primaryIssue?.code ?? "task_state_initialization_blocked",
+        message:
+          primaryIssue?.message ??
+          "Task state initialization was blocked before persistence.",
+        category: "validation",
+      });
+      const output = createTaskStateInitializationFailure({
+        taskId,
+        error,
+        issues: proofIssues,
+      });
+
+      if (json) {
+        writeTaskStateInitJson(output);
+      } else {
+        printTaskStateInitError(output);
+      }
+
+      setExitCode(1);
+      return;
+    }
+
+    const existingStateResult = await loadTaskState({
+      projectRoot: getCwd(),
+      taskId,
+    });
+
+    if (existingStateResult.ok) {
+      const error = createTaskStateAlreadyExistsError();
+      const output = createTaskStateInitializationFailure({
+        taskId,
+        error,
+      });
+
+      if (json) {
+        writeTaskStateInitJson(output);
+      } else {
+        printTaskStateInitError(output);
+      }
+
+      setExitCode(1);
+      return;
+    }
+
+    if (existingStateResult.error.code !== "task_state_not_found") {
+      const output = createTaskStateInitializationFailure({
+        taskId,
+        error: existingStateResult.error,
+      });
+
+      if (json) {
+        writeTaskStateInitJson(output);
+      } else {
+        printTaskStateInitError(output);
+      }
+
+      setExitCode(1);
+      return;
+    }
+
+    const state = createPlannedInitialTaskState({
+      taskFile,
+      taskId,
+      planningResult,
+      planningResultReference: integrationResult.planner.planningResultReference,
+    });
+    const saveResult = await saveTaskState({
+      projectRoot: getCwd(),
+      state,
+    });
+
+    if (!saveResult.ok) {
+      const mappedError =
+        saveResult.error.code === "task_state_revision_required"
+          ? createTaskStateAlreadyExistsError()
+          : saveResult.error;
+      const output = createTaskStateInitializationFailure({
+        taskId,
+        error: mappedError,
+      });
+
+      if (json) {
+        writeTaskStateInitJson(output);
+      } else {
+        printTaskStateInitError(output);
+      }
+
+      setExitCode(1);
+      return;
+    }
+
+    const output = createTaskStateInitSuccessJsonOutput({
+      state: saveResult.value.state,
+      statePath: saveResult.value.path,
+    });
+
+    if (json) {
+      writeTaskStateInitJson(output);
+    } else {
+      printTaskStateInitOutput(output);
+    }
+  } catch {
+    const error = createTaskStateCliError({
+      code: "task_state_initialization_failed",
+      message: "Task state initialization failed.",
+      category: "unknown",
+    });
+    const output = createTaskStateInitializationFailure({ error });
+
+    if (json) {
+      writeTaskStateInitJson(output);
+      setExitCode(1);
+      return;
+    }
+
+    printTaskStateInitError(output);
+    setExitCode(1);
   }
 }
 
@@ -3597,6 +4202,11 @@ async function handleSearch(args: readonly string[]): Promise<void> {
 }
 
 async function handleTask(args: readonly string[]): Promise<void> {
+  if (args[0] === "state") {
+    await handleTaskState(args.slice(1));
+    return;
+  }
+
   if (args[0] === "status") {
     await handleTaskStatus(args.slice(1));
     return;
@@ -3875,6 +4485,7 @@ async function handleTask(args: readonly string[]): Promise<void> {
     console.error("Usage: aeos task validate <path>");
     console.error("Usage: aeos task plan [<task-file>] [--json]");
     console.error("Usage: aeos task run --dry-run <task-file> [--json]");
+    console.error("Usage: aeos task state init <task-file> [--json]");
     console.error("Usage: aeos task status <task-id> [--json]");
     console.error("Usage: aeos task resume --preview <task-id> [--json]");
     setExitCode(1);

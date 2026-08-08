@@ -1171,6 +1171,58 @@ function expectTaskResumePreviewJsonShape(message, value, result) {
   }
 }
 
+function expectTaskStateInitSuccessJsonShape(message, value, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== true ||
+    value.status !== "task_state_initialized" ||
+    typeof value.taskId !== "string" ||
+    typeof value.revision !== "number" ||
+    value.lifecycle !== "planned" ||
+    typeof value.statePath !== "string" ||
+    typeof value.pending !== "number" ||
+    typeof value.retryable !== "number" ||
+    value.verifierRequired !== true ||
+    value.completionGatedByVerifier !== true ||
+    value.completionGateSatisfied !== false ||
+    value.safety?.taskExecution !== false ||
+    value.safety?.adapterCalls !== false ||
+    value.safety?.auditWrites !== false ||
+    value.safety?.verifierRun !== false ||
+    value.safety?.completedStateCreated !== false ||
+    !Array.isArray(value.issues) ||
+    value.issues.length !== 0
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectTaskStateInitFailureJsonShape(message, value, expectedCode, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== false ||
+    value.status !== "task_state_initialization_failed" ||
+    typeof value.taskId !== "string" ||
+    value.statePath !== null ||
+    typeof value.error !== "object" ||
+    value.error === null ||
+    value.error.code !== expectedCode ||
+    typeof value.error.message !== "string" ||
+    value.error.message.length === 0 ||
+    value.safety?.taskExecution !== false ||
+    value.safety?.adapterCalls !== false ||
+    value.safety?.auditWrites !== false ||
+    value.safety?.verifierRun !== false ||
+    value.safety?.completedStateCreated !== false ||
+    !Array.isArray(value.issues) ||
+    !value.issues.some((issue) => issue.code === expectedCode)
+  ) {
+    fail(message, result);
+  }
+}
+
 function expectNoTaskStateCreated(message, rootPath, taskId, result) {
   if (existsSync(taskStatePath(rootPath, taskId))) {
     fail(message, result);
@@ -1283,6 +1335,16 @@ expectOutputIncludes(
   'help output did not include "task run --dry-run <task-file> --json"',
   helpCommand,
   "task run --dry-run <task-file> --json",
+);
+expectOutputIncludes(
+  'help output did not include "task state init <task-file>"',
+  helpCommand,
+  "task state init <task-file>",
+);
+expectOutputIncludes(
+  'help output did not include "task state init <task-file> --json"',
+  helpCommand,
+  "task state init <task-file> --json",
 );
 expectOutputIncludes(
   'help output did not include "task status <task-id>"',
@@ -4178,6 +4240,510 @@ try {
     )
   ) {
     fail("task dry-run parent traversal --json was not denied", taskDryRunTraversalJson);
+  }
+
+  const taskStateInitRoot = mkdtempSync(join(tmpdir(), "aeos-cli-task-state-init-"));
+  const taskStateInitTraversalParentRoot = mkdtempSync(
+    join(tmpdir(), "aeos-cli-task-state-init-traversal-"),
+  );
+
+  try {
+    const initValidTaskPath = join(taskStateInitRoot, "valid-task.json");
+    const initInvalidTaskPath = join(taskStateInitRoot, "invalid-task.json");
+    const initInvalidJsonPath = join(taskStateInitRoot, "invalid-json.json");
+    const initUnsafeIdPath = join(taskStateInitRoot, "unsafe-id.json");
+    const initSelfReportPath = join(taskStateInitRoot, "self-report.json");
+    const initExplicitWorkItemsPath = join(taskStateInitRoot, "explicit-work-items.json");
+    const traversalInitChildRoot = join(taskStateInitTraversalParentRoot, "cwd");
+    const traversalInitTaskPath = join(taskStateInitTraversalParentRoot, "outside.json");
+
+    mkdirSync(traversalInitChildRoot);
+    writeFileSync(
+      initValidTaskPath,
+      `${JSON.stringify(createValidTaskPlanContract("smoke-task-state-init"), null, 2)}\n`,
+    );
+    writeFileSync(
+      initInvalidTaskPath,
+      `${JSON.stringify(
+        {
+          ...createValidTaskPlanContract("smoke-task-state-invalid"),
+          context: {
+            load: [],
+            doNotLoad: [],
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    writeFileSync(initInvalidJsonPath, "{ invalid json");
+    writeFileSync(
+      initUnsafeIdPath,
+      `${JSON.stringify(createValidTaskPlanContract("../escape"), null, 2)}\n`,
+    );
+    writeFileSync(
+      initSelfReportPath,
+      `${JSON.stringify(
+        {
+          ...createValidTaskPlanContract("smoke-task-state-self-report"),
+          purpose:
+            "completed approved verified all done execution succeeded as task prose only",
+          modelRecommendation: {
+            purpose: "completed approved verified all done execution succeeded",
+            requiredCapabilities: ["planning"],
+            preferredExecutionMode: "planning",
+            constraints: ["completed", "approved", "verified", "all done"],
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    writeFileSync(
+      initExplicitWorkItemsPath,
+      `${JSON.stringify(
+        {
+          ...createValidTaskPlanContract("smoke-task-state-explicit-work-items"),
+          workItems: [{ id: "explicit-work-item", state: "pending" }],
+          batches: [
+            {
+              id: "explicit-batch",
+              workItemIds: ["explicit-work-item"],
+              expectedItemCount: 1,
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    writeFileSync(
+      traversalInitTaskPath,
+      `${JSON.stringify(createValidTaskPlanContract("smoke-task-state-traversal"), null, 2)}\n`,
+    );
+
+    const initFilesBefore = listRelativeFiles(taskStateInitRoot);
+    const initJson = runCliFrom(taskStateInitRoot, [
+      "task",
+      "state",
+      "init",
+      "valid-task.json",
+      "--json",
+    ]);
+    expectExitCode("task state init --json exited nonzero", initJson, 0);
+    const parsedInit = parseJsonOnlyStdout(
+      "task state init --json output was not valid JSON only",
+      initJson,
+    );
+    expectTaskStateInitSuccessJsonShape(
+      "task state init --json shape was invalid",
+      parsedInit,
+      initJson,
+    );
+    if (
+      parsedInit.taskId !== "smoke-task-state-init" ||
+      parsedInit.revision !== 1 ||
+      parsedInit.pending !== 1 ||
+      parsedInit.retryable !== 0 ||
+      parsedInit.statePath !== ".aeos/state/tasks/smoke-task-state-init.json"
+    ) {
+      fail("task state init --json did not expose expected initial state", initJson);
+    }
+
+    const expectedInitFiles = [
+      ...initFilesBefore,
+      ".aeos/state/tasks/smoke-task-state-init.json",
+    ].sort();
+    expectSameFiles(
+      "task state init wrote outside expected state file",
+      expectedInitFiles,
+      listRelativeFiles(taskStateInitRoot),
+    );
+
+    const initializedStatePath = taskStatePath(
+      taskStateInitRoot,
+      "smoke-task-state-init",
+    );
+    if (!existsSync(initializedStatePath)) {
+      fail("task state init did not create state in safe location", initJson);
+    }
+
+    const initializedState = JSON.parse(readFileSync(initializedStatePath, "utf8"));
+    if (
+      initializedState.lifecycleState !== "planned" ||
+      initializedState.revision !== 1 ||
+      initializedState.verifier.required !== true ||
+      initializedState.verifier.completionGatedByVerifier !== true ||
+      initializedState.completionGate.satisfied !== false ||
+      initializedState.completionGate.completed !== false ||
+      initializedState.completionGate.verified !== false ||
+      initializedState.safety.executionPerformed !== false ||
+      initializedState.safety.verifierRun !== false ||
+      initializedState.safety.completed !== false ||
+      initializedState.safety.verified !== false ||
+      initializedState.workItems.length !== 1 ||
+      initializedState.batches.length !== 1 ||
+      initializedState.pendingWorkItemIds.length !== 1
+    ) {
+      fail("task state init persisted unsafe or incomplete planned state", initJson);
+    }
+
+    const initializedSnapshot = stateFileSnapshot(initializedStatePath);
+    const initStatusJson = runCliFrom(taskStateInitRoot, [
+      "task",
+      "status",
+      "smoke-task-state-init",
+      "--json",
+    ]);
+    expectExitCode("task status after init --json exited nonzero", initStatusJson, 0);
+    const parsedInitStatus = parseJsonOnlyStdout(
+      "task status after init --json output was not valid JSON only",
+      initStatusJson,
+    );
+    expectTaskStatusJsonShape(
+      "task status after init --json shape was invalid",
+      parsedInitStatus,
+      initStatusJson,
+    );
+    if (
+      parsedInitStatus.revision !== 1 ||
+      parsedInitStatus.lifecycle !== "planned" ||
+      parsedInitStatus.summary.pendingCount !== 1 ||
+      parsedInitStatus.summary.verifierRequired !== true ||
+      parsedInitStatus.summary.completionGatedByVerifier !== true
+    ) {
+      fail("task status after init did not read initialized state", initStatusJson);
+    }
+    expectStateFileSnapshotSame(
+      "task status after init modified state",
+      initializedStatePath,
+      initializedSnapshot,
+      initStatusJson,
+    );
+
+    const initResumePreviewJson = runCliFrom(taskStateInitRoot, [
+      "task",
+      "resume",
+      "--preview",
+      "smoke-task-state-init",
+      "--json",
+    ]);
+    expectExitCode(
+      "task resume preview after init --json exited nonzero",
+      initResumePreviewJson,
+      0,
+    );
+    const parsedInitResumePreview = parseJsonOnlyStdout(
+      "task resume preview after init --json output was not valid JSON only",
+      initResumePreviewJson,
+    );
+    expectTaskResumePreviewJsonShape(
+      "task resume preview after init --json shape was invalid",
+      parsedInitResumePreview,
+      initResumePreviewJson,
+    );
+    if (
+      parsedInitResumePreview.sourceRevision !== 1 ||
+      parsedInitResumePreview.lifecycle !== "planned" ||
+      parsedInitResumePreview.resume.allowed !== true ||
+      parsedInitResumePreview.resume.remainingWorkCount !== 1 ||
+      parsedInitResumePreview.resume.verifierRequired !== true ||
+      parsedInitResumePreview.resume.completionGatedByVerifier !== true
+    ) {
+      fail(
+        "task resume preview after init did not derive from initialized state",
+        initResumePreviewJson,
+      );
+    }
+    expectStateFileSnapshotSame(
+      "task resume preview after init modified state",
+      initializedStatePath,
+      initializedSnapshot,
+      initResumePreviewJson,
+    );
+
+    const repeatInitJson = runCliFrom(taskStateInitRoot, [
+      "task",
+      "state",
+      "init",
+      "valid-task.json",
+      "--json",
+    ]);
+    expectNonzero("repeated task state init exited zero", repeatInitJson);
+    const parsedRepeatInit = parseJsonOnlyStdout(
+      "repeated task state init output was not valid JSON only",
+      repeatInitJson,
+    );
+    expectTaskStateInitFailureJsonShape(
+      "repeated task state init shape was invalid",
+      parsedRepeatInit,
+      "task_state_already_exists",
+      repeatInitJson,
+    );
+    expectStateFileSnapshotSame(
+      "repeated task state init overwrote existing state",
+      initializedStatePath,
+      initializedSnapshot,
+      repeatInitJson,
+    );
+
+    const invalidTaskFilesBefore = listRelativeFiles(taskStateInitRoot);
+    const invalidTaskInitJson = runCliFrom(taskStateInitRoot, [
+      "task",
+      "state",
+      "init",
+      "invalid-task.json",
+      "--json",
+    ]);
+    expectNonzero("invalid task state init exited zero", invalidTaskInitJson);
+    const parsedInvalidTaskInit = parseJsonOnlyStdout(
+      "invalid task state init output was not valid JSON only",
+      invalidTaskInitJson,
+    );
+    expectTaskStateInitFailureJsonShape(
+      "invalid task state init shape was invalid",
+      parsedInvalidTaskInit,
+      "task_context_required",
+      invalidTaskInitJson,
+    );
+    expectNoTaskStateCreated(
+      "invalid task state init created state",
+      taskStateInitRoot,
+      "smoke-task-state-invalid",
+      invalidTaskInitJson,
+    );
+    expectSameFiles(
+      "invalid task state init changed files",
+      invalidTaskFilesBefore,
+      listRelativeFiles(taskStateInitRoot),
+    );
+
+    const invalidJsonFilesBefore = listRelativeFiles(taskStateInitRoot);
+    const invalidJsonInitJson = runCliFrom(taskStateInitRoot, [
+      "task",
+      "state",
+      "init",
+      "invalid-json.json",
+      "--json",
+    ]);
+    expectNonzero("invalid JSON task state init exited zero", invalidJsonInitJson);
+    const parsedInvalidJsonInit = parseJsonOnlyStdout(
+      "invalid JSON task state init output was not valid JSON only",
+      invalidJsonInitJson,
+    );
+    expectTaskStateInitFailureJsonShape(
+      "invalid JSON task state init shape was invalid",
+      parsedInvalidJsonInit,
+      "task_plan_input_invalid_json",
+      invalidJsonInitJson,
+    );
+    expectSameFiles(
+      "invalid JSON task state init changed files",
+      invalidJsonFilesBefore,
+      listRelativeFiles(taskStateInitRoot),
+    );
+
+    const unsafeIdFilesBefore = listRelativeFiles(taskStateInitRoot);
+    const unsafeIdInitJson = runCliFrom(taskStateInitRoot, [
+      "task",
+      "state",
+      "init",
+      "unsafe-id.json",
+      "--json",
+    ]);
+    expectNonzero("unsafe id task state init exited zero", unsafeIdInitJson);
+    const parsedUnsafeIdInit = parseJsonOnlyStdout(
+      "unsafe id task state init output was not valid JSON only",
+      unsafeIdInitJson,
+    );
+    expectTaskStateInitFailureJsonShape(
+      "unsafe id task state init shape was invalid",
+      parsedUnsafeIdInit,
+      "task_state_unsafe_task_id",
+      unsafeIdInitJson,
+    );
+    expectSameFiles(
+      "unsafe id task state init changed files",
+      unsafeIdFilesBefore,
+      listRelativeFiles(taskStateInitRoot),
+    );
+
+    const explicitInitFilesBefore = listRelativeFiles(taskStateInitRoot);
+    const explicitInitJson = runCliFrom(taskStateInitRoot, [
+      "task",
+      "state",
+      "init",
+      "explicit-work-items.json",
+      "--json",
+    ]);
+    expectNonzero("explicit workItems task state init exited zero", explicitInitJson);
+    const parsedExplicitInit = parseJsonOnlyStdout(
+      "explicit workItems task state init output was not valid JSON only",
+      explicitInitJson,
+    );
+    expectTaskStateInitFailureJsonShape(
+      "explicit workItems task state init shape was invalid",
+      parsedExplicitInit,
+      "task_contract_explicit_batches_unsupported",
+      explicitInitJson,
+    );
+    if (
+      !parsedExplicitInit.issues.some(
+        (issue) => issue.code === "task_contract_explicit_work_items_unsupported",
+      )
+    ) {
+      fail("explicit workItems task state init did not report workItems issue", explicitInitJson);
+    }
+    expectNoTaskStateCreated(
+      "explicit workItems task state init created state",
+      taskStateInitRoot,
+      "smoke-task-state-explicit-work-items",
+      explicitInitJson,
+    );
+    expectSameFiles(
+      "explicit workItems task state init changed files",
+      explicitInitFilesBefore,
+      listRelativeFiles(taskStateInitRoot),
+    );
+
+    const selfReportInitJson = runCliFrom(taskStateInitRoot, [
+      "task",
+      "state",
+      "init",
+      "self-report.json",
+      "--json",
+    ]);
+    expectExitCode("self-report task state init exited nonzero", selfReportInitJson, 0);
+    const parsedSelfReportInit = parseJsonOnlyStdout(
+      "self-report task state init output was not valid JSON only",
+      selfReportInitJson,
+    );
+    expectTaskStateInitSuccessJsonShape(
+      "self-report task state init shape was invalid",
+      parsedSelfReportInit,
+      selfReportInitJson,
+    );
+    const selfReportState = JSON.parse(
+      readFileSync(
+        taskStatePath(taskStateInitRoot, "smoke-task-state-self-report"),
+        "utf8",
+      ),
+    );
+    if (
+      selfReportState.lifecycleState !== "planned" ||
+      selfReportState.completionGate.satisfied !== false ||
+      selfReportState.completionGate.completed !== false ||
+      selfReportState.completionGate.verified !== false ||
+      selfReportState.safety.completed !== false ||
+      selfReportState.safety.verified !== false ||
+      selfReportState.safety.approved !== false
+    ) {
+      fail("self-report task state init persisted terminal authority", selfReportInitJson);
+    }
+
+    const traversalInitFilesBefore = listRelativeFiles(taskStateInitTraversalParentRoot);
+    const traversalInitJson = runCliFrom(traversalInitChildRoot, [
+      "task",
+      "state",
+      "init",
+      "../outside.json",
+      "--json",
+    ]);
+    expectNonzero("task state init parent traversal exited zero", traversalInitJson);
+    const parsedTraversalInit = parseJsonOnlyStdout(
+      "task state init parent traversal output was not valid JSON only",
+      traversalInitJson,
+    );
+    expectTaskStateInitFailureJsonShape(
+      "task state init parent traversal shape was invalid",
+      parsedTraversalInit,
+      "task_plan_input_parent_traversal_disallowed",
+      traversalInitJson,
+    );
+    expectSameFiles(
+      "task state init parent traversal changed files",
+      traversalInitFilesBefore,
+      listRelativeFiles(taskStateInitTraversalParentRoot),
+    );
+  } finally {
+    rmSync(taskStateInitRoot, { recursive: true, force: true });
+    rmSync(taskStateInitTraversalParentRoot, { recursive: true, force: true });
+  }
+
+  const initRootSymlinkRoot = mkdtempSync(join(tmpdir(), "aeos-cli-task-state-init-root-symlink-"));
+  const initRootSymlinkEscape = mkdtempSync(join(tmpdir(), "aeos-cli-task-state-init-root-escape-"));
+  const initFileSymlinkRoot = mkdtempSync(join(tmpdir(), "aeos-cli-task-state-init-file-symlink-"));
+  const initFileSymlinkEscape = mkdtempSync(join(tmpdir(), "aeos-cli-task-state-init-file-escape-"));
+
+  try {
+    writeFileSync(
+      join(initRootSymlinkRoot, "valid-task.json"),
+      `${JSON.stringify(createValidTaskPlanContract("smoke-task-state-root-symlink"), null, 2)}\n`,
+    );
+    mkdirSync(join(initRootSymlinkRoot, ".aeos", "state"), { recursive: true });
+    symlinkSync(initRootSymlinkEscape, join(initRootSymlinkRoot, ".aeos", "state", "tasks"));
+    const rootSymlinkBefore = listRelativeFiles(initRootSymlinkEscape);
+    const rootSymlinkInitJson = runCliFrom(initRootSymlinkRoot, [
+      "task",
+      "state",
+      "init",
+      "valid-task.json",
+      "--json",
+    ]);
+    expectNonzero("task state init state-root symlink exited zero", rootSymlinkInitJson);
+    const parsedRootSymlinkInit = parseJsonOnlyStdout(
+      "task state init state-root symlink output was not valid JSON only",
+      rootSymlinkInitJson,
+    );
+    expectTaskStateInitFailureJsonShape(
+      "task state init state-root symlink shape was invalid",
+      parsedRootSymlinkInit,
+      "task_state_unsafe_state_root",
+      rootSymlinkInitJson,
+    );
+    expectSameFiles(
+      "task state init wrote through state-root symlink",
+      rootSymlinkBefore,
+      listRelativeFiles(initRootSymlinkEscape),
+    );
+
+    writeFileSync(
+      join(initFileSymlinkRoot, "valid-task.json"),
+      `${JSON.stringify(createValidTaskPlanContract("smoke-task-state-file-symlink"), null, 2)}\n`,
+    );
+    mkdirSync(join(initFileSymlinkRoot, ".aeos", "state", "tasks"), { recursive: true });
+    writeFileSync(join(initFileSymlinkEscape, "escaped.json"), "{}\n");
+    symlinkSync(
+      join(initFileSymlinkEscape, "escaped.json"),
+      taskStatePath(initFileSymlinkRoot, "smoke-task-state-file-symlink"),
+    );
+    const fileSymlinkBefore = readFileSync(join(initFileSymlinkEscape, "escaped.json"), "utf8");
+    const fileSymlinkInitJson = runCliFrom(initFileSymlinkRoot, [
+      "task",
+      "state",
+      "init",
+      "valid-task.json",
+      "--json",
+    ]);
+    expectNonzero("task state init state-file symlink exited zero", fileSymlinkInitJson);
+    const parsedFileSymlinkInit = parseJsonOnlyStdout(
+      "task state init state-file symlink output was not valid JSON only",
+      fileSymlinkInitJson,
+    );
+    expectTaskStateInitFailureJsonShape(
+      "task state init state-file symlink shape was invalid",
+      parsedFileSymlinkInit,
+      "task_state_unsafe_target",
+      fileSymlinkInitJson,
+    );
+    if (readFileSync(join(initFileSymlinkEscape, "escaped.json"), "utf8") !== fileSymlinkBefore) {
+      fail("task state init modified state-file symlink target", fileSymlinkInitJson);
+    }
+  } finally {
+    rmSync(initRootSymlinkRoot, { recursive: true, force: true });
+    rmSync(initRootSymlinkEscape, { recursive: true, force: true });
+    rmSync(initFileSymlinkRoot, { recursive: true, force: true });
+    rmSync(initFileSymlinkEscape, { recursive: true, force: true });
   }
 } finally {
   rmSync(taskPlanNoWriteRoot, { recursive: true, force: true });

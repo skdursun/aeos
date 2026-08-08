@@ -19,6 +19,8 @@ Current foundation:
 - `aeos task plan <task-file>` exists as parser-mapper-planner integration.
 - `aeos task run --dry-run <task-file>` exists as a non-executing dry-run
   preview over the existing parser, mapper, planner, and dry-run contracts.
+- `aeos task state init <task-file>` exists as the explicit persisted
+  task-state initialization command.
 - `aeos task status <task-id>` exists as a read-only persisted-state inspection
   command.
 - `aeos task resume --preview <task-id>` exists as a read-only resume handoff
@@ -109,6 +111,35 @@ Current MVP limitations:
 ### `aeos task run --dry-run --json`
 Same behavior as `aeos task run --dry-run`, but stdout is exactly one JSON
 object and no human text. Adapter calls must be represented as not executed.
+
+### `aeos task state init`
+Creates authoritative persisted task state only when the operator explicitly
+requests it:
+
+```text
+aeos task state init <task-file>
+```
+
+This command uses the same safe parser, validation, mapper, strict
+runner-planning-input safety gates, and dependency-injected planner chain as
+task planning. It then persists a non-terminal `planned` state at revision `1`
+through the core task-state persistence API.
+
+It must not execute work, call adapters, write audit events, run verifiers,
+create completed state, mutate the source task file, or write outside
+`.aeos/state/tasks/<task-id>.json`.
+
+Existing task state is not overwritten. Repeated initialization fails closed
+with `task_state_already_exists`; no `--force` mode exists in this MVP.
+
+Task prose or model-like claims such as completed, approved, verified, all done,
+or execution succeeded are not completion proof and cannot initialize a terminal
+state. Completion remains verifier-gated and unsatisfied.
+
+### `aeos task state init --json`
+Same initialization behavior as human mode, but stdout is exactly one JSON
+object. Failures are JSON-only with deterministic issue codes and no raw runtime
+stack traces.
 
 ### `aeos task status`
 Loads authoritative persisted task state by task id from the project-local state
@@ -278,7 +309,13 @@ Dry-run JSON concept:
   input, blocked policy, and unavailable persistence/runtime features.
 
 ## State Persistence Expectations
-MVP planning and dry-run commands should not write state by default.
+MVP planning and dry-run commands do not write state by default.
+
+The explicit initialization write boundary is:
+
+```text
+aeos task state init <task-file>
+```
 
 Persisted task state stores task contract reference, planning summary, lifecycle
 state, work item state, batch state, verifier gate, completion gate, issues,
@@ -494,6 +531,11 @@ Future CLI smoke tests should prove:
 - dry-run reports verifier run false.
 - dry-run reports completed false.
 - dry-run creates no lifecycle or resume persistence.
+- `aeos task state init <task-file> --json` creates revision-1 planned state.
+- repeated state init fails closed without overwriting.
+- invalid, unsupported, traversal, and symlink init failures create no state.
+- self-report text cannot create completed, approved, verified, or execution
+  success state.
 - status reads persisted state only and fails closed when state is absent.
 - verify reports unavailable until evidence loading exists.
 - resume preview reads persisted state only, preserves revision, writes no

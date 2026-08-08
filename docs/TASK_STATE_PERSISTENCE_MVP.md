@@ -38,10 +38,10 @@ The MVP state includes:
 - safety metadata that keeps execution, approval, completion, verification, and
   model self-report trust false
 
-The current persisted lifecycle starts at `new`, then may move to `planned`,
-then `dry_run_ready` or `verification_required` where future integration has
-system evidence. Existing lifecycle contracts use `draft`; the persistence MVP
-uses `new` for the initial durable record.
+`createInitialTaskState` creates an in-memory `new` state. The explicit CLI
+initialization command persists the current safe initialized lifecycle as
+`planned` after parser, validation, mapping, strict planner-input safety proof,
+dependency-injected planning, and verifier-gate proof all pass.
 
 ## Revision Behavior
 New state starts at `revision: 1`.
@@ -60,6 +60,39 @@ unique.
 
 `loadTaskState` reads and validates the JSON state. Missing state returns
 `task_state_not_found`.
+
+## Explicit Initialization CLI
+`aeos task state init <task-file>` is the only MVP task command that creates
+persisted task state. `--json` emits one deterministic JSON object only.
+
+Initialization derives state from the safe planning chain:
+
+```text
+task file -> parser -> validation -> mapper -> runnerPlanningInput
+  -> dependency-injected planner -> planned result -> saveTaskState()
+```
+
+The command requires actual proof on
+`mappingResult.planningInput.runnerPlanningInput.metadata.noExecution === true`
+and `metadata.noWrites === true`. It also requires actual verifier proof on
+`runnerPlanningInput.verifierRequirements.verifierRequired === true` and
+`completionGatedByVerifier === true`. Top-level, summary, task prose, and model
+self-report claims cannot authorize persistence.
+
+The persisted initial state is non-terminal:
+
+- `revision: 1`
+- `lifecycleState: "planned"`
+- planned work items and batches represented from the planner result
+- pending and retryable ids derived from represented work item state
+- verifier status `required_not_run`
+- completion gate unsatisfied
+- execution, adapter, audit, verifier-run, approval, completion, verification,
+  and self-report trust safety flags false
+
+If state already exists, initialization fails closed with
+`task_state_already_exists` and does not overwrite bytes or increment revision.
+No `--force` or arbitrary state editing command exists in this MVP.
 
 ## Corruption Behavior
 Corrupt JSON is not treated as empty or new state. Loading or replacing a corrupt
@@ -169,24 +202,24 @@ closed with `task_resume_execution_not_implemented`.
 `aeos task run --dry-run` remains read-only and does not persist task state,
 resume state, audit state, verifier state, or completion state.
 
-Automatic state initialization, state update CLI commands, and plan/dry-run
-state persistence remain later scope.
+Automatic plan/dry-run state persistence remains out of scope. The explicit
+write boundary is `aeos task state init <task-file>` only.
 
 ## MVP Limitations
 The MVP does not implement real task execution, adapter runtime, audit runtime,
 verifier runtime, automatic resume, retries, concurrency, locks, approvals, or
-CLI persistence commands.
+arbitrary state update commands.
 
 Atomic replacement uses dependency-free local temp-file write plus rename. This
 is the safest MVP approach here, but it is not a full cross-platform transaction
 or multi-writer locking mechanism.
 
-TASK-0279 does not implement automatic resume, retry execution, task status CLI,
-resume preview CLI, real task execution, verifier execution, audit runtime, or
-cross-process locking. A later executor must compare the handoff source revision
-against the then-current persisted revision before acting.
+The MVP does not implement automatic resume, retry execution, real task
+execution, verifier execution, audit runtime, or cross-process locking. A later
+executor must compare the handoff source revision against the then-current
+persisted revision before acting.
 
 ## Later Scope
-Future work should review the persistence safety boundary, then wire explicit
-command integration and resume handoff only after authoritative execution,
-audit, and verifier evidence exist.
+Future work should add revision-guarded, system-owned state transitions only
+after authoritative execution, audit, and verifier evidence exist. Arbitrary
+operator state mutation remains out of scope.
