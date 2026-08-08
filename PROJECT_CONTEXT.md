@@ -58,6 +58,7 @@ condition.
 - TASK-0274: Fix AEOS global audit integration findings for task plan.
 - TASK-0275: Post-audit task plan regression review.
 - TASK-0276: Design CLI task dry-run integration.
+- TASK-0277: CLI task dry-run targeted regression and safety review.
 
 ## Do Not Load By Default
 
@@ -68,7 +69,7 @@ condition.
 
 ## Next Task
 
-TASK-0277 CLI task dry-run targeted regression and safety review.
+TASK-0278 Design and implement task state persistence MVP foundation.
 
 ## Current Plans
 
