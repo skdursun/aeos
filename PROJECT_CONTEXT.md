@@ -46,6 +46,7 @@ condition.
 - TASK-0262: Add task plan file planner wiring final safety review.
 - TASK-0263: Design CLI task plan parser-mapper-planner integration.
 - TASK-0264: Implement CLI task plan planner integration contracts.
+- TASK-0265: Add CLI task plan planner integration contract examples.
 
 ## Do Not Load By Default
 
@@ -56,7 +57,7 @@ condition.
 
 ## Next Task
 
-TASK-0265 Add CLI task plan planner integration contract examples.
+TASK-0266 Add CLI task plan planner integration contract smoke tests.
 
 ## Current Plans
 
