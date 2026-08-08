@@ -94,10 +94,15 @@ import {
 } from "../dist/agentic-runner-dry-run-logic.example.js";
 import {
   createTaskPlanFilePlannerWiringResult,
+  createCliTaskPlanHumanRenderModel,
+  createCliTaskPlanJsonRenderModel,
+  createCliTaskPlanPlannerIntegrationResult,
   parseTaskPlanInputFile,
   mapTaskContractToRunnerPlanningInput,
+  mapCliTaskPlanStatusToExitCode,
   planAgenticRunner,
   runAgenticRunnerDryRun,
+  summarizeCliTaskPlanPlannerIntegrationResult,
   verifyAgenticCoverage,
 } from "../dist/index.js";
 import {
@@ -185,6 +190,40 @@ import {
   scenarioOExitCodeExamples,
   scenarioPSafetyStage,
 } from "../dist/cli-task-plan-planner-integration.example.js";
+import {
+  cliTaskPlanPlannerIntegrationLogicExamples,
+  scenarioASuccessfulCliTaskPlanIntegrationLogic as cliLogicScenarioA,
+  scenarioASuccessfulCliTaskPlanIntegrationLogicChecks as cliLogicScenarioAChecks,
+  scenarioBJsonSuccessBehavior as cliLogicScenarioB,
+  scenarioBJsonSuccessBehaviorChecks as cliLogicScenarioBChecks,
+  scenarioCParserFailure as cliLogicScenarioC,
+  scenarioCParserFailureChecks as cliLogicScenarioCChecks,
+  scenarioDValidationFailure as cliLogicScenarioD,
+  scenarioDValidationFailureChecks as cliLogicScenarioDChecks,
+  scenarioEUnsupportedMapping as cliLogicScenarioE,
+  scenarioEUnsupportedMappingChecks as cliLogicScenarioEChecks,
+  scenarioFMissingRunnerPlanningInput as cliLogicScenarioF,
+  scenarioFMissingRunnerPlanningInputChecks as cliLogicScenarioFChecks,
+  scenarioGMissingVerifierGate as cliLogicScenarioG,
+  scenarioGMissingVerifierGateChecks as cliLogicScenarioGChecks,
+  scenarioHMissingNoExecutionNoWrites as cliLogicScenarioH,
+  scenarioHMissingNoExecutionNoWritesChecks as cliLogicScenarioHChecks,
+  scenarioIUnsafeRepresentedMetadata as cliLogicScenarioI,
+  scenarioIUnsafeRepresentedMetadataChecks as cliLogicScenarioIChecks,
+  scenarioJPlannerFailure as cliLogicScenarioJ,
+  scenarioJPlannerFailureChecks as cliLogicScenarioJChecks,
+  scenarioKHumanRenderModel as cliLogicScenarioK,
+  scenarioKHumanRenderModelFields as cliLogicScenarioKFields,
+  scenarioLJsonRenderModel as cliLogicScenarioL,
+  scenarioLJsonRenderModelFields as cliLogicScenarioLFields,
+  scenarioMJsonOnlyFailureBehavior as cliLogicScenarioM,
+  scenarioMJsonOnlyFailureBehaviorChecks as cliLogicScenarioMChecks,
+  scenarioNSummaryGeneration as cliLogicScenarioN,
+  scenarioNSummaryGenerationMatches as cliLogicScenarioNMatches,
+  scenarioOExitCodeMapping as cliLogicScenarioO,
+  scenarioPDeterministicOutput as cliLogicScenarioP,
+  scenarioQDependencyInjectedPlannerBehavior as cliLogicScenarioQ,
+} from "../dist/cli-task-plan-planner-integration-logic.example.js";
 
 async function pathExists(path) {
   try {
@@ -2648,6 +2687,190 @@ function assertCliJsonOnlyBehavior(result, message) {
     `${message} deterministic issues`,
   );
   assert.ok(result.jsonOutput, `${message} should expose JSON output`);
+}
+
+function assertCliLogicSummaryMatchesResult(result, message) {
+  const planningSummary = result.planner.planningResult?.summary;
+  const mappingSummary = result.mapping.mappingResult?.summary;
+
+  assert.equal(
+    result.summary.parsed,
+    result.parser.ok,
+    `${message} summary parsed should match parser stage`,
+  );
+  assert.equal(
+    result.summary.mapped,
+    result.mapping.ok,
+    `${message} summary mapped should match mapping stage`,
+  );
+  assert.equal(
+    result.summary.wired,
+    result.wiring.ok,
+    `${message} summary wired should match wiring stage`,
+  );
+  assert.equal(
+    result.summary.planned,
+    result.planner.ok && result.planner.status === "planned",
+    `${message} summary planned should match planner stage`,
+  );
+  assert.equal(
+    result.summary.workItemCount,
+    planningSummary?.workItemCount ?? mappingSummary?.workItemCount ?? 0,
+    `${message} summary work item count should match represented stages`,
+  );
+  assert.equal(
+    result.summary.batchCount,
+    planningSummary?.batchCount ?? mappingSummary?.batchCount ?? 0,
+    `${message} summary batch count should match represented stages`,
+  );
+  assert.equal(
+    result.summary.planStepCount,
+    result.planner.planStepCount ?? planningSummary?.stepCount ?? 0,
+    `${message} summary plan step count should match represented stages`,
+  );
+  assert.equal(
+    result.summary.issueCount,
+    result.issues.length,
+    `${message} summary issue count should match issues array`,
+  );
+  assert.equal(
+    result.summary.json,
+    result.jsonOnly.jsonRequested,
+    `${message} summary json should match JSON mode`,
+  );
+  assert.equal(result.summary.noExecution, true, `${message} noExecution`);
+  assert.equal(result.summary.noWrites, true, `${message} noWrites`);
+  assert.equal(
+    result.summary.executionEnabled,
+    result.safety.executionEnabled,
+    `${message} summary executionEnabled should match safety`,
+  );
+  assert.equal(
+    result.summary.adapterCalls,
+    result.safety.adapterCalls,
+    `${message} summary adapterCalls should match safety`,
+  );
+  assert.equal(
+    result.summary.auditWrites,
+    result.safety.auditWrites,
+    `${message} summary auditWrites should match safety`,
+  );
+  assert.equal(
+    result.summary.verifierRun,
+    result.safety.verifierRun,
+    `${message} summary verifierRun should match safety`,
+  );
+  assert.equal(
+    result.summary.persistence,
+    result.safety.persistence,
+    `${message} summary persistence should match safety`,
+  );
+  assert.equal(
+    result.summary.filesystemMutation,
+    result.safety.filesystemMutation,
+    `${message} summary filesystemMutation should match safety`,
+  );
+  assert.equal(
+    result.summary.completedStateCreated,
+    result.safety.completedStateCreated,
+    `${message} summary completedStateCreated should match safety`,
+  );
+  assert.equal(
+    result.summary.verifierRequired,
+    result.mapping.verifierRequired ||
+      result.planner.planningResult?.verifier.verifierRequired === true,
+    `${message} summary verifierRequired should match stages`,
+  );
+  assert.equal(
+    result.summary.completionGatedByVerifier,
+    result.mapping.completionGatedByVerifier ||
+      result.planner.planningResult?.verifier.completionGatedByVerifier === true,
+    `${message} summary completion gate should match stages`,
+  );
+  assert.equal(
+    result.summary.runnerPlanningInputAvailable,
+    result.mapping.runnerPlanningInputAvailable,
+    `${message} summary runnerPlanningInputAvailable should match mapping stage`,
+  );
+  assert.equal(
+    result.summary.plannerDependencyInjected,
+    result.wiring.plannerDependencyInjected,
+    `${message} summary plannerDependencyInjected should match wiring stage`,
+  );
+  assert.equal(
+    result.summary.plannerInvocationAllowed,
+    result.wiring.plannerInvocationAllowed,
+    `${message} summary plannerInvocationAllowed should match wiring stage`,
+  );
+}
+
+function assertCliLogicNoExecutionNoWrites(result, message) {
+  assertCliNoExecutionNoWrites(result, message);
+  assert.equal(
+    result.safety.cliPlanCommandMayRunParserMapperWiringPlannerLater,
+    true,
+    `${message} should only represent later CLI planning capability`,
+  );
+  assert.equal(
+    result.safety.dependencyInjectedPlannerOnly,
+    true,
+    `${message} should require dependency-injected planner`,
+  );
+  assert.equal(
+    result.safety.topLevelPlannerInputBypassAllowed,
+    false,
+    `${message} should forbid top-level plannerInput bypass`,
+  );
+  assertNoRuntimeTruth(result, message);
+}
+
+function cliLogicResultSignature(result) {
+  return {
+    ok: result.ok,
+    status: result.status,
+    exitCode: result.exitCode,
+    issueCodes: result.issues.map((issue) => issue.code),
+    issueFields: result.issues.map((issue) => issue.field),
+    summary: result.summary,
+    safety: result.safety,
+    plannerInvocationAllowed: result.wiring.plannerInvocationAllowed,
+  };
+}
+
+function createCliLogicInputFromResult(result, overrides = {}) {
+  return {
+    taskFile: result.sourceFile,
+    json: result.jsonOnly.jsonRequested,
+    mode: result.mode,
+    parserResult: result.parser.parserResult,
+    parserResultReference: result.parser.parserResultReference,
+    mappingResult: result.mapping.mappingResult,
+    mappingResultReference: result.mapping.mappingResultReference,
+    wiringResultReference: result.wiring.wiringResultReference,
+    plannerDependencyReference: result.planner.plannerDependencyReference,
+    noExecution: true,
+    noWrites: true,
+    ...overrides,
+  };
+}
+
+function createCliLogicCountingPlanner(planningResult) {
+  let callCount = 0;
+
+  return {
+    planner(input) {
+      callCount += 1;
+
+      return {
+        ...planningResult,
+        taskId: input.taskId,
+        mode: input.mode,
+      };
+    },
+    calls() {
+      return callCount;
+    },
+  };
 }
 
 function assertWiringLogicSummaryMatchesResult(result, message) {
@@ -5179,6 +5402,885 @@ for (const [message, result] of [
 }
 
 console.log("CLI task plan planner integration contract smoke tests passed");
+
+for (const [check, passed] of Object.entries(cliLogicScenarioAChecks)) {
+  assert.equal(
+    passed,
+    true,
+    `CLI task plan integration logic smoke A ${check} should pass`,
+  );
+}
+assert.equal(
+  cliLogicScenarioA.taskId,
+  cliLogicScenarioA.mapping.mappingResult?.planningInput.runnerPlanningInput
+    ?.taskId,
+  "CLI task plan integration logic smoke A should pass mapped runnerPlanningInput to planner",
+);
+assert.equal(
+  cliLogicScenarioA.jsonOnly.jsonRequested,
+  false,
+  "CLI task plan integration logic smoke A JSON should be false",
+);
+assert.equal(
+  cliLogicScenarioA.mode,
+  "plan",
+  "CLI task plan integration logic smoke A should preserve plan mode",
+);
+assertCliLogicNoExecutionNoWrites(
+  cliLogicScenarioA,
+  "CLI task plan integration logic smoke A",
+);
+
+for (const [check, passed] of Object.entries(cliLogicScenarioBChecks)) {
+  assert.equal(
+    passed,
+    true,
+    `CLI task plan integration logic smoke B ${check} should pass`,
+  );
+}
+assertCliJsonOnlyBehavior(
+  cliLogicScenarioB,
+  "CLI task plan integration logic smoke B",
+);
+assert.equal(
+  cliLogicScenarioB.humanOutput,
+  undefined,
+  "CLI task plan integration logic smoke B should suppress human output model",
+);
+assert.equal(
+  cliLogicScenarioB.ok,
+  true,
+  "CLI task plan integration logic smoke B should be ok",
+);
+assert.equal(
+  cliLogicScenarioB.status,
+  "planned",
+  "CLI task plan integration logic smoke B should report planned",
+);
+assert.equal(
+  cliLogicScenarioB.exitCode,
+  "success",
+  "CLI task plan integration logic smoke B should report success",
+);
+
+for (const [check, passed] of Object.entries(cliLogicScenarioCChecks)) {
+  assert.equal(
+    passed,
+    true,
+    `CLI task plan integration logic smoke C ${check} should pass`,
+  );
+}
+assert.equal(
+  cliLogicScenarioC.mapping.attempted,
+  false,
+  "CLI task plan integration logic smoke C mapping should not be attempted",
+);
+assert.equal(
+  cliLogicScenarioC.wiring.attempted,
+  false,
+  "CLI task plan integration logic smoke C wiring should not be attempted",
+);
+assertCliPlannerNotAttempted(
+  cliLogicScenarioC,
+  "CLI task plan integration logic smoke C",
+);
+assertCliIssueRepresented(
+  cliLogicScenarioC,
+  "CLI task plan integration logic smoke C",
+);
+
+for (const [check, passed] of Object.entries(cliLogicScenarioDChecks)) {
+  assert.equal(
+    passed,
+    true,
+    `CLI task plan integration logic smoke D ${check} should pass`,
+  );
+}
+assert.equal(
+  cliLogicScenarioD.mapping.attempted,
+  false,
+  "CLI task plan integration logic smoke D mapping should not be attempted",
+);
+assert.equal(
+  cliLogicScenarioD.wiring.attempted,
+  false,
+  "CLI task plan integration logic smoke D wiring should not be attempted",
+);
+assertCliPlannerNotAttempted(
+  cliLogicScenarioD,
+  "CLI task plan integration logic smoke D",
+);
+assertCliIssueRepresented(
+  cliLogicScenarioD,
+  "CLI task plan integration logic smoke D",
+);
+
+for (const [check, passed] of Object.entries(cliLogicScenarioEChecks)) {
+  assert.equal(
+    passed,
+    true,
+    `CLI task plan integration logic smoke E ${check} should pass`,
+  );
+}
+assert.equal(
+  cliLogicScenarioE.mapping.status,
+  "unsupported",
+  "CLI task plan integration logic smoke E should represent unsupported mapping",
+);
+assert.equal(
+  cliLogicScenarioE.wiring.plannerInvocationAllowed,
+  false,
+  "CLI task plan integration logic smoke E planner should be blocked",
+);
+assertCliPlannerNotAttempted(
+  cliLogicScenarioE,
+  "CLI task plan integration logic smoke E",
+);
+assert.notEqual(
+  cliLogicScenarioE.ok,
+  true,
+  "CLI task plan integration logic smoke E should not fake success",
+);
+
+for (const [check, passed] of Object.entries(cliLogicScenarioFChecks)) {
+  assert.equal(
+    passed,
+    true,
+    `CLI task plan integration logic smoke F ${check} should pass`,
+  );
+}
+assert.equal(
+  cliLogicScenarioF.mapping.mappingResult?.planningInput.runnerPlanningInput,
+  undefined,
+  "CLI task plan integration logic smoke F mapping result should not contain runnerPlanningInput",
+);
+assert.equal(
+  cliLogicScenarioF.wiring.plannerInvocationAllowed,
+  false,
+  "CLI task plan integration logic smoke F planner invocation should be blocked",
+);
+assertCliPlannerNotAttempted(
+  cliLogicScenarioF,
+  "CLI task plan integration logic smoke F",
+);
+assert.ok(
+  ["mapping_failed", "blocked"].includes(cliLogicScenarioF.status),
+  "CLI task plan integration logic smoke F should report mapping_failed or blocked",
+);
+assertCliIssueRepresented(
+  cliLogicScenarioF,
+  "CLI task plan integration logic smoke F",
+);
+
+for (const [check, passed] of Object.entries(cliLogicScenarioGChecks)) {
+  assert.equal(
+    passed,
+    true,
+    `CLI task plan integration logic smoke G ${check} should pass`,
+  );
+}
+assert.equal(
+  cliLogicScenarioG.mapping.verifierRequired === false ||
+    cliLogicScenarioG.mapping.completionGatedByVerifier === false,
+  true,
+  "CLI task plan integration logic smoke G should represent a missing verifier gate",
+);
+assert.equal(
+  cliLogicScenarioG.wiring.plannerInvocationAllowed,
+  false,
+  "CLI task plan integration logic smoke G planner invocation should be blocked",
+);
+assertCliPlannerNotAttempted(
+  cliLogicScenarioG,
+  "CLI task plan integration logic smoke G",
+);
+assertCliIssueRepresented(
+  cliLogicScenarioG,
+  "CLI task plan integration logic smoke G",
+);
+
+for (const [check, passed] of Object.entries(cliLogicScenarioHChecks)) {
+  assert.equal(
+    passed,
+    true,
+    `CLI task plan integration logic smoke H ${check} should pass`,
+  );
+}
+assert.equal(
+  cliLogicScenarioH.issues.some((issue) =>
+    ["mapping.noExecution", "mapping.noWrites"].includes(issue.field),
+  ),
+  true,
+  "CLI task plan integration logic smoke H should represent missing noExecution/noWrites proof",
+);
+assert.equal(
+  cliLogicScenarioH.wiring.plannerInvocationAllowed,
+  false,
+  "CLI task plan integration logic smoke H planner invocation should be blocked",
+);
+assertCliPlannerNotAttempted(
+  cliLogicScenarioH,
+  "CLI task plan integration logic smoke H",
+);
+assert.equal(
+  cliLogicScenarioH.safety.filesystemMutation,
+  false,
+  "CLI task plan integration logic smoke H filesystem mutation should be false",
+);
+assert.equal(
+  cliLogicScenarioH.safety.executionEnabled,
+  false,
+  "CLI task plan integration logic smoke H execution should be false",
+);
+
+const cliLogicStrictNoExecutionNoWritesPlanner = createCliLogicCountingPlanner(
+  cliLogicScenarioA.planner.planningResult,
+);
+const cliLogicStrictNoExecutionNoWritesMappingResult = {
+  ...cliLogicScenarioA.mapping.mappingResult,
+  planningInput: {
+    ...cliLogicScenarioA.mapping.mappingResult.planningInput,
+    runnerPlanningInput: {
+      ...cliLogicScenarioA.mapping.mappingResult.planningInput.runnerPlanningInput,
+      metadata: {
+        runnerExecutionStarted: false,
+        adapterCallsMade: false,
+        executionEnabled: false,
+        adapterCalls: false,
+        verifierRun: false,
+        verifierExecuted: false,
+        auditEventsEmitted: false,
+        taskPersistenceWritten: false,
+        auditWrites: false,
+        persistence: false,
+        filesystemMutation: false,
+        completedStateCreated: false,
+      },
+    },
+    runnerPlanningInputData: undefined,
+  },
+};
+const cliLogicStrictNoExecutionNoWritesResult =
+  createCliTaskPlanPlannerIntegrationResult(
+    createCliLogicInputFromResult(cliLogicScenarioA, {
+      mappingResult: cliLogicStrictNoExecutionNoWritesMappingResult,
+    }),
+    {
+      planner: cliLogicStrictNoExecutionNoWritesPlanner.planner,
+      planningResultReference: cliLogicScenarioA.planner.planningResultReference,
+    },
+  );
+assert.equal(
+  cliLogicStrictNoExecutionNoWritesResult.mapping.runnerPlanningInputAvailable,
+  true,
+  "CLI task plan integration logic smoke H strict proof case should represent runnerPlanningInput availability",
+);
+assert.equal(
+  cliLogicStrictNoExecutionNoWritesResult.mapping.ok,
+  false,
+  "CLI task plan integration logic smoke H strict proof case should fail mapping gate",
+);
+assert.equal(
+  cliLogicStrictNoExecutionNoWritesResult.wiring.plannerInvocationAllowed,
+  false,
+  "CLI task plan integration logic smoke H strict proof case planner invocation should be blocked",
+);
+assert.equal(
+  cliLogicStrictNoExecutionNoWritesPlanner.calls(),
+  0,
+  "CLI task plan integration logic smoke H strict proof case fake planner should not be invoked",
+);
+assertCliPlannerNotAttempted(
+  cliLogicStrictNoExecutionNoWritesResult,
+  "CLI task plan integration logic smoke H strict proof case",
+);
+assert.equal(
+  cliLogicStrictNoExecutionNoWritesResult.ok,
+  false,
+  "CLI task plan integration logic smoke H strict proof case should fail closed",
+);
+assert.ok(
+  ["mapping_failed", "blocked"].includes(
+    cliLogicStrictNoExecutionNoWritesResult.status,
+  ),
+  "CLI task plan integration logic smoke H strict proof case should report mapping_failed or blocked",
+);
+assert.equal(
+  cliLogicStrictNoExecutionNoWritesResult.issues.some((issue) =>
+    ["mapping.noExecution", "mapping.noWrites"].includes(issue.field),
+  ),
+  true,
+  "CLI task plan integration logic smoke H strict proof case should represent deterministic safety issue",
+);
+assert.equal(
+  cliLogicStrictNoExecutionNoWritesResult.safety.executionEnabled,
+  false,
+  "CLI task plan integration logic smoke H strict proof case execution should remain disabled",
+);
+assert.equal(
+  cliLogicStrictNoExecutionNoWritesResult.safety.filesystemMutation,
+  false,
+  "CLI task plan integration logic smoke H strict proof case filesystem mutation should remain false",
+);
+assert.equal(
+  cliLogicStrictNoExecutionNoWritesResult.safety.completedStateCreated,
+  false,
+  "CLI task plan integration logic smoke H strict proof case completed state should not be created",
+);
+
+for (const [check, passed] of Object.entries(cliLogicScenarioIChecks)) {
+  assert.equal(
+    passed,
+    true,
+    `CLI task plan integration logic smoke I ${check} should pass`,
+  );
+}
+assert.equal(
+  cliLogicScenarioI.status,
+  "blocked",
+  "CLI task plan integration logic smoke I should report blocked",
+);
+assert.equal(
+  cliLogicScenarioI.wiring.plannerInvocationAllowed,
+  false,
+  "CLI task plan integration logic smoke I planner invocation should be blocked",
+);
+assertCliPlannerNotAttempted(
+  cliLogicScenarioI,
+  "CLI task plan integration logic smoke I",
+);
+assertCliIssueRepresented(
+  cliLogicScenarioI,
+  "CLI task plan integration logic smoke I",
+);
+
+for (const [check, passed] of Object.entries(cliLogicScenarioJChecks)) {
+  assert.equal(
+    passed,
+    true,
+    `CLI task plan integration logic smoke J ${check} should pass`,
+  );
+}
+assert.equal(
+  cliLogicScenarioJ.planner.attempted,
+  true,
+  "CLI task plan integration logic smoke J planner should be attempted",
+);
+assert.equal(
+  cliLogicScenarioJ.planner.ok,
+  false,
+  "CLI task plan integration logic smoke J planner should fail",
+);
+assert.equal(
+  cliLogicScenarioJ.status,
+  "planner_failed",
+  "CLI task plan integration logic smoke J should report planner_failed",
+);
+assert.equal(
+  cliLogicScenarioJ.exitCode,
+  "planner_failure",
+  "CLI task plan integration logic smoke J should report planner failure",
+);
+assert.equal(
+  cliLogicScenarioJ.planner.planningResult?.steps.some(
+    (step) => step.state === "completed",
+  ) ?? false,
+  false,
+  "CLI task plan integration logic smoke J should not create completed planner state",
+);
+assertCliIssueRepresented(
+  cliLogicScenarioJ,
+  "CLI task plan integration logic smoke J",
+);
+
+assertCliFields(
+  cliLogicScenarioK,
+  Object.keys(cliLogicScenarioKFields),
+  "CLI task plan integration logic smoke K human render model",
+);
+assert.deepEqual(
+  createCliTaskPlanHumanRenderModel(cliLogicScenarioA),
+  cliLogicScenarioK,
+  "CLI task plan integration logic smoke K human render model should come from helper",
+);
+assertCliSideEffectFalseFields(
+  cliLogicScenarioK,
+  "CLI task plan integration logic smoke K human render model",
+);
+assert.equal(
+  cliLogicScenarioK.realExecution,
+  false,
+  "CLI task plan integration logic smoke K real execution should be false",
+);
+
+assertCliFields(
+  cliLogicScenarioL,
+  Object.keys(cliLogicScenarioLFields),
+  "CLI task plan integration logic smoke L JSON render model",
+);
+assert.deepEqual(
+  createCliTaskPlanJsonRenderModel(cliLogicScenarioA),
+  cliLogicScenarioL,
+  "CLI task plan integration logic smoke L JSON render model should come from helper",
+);
+assertCliSideEffectFalseFields(
+  cliLogicScenarioL.safety,
+  "CLI task plan integration logic smoke L JSON render model safety",
+);
+
+for (const [check, passed] of Object.entries(cliLogicScenarioMChecks)) {
+  assert.equal(
+    passed,
+    true,
+    `CLI task plan integration logic smoke M ${check} should pass`,
+  );
+}
+assertCliJsonOnlyBehavior(
+  cliLogicScenarioM,
+  "CLI task plan integration logic smoke M",
+);
+assert.equal(
+  cliLogicScenarioM.ok,
+  false,
+  "CLI task plan integration logic smoke M should fail",
+);
+assert.notEqual(
+  cliLogicScenarioM.exitCode,
+  "success",
+  "CLI task plan integration logic smoke M exit code should be non-success",
+);
+
+assert.deepEqual(
+  summarizeCliTaskPlanPlannerIntegrationResult(cliLogicScenarioA),
+  cliLogicScenarioN,
+  "CLI task plan integration logic smoke N summary should come from helper",
+);
+const cliLogicScenarioNExpectedFalseFields = new Set([
+  "json",
+  "executionEnabled",
+  "adapterCalls",
+  "auditWrites",
+  "verifierRun",
+  "persistence",
+  "filesystemMutation",
+  "completedStateCreated",
+]);
+for (const [field, value] of Object.entries(cliLogicScenarioNMatches)) {
+  if (typeof value === "boolean") {
+    assert.equal(
+      value,
+      !cliLogicScenarioNExpectedFalseFields.has(field),
+      `CLI task plan integration logic smoke N ${field} should match`,
+    );
+  }
+}
+for (const [message, result] of [
+  ["CLI task plan integration logic smoke N success", cliLogicScenarioA],
+  ["CLI task plan integration logic smoke N JSON success", cliLogicScenarioB],
+  ["CLI task plan integration logic smoke N parser failure", cliLogicScenarioC],
+  ["CLI task plan integration logic smoke N validation failure", cliLogicScenarioD],
+  ["CLI task plan integration logic smoke N unsupported mapping", cliLogicScenarioE],
+  [
+    "CLI task plan integration logic smoke N missing runnerPlanningInput",
+    cliLogicScenarioF,
+  ],
+  ["CLI task plan integration logic smoke N missing verifier gate", cliLogicScenarioG],
+  [
+    "CLI task plan integration logic smoke N missing noExecution/noWrites",
+    cliLogicScenarioH,
+  ],
+  ["CLI task plan integration logic smoke N unsafe metadata", cliLogicScenarioI],
+  ["CLI task plan integration logic smoke N planner failure", cliLogicScenarioJ],
+]) {
+  assertCliLogicSummaryMatchesResult(result, message);
+}
+
+assert.deepEqual(
+  cliLogicScenarioO,
+  {
+    planned: "success",
+    parser_failed: "parser_failure",
+    validation_failed: "validation_failure",
+    unsupported_mapping: "unsupported_mapping",
+    mapping_failed: "mapping_failure",
+    wiring_failed: "wiring_failure",
+    planner_failed: "planner_failure",
+    blocked: "blocked",
+    failed: "unknown_failure",
+    unknown: "unknown_failure",
+  },
+  "CLI task plan integration logic smoke O exit code mapping should remain stable",
+);
+for (const [status, exitCode] of Object.entries(cliLogicScenarioO)) {
+  assert.equal(
+    mapCliTaskPlanStatusToExitCode(status),
+    exitCode,
+    `CLI task plan integration logic smoke O ${status} exit code should match helper`,
+  );
+}
+
+for (const [check, passed] of Object.entries(cliLogicScenarioP)) {
+  assert.equal(
+    passed,
+    true,
+    `CLI task plan integration logic smoke P ${check} should pass`,
+  );
+}
+const cliLogicDeterministicPlannerOne = createCliLogicCountingPlanner(
+  cliLogicScenarioA.planner.planningResult,
+);
+const cliLogicDeterministicPlannerTwo = createCliLogicCountingPlanner(
+  cliLogicScenarioA.planner.planningResult,
+);
+const cliLogicDeterministicInput = createCliLogicInputFromResult(cliLogicScenarioA);
+const cliLogicDeterministicRunOne = createCliTaskPlanPlannerIntegrationResult(
+  cliLogicDeterministicInput,
+  {
+    planner: cliLogicDeterministicPlannerOne.planner,
+    planningResultReference: cliLogicScenarioA.planner.planningResultReference,
+  },
+);
+const cliLogicDeterministicRunTwo = createCliTaskPlanPlannerIntegrationResult(
+  cliLogicDeterministicInput,
+  {
+    planner: cliLogicDeterministicPlannerTwo.planner,
+    planningResultReference: cliLogicScenarioA.planner.planningResultReference,
+  },
+);
+assert.deepEqual(
+  cliLogicResultSignature(cliLogicDeterministicRunOne),
+  cliLogicResultSignature(cliLogicDeterministicRunTwo),
+  "CLI task plan integration logic smoke P repeated helper output should be deterministic",
+);
+assert.equal(
+  cliLogicDeterministicPlannerOne.calls(),
+  1,
+  "CLI task plan integration logic smoke P first fake planner should be called once",
+);
+assert.equal(
+  cliLogicDeterministicPlannerTwo.calls(),
+  1,
+  "CLI task plan integration logic smoke P second fake planner should be called once",
+);
+
+assert.equal(
+  cliLogicScenarioQ.gatesPass.plannerInvocationAllowed,
+  true,
+  "CLI task plan integration logic smoke Q gates should allow planner on success",
+);
+assert.equal(
+  cliLogicScenarioQ.plannedAfterGatesPass.wiring.plannerInvocationAllowed,
+  true,
+  "CLI task plan integration logic smoke Q helper should allow planner after gates pass",
+);
+assert.equal(
+  cliLogicScenarioQ.calls.gatesPassedPlanner,
+  1,
+  "CLI task plan integration logic smoke Q exported fake planner should run only on success",
+);
+assert.equal(
+  cliLogicScenarioQ.calls.parserFailurePlanner,
+  0,
+  "CLI task plan integration logic smoke Q fake planner should not run for parser failure",
+);
+assert.equal(
+  cliLogicScenarioQ.calls.unsupportedMappingPlanner,
+  0,
+  "CLI task plan integration logic smoke Q fake planner should not run for unsupported mapping",
+);
+assert.equal(
+  cliLogicScenarioQ.calls.missingRunnerPlanningInputPlanner,
+  0,
+  "CLI task plan integration logic smoke Q fake planner should not run without runnerPlanningInput",
+);
+assert.equal(
+  cliLogicScenarioQ.calls.missingVerifierPlanner,
+  0,
+  "CLI task plan integration logic smoke Q fake planner should not run without verifier gate",
+);
+assert.equal(
+  cliLogicScenarioQ.calls.missingNoExecutionNoWritesPlanner,
+  0,
+  "CLI task plan integration logic smoke Q fake planner should not run without noExecution/noWrites proof",
+);
+assert.equal(
+  cliLogicScenarioQ.noDirectPlanAgenticRunnerImportOrCall,
+  true,
+  "CLI task plan integration logic smoke Q should not need direct planAgenticRunner call",
+);
+
+const plannerGatedScenarios = [
+  [
+    "parser failure",
+    createCliLogicInputFromResult(cliLogicScenarioA, {
+      parserResult: cliLogicScenarioC.parser.parserResult,
+    }),
+  ],
+  [
+    "validation failure",
+    createCliLogicInputFromResult(cliLogicScenarioA, {
+      parserResult: cliLogicScenarioD.parser.parserResult,
+    }),
+  ],
+  [
+    "unsupported mapping",
+    createCliLogicInputFromResult(cliLogicScenarioA, {
+      mappingResult: cliLogicScenarioE.mapping.mappingResult,
+    }),
+  ],
+  [
+    "missing runnerPlanningInput",
+    createCliLogicInputFromResult(cliLogicScenarioA, {
+      mappingResult: cliLogicScenarioF.mapping.mappingResult,
+    }),
+  ],
+  [
+    "missing verifier gate",
+    createCliLogicInputFromResult(cliLogicScenarioA, {
+      mappingResult: cliLogicScenarioG.mapping.mappingResult,
+    }),
+  ],
+  [
+    "missing noExecution/noWrites",
+    createCliLogicInputFromResult(cliLogicScenarioA, {
+      mappingResult: cliLogicScenarioH.mapping.mappingResult,
+    }),
+  ],
+  [
+    "unsafe represented metadata",
+    createCliLogicInputFromResult(cliLogicScenarioA, {
+      parserResult: {
+        ...cliLogicScenarioA.parser.parserResult,
+        summary: {
+          ...cliLogicScenarioA.parser.parserResult.summary,
+          runnerPlanningExecuted: true,
+        },
+      },
+    }),
+  ],
+];
+
+const gatedSuccessPlanner = createCliLogicCountingPlanner(
+  cliLogicScenarioA.planner.planningResult,
+);
+const gatedSuccessResult = createCliTaskPlanPlannerIntegrationResult(
+  createCliLogicInputFromResult(cliLogicScenarioA),
+  {
+    planner: gatedSuccessPlanner.planner,
+    planningResultReference: cliLogicScenarioA.planner.planningResultReference,
+  },
+);
+assert.equal(
+  gatedSuccessResult.wiring.plannerInvocationAllowed,
+  true,
+  "CLI task plan integration logic smoke Q in-memory fake planner should be allowed after gates pass",
+);
+assert.equal(
+  gatedSuccessPlanner.calls(),
+  1,
+  "CLI task plan integration logic smoke Q in-memory fake planner should be invoked after gates pass",
+);
+
+for (const [name, input] of plannerGatedScenarios) {
+  const blockedPlanner = createCliLogicCountingPlanner(
+    cliLogicScenarioA.planner.planningResult,
+  );
+  const blockedResult = createCliTaskPlanPlannerIntegrationResult(input, {
+    planner: blockedPlanner.planner,
+    planningResultReference: cliLogicScenarioA.planner.planningResultReference,
+  });
+
+  assert.equal(
+    blockedResult.wiring.plannerInvocationAllowed,
+    false,
+    `CLI task plan integration logic smoke Q fake planner should be disallowed for ${name}`,
+  );
+  assert.equal(
+    blockedPlanner.calls(),
+    0,
+    `CLI task plan integration logic smoke Q fake planner should not run for ${name}`,
+  );
+  assertCliPlannerNotAttempted(
+    blockedResult,
+    `CLI task plan integration logic smoke Q ${name}`,
+  );
+}
+
+const topLevelBypassPlanner = createCliLogicCountingPlanner(
+  cliLogicScenarioA.planner.planningResult,
+);
+const cliLogicTopLevelPlannerInputBypassInput = createCliLogicInputFromResult(
+  cliLogicScenarioA,
+  {
+    mappingResult: cliLogicScenarioF.mapping.mappingResult,
+    plannerInput: cliLogicScenarioA.mapping.runnerPlanningInput,
+  },
+);
+assert.equal(
+  Object.hasOwn(cliLogicTopLevelPlannerInputBypassInput, "plannerInput"),
+  true,
+  "CLI task plan integration logic smoke R should represent a top-level plannerInput field",
+);
+const cliLogicTopLevelPlannerInputBypassResult =
+  createCliTaskPlanPlannerIntegrationResult(
+    cliLogicTopLevelPlannerInputBypassInput,
+    {
+      planner: topLevelBypassPlanner.planner,
+      planningResultReference: cliLogicScenarioA.planner.planningResultReference,
+    },
+  );
+const cliLogicTopLevelPlannerInputBypassRepeat =
+  createCliTaskPlanPlannerIntegrationResult(cliLogicTopLevelPlannerInputBypassInput, {
+    planner: createCliLogicCountingPlanner(cliLogicScenarioA.planner.planningResult)
+      .planner,
+    planningResultReference: cliLogicScenarioA.planner.planningResultReference,
+  });
+assert.equal(
+  cliLogicTopLevelPlannerInputBypassResult.mapping.runnerPlanningInputAvailable,
+  false,
+  "CLI task plan integration logic smoke R mapping runnerPlanningInput should remain unavailable",
+);
+assert.equal(
+  cliLogicTopLevelPlannerInputBypassResult.mapping.mappingResult?.planningInput
+    .runnerPlanningInput,
+  undefined,
+  "CLI task plan integration logic smoke R mappingResult runnerPlanningInput should remain absent",
+);
+assert.equal(
+  cliLogicTopLevelPlannerInputBypassResult.wiring.plannerInvocationAllowed,
+  false,
+  "CLI task plan integration logic smoke R top-level plannerInput should not allow planner invocation",
+);
+assert.equal(
+  topLevelBypassPlanner.calls(),
+  0,
+  "CLI task plan integration logic smoke R fake planner should not be invoked",
+);
+assert.equal(
+  cliLogicTopLevelPlannerInputBypassResult.ok,
+  false,
+  "CLI task plan integration logic smoke R should fail closed",
+);
+assert.ok(
+  ["mapping_failed", "blocked"].includes(
+    cliLogicTopLevelPlannerInputBypassResult.status,
+  ),
+  "CLI task plan integration logic smoke R should report mapping_failed or blocked",
+);
+assert.equal(
+  cliLogicTopLevelPlannerInputBypassResult.issues.some(
+    (issue) => issue.code === "cli_task_plan_runner_planning_input_missing",
+  ),
+  true,
+  "CLI task plan integration logic smoke R should represent deterministic missing runnerPlanningInput issue",
+);
+assert.deepEqual(
+  cliLogicTopLevelPlannerInputBypassResult.issues.map((issue) => issue.code),
+  cliLogicTopLevelPlannerInputBypassRepeat.issues.map((issue) => issue.code),
+  "CLI task plan integration logic smoke R issue ordering should be deterministic",
+);
+
+for (const [message, result] of [
+  ["CLI task plan integration logic smoke S success", cliLogicScenarioA],
+  ["CLI task plan integration logic smoke S JSON success", cliLogicScenarioB],
+  ["CLI task plan integration logic smoke S parser failure", cliLogicScenarioC],
+  ["CLI task plan integration logic smoke S validation failure", cliLogicScenarioD],
+  ["CLI task plan integration logic smoke S unsupported mapping", cliLogicScenarioE],
+  [
+    "CLI task plan integration logic smoke S missing runnerPlanningInput",
+    cliLogicScenarioF,
+  ],
+  ["CLI task plan integration logic smoke S missing verifier gate", cliLogicScenarioG],
+  [
+    "CLI task plan integration logic smoke S missing noExecution/noWrites",
+    cliLogicScenarioH,
+  ],
+  [
+    "CLI task plan integration logic smoke S missing strict noExecution/noWrites proof",
+    cliLogicStrictNoExecutionNoWritesResult,
+  ],
+  ["CLI task plan integration logic smoke S unsafe metadata", cliLogicScenarioI],
+  ["CLI task plan integration logic smoke S planner failure", cliLogicScenarioJ],
+  [
+    "CLI task plan integration logic smoke S top-level bypass",
+    cliLogicTopLevelPlannerInputBypassResult,
+  ],
+]) {
+  assertCliLogicNoExecutionNoWrites(result, message);
+  for (const field of [
+    "cliCommandChanged",
+    "cliCommandExecuted",
+    "cliRan",
+    "outputPrinted",
+    "outputRendered",
+    "renderedToStdout",
+    "filesystemIoHappened",
+    "filesystemMutationHappened",
+    "directPlanAgenticRunnerCall",
+    "runnerExecutionHappened",
+    "runnerExecuted",
+    "adapterCallHappened",
+    "auditWriteHappened",
+    "verifierExecutionHappened",
+    "persistenceHappened",
+    "trustedModelSelfReportCompletion",
+    "trustedModelSelfReportApproval",
+  ]) {
+    assert.equal(
+      Object.hasOwn(result, field),
+      false,
+      `${message} must not expose ${field}`,
+    );
+  }
+  assert.equal(
+    result.safety.executionEnabled,
+    false,
+    `${message} must not enable execution`,
+  );
+  assert.equal(
+    result.safety.adapterCalls,
+    false,
+    `${message} must not call adapters`,
+  );
+  assert.equal(
+    result.safety.auditWrites,
+    false,
+    `${message} must not write audit events`,
+  );
+  assert.equal(
+    result.safety.verifierRun,
+    false,
+    `${message} must not run verifier`,
+  );
+  assert.equal(
+    result.safety.persistence,
+    false,
+    `${message} must not persist task state`,
+  );
+  assert.equal(
+    result.safety.filesystemMutation,
+    false,
+    `${message} must not mutate filesystem`,
+  );
+  assert.equal(
+    result.safety.completedStateCreated,
+    false,
+    `${message} must not create completed state`,
+  );
+}
+
+assert.deepEqual(
+  cliTaskPlanPlannerIntegrationLogicExamples.successful,
+  cliLogicScenarioA,
+  "CLI task plan integration logic examples index should expose successful scenario",
+);
+assert.deepEqual(
+  cliTaskPlanPlannerIntegrationLogicExamples.dependencyInjectedPlanner,
+  cliLogicScenarioQ,
+  "CLI task plan integration logic examples index should expose dependency-injected planner scenario",
+);
+
+console.log("CLI task plan planner integration logic smoke tests passed");
 
 const taskContractMapperLogicMinimalInput =
   createTaskContractMapperLogicSmokeInput();

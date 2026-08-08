@@ -50,6 +50,7 @@ condition.
 - TASK-0266: Add CLI task plan planner integration contract smoke tests.
 - TASK-0267: Implement CLI task plan planner integration logic.
 - TASK-0268: Add CLI task plan planner integration logic examples.
+- TASK-0269: Add CLI task plan planner integration logic smoke tests.
 
 ## Do Not Load By Default
 
@@ -60,7 +61,7 @@ condition.
 
 ## Next Task
 
-TASK-0269 Add CLI task plan planner integration logic smoke tests.
+TASK-0270 Add CLI task plan planner integration safety review.
 
 ## Current Plans
 

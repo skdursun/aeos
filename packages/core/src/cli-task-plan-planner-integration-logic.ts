@@ -445,19 +445,21 @@ function mappingResultNoExecution(
 ): boolean {
   const mappingResult = input.mappingResult;
   const runnerPlanningInput = mappingResult?.planningInput.runnerPlanningInput;
+  const runnerPlanningInputMetadata = runnerPlanningInput?.metadata;
 
   return (
     booleanField(input, "noExecution") === true &&
     mappingResult !== undefined &&
     booleanField(mappingResult.summary, "noExecution") === true &&
+    booleanField(runnerPlanningInputMetadata, "noExecution") === true &&
     booleanField(mappingResult.planningInput, "runnerPlanningExecuted") ===
       false &&
-    runnerPlanningInput?.metadata?.runnerExecutionStarted !== true &&
-    runnerPlanningInput?.metadata?.adapterCallsMade !== true &&
-    runnerPlanningInput?.metadata?.executionEnabled !== true &&
-    runnerPlanningInput?.metadata?.adapterCalls !== true &&
-    runnerPlanningInput?.metadata?.verifierRun !== true &&
-    runnerPlanningInput?.metadata?.verifierExecuted !== true
+    runnerPlanningInputMetadata?.runnerExecutionStarted !== true &&
+    runnerPlanningInputMetadata?.adapterCallsMade !== true &&
+    runnerPlanningInputMetadata?.executionEnabled !== true &&
+    runnerPlanningInputMetadata?.adapterCalls !== true &&
+    runnerPlanningInputMetadata?.verifierRun !== true &&
+    runnerPlanningInputMetadata?.verifierExecuted !== true
   );
 }
 
@@ -466,19 +468,21 @@ function mappingResultNoWrites(
 ): boolean {
   const mappingResult = input.mappingResult;
   const runnerPlanningInput = mappingResult?.planningInput.runnerPlanningInput;
+  const runnerPlanningInputMetadata = runnerPlanningInput?.metadata;
 
   return (
     booleanField(input, "noWrites") === true &&
     mappingResult !== undefined &&
     booleanField(mappingResult.summary, "noWrites") === true &&
+    booleanField(runnerPlanningInputMetadata, "noWrites") === true &&
     booleanField(mappingResult.planningInput, "taskPersistenceWritten") ===
       false &&
-    runnerPlanningInput?.metadata?.auditEventsEmitted !== true &&
-    runnerPlanningInput?.metadata?.taskPersistenceWritten !== true &&
-    runnerPlanningInput?.metadata?.auditWrites !== true &&
-    runnerPlanningInput?.metadata?.persistence !== true &&
-    runnerPlanningInput?.metadata?.filesystemMutation !== true &&
-    runnerPlanningInput?.metadata?.completedStateCreated !== true
+    runnerPlanningInputMetadata?.auditEventsEmitted !== true &&
+    runnerPlanningInputMetadata?.taskPersistenceWritten !== true &&
+    runnerPlanningInputMetadata?.auditWrites !== true &&
+    runnerPlanningInputMetadata?.persistence !== true &&
+    runnerPlanningInputMetadata?.filesystemMutation !== true &&
+    runnerPlanningInputMetadata?.completedStateCreated !== true
   );
 }
 
@@ -753,6 +757,18 @@ function createMappingStage(
         taskId,
         sourceFile,
         field: "mapping.noExecution",
+        metadata: {
+          requiredNoExecution: true,
+          representedNoExecution: booleanField(
+            rawRunnerPlanningInput?.metadata,
+            "noExecution",
+          ),
+          representedInputNoExecution: booleanField(input, "noExecution"),
+          representedSummaryNoExecution: booleanField(
+            mappingResult?.summary,
+            "noExecution",
+          ),
+        },
       }),
     );
   }
@@ -768,6 +784,18 @@ function createMappingStage(
         taskId,
         sourceFile,
         field: "mapping.noWrites",
+        metadata: {
+          requiredNoWrites: true,
+          representedNoWrites: booleanField(
+            rawRunnerPlanningInput?.metadata,
+            "noWrites",
+          ),
+          representedInputNoWrites: booleanField(input, "noWrites"),
+          representedSummaryNoWrites: booleanField(
+            mappingResult?.summary,
+            "noWrites",
+          ),
+        },
       }),
     );
   }
@@ -1052,8 +1080,12 @@ export function createCliTaskPlanSafetyIntegrationStage(
     noWrites: true,
     failClosedWithoutRunnerPlanningInput:
       safetyInput.mapping?.runnerPlanningInputAvailable !== true,
-    failClosedWithoutNoExecution: safetyInput.mapping?.noExecution !== true,
-    failClosedWithoutNoWrites: safetyInput.mapping?.noWrites !== true,
+    failClosedWithoutNoExecution:
+      safetyInput.mapping?.noExecution !== true ||
+      hasIssueForField(safetyInput.mapping?.issues ?? [], "mapping.noExecution"),
+    failClosedWithoutNoWrites:
+      safetyInput.mapping?.noWrites !== true ||
+      hasIssueForField(safetyInput.mapping?.issues ?? [], "mapping.noWrites"),
     failClosedWithoutVerifierRequired:
       safetyInput.mapping?.verifierRequired !== true,
     failClosedWithoutCompletionGate:
@@ -1343,6 +1375,15 @@ function determineStatus(input: {
 
   if (input.mapping.status === "unsupported") {
     return "unsupported_mapping";
+  }
+
+  if (
+    input.mapping.attempted &&
+    input.mapping.status === "mapped" &&
+    input.mapping.mappingResult !== undefined &&
+    input.mapping.mappingResult?.planningInput.runnerPlanningInput === undefined
+  ) {
+    return "mapping_failed";
   }
 
   if (
