@@ -40,6 +40,7 @@ condition.
 - TASK-0256: Add task plan file planner wiring contract smoke tests.
 - TASK-0257: Implement task plan file planner wiring logic.
 - TASK-0258: Add task plan file planner wiring logic examples.
+- TASK-0259: Add task plan file planner wiring logic smoke tests.
 
 ## Do Not Load By Default
 
@@ -50,7 +51,7 @@ condition.
 
 ## Next Task
 
-TASK-0259 Add task plan file planner wiring logic smoke tests.
+TASK-0260 Add task plan file planner wiring safety review.
 
 ## Current Plans
 

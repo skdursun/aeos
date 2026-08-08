@@ -93,6 +93,7 @@ import {
   verifierPreviewChecks as logicVerifierPreviewChecks,
 } from "../dist/agentic-runner-dry-run-logic.example.js";
 import {
+  createTaskPlanFilePlannerWiringResult,
   parseTaskPlanInputFile,
   mapTaskContractToRunnerPlanningInput,
   planAgenticRunner,
@@ -148,6 +149,22 @@ import {
   unsupportedMappingPlannerWiringResultExample,
   validationFailurePlannerWiringResultExample,
 } from "../dist/task-plan-file-planner-wiring.example.js";
+import {
+  createScenarioNOptionalDependencyInjectedPlannerBehavior,
+  scenarioASuccessfulMinimalPlanningHandoff,
+  scenarioBParserFailureFailClosed,
+  scenarioCValidationFailureFailClosed,
+  scenarioDUnsupportedMappingFailClosed,
+  scenarioEMissingVerifierGateFailClosed,
+  scenarioFMissingNoExecutionNoWritesGateFailClosed,
+  scenarioGPlannerFailureFailClosed,
+  scenarioHSafetyStageCreation,
+  scenarioIHumanOutputPayload,
+  scenarioJJsonOutputPayload,
+  scenarioKSummaryGeneration,
+  scenarioLExitCodeMapping,
+  scenarioMDeterministicOutput,
+} from "../dist/task-plan-file-planner-wiring-logic.example.js";
 
 async function pathExists(path) {
   try {
@@ -2345,6 +2362,187 @@ function assertNoRuntimeTruth(value, message) {
   visit(value);
 }
 
+function assertWiringLogicSummaryMatchesResult(result, message) {
+  const planningSummary = result.planner.planningResult?.summary;
+  const mappingSummary = result.mapping.mappingResult?.summary;
+
+  assert.equal(
+    result.summary.parsed,
+    result.parse.ok,
+    `${message} summary parsed should match parse stage`,
+  );
+  assert.equal(
+    result.summary.mapped,
+    result.mapping.ok,
+    `${message} summary mapped should match mapping stage`,
+  );
+  assert.equal(
+    result.summary.planned,
+    result.planner.ok && result.planner.status === "planned",
+    `${message} summary planned should match planner stage`,
+  );
+  assert.equal(
+    result.summary.workItemCount,
+    planningSummary?.workItemCount ?? mappingSummary?.workItemCount ?? 0,
+    `${message} summary work item count should match represented stages`,
+  );
+  assert.equal(
+    result.summary.batchCount,
+    planningSummary?.batchCount ?? mappingSummary?.batchCount ?? 0,
+    `${message} summary batch count should match represented stages`,
+  );
+  assert.equal(
+    result.summary.planStepCount,
+    result.planner.planStepCount ?? planningSummary?.stepCount ?? 0,
+    `${message} summary step count should match represented stages`,
+  );
+  assert.equal(
+    result.summary.issueCount,
+    result.issues.length,
+    `${message} summary issue count should match issues array`,
+  );
+  assert.equal(
+    result.summary.json,
+    result.jsonOutput !== undefined,
+    `${message} summary json should match output payload`,
+  );
+  assert.equal(result.summary.noExecution, true, `${message} noExecution`);
+  assert.equal(result.summary.noWrites, true, `${message} noWrites`);
+  assert.equal(
+    result.summary.executionEnabled,
+    result.safety.executionEnabled,
+    `${message} summary executionEnabled should match safety`,
+  );
+  assert.equal(
+    result.summary.adapterCalls,
+    result.safety.adapterCalls,
+    `${message} summary adapterCalls should match safety`,
+  );
+  assert.equal(
+    result.summary.auditWrites,
+    result.safety.auditWrites,
+    `${message} summary auditWrites should match safety`,
+  );
+  assert.equal(
+    result.summary.verifierRun,
+    result.safety.verifierRun,
+    `${message} summary verifierRun should match safety`,
+  );
+  assert.equal(
+    result.summary.persistence,
+    result.safety.persistence,
+    `${message} summary persistence should match safety`,
+  );
+  assert.equal(
+    result.summary.filesystemMutation,
+    result.safety.filesystemMutation,
+    `${message} summary filesystemMutation should match safety`,
+  );
+  assert.equal(
+    result.summary.completedStateCreated,
+    result.safety.completedStateCreated,
+    `${message} summary completedStateCreated should match safety`,
+  );
+  assert.equal(
+    result.summary.verifierRequired,
+    result.mapping.verifierRequired ||
+      result.planner.planningResult?.verifier.verifierRequired === true,
+    `${message} summary verifierRequired should match stages`,
+  );
+  assert.equal(
+    result.summary.completionGatedByVerifier,
+    result.mapping.completionGatedByVerifier ||
+      result.planner.planningResult?.verifier.completionGatedByVerifier === true,
+    `${message} summary completion gate should match stages`,
+  );
+  assert.equal(
+    result.summary.mappingSupported,
+    result.mapping.status === "mapped",
+    `${message} summary mappingSupported should match mapping status`,
+  );
+  assert.equal(
+    result.summary.planningInputAvailable,
+    result.mapping.planningInputAvailable,
+    `${message} summary planningInputAvailable should match mapping stage`,
+  );
+}
+
+function assertWiringLogicNoExecutionNoWrites(result, message) {
+  assertWiringNoExecutionNoWriteResult(result, message);
+  assert.equal(
+    result.safety.adapterCalls,
+    false,
+    `${message} must not call adapters`,
+  );
+  assert.equal(
+    result.safety.auditWrites,
+    false,
+    `${message} must not write audit events`,
+  );
+  assert.equal(
+    result.safety.verifierRun,
+    false,
+    `${message} must not run verifier`,
+  );
+  assert.equal(
+    result.safety.persistence,
+    false,
+    `${message} must not persist task state`,
+  );
+  assert.equal(
+    result.safety.filesystemMutation,
+    false,
+    `${message} must not mutate filesystem`,
+  );
+  assert.equal(
+    result.safety.completedStateCreated,
+    false,
+    `${message} must not create completed state`,
+  );
+  assert.equal(
+    result.planner.plannerExecuted,
+    false,
+    `${message} must not mark direct planner execution`,
+  );
+  assertNoRuntimeTruth(result, message);
+}
+
+function assertStableWiringPayloadShape(left, right, message) {
+  assert.deepEqual(
+    Object.keys(left),
+    Object.keys(right),
+    `${message} result payload shape should be stable`,
+  );
+
+  if (left.jsonOutput !== undefined && right.jsonOutput !== undefined) {
+    assert.deepEqual(
+      Object.keys(left.jsonOutput),
+      Object.keys(right.jsonOutput),
+      `${message} JSON output payload shape should be stable`,
+    );
+  }
+
+  if (left.humanOutput !== undefined && right.humanOutput !== undefined) {
+    assert.deepEqual(
+      Object.keys(left.humanOutput),
+      Object.keys(right.humanOutput),
+      `${message} human output payload shape should be stable`,
+    );
+  }
+}
+
+function createWiringInputFromResult(result, json = true) {
+  return {
+    taskFile: result.sourceFile,
+    json,
+    mode: result.mode,
+    parserResult: result.parse.parserResult,
+    mappingResult: result.mapping.mappingResult,
+    noExecution: true,
+    noWrites: true,
+  };
+}
+
 assert.equal(
   successfulMinimalPlannerWiringResultExample.ok,
   true,
@@ -2939,6 +3137,721 @@ for (const [message, result] of [
 }
 
 console.log("task plan file planner wiring contract smoke tests passed");
+
+assert.equal(
+  scenarioASuccessfulMinimalPlanningHandoff.parse.ok,
+  true,
+  "task plan file planner wiring logic smoke A parser stage should be ok",
+);
+assert.equal(
+  scenarioASuccessfulMinimalPlanningHandoff.mapping.ok,
+  true,
+  "task plan file planner wiring logic smoke A mapping stage should be ok",
+);
+assert.equal(
+  scenarioASuccessfulMinimalPlanningHandoff.mapping.planningInputAvailable,
+  true,
+  "task plan file planner wiring logic smoke A planning input should be available",
+);
+assert.equal(
+  scenarioASuccessfulMinimalPlanningHandoff.mapping.noExecution,
+  true,
+  "task plan file planner wiring logic smoke A noExecution should be true",
+);
+assert.equal(
+  scenarioASuccessfulMinimalPlanningHandoff.mapping.noWrites,
+  true,
+  "task plan file planner wiring logic smoke A noWrites should be true",
+);
+assert.equal(
+  scenarioASuccessfulMinimalPlanningHandoff.mapping.verifierRequired,
+  true,
+  "task plan file planner wiring logic smoke A should require verifier",
+);
+assert.equal(
+  scenarioASuccessfulMinimalPlanningHandoff.mapping.completionGatedByVerifier,
+  true,
+  "task plan file planner wiring logic smoke A should gate completion by verifier",
+);
+assertWiringLogicNoExecutionNoWrites(
+  scenarioASuccessfulMinimalPlanningHandoff,
+  "task plan file planner wiring logic smoke A",
+);
+assert.equal(
+  scenarioASuccessfulMinimalPlanningHandoff.ok,
+  true,
+  "task plan file planner wiring logic smoke A should be ok",
+);
+assert.ok(
+  ["planned"].includes(scenarioASuccessfulMinimalPlanningHandoff.status),
+  "task plan file planner wiring logic smoke A status should be planned",
+);
+assert.equal(
+  scenarioASuccessfulMinimalPlanningHandoff.exitCode,
+  "success",
+  "task plan file planner wiring logic smoke A exit code should be success",
+);
+
+assert.equal(
+  scenarioBParserFailureFailClosed.parse.attempted,
+  true,
+  "task plan file planner wiring logic smoke B parser should be attempted",
+);
+assert.equal(
+  scenarioBParserFailureFailClosed.parse.ok,
+  false,
+  "task plan file planner wiring logic smoke B parser should fail",
+);
+assert.equal(
+  scenarioBParserFailureFailClosed.mapping.attempted,
+  false,
+  "task plan file planner wiring logic smoke B mapping should not be attempted",
+);
+assertPlannerNotAttempted(
+  scenarioBParserFailureFailClosed,
+  "task plan file planner wiring logic smoke B",
+);
+assert.equal(
+  scenarioBParserFailureFailClosed.ok,
+  false,
+  "task plan file planner wiring logic smoke B should fail closed",
+);
+assert.equal(
+  scenarioBParserFailureFailClosed.status,
+  "parser_failed",
+  "task plan file planner wiring logic smoke B should report parser_failed",
+);
+assert.equal(
+  scenarioBParserFailureFailClosed.exitCode,
+  "parser_failure",
+  "task plan file planner wiring logic smoke B exit code should be parser_failure",
+);
+assert.equal(
+  scenarioBParserFailureFailClosed.safety.executionEnabled,
+  false,
+  "task plan file planner wiring logic smoke B execution should be disabled",
+);
+assertWiringIssueRepresented(
+  scenarioBParserFailureFailClosed,
+  "task plan file planner wiring logic smoke B",
+);
+
+assert.equal(
+  scenarioCValidationFailureFailClosed.parse.ok,
+  false,
+  "task plan file planner wiring logic smoke C parse stage should fail validation",
+);
+assert.equal(
+  scenarioCValidationFailureFailClosed.parse.parseOk,
+  true,
+  "task plan file planner wiring logic smoke C parsing should be ok",
+);
+assert.equal(
+  scenarioCValidationFailureFailClosed.parse.validationCompatible,
+  false,
+  "task plan file planner wiring logic smoke C validation compatibility should fail",
+);
+assert.equal(
+  scenarioCValidationFailureFailClosed.parse.validationStatus,
+  "fail",
+  "task plan file planner wiring logic smoke C validation status should fail",
+);
+assert.equal(
+  scenarioCValidationFailureFailClosed.mapping.attempted,
+  false,
+  "task plan file planner wiring logic smoke C mapping should not be attempted",
+);
+assertPlannerNotAttempted(
+  scenarioCValidationFailureFailClosed,
+  "task plan file planner wiring logic smoke C",
+);
+assert.equal(
+  scenarioCValidationFailureFailClosed.ok,
+  false,
+  "task plan file planner wiring logic smoke C should fail closed",
+);
+assert.equal(
+  scenarioCValidationFailureFailClosed.status,
+  "validation_failed",
+  "task plan file planner wiring logic smoke C should report validation_failed",
+);
+assert.equal(
+  scenarioCValidationFailureFailClosed.exitCode,
+  "validation_failure",
+  "task plan file planner wiring logic smoke C exit code should be validation_failure",
+);
+assert.equal(
+  scenarioCValidationFailureFailClosed.safety.executionEnabled,
+  false,
+  "task plan file planner wiring logic smoke C execution should be disabled",
+);
+assertWiringIssueRepresented(
+  scenarioCValidationFailureFailClosed,
+  "task plan file planner wiring logic smoke C",
+);
+
+assert.equal(
+  scenarioDUnsupportedMappingFailClosed.mapping.attempted,
+  true,
+  "task plan file planner wiring logic smoke D mapping should be attempted",
+);
+assert.equal(
+  scenarioDUnsupportedMappingFailClosed.mapping.ok,
+  false,
+  "task plan file planner wiring logic smoke D mapping should fail",
+);
+assert.equal(
+  scenarioDUnsupportedMappingFailClosed.mapping.status,
+  "unsupported",
+  "task plan file planner wiring logic smoke D should represent unsupported mapping",
+);
+assert.equal(
+  scenarioDUnsupportedMappingFailClosed.mapping.planningInputAvailable,
+  false,
+  "task plan file planner wiring logic smoke D planning input should be unavailable",
+);
+assertPlannerNotAttempted(
+  scenarioDUnsupportedMappingFailClosed,
+  "task plan file planner wiring logic smoke D",
+);
+assert.equal(
+  scenarioDUnsupportedMappingFailClosed.ok,
+  false,
+  "task plan file planner wiring logic smoke D should fail closed",
+);
+assert.equal(
+  scenarioDUnsupportedMappingFailClosed.status,
+  "unsupported_mapping",
+  "task plan file planner wiring logic smoke D should report unsupported_mapping",
+);
+assert.equal(
+  scenarioDUnsupportedMappingFailClosed.exitCode,
+  "unsupported_mapping",
+  "task plan file planner wiring logic smoke D exit code should be unsupported_mapping",
+);
+assert.notEqual(
+  scenarioDUnsupportedMappingFailClosed.status,
+  "planned",
+  "task plan file planner wiring logic smoke D should not fake success",
+);
+assertWiringIssueRepresented(
+  scenarioDUnsupportedMappingFailClosed,
+  "task plan file planner wiring logic smoke D",
+);
+
+assert.equal(
+  scenarioEMissingVerifierGateFailClosed.mapping.verifierRequired === false ||
+    scenarioEMissingVerifierGateFailClosed.mapping.completionGatedByVerifier ===
+      false,
+  true,
+  "task plan file planner wiring logic smoke E should represent missing verifier gate",
+);
+assertPlannerNotAttempted(
+  scenarioEMissingVerifierGateFailClosed,
+  "task plan file planner wiring logic smoke E",
+);
+assert.equal(
+  scenarioEMissingVerifierGateFailClosed.ok,
+  false,
+  "task plan file planner wiring logic smoke E should fail closed",
+);
+assert.ok(
+  ["mapping_failed", "blocked"].includes(
+    scenarioEMissingVerifierGateFailClosed.status,
+  ),
+  "task plan file planner wiring logic smoke E should be blocked or mapping_failed",
+);
+assert.equal(
+  scenarioEMissingVerifierGateFailClosed.safety.executionEnabled,
+  false,
+  "task plan file planner wiring logic smoke E execution should be disabled",
+);
+assertWiringIssueRepresented(
+  scenarioEMissingVerifierGateFailClosed,
+  "task plan file planner wiring logic smoke E",
+);
+
+assert.equal(
+  scenarioFMissingNoExecutionNoWritesGateFailClosed.mapping
+    .failClosedWithoutNoExecution ||
+    scenarioFMissingNoExecutionNoWritesGateFailClosed.mapping
+      .failClosedWithoutNoWrites,
+  true,
+  "task plan file planner wiring logic smoke F should represent missing noExecution/noWrites gate",
+);
+assertPlannerNotAttempted(
+  scenarioFMissingNoExecutionNoWritesGateFailClosed,
+  "task plan file planner wiring logic smoke F",
+);
+assert.equal(
+  scenarioFMissingNoExecutionNoWritesGateFailClosed.ok,
+  false,
+  "task plan file planner wiring logic smoke F should fail closed",
+);
+assert.ok(
+  ["mapping_failed", "blocked"].includes(
+    scenarioFMissingNoExecutionNoWritesGateFailClosed.status,
+  ),
+  "task plan file planner wiring logic smoke F should be blocked or mapping_failed",
+);
+assert.equal(
+  scenarioFMissingNoExecutionNoWritesGateFailClosed.safety.executionEnabled,
+  false,
+  "task plan file planner wiring logic smoke F execution should be disabled",
+);
+assert.equal(
+  scenarioFMissingNoExecutionNoWritesGateFailClosed.safety.filesystemMutation,
+  false,
+  "task plan file planner wiring logic smoke F filesystem mutation should be false",
+);
+assertWiringIssueRepresented(
+  scenarioFMissingNoExecutionNoWritesGateFailClosed,
+  "task plan file planner wiring logic smoke F",
+);
+
+assert.equal(
+  scenarioGPlannerFailureFailClosed.parse.ok,
+  true,
+  "task plan file planner wiring logic smoke G parser should be ok",
+);
+assert.equal(
+  scenarioGPlannerFailureFailClosed.mapping.ok,
+  true,
+  "task plan file planner wiring logic smoke G mapping should be ok",
+);
+assert.equal(
+  scenarioGPlannerFailureFailClosed.mapping.planningInputAvailable,
+  true,
+  "task plan file planner wiring logic smoke G planning input should be available",
+);
+assert.equal(
+  scenarioGPlannerFailureFailClosed.planner.attempted,
+  true,
+  "task plan file planner wiring logic smoke G planner should be attempted",
+);
+assert.equal(
+  scenarioGPlannerFailureFailClosed.planner.ok,
+  false,
+  "task plan file planner wiring logic smoke G planner should fail",
+);
+assert.equal(
+  scenarioGPlannerFailureFailClosed.ok,
+  false,
+  "task plan file planner wiring logic smoke G should fail closed",
+);
+assert.equal(
+  scenarioGPlannerFailureFailClosed.status,
+  "planner_failed",
+  "task plan file planner wiring logic smoke G should report planner_failed",
+);
+assert.equal(
+  scenarioGPlannerFailureFailClosed.exitCode,
+  "planner_failure",
+  "task plan file planner wiring logic smoke G exit code should be planner_failure",
+);
+assert.equal(
+  scenarioGPlannerFailureFailClosed.safety.executionEnabled,
+  false,
+  "task plan file planner wiring logic smoke G execution should be disabled",
+);
+assertWiringIssueRepresented(
+  scenarioGPlannerFailureFailClosed,
+  "task plan file planner wiring logic smoke G",
+);
+
+assertWiringFields(
+  scenarioHSafetyStageCreation,
+  [
+    "executionEnabled",
+    "adapterCalls",
+    "auditWrites",
+    "verifierRun",
+    "persistence",
+    "filesystemMutation",
+    "completedStateCreated",
+    "noExecution",
+    "noWrites",
+  ],
+  "task plan file planner wiring logic smoke H safety stage",
+);
+assert.equal(
+  scenarioHSafetyStageCreation.executionEnabled,
+  false,
+  "task plan file planner wiring logic smoke H executionEnabled should be false",
+);
+assert.equal(
+  scenarioHSafetyStageCreation.adapterCalls,
+  false,
+  "task plan file planner wiring logic smoke H adapterCalls should be false",
+);
+assert.equal(
+  scenarioHSafetyStageCreation.auditWrites,
+  false,
+  "task plan file planner wiring logic smoke H auditWrites should be false",
+);
+assert.equal(
+  scenarioHSafetyStageCreation.verifierRun,
+  false,
+  "task plan file planner wiring logic smoke H verifierRun should be false",
+);
+assert.equal(
+  scenarioHSafetyStageCreation.persistence,
+  false,
+  "task plan file planner wiring logic smoke H persistence should be false",
+);
+assert.equal(
+  scenarioHSafetyStageCreation.filesystemMutation,
+  false,
+  "task plan file planner wiring logic smoke H filesystemMutation should be false",
+);
+assert.equal(
+  scenarioHSafetyStageCreation.completedStateCreated,
+  false,
+  "task plan file planner wiring logic smoke H completedStateCreated should be false",
+);
+assert.equal(
+  scenarioHSafetyStageCreation.noExecution,
+  true,
+  "task plan file planner wiring logic smoke H noExecution should be true",
+);
+assert.equal(
+  scenarioHSafetyStageCreation.noWrites,
+  true,
+  "task plan file planner wiring logic smoke H noWrites should be true",
+);
+
+assertWiringFields(
+  scenarioIHumanOutputPayload,
+  [
+    "title",
+    "taskId",
+    "sourceFile",
+    "mode",
+    "parsed",
+    "mapping",
+    "planning",
+    "workItems",
+    "batches",
+    "steps",
+    "policy",
+    "approvalRequired",
+    "verifierRequired",
+    "completionGatedByVerifier",
+    "auditExpected",
+    "realExecution",
+    "adapterCalls",
+    "auditWrites",
+    "verifierRun",
+    "persistence",
+    "issues",
+  ],
+  "task plan file planner wiring logic smoke I human output",
+);
+assert.equal(
+  scenarioIHumanOutputPayload.realExecution,
+  false,
+  "task plan file planner wiring logic smoke I realExecution should be false",
+);
+assertWiringSideEffectFalseFields(
+  scenarioIHumanOutputPayload,
+  "task plan file planner wiring logic smoke I human output",
+);
+
+assertWiringFields(
+  scenarioJJsonOutputPayload,
+  [
+    "ok",
+    "status",
+    "exitCode",
+    "taskId",
+    "mode",
+    "sourceFile",
+    "parse",
+    "mapping",
+    "plan",
+    "policy",
+    "verifier",
+    "audit",
+    "resume",
+    "executionEnabled",
+    "adapterCalls",
+    "auditWrites",
+    "verifierRun",
+    "persistence",
+    "issues",
+    "summary",
+  ],
+  "task plan file planner wiring logic smoke J JSON output",
+);
+assertWiringSideEffectFalseFields(
+  scenarioJJsonOutputPayload,
+  "task plan file planner wiring logic smoke J JSON output",
+);
+
+assertWiringFields(
+  scenarioKSummaryGeneration,
+  [
+    "parsed",
+    "mapped",
+    "planned",
+    "workItemCount",
+    "batchCount",
+    "planStepCount",
+    "issueCount",
+    "json",
+    "noExecution",
+    "noWrites",
+    "executionEnabled",
+    "adapterCalls",
+    "auditWrites",
+    "verifierRun",
+    "persistence",
+    "filesystemMutation",
+    "completedStateCreated",
+    "verifierRequired",
+    "completionGatedByVerifier",
+    "mappingSupported",
+    "planningInputAvailable",
+  ],
+  "task plan file planner wiring logic smoke K summary",
+);
+assert.deepEqual(
+  scenarioKSummaryGeneration,
+  scenarioASuccessfulMinimalPlanningHandoff.summary,
+  "task plan file planner wiring logic smoke K summary should match result summary",
+);
+assertWiringLogicSummaryMatchesResult(
+  scenarioASuccessfulMinimalPlanningHandoff,
+  "task plan file planner wiring logic smoke K",
+);
+
+assert.deepEqual(
+  scenarioLExitCodeMapping,
+  {
+    planned: "success",
+    parser_failed: "parser_failure",
+    validation_failed: "validation_failure",
+    unsupported_mapping: "unsupported_mapping",
+    mapping_failed: "mapping_failure",
+    planner_failed: "planner_failure",
+    blocked: "blocked",
+    failed: "unknown_failure",
+    unknown: "unknown_failure",
+  },
+  "task plan file planner wiring logic smoke L exit code mapping should remain stable",
+);
+
+const deterministicPlanner = () =>
+  scenarioASuccessfulMinimalPlanningHandoff.planner.planningResult;
+const deterministicInput = createWiringInputFromResult(
+  scenarioASuccessfulMinimalPlanningHandoff,
+);
+const deterministicFirst = createTaskPlanFilePlannerWiringResult(
+  deterministicInput,
+  {
+    planner: deterministicPlanner,
+    planningResultReference:
+      scenarioASuccessfulMinimalPlanningHandoff.planner.planningResultReference,
+  },
+);
+const deterministicSecond = createTaskPlanFilePlannerWiringResult(
+  deterministicInput,
+  {
+    planner: deterministicPlanner,
+    planningResultReference:
+      scenarioASuccessfulMinimalPlanningHandoff.planner.planningResultReference,
+  },
+);
+
+assert.deepEqual(
+  deterministicFirst,
+  deterministicSecond,
+  "task plan file planner wiring logic smoke M repeated result should be equivalent",
+);
+assert.deepEqual(
+  deterministicFirst.issues.map((issue) => issue.code),
+  deterministicSecond.issues.map((issue) => issue.code),
+  "task plan file planner wiring logic smoke M issue ordering should be stable",
+);
+assert.deepEqual(
+  deterministicFirst.summary,
+  deterministicSecond.summary,
+  "task plan file planner wiring logic smoke M summary should be stable",
+);
+assert.deepEqual(
+  deterministicFirst.safety,
+  deterministicSecond.safety,
+  "task plan file planner wiring logic smoke M safety flags should be stable",
+);
+assertStableWiringPayloadShape(
+  deterministicFirst,
+  deterministicSecond,
+  "task plan file planner wiring logic smoke M",
+);
+assert.deepEqual(
+  scenarioMDeterministicOutput.sameSummary,
+  scenarioMDeterministicOutput.repeatedSummary,
+  "task plan file planner wiring logic smoke M exported summary should be stable",
+);
+assert.equal(
+  scenarioMDeterministicOutput.sameOk &&
+    scenarioMDeterministicOutput.sameStatus &&
+    scenarioMDeterministicOutput.sameExitCode &&
+    scenarioMDeterministicOutput.sameTaskId &&
+    scenarioMDeterministicOutput.adapterCallsRemainFalse &&
+    scenarioMDeterministicOutput.filesystemMutationRemainsFalse,
+  true,
+  "task plan file planner wiring logic smoke M exported deterministic flags should be stable",
+);
+
+const injectedPlannerScenario =
+  createScenarioNOptionalDependencyInjectedPlannerBehavior();
+
+assert.equal(
+  injectedPlannerScenario.plannerInvokedOnlyAfterGatesPass,
+  true,
+  "task plan file planner wiring logic smoke N exported fake planner should be gated",
+);
+assert.equal(
+  injectedPlannerScenario.directPlanAgenticRunnerCall,
+  false,
+  "task plan file planner wiring logic smoke N should not direct-call planAgenticRunner",
+);
+assert.equal(
+  injectedPlannerScenario.planned.planner.attempted,
+  true,
+  "task plan file planner wiring logic smoke N fake planner should run after gates pass",
+);
+assert.equal(
+  injectedPlannerScenario.callsAfterSuccessfulGate,
+  1,
+  "task plan file planner wiring logic smoke N fake planner should be called once on success",
+);
+assert.equal(
+  injectedPlannerScenario.callsAfterParserFailedGate,
+  1,
+  "task plan file planner wiring logic smoke N fake planner should not run for parser failure",
+);
+assert.equal(
+  injectedPlannerScenario.callsAfterBlockedGate,
+  1,
+  "task plan file planner wiring logic smoke N fake planner should not run for missing verifier gate",
+);
+
+let injectedPlannerCalls = 0;
+const injectedPlanner = (input) => {
+  injectedPlannerCalls += 1;
+  return {
+    ...scenarioASuccessfulMinimalPlanningHandoff.planner.planningResult,
+    taskId: input.taskId,
+  };
+};
+const injectedPlannerOptions = {
+  planner: injectedPlanner,
+  planningResultReference:
+    scenarioASuccessfulMinimalPlanningHandoff.planner.planningResultReference,
+};
+
+createTaskPlanFilePlannerWiringResult(
+  createWiringInputFromResult(scenarioASuccessfulMinimalPlanningHandoff),
+  injectedPlannerOptions,
+);
+assert.equal(
+  injectedPlannerCalls,
+  1,
+  "task plan file planner wiring logic smoke N fake planner should run after all gates pass",
+);
+createTaskPlanFilePlannerWiringResult(
+  createWiringInputFromResult(scenarioBParserFailureFailClosed),
+  injectedPlannerOptions,
+);
+assert.equal(
+  injectedPlannerCalls,
+  1,
+  "task plan file planner wiring logic smoke N fake planner should not run for parser failure",
+);
+createTaskPlanFilePlannerWiringResult(
+  createWiringInputFromResult(scenarioDUnsupportedMappingFailClosed),
+  injectedPlannerOptions,
+);
+assert.equal(
+  injectedPlannerCalls,
+  1,
+  "task plan file planner wiring logic smoke N fake planner should not run for unsupported mapping",
+);
+createTaskPlanFilePlannerWiringResult(
+  createWiringInputFromResult(scenarioEMissingVerifierGateFailClosed),
+  injectedPlannerOptions,
+);
+assert.equal(
+  injectedPlannerCalls,
+  1,
+  "task plan file planner wiring logic smoke N fake planner should not run for missing verifier gate",
+);
+createTaskPlanFilePlannerWiringResult(
+  createWiringInputFromResult(scenarioFMissingNoExecutionNoWritesGateFailClosed),
+  injectedPlannerOptions,
+);
+assert.equal(
+  injectedPlannerCalls,
+  1,
+  "task plan file planner wiring logic smoke N fake planner should not run for missing noExecution/noWrites",
+);
+
+for (const [message, result] of [
+  [
+    "task plan file planner wiring logic smoke O successful handoff",
+    scenarioASuccessfulMinimalPlanningHandoff,
+  ],
+  [
+    "task plan file planner wiring logic smoke O parser failure",
+    scenarioBParserFailureFailClosed,
+  ],
+  [
+    "task plan file planner wiring logic smoke O validation failure",
+    scenarioCValidationFailureFailClosed,
+  ],
+  [
+    "task plan file planner wiring logic smoke O unsupported mapping",
+    scenarioDUnsupportedMappingFailClosed,
+  ],
+  [
+    "task plan file planner wiring logic smoke O missing verifier gate",
+    scenarioEMissingVerifierGateFailClosed,
+  ],
+  [
+    "task plan file planner wiring logic smoke O missing noExecution/noWrites",
+    scenarioFMissingNoExecutionNoWritesGateFailClosed,
+  ],
+  [
+    "task plan file planner wiring logic smoke O planner failure",
+    scenarioGPlannerFailureFailClosed,
+  ],
+]) {
+  assertWiringLogicNoExecutionNoWrites(result, message);
+  assert.equal(
+    Object.hasOwn(result, "filesystemIoHappened"),
+    false,
+    `${message} must not represent filesystem IO`,
+  );
+  assert.equal(
+    Object.hasOwn(result, "cliRan"),
+    false,
+    `${message} must not represent CLI execution`,
+  );
+  assert.equal(
+    Object.hasOwn(result, "runnerExecutionHappened"),
+    false,
+    `${message} must not represent runner execution`,
+  );
+  assert.equal(
+    Object.hasOwn(result, "directPlanAgenticRunnerCall"),
+    false,
+    `${message} must not represent direct planAgenticRunner call`,
+  );
+}
+
+console.log("task plan file planner wiring logic smoke tests passed");
 
 const taskContractMapperLogicMinimalInput =
   createTaskContractMapperLogicSmokeInput();
