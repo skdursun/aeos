@@ -24,6 +24,9 @@ Current foundation:
 - `aeos task state transition --preview <task-id> --intent <intent>
   --expected-revision <number>` exists as a read-only persisted-state transition
   evaluation command.
+- `aeos task state transition <task-id> --intent <intent>
+  --expected-revision <number>` exists as an explicit revision-guarded
+  persisted-state transition apply command for the same closed intents.
 - `aeos task status <task-id>` exists as a read-only persisted-state inspection
   command.
 - `aeos task resume --preview <task-id>` exists as a read-only resume handoff
@@ -189,9 +192,45 @@ corrupt state, forged terminal state, and revision conflicts exit non-zero with
 deterministic JSON errors.
 
 ### `aeos task state transition`
-Transition apply is not implemented. Running the transition command without
-`--preview` fails closed with `task_state_transition_apply_not_implemented` and
-performs no writes.
+Applies one closed, system-owned persisted task-state transition:
+
+```text
+aeos task state transition <task-id> --intent <intent> --expected-revision <number>
+```
+
+`--expected-revision` is mandatory for writes and must be a positive integer.
+Apply never silently uses the latest revision and has no `--force` mode.
+
+Preview is not authorization. Apply reloads authoritative persisted state,
+validates it, compares the expected revision, derives typed system evidence from
+that current state, evaluates the same closed transition policy as preview, and
+then writes through the core revision-guarded transition API. A successful apply
+increments the revision exactly once and returns the previous revision/lifecycle
+and new revision/lifecycle.
+
+Apply accepts only:
+
+- `mark_dry_run_ready`
+- `require_verification`
+- `mark_blocked`
+
+It accepts no arbitrary targets such as `--to`, `--target`, or `--state`, and
+it accepts no arbitrary `--evidence-json`, proof text, model prose, or operator
+free-form evidence. `mark_dry_run_ready` remains blocked until authoritative
+persisted dry-run evidence exists; the current dry-run command remains read-only
+and does not create that evidence. Terminal-style intents such as `completed`,
+`verified`, `approved`, `execution_success`, `mark_completed`, and
+`mark_verified` fail closed.
+
+Transition apply does not execute task work, call adapters, write audit events,
+run verifiers, persist external resume cursors, create completion, or create
+verification. Failed or blocked apply preserves bytes, revision, lifecycle, and
+reliable mtime.
+
+### `aeos task state transition --json`
+Same apply behavior as human mode, but stdout is exactly one JSON object.
+Failures are JSON-only with deterministic issue codes and no raw runtime stack
+traces.
 
 ### `aeos task status`
 Loads authoritative persisted task state by task id from the project-local state

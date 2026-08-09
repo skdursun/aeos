@@ -68,6 +68,8 @@ condition.
 - TASK-0282: Design and implement revision-guarded task-state transition/update
   foundation.
 - TASK-0283: Design and implement read-only task-state transition preview CLI.
+- TASK-0284: Design and implement explicit revision-guarded transition apply
+  CLI.
 
 ## Do Not Load By Default
 
@@ -78,11 +80,11 @@ condition.
 
 ## Next Task
 
-TASK-0284 Design and implement explicit revision-guarded transition apply CLI.
+TASK-0285 Design authoritative execution-attempt/event state foundation.
 
-Purpose: add operator-safe persisted transition apply after the read-only
-transition preview proved revision, evidence, terminal-state, and no-write
-safety boundaries.
+Purpose: Before real model/tool execution, establish authoritative
+execution-attempt records/events that future execution, audit, retry, and
+verifier flows can rely on.
 
 ## Current Plans
 

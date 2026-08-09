@@ -12,6 +12,7 @@ import {
   runAgenticRunnerDryRun,
   runInitPipeline,
   saveTaskState,
+  transitionPersistedTaskState,
   validateAeosTask,
 } from "@aeos/core";
 import type {
@@ -90,6 +91,8 @@ Commands:
   task state init <task-file> --json
   task state transition --preview <task-id> --intent <intent> --expected-revision <number>
   task state transition --preview <task-id> --intent <intent> --expected-revision <number> --json
+  task state transition <task-id> --intent <intent> --expected-revision <number>
+  task state transition <task-id> --intent <intent> --expected-revision <number> --json
   task status <task-id>
   task status <task-id> --json
   task resume --preview <task-id>
@@ -373,7 +376,7 @@ type TaskStateTransitionPreviewJsonOutput =
         | "failed_to_load"
         | "invalid_arguments"
         | "task_state_revision_conflict"
-        | "task_state_transition_apply_not_implemented";
+        | "task_state_transition_blocked";
       readonly taskId: string;
       readonly sourceRevision: number | null;
       readonly expectedRevision: number | null;
@@ -384,6 +387,52 @@ type TaskStateTransitionPreviewJsonOutput =
       readonly transition: null;
       readonly evidence: TaskStateTransitionPreviewEvidence;
       readonly safety: TaskStateTransitionPreviewSafety;
+      readonly error: {
+        readonly code: string;
+        readonly message: string;
+        readonly category: string;
+      };
+      readonly issues: readonly TaskStateCliIssue[];
+    };
+
+type TaskStateTransitionApplySafety = {
+  readonly executionPerformed: false;
+  readonly adapterCalls: false;
+  readonly auditWrites: false;
+  readonly verifierRun: false;
+  readonly completedStateCreated: false;
+  readonly verifiedStateCreated: false;
+};
+
+type TaskStateTransitionApplyJsonOutput =
+  | {
+      readonly ok: true;
+      readonly status: "task_state_transition_applied";
+      readonly taskId: string;
+      readonly intent: TaskStateTransitionIntent["kind"];
+      readonly previousRevision: number;
+      readonly revision: number;
+      readonly previousLifecycle: string;
+      readonly lifecycle: string;
+      readonly transitionApplied: true;
+      readonly safety: TaskStateTransitionApplySafety;
+      readonly issues: readonly TaskStateCliIssue[];
+    }
+  | {
+      readonly ok: false;
+      readonly status:
+        | "failed_to_load"
+        | "invalid_arguments"
+        | "task_state_revision_conflict"
+        | "task_state_transition_blocked";
+      readonly taskId: string;
+      readonly intent: string | null;
+      readonly previousRevision: number | null;
+      readonly expectedRevision: number | null;
+      readonly previousLifecycle: string | null;
+      readonly lifecycle: string | null;
+      readonly transitionApplied: false;
+      readonly safety: TaskStateTransitionApplySafety;
       readonly error: {
         readonly code: string;
         readonly message: string;
@@ -1000,6 +1049,12 @@ function writeTaskResumePreviewJson(value: TaskResumePreviewJsonOutput): void {
 
 function writeTaskStateTransitionPreviewJson(
   value: TaskStateTransitionPreviewJsonOutput,
+): void {
+  writeJsonLine(value);
+}
+
+function writeTaskStateTransitionApplyJson(
+  value: TaskStateTransitionApplyJsonOutput,
 ): void {
   writeJsonLine(value);
 }
@@ -2511,6 +2566,15 @@ const taskStateTransitionPreviewSafety: TaskStateTransitionPreviewSafety = {
   verifiedStateCreated: false,
 };
 
+const taskStateTransitionApplySafety: TaskStateTransitionApplySafety = {
+  executionPerformed: false,
+  adapterCalls: false,
+  auditWrites: false,
+  verifierRun: false,
+  completedStateCreated: false,
+  verifiedStateCreated: false,
+};
+
 const taskStateTransitionIntentKinds = new Set<string>([
   "mark_dry_run_ready",
   "require_verification",
@@ -2630,7 +2694,7 @@ function parseExpectedTransitionRevision(
       error: createTaskStateCliError({
         code: "task_state_transition_expected_revision_required",
         message:
-          "Task state transition preview requires --expected-revision <number>.",
+          "Task state transition requires --expected-revision <number>.",
       }),
     };
   }
@@ -2736,6 +2800,66 @@ function createTaskStateTransitionPreviewJsonOutput(input: {
   };
 }
 
+function createTaskStateTransitionApplyErrorJsonOutput(input: {
+  readonly taskId?: string;
+  readonly previousRevision?: number | null;
+  readonly expectedRevision?: number | null;
+  readonly previousLifecycle?: string | null;
+  readonly lifecycle?: string | null;
+  readonly intent?: string | null;
+  readonly error: AeosError;
+  readonly status?: Extract<
+    TaskStateTransitionApplyJsonOutput,
+    { readonly ok: false }
+  >["status"];
+}): Extract<TaskStateTransitionApplyJsonOutput, { readonly ok: false }> {
+  return {
+    ok: false,
+    status:
+      input.status ??
+      (input.error.code === "task_state_revision_conflict"
+        ? "task_state_revision_conflict"
+        : input.error.category === "not_found" ||
+            input.error.code.startsWith("task_state_")
+          ? "failed_to_load"
+          : "invalid_arguments"),
+    taskId: input.taskId ?? "",
+    intent: input.intent ?? null,
+    previousRevision: input.previousRevision ?? null,
+    expectedRevision: input.expectedRevision ?? null,
+    previousLifecycle: input.previousLifecycle ?? null,
+    lifecycle: input.lifecycle ?? null,
+    transitionApplied: false,
+    safety: taskStateTransitionApplySafety,
+    error: {
+      code: input.error.code,
+      message: input.error.message,
+      category: input.error.category,
+    },
+    issues: [createTaskStateCliIssueFromError(input.error)],
+  };
+}
+
+function createTaskStateTransitionApplyJsonOutput(input: {
+  readonly previousState: PersistedTaskState;
+  readonly state: PersistedTaskState;
+  readonly intent: TaskStateTransitionIntent["kind"];
+}): Extract<TaskStateTransitionApplyJsonOutput, { readonly ok: true }> {
+  return {
+    ok: true,
+    status: "task_state_transition_applied",
+    taskId: input.state.taskId,
+    intent: input.intent,
+    previousRevision: input.previousState.revision,
+    revision: input.state.revision,
+    previousLifecycle: input.previousState.lifecycleState,
+    lifecycle: input.state.lifecycleState,
+    transitionApplied: true,
+    safety: taskStateTransitionApplySafety,
+    issues: [],
+  };
+}
+
 function printTaskStateTransitionPreviewOutput(
   output: Extract<TaskStateTransitionPreviewJsonOutput, { readonly ok: true }>,
 ): void {
@@ -2792,6 +2916,50 @@ function printTaskStateTransitionPreviewError(
   console.error("Verified state created: false");
 }
 
+function printTaskStateTransitionApplyOutput(
+  output: Extract<TaskStateTransitionApplyJsonOutput, { readonly ok: true }>,
+): void {
+  console.log("Task State Transition Applied");
+  console.log("");
+  console.log(`Task id: ${output.taskId}`);
+  console.log(`Previous revision: ${output.previousRevision}`);
+  console.log(`New revision: ${output.revision}`);
+  console.log(`Previous lifecycle: ${output.previousLifecycle}`);
+  console.log(`Intent: ${output.intent}`);
+  console.log(`New lifecycle: ${output.lifecycle}`);
+  console.log(`Transition applied: ${String(output.transitionApplied)}`);
+  console.log("");
+  console.log(`Execution performed: ${String(output.safety.executionPerformed)}`);
+  console.log(`Adapter calls: ${String(output.safety.adapterCalls)}`);
+  console.log(`Audit writes: ${String(output.safety.auditWrites)}`);
+  console.log(`Verifier run: ${String(output.safety.verifierRun)}`);
+  console.log(
+    `Completed state created: ${String(output.safety.completedStateCreated)}`,
+  );
+  console.log(
+    `Verified state created: ${String(output.safety.verifiedStateCreated)}`,
+  );
+  console.log("");
+  console.log(`Issues: ${output.issues.length}`);
+}
+
+function printTaskStateTransitionApplyError(
+  output: Extract<TaskStateTransitionApplyJsonOutput, { readonly ok: false }>,
+): void {
+  console.error("Task State Transition Apply");
+  console.error(`Task id: ${output.taskId}`);
+  console.error(`Status: ${output.status}`);
+  console.error(`Error: ${output.error.code}`);
+  console.error(`Message: ${output.error.message}`);
+  console.error("Transition applied: false");
+  console.error("Execution performed: false");
+  console.error("Adapter calls: false");
+  console.error("Audit writes: false");
+  console.error("Verifier run: false");
+  console.error("Completed state created: false");
+  console.error("Verified state created: false");
+}
+
 function parseTaskStateTransitionArgs(args: readonly string[]): {
   readonly json: boolean;
   readonly preview: boolean;
@@ -2831,7 +2999,7 @@ function parseTaskStateTransitionArgs(args: readonly string[]): {
           expectedRevision,
           error: createTaskStateCliError({
             code: "task_state_transition_intent_required",
-            message: "Task state transition preview requires --intent <intent>.",
+            message: "Task state transition requires --intent <intent>.",
           }),
         };
       }
@@ -2845,7 +3013,7 @@ function parseTaskStateTransitionArgs(args: readonly string[]): {
           expectedRevision,
           error: createTaskStateCliError({
             code: "task_state_transition_duplicate_intent",
-            message: "Task state transition preview accepts one intent.",
+            message: "Task state transition accepts one intent.",
           }),
         };
       }
@@ -2868,7 +3036,7 @@ function parseTaskStateTransitionArgs(args: readonly string[]): {
           error: createTaskStateCliError({
             code: "task_state_transition_expected_revision_required",
             message:
-              "Task state transition preview requires --expected-revision <number>.",
+              "Task state transition requires --expected-revision <number>.",
           }),
         };
       }
@@ -2883,7 +3051,7 @@ function parseTaskStateTransitionArgs(args: readonly string[]): {
           error: createTaskStateCliError({
             code: "task_state_transition_duplicate_expected_revision",
             message:
-              "Task state transition preview accepts one expected revision.",
+              "Task state transition accepts one expected revision.",
           }),
         };
       }
@@ -2913,7 +3081,7 @@ function parseTaskStateTransitionArgs(args: readonly string[]): {
               ? "task_state_transition_terminal_forbidden"
               : "task_state_transition_arbitrary_target_forbidden",
           message:
-            "Task state transition preview accepts only closed system-owned intents and no arbitrary target lifecycle.",
+            "Task state transition accepts only closed system-owned intents and no arbitrary target lifecycle.",
         }),
       };
     }
@@ -2941,7 +3109,7 @@ function parseTaskStateTransitionArgs(args: readonly string[]): {
         expectedRevision,
         error: createTaskStateCliError({
           code: "task_state_transition_task_id_ambiguous",
-          message: "Task state transition preview accepts one task id.",
+          message: "Task state transition accepts one task id.",
         }),
       };
     }
@@ -2961,45 +3129,33 @@ function parseTaskStateTransitionArgs(args: readonly string[]): {
 async function handleTaskStateTransition(args: readonly string[]): Promise<void> {
   const parsedArgs = parseTaskStateTransitionArgs(args);
 
-  if (!parsedArgs.preview) {
-    const error = createTaskStateCliError({
-      code: "task_state_transition_apply_not_implemented",
-      message:
-        "Task state transition apply is not implemented; use --preview for read-only evaluation.",
-    });
-    const output = createTaskStateTransitionPreviewErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      intent: parsedArgs.intent,
-      expectedRevision:
-        parsedArgs.expectedRevision === undefined
-          ? null
-          : Number(parsedArgs.expectedRevision),
-      error,
-      status: "task_state_transition_apply_not_implemented",
-    });
-
-    if (parsedArgs.json) {
-      writeTaskStateTransitionPreviewJson(output);
-    } else {
-      printTaskStateTransitionPreviewError(output);
-    }
-
-    setExitCode(1);
-    return;
-  }
-
   if (parsedArgs.error !== undefined) {
-    const output = createTaskStateTransitionPreviewErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      intent: parsedArgs.intent,
-      error: parsedArgs.error,
-      status: "invalid_arguments",
-    });
+    if (parsedArgs.preview) {
+      const output = createTaskStateTransitionPreviewErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        intent: parsedArgs.intent,
+        error: parsedArgs.error,
+        status: "invalid_arguments",
+      });
 
-    if (parsedArgs.json) {
-      writeTaskStateTransitionPreviewJson(output);
+      if (parsedArgs.json) {
+        writeTaskStateTransitionPreviewJson(output);
+      } else {
+        printTaskStateTransitionPreviewError(output);
+      }
     } else {
-      printTaskStateTransitionPreviewError(output);
+      const output = createTaskStateTransitionApplyErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        intent: parsedArgs.intent,
+        error: parsedArgs.error,
+        status: "invalid_arguments",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskStateTransitionApplyJson(output);
+      } else {
+        printTaskStateTransitionApplyError(output);
+      }
     }
 
     setExitCode(1);
@@ -3009,17 +3165,31 @@ async function handleTaskStateTransition(args: readonly string[]): Promise<void>
   if (parsedArgs.taskId === undefined || parsedArgs.taskId.trim().length === 0) {
     const error = createTaskStateCliError({
       code: "task_state_transition_task_id_required",
-      message: "Task state transition preview requires a task id.",
-    });
-    const output = createTaskStateTransitionPreviewErrorJsonOutput({
-      error,
-      status: "invalid_arguments",
+      message: "Task state transition requires a task id.",
     });
 
-    if (parsedArgs.json) {
-      writeTaskStateTransitionPreviewJson(output);
+    if (parsedArgs.preview) {
+      const output = createTaskStateTransitionPreviewErrorJsonOutput({
+        error,
+        status: "invalid_arguments",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskStateTransitionPreviewJson(output);
+      } else {
+        printTaskStateTransitionPreviewError(output);
+      }
     } else {
-      printTaskStateTransitionPreviewError(output);
+      const output = createTaskStateTransitionApplyErrorJsonOutput({
+        error,
+        status: "invalid_arguments",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskStateTransitionApplyJson(output);
+      } else {
+        printTaskStateTransitionApplyError(output);
+      }
     }
 
     setExitCode(1);
@@ -3029,18 +3199,33 @@ async function handleTaskStateTransition(args: readonly string[]): Promise<void>
   if (parsedArgs.intent === undefined) {
     const error = createTaskStateCliError({
       code: "task_state_transition_intent_required",
-      message: "Task state transition preview requires --intent <intent>.",
-    });
-    const output = createTaskStateTransitionPreviewErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      error,
-      status: "invalid_arguments",
+      message: "Task state transition requires --intent <intent>.",
     });
 
-    if (parsedArgs.json) {
-      writeTaskStateTransitionPreviewJson(output);
+    if (parsedArgs.preview) {
+      const output = createTaskStateTransitionPreviewErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        error,
+        status: "invalid_arguments",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskStateTransitionPreviewJson(output);
+      } else {
+        printTaskStateTransitionPreviewError(output);
+      }
     } else {
-      printTaskStateTransitionPreviewError(output);
+      const output = createTaskStateTransitionApplyErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        error,
+        status: "invalid_arguments",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskStateTransitionApplyJson(output);
+      } else {
+        printTaskStateTransitionApplyError(output);
+      }
     }
 
     setExitCode(1);
@@ -3051,20 +3236,37 @@ async function handleTaskStateTransition(args: readonly string[]): Promise<void>
     const error = createTaskStateCliError({
       code: "task_state_transition_terminal_forbidden",
       message:
-        "Task state transition preview cannot authorize completed, verified, approved, or execution-success lifecycle states.",
-    });
-    const output = createTaskStateTransitionPreviewErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      intent: parsedArgs.intent,
-      targetLifecycle: parsedArgs.intent,
-      error,
-      status: "invalid_arguments",
+        "Task state transition cannot authorize completed, verified, approved, or execution-success lifecycle states.",
     });
 
-    if (parsedArgs.json) {
-      writeTaskStateTransitionPreviewJson(output);
+    if (parsedArgs.preview) {
+      const output = createTaskStateTransitionPreviewErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        intent: parsedArgs.intent,
+        targetLifecycle: parsedArgs.intent,
+        error,
+        status: "invalid_arguments",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskStateTransitionPreviewJson(output);
+      } else {
+        printTaskStateTransitionPreviewError(output);
+      }
     } else {
-      printTaskStateTransitionPreviewError(output);
+      const output = createTaskStateTransitionApplyErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        intent: parsedArgs.intent,
+        lifecycle: parsedArgs.intent,
+        error,
+        status: "invalid_arguments",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskStateTransitionApplyJson(output);
+      } else {
+        printTaskStateTransitionApplyError(output);
+      }
     }
 
     setExitCode(1);
@@ -3076,17 +3278,33 @@ async function handleTaskStateTransition(args: readonly string[]): Promise<void>
       code: "task_state_transition_unknown_intent",
       message: "Task state transition intent is unknown or unsupported.",
     });
-    const output = createTaskStateTransitionPreviewErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      intent: parsedArgs.intent,
-      error,
-      status: "invalid_arguments",
-    });
 
-    if (parsedArgs.json) {
-      writeTaskStateTransitionPreviewJson(output);
+    if (parsedArgs.preview) {
+      const output = createTaskStateTransitionPreviewErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        intent: parsedArgs.intent,
+        error,
+        status: "invalid_arguments",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskStateTransitionPreviewJson(output);
+      } else {
+        printTaskStateTransitionPreviewError(output);
+      }
     } else {
-      printTaskStateTransitionPreviewError(output);
+      const output = createTaskStateTransitionApplyErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        intent: parsedArgs.intent,
+        error,
+        status: "invalid_arguments",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskStateTransitionApplyJson(output);
+      } else {
+        printTaskStateTransitionApplyError(output);
+      }
     }
 
     setExitCode(1);
@@ -3098,17 +3316,32 @@ async function handleTaskStateTransition(args: readonly string[]): Promise<void>
   );
 
   if (!expectedRevisionResult.ok) {
-    const output = createTaskStateTransitionPreviewErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      intent: parsedArgs.intent,
-      error: expectedRevisionResult.error,
-      status: "invalid_arguments",
-    });
+    if (parsedArgs.preview) {
+      const output = createTaskStateTransitionPreviewErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        intent: parsedArgs.intent,
+        error: expectedRevisionResult.error,
+        status: "invalid_arguments",
+      });
 
-    if (parsedArgs.json) {
-      writeTaskStateTransitionPreviewJson(output);
+      if (parsedArgs.json) {
+        writeTaskStateTransitionPreviewJson(output);
+      } else {
+        printTaskStateTransitionPreviewError(output);
+      }
     } else {
-      printTaskStateTransitionPreviewError(output);
+      const output = createTaskStateTransitionApplyErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        intent: parsedArgs.intent,
+        error: expectedRevisionResult.error,
+        status: "invalid_arguments",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskStateTransitionApplyJson(output);
+      } else {
+        printTaskStateTransitionApplyError(output);
+      }
     }
 
     setExitCode(1);
@@ -3121,18 +3354,34 @@ async function handleTaskStateTransition(args: readonly string[]): Promise<void>
   });
 
   if (!loadResult.ok) {
-    const output = createTaskStateTransitionPreviewErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      expectedRevision: expectedRevisionResult.value,
-      intent: parsedArgs.intent,
-      error: loadResult.error,
-      status: "failed_to_load",
-    });
+    if (parsedArgs.preview) {
+      const output = createTaskStateTransitionPreviewErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        expectedRevision: expectedRevisionResult.value,
+        intent: parsedArgs.intent,
+        error: loadResult.error,
+        status: "failed_to_load",
+      });
 
-    if (parsedArgs.json) {
-      writeTaskStateTransitionPreviewJson(output);
+      if (parsedArgs.json) {
+        writeTaskStateTransitionPreviewJson(output);
+      } else {
+        printTaskStateTransitionPreviewError(output);
+      }
     } else {
-      printTaskStateTransitionPreviewError(output);
+      const output = createTaskStateTransitionApplyErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        expectedRevision: expectedRevisionResult.value,
+        intent: parsedArgs.intent,
+        error: loadResult.error,
+        status: "failed_to_load",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskStateTransitionApplyJson(output);
+      } else {
+        printTaskStateTransitionApplyError(output);
+      }
     }
 
     setExitCode(1);
@@ -3146,21 +3395,39 @@ async function handleTaskStateTransition(args: readonly string[]): Promise<void>
       expectedRevision: expectedRevisionResult.value,
       actualRevision: state.revision,
     });
-    const output = createTaskStateTransitionPreviewErrorJsonOutput({
-      taskId: state.taskId,
-      sourceRevision: state.revision,
-      expectedRevision: expectedRevisionResult.value,
-      currentLifecycle: state.lifecycleState,
-      intent: parsedArgs.intent,
-      error,
-      status: "task_state_revision_conflict",
-      evidence: createTransitionEvidencePreview(parsedArgs.intent, undefined),
-    });
+    if (parsedArgs.preview) {
+      const output = createTaskStateTransitionPreviewErrorJsonOutput({
+        taskId: state.taskId,
+        sourceRevision: state.revision,
+        expectedRevision: expectedRevisionResult.value,
+        currentLifecycle: state.lifecycleState,
+        intent: parsedArgs.intent,
+        error,
+        status: "task_state_revision_conflict",
+        evidence: createTransitionEvidencePreview(parsedArgs.intent, undefined),
+      });
 
-    if (parsedArgs.json) {
-      writeTaskStateTransitionPreviewJson(output);
+      if (parsedArgs.json) {
+        writeTaskStateTransitionPreviewJson(output);
+      } else {
+        printTaskStateTransitionPreviewError(output);
+      }
     } else {
-      printTaskStateTransitionPreviewError(output);
+      const output = createTaskStateTransitionApplyErrorJsonOutput({
+        taskId: state.taskId,
+        previousRevision: state.revision,
+        expectedRevision: expectedRevisionResult.value,
+        previousLifecycle: state.lifecycleState,
+        intent: parsedArgs.intent,
+        error,
+        status: "task_state_revision_conflict",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskStateTransitionApplyJson(output);
+      } else {
+        printTaskStateTransitionApplyError(output);
+      }
     }
 
     setExitCode(1);
@@ -3182,6 +3449,103 @@ async function handleTaskStateTransition(args: readonly string[]): Promise<void>
     },
     evidence,
   });
+
+  if (!parsedArgs.preview) {
+    if (!transitionResult.ok) {
+      const output = createTaskStateTransitionApplyErrorJsonOutput({
+        taskId: state.taskId,
+        previousRevision: state.revision,
+        expectedRevision: expectedRevisionResult.value,
+        previousLifecycle: state.lifecycleState,
+        intent: parsedArgs.intent,
+        error: transitionResult.error,
+        status: "task_state_transition_blocked",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskStateTransitionApplyJson(output);
+      } else {
+        printTaskStateTransitionApplyError(output);
+      }
+
+      setExitCode(1);
+      return;
+    }
+
+    if (evidence === undefined) {
+      const error = createTaskStateCliError({
+        code: "task_state_transition_evidence_unavailable",
+        message:
+          "Task state transition apply requires authoritative typed system evidence.",
+      });
+      const output = createTaskStateTransitionApplyErrorJsonOutput({
+        taskId: state.taskId,
+        previousRevision: state.revision,
+        expectedRevision: expectedRevisionResult.value,
+        previousLifecycle: state.lifecycleState,
+        intent: parsedArgs.intent,
+        error,
+        status: "task_state_transition_blocked",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskStateTransitionApplyJson(output);
+      } else {
+        printTaskStateTransitionApplyError(output);
+      }
+
+      setExitCode(1);
+      return;
+    }
+
+    const persistResult = await transitionPersistedTaskState({
+      projectRoot: getCwd(),
+      taskId: state.taskId,
+      expectedRevision: expectedRevisionResult.value,
+      intent: {
+        kind: parsedArgs.intent,
+      },
+      evidence,
+    });
+
+    if (!persistResult.ok) {
+      const output = createTaskStateTransitionApplyErrorJsonOutput({
+        taskId: state.taskId,
+        previousRevision: state.revision,
+        expectedRevision: expectedRevisionResult.value,
+        previousLifecycle: state.lifecycleState,
+        intent: parsedArgs.intent,
+        error: persistResult.error,
+        status:
+          persistResult.error.code === "task_state_revision_conflict"
+            ? "task_state_revision_conflict"
+            : "task_state_transition_blocked",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskStateTransitionApplyJson(output);
+      } else {
+        printTaskStateTransitionApplyError(output);
+      }
+
+      setExitCode(1);
+      return;
+    }
+
+    const output = createTaskStateTransitionApplyJsonOutput({
+      previousState: state,
+      state: persistResult.value.state,
+      intent: parsedArgs.intent,
+    });
+
+    if (parsedArgs.json) {
+      writeTaskStateTransitionApplyJson(output);
+    } else {
+      printTaskStateTransitionApplyOutput(output);
+    }
+
+    return;
+  }
 
   const output = transitionResult.ok
     ? createTaskStateTransitionPreviewJsonOutput({
@@ -3410,6 +3774,9 @@ async function handleTaskState(args: readonly string[]): Promise<void> {
     console.error("Usage: aeos task state init <task-file> [--json]");
     console.error(
       "Usage: aeos task state transition --preview <task-id> --intent <intent> --expected-revision <number> [--json]",
+    );
+    console.error(
+      "Usage: aeos task state transition <task-id> --intent <intent> --expected-revision <number> [--json]",
     );
     setExitCode(1);
     return;
@@ -5273,6 +5640,9 @@ async function handleTask(args: readonly string[]): Promise<void> {
     console.error("Usage: aeos task state init <task-file> [--json]");
     console.error(
       "Usage: aeos task state transition --preview <task-id> --intent <intent> --expected-revision <number> [--json]",
+    );
+    console.error(
+      "Usage: aeos task state transition <task-id> --intent <intent> --expected-revision <number> [--json]",
     );
     console.error("Usage: aeos task status <task-id> [--json]");
     console.error("Usage: aeos task resume --preview <task-id> [--json]");
