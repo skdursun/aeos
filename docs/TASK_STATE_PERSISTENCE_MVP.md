@@ -245,6 +245,127 @@ authoritative pending or retryable work. Invalid state, corrupt state, forged
 completion/verification, unknown lifecycle state, inconsistent work references,
 and zero remaining work without verifiable completion proof block the handoff.
 
+## Execution Attempt Foundation
+Execution attempts are separate system-owned evidence records. They are not task
+state, audit runtime, verifier runtime, adapter runtime, approval grants, or
+completion proof.
+
+The current storage convention is:
+
+```text
+.aeos/state/executions/<task-id>/<attempt-id>.json
+```
+
+Task state remains authoritative for task lifecycle, work item state, verifier
+gate, completion gate, and revision. Attempt records are authoritative only for
+the attempt lifecycle evidence they contain. This avoids overloading task-state
+JSON and keeps attempts independently inspectable without creating two sources
+of truth for task completion.
+
+`prepareTaskExecutionAttempt` is pure and system-owned. It validates persisted
+task state, requires the expected task-state revision, checks that the task
+lifecycle is executable or resumable, binds the attempt to known pending or
+retryable work and/or a known batch, derives a deterministic safe attempt id,
+creates an `attempt_prepared` event, and returns a `prepared` attempt. It does
+not call adapters, execute work, write audit, run verifiers, mutate task state,
+mark work attempted, or mark anything completed.
+
+Attempt identity fields are immutable after creation:
+
+- `attemptId`
+- `taskId`
+- `taskStateRevision`
+- `workItemId`
+- `batchId`
+- `attemptNumber`
+
+The closed attempt lifecycle is:
+
+- `prepared`
+- `started`
+- `failed`
+- `interrupted`
+- `verification_required`
+
+Unknown lifecycle values fail closed. `succeeded`, `completed`, `verified`,
+`approved`, and execution-success states are explicitly rejected. The current
+transition API can represent only system events for start, failure,
+interruption, and verification-required. It cannot authorize success,
+completion, verification pass, approval granted, audit written, or task
+completion.
+
+Attempt events are state-machine evidence, not the audit log. Current event
+kinds are:
+
+- `attempt_prepared`
+- `attempt_started`
+- `attempt_failed`
+- `attempt_interrupted`
+- `verification_required`
+
+Events carry the attempt id, task id, source task-state revision, sequence,
+timestamp, system authority marker, structured issues, and structured failure
+classification where applicable. Event order is enforced: an attempt must start
+with `attempt_prepared`; duplicate starts and impossible orderings fail closed.
+
+Work and batch bindings are resolved only from validated persisted task state.
+Unknown work items or batches are rejected. Work/batch mismatches are rejected.
+Normal preparation requires pending or retryable work. Completed or verified
+work remains rejected by persisted task-state validation and therefore cannot
+receive a normal MVP execution attempt.
+
+Failure and retry evidence is structured. Failure records include code,
+category, retryable boolean, and optional diagnostic text. Raw stack traces are
+not accepted as authoritative failure data. Retry eligibility comes from the
+system-owned structured failure classification, not model prose such as
+"retryable" or "all complete".
+
+Attempt persistence is immutable for a given attempt id. Existing attempt
+records are not overwritten. Attempt paths are confined under
+`.aeos/state/executions`, task ids and attempt ids must be safe path segments,
+corrupt JSON fails closed, and symlink/non-directory state-root or symlink target
+escapes are rejected. The write strategy mirrors task-state persistence:
+temporary file, fsync, and rename.
+
+The stale-attempt invariant is explicit: an attempt prepared from task revision
+`N` is not execution-authoritative for a current task state at revision `N+1`.
+`validateTaskExecutionAttemptForTaskState` rejects that mismatch for future
+execution-preparation flows.
+
+Attempt success is not task completion. The intended future flow remains:
+
+```text
+execution attempt evidence
+  -> coverage/accounting
+  -> verifier
+  -> completion gate
+  -> authoritative task-state transition
+```
+
+Model self-report remains non-authoritative. The canonical case still fails
+closed:
+
+```text
+400 expected work items
+20 accounted work items
+model says "all complete"
+```
+
+An attempt record may be prepared for remaining authoritative work, but it cannot
+mark the remaining 380 items complete, satisfy the verifier, satisfy the
+completion gate, or create completed task state.
+
+Current limitations:
+
+- no real execution runtime;
+- no execution-attempt CLI;
+- no retry execution;
+- no audit runtime integration;
+- no verifier runtime integration;
+- no policy runtime integration;
+- no automatic resume or retry;
+- no terminal success/completion attempt state.
+
 ## Read-Only CLI Inspection
 `aeos task status <task-id>` reads the authoritative persisted state from:
 

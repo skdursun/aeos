@@ -105,13 +105,20 @@ import {
   createInitialTaskState,
   createTaskResumeHandoff,
   evaluateTaskStateTransition,
+  getTaskExecutionAttemptStoragePath,
   getTaskStateStoragePath,
+  loadTaskExecutionAttempt,
   loadTaskResumeHandoff,
   loadTaskState,
+  prepareTaskExecutionAttempt,
   saveTaskState,
+  saveTaskExecutionAttempt,
   summarizeCliTaskPlanPlannerIntegrationResult,
+  transitionTaskExecutionAttempt,
   transitionTaskState,
   transitionPersistedTaskState,
+  validateTaskExecutionAttempt,
+  validateTaskExecutionAttemptForTaskState,
   updateTaskState,
   validatePersistedTaskState,
   verifyAgenticCoverage,
@@ -13544,6 +13551,638 @@ try {
     "task resume handoff smoke W should be equivalent for same state",
   );
 
+  const attemptCreatedAt = "2026-08-08T00:01:30.000Z";
+  const preparedAttemptResult = prepareTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    expectedRevision: 2,
+    workItemId: "work-a",
+    batchId: "batch-a",
+    attemptNumber: 1,
+    createdAt: attemptCreatedAt,
+  });
+  assert.equal(
+    preparedAttemptResult.ok,
+    true,
+    "task execution attempt smoke A should prepare valid attempt from authoritative state",
+  );
+  const preparedAttempt = preparedAttemptResult.value.attempt;
+  assert.equal(
+    preparedAttempt.taskId,
+    "TASK-STATE-SMOKE",
+    "task execution attempt smoke B should bind correct task id",
+  );
+  assert.equal(
+    preparedAttempt.taskStateRevision,
+    2,
+    "task execution attempt smoke C should preserve source revision",
+  );
+  assert.equal(
+    preparedAttempt.workItemId,
+    "work-a",
+    "task execution attempt smoke D should bind valid work item",
+  );
+  assert.equal(
+    preparedAttempt.batchId,
+    "batch-a",
+    "task execution attempt smoke D should bind valid batch from work item",
+  );
+  assert.equal(
+    preparedAttempt.lifecycle,
+    "prepared",
+    "task execution attempt smoke A should remain prepared only",
+  );
+  assert.equal(
+    preparedAttempt.noExecution,
+    true,
+    "task execution attempt smoke A should not execute during preparation",
+  );
+  assert.equal(
+    preparedAttempt.events[0]?.kind,
+    "attempt_prepared",
+    "task execution attempt smoke A should create prepared event evidence",
+  );
+  assert.equal(
+    preparedAttempt.events[0]?.sequence,
+    1,
+    "task execution attempt smoke O should sequence prepared event first",
+  );
+  assert.equal(
+    firstUpdate.value.state.lifecycleState,
+    "planned",
+    "task execution attempt smoke T should not change task-state lifecycle",
+  );
+  assert.equal(
+    firstUpdate.value.state.revision,
+    2,
+    "task execution attempt smoke T should not increment task-state revision",
+  );
+  assert.equal(
+    preparedAttempt.safety.adapterCalls,
+    false,
+    "task execution attempt smoke U should not call adapters",
+  );
+  assert.equal(
+    preparedAttempt.safety.auditWrites,
+    false,
+    "task execution attempt smoke V should not write audit",
+  );
+  assert.equal(
+    preparedAttempt.safety.verifierRun,
+    false,
+    "task execution attempt smoke W should not run verifier",
+  );
+  assert.equal(
+    preparedAttempt.safety.completedStateCreated,
+    false,
+    "task execution attempt smoke J should not create completed state",
+  );
+  assert.equal(
+    preparedAttempt.safety.verifiedStateCreated,
+    false,
+    "task execution attempt smoke J should not create verified state",
+  );
+
+  const equivalentPreparedAttempt = prepareTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    expectedRevision: 2,
+    workItemId: "work-a",
+    batchId: "batch-a",
+    attemptNumber: 1,
+    createdAt: attemptCreatedAt,
+  });
+  assert.deepEqual(
+    equivalentPreparedAttempt,
+    preparedAttemptResult,
+    "task execution attempt smoke N should be deterministic for equivalent deterministic inputs",
+  );
+
+  const unknownWorkAttempt = prepareTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    expectedRevision: 2,
+    workItemId: "missing-work",
+    createdAt: attemptCreatedAt,
+  });
+  assert.equal(
+    unknownWorkAttempt.ok,
+    false,
+    "task execution attempt smoke E should reject unknown work item",
+  );
+  assert.equal(
+    unknownWorkAttempt.error.code,
+    "task_execution_attempt_unknown_work_item",
+    "task execution attempt smoke E should report unknown work item deterministically",
+  );
+
+  const invalidBatchAttempt = prepareTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    expectedRevision: 2,
+    workItemId: "work-a",
+    batchId: "missing-batch",
+    createdAt: attemptCreatedAt,
+  });
+  assert.equal(
+    invalidBatchAttempt.ok,
+    false,
+    "task execution attempt smoke F should reject invalid batch binding",
+  );
+  assert.equal(
+    invalidBatchAttempt.error.code,
+    "task_execution_attempt_work_batch_mismatch",
+    "task execution attempt smoke F should report work/batch mismatch",
+  );
+
+  const staleAttemptValidation = validateTaskExecutionAttemptForTaskState({
+    attempt: preparedAttempt,
+    state: {
+      ...firstUpdate.value.state,
+      revision: 3,
+    },
+  });
+  assert.equal(
+    staleAttemptValidation.ok,
+    false,
+    "task execution attempt smoke H should detect stale source revision",
+  );
+  assert.equal(
+    staleAttemptValidation.error.code,
+    "task_execution_attempt_stale_task_revision",
+    "task execution attempt smoke H should report stale revision deterministically",
+  );
+
+  for (const [candidate, expectedCode, message] of [
+    [
+      {
+        ...preparedAttempt,
+        lifecycle: "mystery",
+      },
+      "task_execution_attempt_lifecycle_unknown",
+      "task execution attempt smoke I should reject arbitrary lifecycle",
+    ],
+    [
+      {
+        ...preparedAttempt,
+        lifecycle: "completed",
+      },
+      "task_execution_attempt_terminal_lifecycle_forbidden",
+      "task execution attempt smoke J should reject forged completed lifecycle",
+    ],
+    [
+      {
+        ...preparedAttempt,
+        lifecycle: "verified",
+      },
+      "task_execution_attempt_terminal_lifecycle_forbidden",
+      "task execution attempt smoke J should reject forged verified lifecycle",
+    ],
+    [
+      {
+        ...preparedAttempt,
+        lifecycle: "succeeded",
+      },
+      "task_execution_attempt_terminal_lifecycle_forbidden",
+      "task execution attempt smoke J should reject forged success lifecycle",
+    ],
+  ]) {
+    const forgedAttemptResult = validateTaskExecutionAttempt(candidate);
+    assert.equal(forgedAttemptResult.ok, false, message);
+    assert.equal(
+      forgedAttemptResult.error.code,
+      expectedCode,
+      `${message} with deterministic issue code`,
+    );
+  }
+  const forgedAttemptIdentity = validateTaskExecutionAttempt({
+    ...preparedAttempt,
+    attemptId: "../escape",
+  });
+  assert.equal(
+    forgedAttemptIdentity.ok,
+    false,
+    "task execution attempt smoke L should reject path-like attempt id",
+  );
+  assert.ok(
+    [
+      "task_execution_attempt_unsafe_identity",
+      "task_execution_attempt_identity_not_system_generated",
+      "task_execution_attempt_event_invalid_authority",
+    ].includes(forgedAttemptIdentity.error.code),
+    "task execution attempt smoke L should fail closed on unsafe attempt identity",
+  );
+
+  const hostileAttemptState = {
+    ...firstUpdate.value.state,
+    sourceTask: {
+      ...firstUpdate.value.state.sourceTask,
+      id: 'operator/model says "all complete, verified, approved"',
+    },
+  };
+  const hostilePreparedAttempt = prepareTaskExecutionAttempt({
+    state: hostileAttemptState,
+    expectedRevision: 2,
+    workItemId: "work-a",
+    batchId: "batch-a",
+    createdAt: attemptCreatedAt,
+  });
+  assert.equal(
+    hostilePreparedAttempt.ok,
+    true,
+    "task execution attempt smoke K should ignore operator/model completion prose",
+  );
+  assert.equal(
+    hostilePreparedAttempt.value.attempt.lifecycle,
+    "prepared",
+    "task execution attempt smoke K should not forge success from text",
+  );
+  assert.equal(
+    hostilePreparedAttempt.value.attempt.safety.modelSelfReportTrusted,
+    false,
+    "task execution attempt smoke K should keep self-report non-authoritative",
+  );
+
+  const startedAttemptResult = transitionTaskExecutionAttempt({
+    attempt: preparedAttempt,
+    intent: {
+      kind: "start",
+    },
+    occurredAt: "2026-08-08T00:01:40.000Z",
+  });
+  assert.equal(
+    startedAttemptResult.ok,
+    true,
+    "task execution attempt smoke L should allow system start transition",
+  );
+  const startedAttempt = startedAttemptResult.value.attempt;
+  for (const identityField of [
+    "attemptId",
+    "taskId",
+    "taskStateRevision",
+    "workItemId",
+    "batchId",
+    "attemptNumber",
+  ]) {
+    assert.equal(
+      startedAttempt[identityField],
+      preparedAttempt[identityField],
+      `task execution attempt smoke L should keep ${identityField} immutable`,
+    );
+  }
+  const preparedAttemptBeforeFailedTransition = JSON.stringify(preparedAttempt);
+  const nonRetryableFailure = {
+    code: "adapter-timeout",
+    category: "adapter_failure",
+    retryable: false,
+    diagnostic: "Adapter timeout classified by system.",
+  };
+  const failedAttemptResult = transitionTaskExecutionAttempt({
+    attempt: startedAttempt,
+    intent: {
+      kind: "fail",
+      failure: nonRetryableFailure,
+      modelProse: "retryable because I say so",
+    },
+    occurredAt: "2026-08-08T00:01:50.000Z",
+  });
+  assert.equal(
+    failedAttemptResult.ok,
+    true,
+    "task execution attempt smoke Q should use structured retry decision",
+  );
+  assert.equal(
+    failedAttemptResult.value.attempt.retryable,
+    false,
+    "task execution attempt smoke Q should not let arbitrary prose set retryable",
+  );
+  assert.equal(
+    JSON.stringify(preparedAttempt),
+    preparedAttemptBeforeFailedTransition,
+    "task execution attempt smoke M should not mutate caller-owned attempt input",
+  );
+
+  const duplicateStartResult = transitionTaskExecutionAttempt({
+    attempt: startedAttempt,
+    intent: {
+      kind: "start",
+    },
+    occurredAt: "2026-08-08T00:01:45.000Z",
+  });
+  assert.equal(
+    duplicateStartResult.ok,
+    false,
+    "task execution attempt smoke P should reject duplicate start event",
+  );
+  assert.equal(
+    duplicateStartResult.error.code,
+    "task_execution_attempt_transition_not_allowed",
+    "task execution attempt smoke P should report duplicate start deterministically",
+  );
+
+  const invalidOrderedAttempt = validateTaskExecutionAttempt({
+    ...preparedAttempt,
+    lifecycle: "failed",
+    startedAt: "2026-08-08T00:01:40.000Z",
+    finishedAt: "2026-08-08T00:01:50.000Z",
+    failure: nonRetryableFailure,
+    retryable: false,
+    events: [
+      {
+        ...preparedAttempt.events[0],
+        eventId: `event-${preparedAttempt.attemptId}-s1-attempt_failed`,
+        kind: "attempt_failed",
+      },
+    ],
+  });
+  assert.equal(
+    invalidOrderedAttempt.ok,
+    false,
+    "task execution attempt smoke O should reject invalid event order",
+  );
+  assert.equal(
+    invalidOrderedAttempt.error.code,
+    "task_execution_attempt_event_order_invalid",
+    "task execution attempt smoke O should report invalid event order",
+  );
+
+  const stackFailureResult = transitionTaskExecutionAttempt({
+    attempt: startedAttempt,
+    intent: {
+      kind: "fail",
+      failure: {
+        code: "raw-stack-forbidden",
+        category: "adapter_failure",
+        retryable: false,
+        diagnostic: "Error: boom\n    at adapter.js:1:1",
+      },
+    },
+    occurredAt: "2026-08-08T00:01:55.000Z",
+  });
+  assert.equal(
+    stackFailureResult.ok,
+    false,
+    "task execution attempt smoke R should reject raw stack trace authority",
+  );
+  assert.equal(
+    stackFailureResult.error.code,
+    "task_execution_attempt_failure_stack_forbidden",
+    "task execution attempt smoke R should report stack rejection",
+  );
+
+  for (const terminalIntent of [
+    { kind: "complete" },
+    { kind: "verified" },
+    { kind: "approval_granted" },
+    { kind: "audit_written" },
+    { kind: "verifier_passed" },
+    { kind: "start", targetLifecycle: "completed" },
+  ]) {
+    const terminalAttemptTransition = transitionTaskExecutionAttempt({
+      attempt: preparedAttempt,
+      intent: terminalIntent,
+      occurredAt: "2026-08-08T00:01:56.000Z",
+    });
+    assert.equal(
+      terminalAttemptTransition.ok,
+      false,
+      "task execution attempt smoke J should block forged terminal authority",
+    );
+    assert.ok(
+      [
+        "task_execution_attempt_terminal_transition_forbidden",
+        "task_execution_attempt_arbitrary_target_forbidden",
+      ].includes(terminalAttemptTransition.error.code),
+      "task execution attempt smoke J should report terminal/arbitrary target rejection",
+    );
+  }
+
+  const retryableFailure = {
+    code: "environment-unavailable",
+    category: "execution_failure",
+    retryable: true,
+    diagnostic: "Environment unavailable.",
+  };
+  const retryableAttemptResult = transitionTaskExecutionAttempt({
+    attempt: startedAttempt,
+    intent: {
+      kind: "fail",
+      failure: retryableFailure,
+    },
+    occurredAt: "2026-08-08T00:01:57.000Z",
+  });
+  assert.equal(
+    retryableAttemptResult.ok,
+    true,
+    "task execution attempt smoke Q should accept structured retryable failure",
+  );
+  assert.equal(
+    retryableAttemptResult.value.attempt.priorAttemptId,
+    preparedAttempt.priorAttemptId,
+    "task execution attempt smoke Q should preserve retry relationship fields",
+  );
+  assert.equal(
+    retryableAttemptResult.value.attempt.failure.retryable,
+    true,
+    "task execution attempt smoke Q should derive retryability from failure classification",
+  );
+
+  const attemptStoragePathResult = getTaskExecutionAttemptStoragePath({
+    projectRoot: persistenceRoot,
+    taskId: preparedAttempt.taskId,
+    attemptId: preparedAttempt.attemptId,
+  });
+  assert.equal(
+    attemptStoragePathResult.ok,
+    true,
+    "task execution attempt smoke X should resolve confined storage path",
+  );
+  assert.equal(
+    attemptStoragePathResult.value.path,
+    join(
+      persistenceRoot,
+      ".aeos",
+      "state",
+      "executions",
+      preparedAttempt.taskId,
+      `${preparedAttempt.attemptId}.json`,
+    ),
+    "task execution attempt smoke X should use canonical execution path",
+  );
+  const unsafeAttemptStoragePath = getTaskExecutionAttemptStoragePath({
+    projectRoot: persistenceRoot,
+    taskId: preparedAttempt.taskId,
+    attemptId: "../escape",
+  });
+  assert.equal(
+    unsafeAttemptStoragePath.ok,
+    false,
+    "task execution attempt smoke X should reject unsafe attempt id",
+  );
+  assert.equal(
+    unsafeAttemptStoragePath.error.code,
+    "task_execution_attempt_unsafe_attemptId",
+    "task execution attempt smoke X should report unsafe attempt id",
+  );
+
+  const saveAttemptResult = await saveTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
+    attempt: preparedAttempt,
+  });
+  assert.equal(
+    saveAttemptResult.ok,
+    true,
+    "task execution attempt smoke G should persist prepared attempt",
+  );
+  const duplicateAttemptResult = await saveTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
+    attempt: preparedAttempt,
+  });
+  assert.equal(
+    duplicateAttemptResult.ok,
+    false,
+    "task execution attempt smoke G should reject duplicate attempt identity",
+  );
+  assert.equal(
+    duplicateAttemptResult.error.code,
+    "task_execution_attempt_already_exists",
+    "task execution attempt smoke G should report duplicate identity",
+  );
+  const loadedAttemptResult = await loadTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
+    taskId: preparedAttempt.taskId,
+    attemptId: preparedAttempt.attemptId,
+  });
+  assert.equal(
+    loadedAttemptResult.ok,
+    true,
+    "task execution attempt smoke G should load persisted attempt",
+  );
+  assert.deepEqual(
+    loadedAttemptResult.value.attempt,
+    JSON.parse(JSON.stringify(preparedAttempt)),
+    "task execution attempt smoke G should roundtrip immutable attempt",
+  );
+
+  const corruptAttemptRoot = join(
+    persistenceTempRoot,
+    "corrupt-attempt-project",
+  );
+  const corruptAttemptStateRoot = join(
+    corruptAttemptRoot,
+    ".aeos",
+    "state",
+    "executions",
+    "TASK-ATTEMPT-CORRUPT",
+  );
+  await mkdir(corruptAttemptStateRoot, { recursive: true });
+  await writeNodeFile(
+    join(corruptAttemptStateRoot, "attempt-corrupt.json"),
+    "{ corrupt attempt json",
+  );
+  const corruptAttemptResult = await loadTaskExecutionAttempt({
+    projectRoot: corruptAttemptRoot,
+    taskId: "TASK-ATTEMPT-CORRUPT",
+    attemptId: "attempt-corrupt",
+  });
+  assert.equal(
+    corruptAttemptResult.ok,
+    false,
+    "task execution attempt smoke Y should reject corrupt JSON",
+  );
+  assert.equal(
+    corruptAttemptResult.error.code,
+    "task_execution_attempt_corrupt_json",
+    "task execution attempt smoke Y should fail closed on corrupt attempt JSON",
+  );
+
+  const attemptSymlinkProjectRoot = join(
+    persistenceTempRoot,
+    "attempt-symlink-project",
+  );
+  const attemptSymlinkOutsideRoot = join(
+    persistenceTempRoot,
+    "attempt-symlink-outside",
+  );
+  const attemptSymlinkExecutionsParent = join(
+    attemptSymlinkProjectRoot,
+    ".aeos",
+    "state",
+  );
+  await mkdir(attemptSymlinkExecutionsParent, { recursive: true });
+  await mkdir(attemptSymlinkOutsideRoot, { recursive: true });
+  await symlink(
+    attemptSymlinkOutsideRoot,
+    join(attemptSymlinkExecutionsParent, "executions"),
+    "dir",
+  );
+  const symlinkAttemptSave = await saveTaskExecutionAttempt({
+    projectRoot: attemptSymlinkProjectRoot,
+    attempt: preparedAttempt,
+  });
+  assert.equal(
+    symlinkAttemptSave.ok,
+    false,
+    "task execution attempt smoke Z should reject execution-root symlink",
+  );
+  assert.equal(
+    symlinkAttemptSave.error.code,
+    "task_execution_attempt_unsafe_state_root",
+    "task execution attempt smoke Z should report unsafe execution root",
+  );
+  assert.equal(
+    await pathExists(
+      join(
+        attemptSymlinkOutsideRoot,
+        preparedAttempt.taskId,
+        `${preparedAttempt.attemptId}.json`,
+      ),
+    ),
+    false,
+    "task execution attempt smoke Z should not write through execution-root symlink",
+  );
+
+  const attemptFileSymlinkProjectRoot = join(
+    persistenceTempRoot,
+    "attempt-file-symlink-project",
+  );
+  const attemptFileSymlinkRoot = join(
+    attemptFileSymlinkProjectRoot,
+    ".aeos",
+    "state",
+    "executions",
+    preparedAttempt.taskId,
+  );
+  const attemptFileSymlinkOutsideRoot = join(
+    persistenceTempRoot,
+    "attempt-file-symlink-outside",
+  );
+  await mkdir(attemptFileSymlinkRoot, { recursive: true });
+  await mkdir(attemptFileSymlinkOutsideRoot, { recursive: true });
+  const outsideAttemptPath = join(
+    attemptFileSymlinkOutsideRoot,
+    `${preparedAttempt.attemptId}.json`,
+  );
+  await writeNodeFile(
+    outsideAttemptPath,
+    `${JSON.stringify(preparedAttempt, null, 2)}\n`,
+  );
+  await symlink(
+    outsideAttemptPath,
+    join(attemptFileSymlinkRoot, `${preparedAttempt.attemptId}.json`),
+  );
+  const fileSymlinkAttemptLoad = await loadTaskExecutionAttempt({
+    projectRoot: attemptFileSymlinkProjectRoot,
+    taskId: preparedAttempt.taskId,
+    attemptId: preparedAttempt.attemptId,
+  });
+  assert.equal(
+    fileSymlinkAttemptLoad.ok,
+    false,
+    "task execution attempt smoke Z should reject attempt-file symlink",
+  );
+  assert.equal(
+    fileSymlinkAttemptLoad.error.code,
+    "task_execution_attempt_unsafe_target",
+    "task execution attempt smoke Z should report unsafe attempt target",
+  );
+
   const stateFileBeforeHandoff = await readFile(firstUpdate.value.path, "utf8");
   const stateStatBeforeHandoff = await stat(firstUpdate.value.path);
   const loadedHandoff = await loadTaskResumeHandoff({
@@ -14131,6 +14770,52 @@ try {
     canonicalCompletedTransition.error.code,
     "task_state_transition_terminal_forbidden",
     "task state transition smoke M should report terminal transition rejection",
+  );
+  const canonicalAttemptResult = prepareTaskExecutionAttempt({
+    state: canonicalIncompleteState,
+    expectedRevision: 1,
+    batchId: "canonical-batch",
+    createdAt: "2026-08-08T00:06:00.000Z",
+  });
+  assert.equal(
+    canonicalAttemptResult.ok,
+    true,
+    "task execution attempt smoke S should prepare 400/20 incomplete state only",
+  );
+  assert.equal(
+    canonicalAttemptResult.value.attempt.lifecycle,
+    "prepared",
+    "task execution attempt smoke S should not complete 400/20 from preparation",
+  );
+  assert.equal(
+    canonicalAttemptResult.value.attempt.safety.completedStateCreated,
+    false,
+    "task execution attempt smoke S should not create completed task state",
+  );
+  const canonicalAttemptCompletion = transitionTaskExecutionAttempt({
+    attempt: canonicalAttemptResult.value.attempt,
+    intent: {
+      kind: "complete",
+      modelSelfReport: 'model says "all complete"',
+      accountedWork: 20,
+      expectedWork: 400,
+    },
+    occurredAt: "2026-08-08T00:06:10.000Z",
+  });
+  assert.equal(
+    canonicalAttemptCompletion.ok,
+    false,
+    "task execution attempt smoke S should block 400/20 model completion transition",
+  );
+  assert.equal(
+    canonicalAttemptCompletion.error.code,
+    "task_execution_attempt_terminal_transition_forbidden",
+    "task execution attempt smoke S should report terminal attempt rejection",
+  );
+  assert.equal(
+    canonicalIncompleteState.pendingWorkItemIds.length,
+    380,
+    "task execution attempt smoke S should leave remaining 380 pending",
   );
 
   const staleUpdate = await updateTaskState({
