@@ -104,6 +104,7 @@ import {
   runAgenticRunnerDryRun,
   createInitialTaskState,
   createTaskResumeHandoff,
+  deriveNextTaskExecutionAttemptNumber,
   evaluateTaskStateTransition,
   getTaskExecutionAttemptStoragePath,
   getTaskStateStoragePath,
@@ -14021,6 +14022,24 @@ try {
     "task execution attempt smoke X should report unsafe attempt id",
   );
 
+  const emptyNextAttemptNumber = await deriveNextTaskExecutionAttemptNumber({
+    projectRoot: persistenceRoot,
+    taskId: preparedAttempt.taskId,
+    taskStateRevision: preparedAttempt.taskStateRevision,
+    workItemId: preparedAttempt.workItemId,
+    batchId: preparedAttempt.batchId,
+  });
+  assert.equal(
+    emptyNextAttemptNumber.ok,
+    true,
+    "task execution attempt smoke AA should derive next number without existing attempts",
+  );
+  assert.equal(
+    emptyNextAttemptNumber.value,
+    1,
+    "task execution attempt smoke AA should start numbering at 1",
+  );
+
   const saveAttemptResult = await saveTaskExecutionAttempt({
     projectRoot: persistenceRoot,
     attempt: preparedAttempt,
@@ -14059,6 +14078,75 @@ try {
     JSON.parse(JSON.stringify(preparedAttempt)),
     "task execution attempt smoke G should roundtrip immutable attempt",
   );
+  const nextAttemptAfterFirst = await deriveNextTaskExecutionAttemptNumber({
+    projectRoot: persistenceRoot,
+    taskId: preparedAttempt.taskId,
+    taskStateRevision: preparedAttempt.taskStateRevision,
+    workItemId: preparedAttempt.workItemId,
+    batchId: preparedAttempt.batchId,
+  });
+  assert.equal(
+    nextAttemptAfterFirst.ok,
+    true,
+    "task execution attempt smoke AB should derive next number after attempt 1",
+  );
+  assert.equal(
+    nextAttemptAfterFirst.value,
+    2,
+    "task execution attempt smoke AB should not reuse existing attempt number",
+  );
+
+  const preparedAttemptThree = prepareTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    expectedRevision: 2,
+    workItemId: "work-a",
+    batchId: "batch-a",
+    attemptNumber: 3,
+    createdAt: attemptCreatedAt,
+  });
+  assert.equal(
+    preparedAttemptThree.ok,
+    true,
+    "task execution attempt smoke AC should prepare valid attempt number 3 fixture",
+  );
+  const saveAttemptThreeResult = await saveTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
+    attempt: preparedAttemptThree.value.attempt,
+  });
+  assert.equal(
+    saveAttemptThreeResult.ok,
+    true,
+    "task execution attempt smoke AC should persist valid attempt number 3 fixture",
+  );
+  const gapNextAttemptNumber = await deriveNextTaskExecutionAttemptNumber({
+    projectRoot: persistenceRoot,
+    taskId: preparedAttempt.taskId,
+    taskStateRevision: preparedAttempt.taskStateRevision,
+    workItemId: preparedAttempt.workItemId,
+    batchId: preparedAttempt.batchId,
+  });
+  assert.equal(
+    gapNextAttemptNumber.ok,
+    true,
+    "task execution attempt smoke AC should derive through unordered existing attempts",
+  );
+  assert.equal(
+    gapNextAttemptNumber.value,
+    2,
+    "task execution attempt smoke AC should deterministically fill the smallest missing positive gap",
+  );
+  const deterministicGapNextAttemptNumber = await deriveNextTaskExecutionAttemptNumber({
+    projectRoot: persistenceRoot,
+    taskId: preparedAttempt.taskId,
+    taskStateRevision: preparedAttempt.taskStateRevision,
+    workItemId: preparedAttempt.workItemId,
+    batchId: preparedAttempt.batchId,
+  });
+  assert.deepEqual(
+    deterministicGapNextAttemptNumber,
+    gapNextAttemptNumber,
+    "task execution attempt smoke AC should not depend on directory iteration order",
+  );
 
   const corruptAttemptRoot = join(
     persistenceTempRoot,
@@ -14090,6 +14178,21 @@ try {
     corruptAttemptResult.error.code,
     "task_execution_attempt_corrupt_json",
     "task execution attempt smoke Y should fail closed on corrupt attempt JSON",
+  );
+  const corruptAttemptAuthority = await deriveNextTaskExecutionAttemptNumber({
+    projectRoot: corruptAttemptRoot,
+    taskId: "TASK-ATTEMPT-CORRUPT",
+    taskStateRevision: 1,
+  });
+  assert.equal(
+    corruptAttemptAuthority.ok,
+    false,
+    "task execution attempt smoke AD should reject corrupt authority when deriving next number",
+  );
+  assert.equal(
+    corruptAttemptAuthority.error.code,
+    "task_execution_attempt_corrupt_json",
+    "task execution attempt smoke AD should fail closed on corrupt authority",
   );
 
   const attemptSymlinkProjectRoot = join(
@@ -14181,6 +14284,57 @@ try {
     fileSymlinkAttemptLoad.error.code,
     "task_execution_attempt_unsafe_target",
     "task execution attempt smoke Z should report unsafe attempt target",
+  );
+  const fileSymlinkAttemptAuthority = await deriveNextTaskExecutionAttemptNumber({
+    projectRoot: attemptFileSymlinkProjectRoot,
+    taskId: preparedAttempt.taskId,
+    taskStateRevision: preparedAttempt.taskStateRevision,
+    workItemId: preparedAttempt.workItemId,
+    batchId: preparedAttempt.batchId,
+  });
+  assert.equal(
+    fileSymlinkAttemptAuthority.ok,
+    false,
+    "task execution attempt smoke AE should reject symlink authority when deriving next number",
+  );
+  assert.equal(
+    fileSymlinkAttemptAuthority.error.code,
+    "task_execution_attempt_unsafe_target",
+    "task execution attempt smoke AE should fail closed on symlink attempt authority",
+  );
+
+  const conflictingAttemptRoot = join(
+    persistenceTempRoot,
+    "conflicting-attempt-project",
+  );
+  const conflictingAttemptStateRoot = join(
+    conflictingAttemptRoot,
+    ".aeos",
+    "state",
+    "executions",
+    preparedAttempt.taskId,
+  );
+  await mkdir(conflictingAttemptStateRoot, { recursive: true });
+  await writeNodeFile(
+    join(conflictingAttemptStateRoot, "attempt-conflicting.json"),
+    `${JSON.stringify(preparedAttempt, null, 2)}\n`,
+  );
+  const conflictingAttemptAuthority = await deriveNextTaskExecutionAttemptNumber({
+    projectRoot: conflictingAttemptRoot,
+    taskId: preparedAttempt.taskId,
+    taskStateRevision: preparedAttempt.taskStateRevision,
+    workItemId: preparedAttempt.workItemId,
+    batchId: preparedAttempt.batchId,
+  });
+  assert.equal(
+    conflictingAttemptAuthority.ok,
+    false,
+    "task execution attempt smoke AF should reject conflicting attempt authority",
+  );
+  assert.equal(
+    conflictingAttemptAuthority.error.code,
+    "task_execution_attempt_identity_mismatch",
+    "task execution attempt smoke AF should report conflicting authority deterministically",
   );
 
   const stateFileBeforeHandoff = await readFile(firstUpdate.value.path, "utf8");

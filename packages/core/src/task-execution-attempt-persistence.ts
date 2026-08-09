@@ -2,6 +2,7 @@ import {
   lstat,
   mkdir,
   open,
+  readdir,
   readFile,
   realpath,
   rename,
@@ -46,6 +47,14 @@ export interface SaveTaskExecutionAttemptInput {
 
 export interface LoadTaskExecutionAttemptInput
   extends TaskExecutionAttemptStorageInput {}
+
+export interface DeriveNextTaskExecutionAttemptNumberInput {
+  readonly projectRoot: string;
+  readonly taskId: AgenticTaskId;
+  readonly taskStateRevision: number;
+  readonly workItemId?: string;
+  readonly batchId?: string;
+}
 
 export interface TaskExecutionAttemptPersistenceResult {
   readonly attempt: TaskExecutionAttempt;
@@ -94,6 +103,10 @@ function createError(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
 function isInsideOrEqual(parentPath: string, childPath: string): boolean {
@@ -206,6 +219,7 @@ async function ensureExecutionRoot(input: {
   readonly projectRoot: string;
   readonly taskId: AgenticTaskId;
   readonly create: boolean;
+  readonly allowMissing?: boolean;
 }): Promise<Result<string, TaskExecutionAttemptPersistenceError>> {
   let projectRootRealPath: string;
 
@@ -264,6 +278,10 @@ async function ensureExecutionRoot(input: {
         typeof error.code === "string" &&
         error.code === "ENOENT"
       ) {
+        if (input.allowMissing === true) {
+          return ok(currentPath);
+        }
+
         if (!input.create) {
           return err(
             createError(
@@ -312,6 +330,168 @@ async function ensureExecutionRoot(input: {
   }
 
   return ok(taskExecutionRootRealPath);
+}
+
+async function readAuthoritativeAttemptFile(input: {
+  readonly taskExecutionRoot: string;
+  readonly fileName: string;
+  readonly taskId: AgenticTaskId;
+}): Promise<Result<TaskExecutionAttempt, TaskExecutionAttemptPersistenceError>> {
+  if (!input.fileName.endsWith(".json")) {
+    return err(
+      createError(
+        "task_execution_attempt_unsafe_record",
+        "Task execution attempt authority root contains an unexpected record.",
+        "validation",
+        { fileName: input.fileName },
+      ),
+    );
+  }
+
+  const attemptId = input.fileName.slice(0, -".json".length);
+  const attemptIdResult = validateSafeId({
+    value: attemptId,
+    field: "attemptId",
+  });
+
+  if (!attemptIdResult.ok) {
+    return attemptIdResult;
+  }
+
+  const targetPath = join(input.taskExecutionRoot, input.fileName);
+  const stats = await lstat(targetPath);
+
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    return err(
+      createError(
+        "task_execution_attempt_unsafe_target",
+        "Persisted task execution attempt target is not a safe file path.",
+        "permission",
+      ),
+    );
+  }
+
+  const jsonResult = await readJsonAttempt(targetPath);
+
+  if (!jsonResult.ok) {
+    return jsonResult;
+  }
+
+  const attemptResult = validateTaskExecutionAttempt(jsonResult.value);
+
+  if (!attemptResult.ok) {
+    return attemptResult;
+  }
+
+  if (
+    attemptResult.value.taskId !== input.taskId ||
+    attemptResult.value.attemptId !== attemptId
+  ) {
+    return err(
+      createError(
+        "task_execution_attempt_identity_mismatch",
+        "Persisted task execution attempt identity did not match its authoritative storage location.",
+        "validation",
+      ),
+    );
+  }
+
+  return ok(attemptResult.value);
+}
+
+export async function deriveNextTaskExecutionAttemptNumber(
+  input: DeriveNextTaskExecutionAttemptNumberInput,
+): Promise<Result<number, TaskExecutionAttemptPersistenceError>> {
+  const taskIdResult = validateSafeId({
+    value: input.taskId,
+    field: "taskId",
+  });
+
+  if (!taskIdResult.ok) {
+    return taskIdResult;
+  }
+
+  if (!isPositiveInteger(input.taskStateRevision)) {
+    return err(
+      createError(
+        "task_execution_attempt_source_revision_invalid",
+        "Task execution attempt number authority requires a positive source revision.",
+        "validation",
+      ),
+    );
+  }
+
+  const rootResult = await ensureExecutionRoot({
+    projectRoot: input.projectRoot,
+    taskId: taskIdResult.value,
+    create: false,
+    allowMissing: true,
+  });
+
+  if (!rootResult.ok) {
+    return rootResult;
+  }
+
+  let entries: readonly string[];
+
+  try {
+    entries = (await readdir(rootResult.value)).sort();
+  } catch (error) {
+    if (
+      isRecord(error) &&
+      typeof error.code === "string" &&
+      error.code === "ENOENT"
+    ) {
+      return ok(1);
+    }
+
+    throw error;
+  }
+
+  const usedAttemptNumbers = new Set<number>();
+
+  for (const fileName of entries) {
+    const attemptResult = await readAuthoritativeAttemptFile({
+      taskExecutionRoot: rootResult.value,
+      fileName,
+      taskId: taskIdResult.value,
+    });
+
+    if (!attemptResult.ok) {
+      return attemptResult;
+    }
+
+    const attempt = attemptResult.value;
+
+    if (
+      attempt.taskStateRevision !== input.taskStateRevision ||
+      attempt.workItemId !== input.workItemId ||
+      attempt.batchId !== input.batchId
+    ) {
+      continue;
+    }
+
+    if (usedAttemptNumbers.has(attempt.attemptNumber)) {
+      return err(
+        createError(
+          "task_execution_attempt_duplicate_number",
+          "Persisted task execution attempt authority contains duplicate numbering for the same source/work/batch context.",
+          "validation",
+          { attemptNumber: attempt.attemptNumber },
+        ),
+      );
+    }
+
+    usedAttemptNumbers.add(attempt.attemptNumber);
+  }
+
+  let nextAttemptNumber = 1;
+
+  while (usedAttemptNumbers.has(nextAttemptNumber)) {
+    nextAttemptNumber += 1;
+  }
+
+  return ok(nextAttemptNumber);
 }
 
 async function readJsonAttempt(

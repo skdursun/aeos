@@ -30,6 +30,8 @@ Current foundation:
 - `aeos task execution prepare --preview <task-id>
   --expected-revision <number>` exists as a read-only execution-attempt
   preparation preview.
+- `aeos task execution prepare <task-id> --expected-revision <number>` exists
+  as an explicit immutable prepared-attempt persistence command.
 - `aeos task status <task-id>` exists as a read-only persisted-state inspection
   command.
 - `aeos task resume --preview <task-id>` exists as a read-only resume handoff
@@ -265,11 +267,13 @@ selection.
 
 Attempt id is system-derived by the core attempt preparation algorithm. The CLI
 does not accept `--attempt-id`, `--attempt-number`, retryability flags, failure
-classification flags, arbitrary lifecycle/status flags, or `--force`. The
-current MVP previews attempt number `1` only; if that deterministic identity
-already exists, the preview reports `task_execution_attempt_already_exists`,
-keeps `preparationAllowed: false`, and does not overwrite or reuse the existing
-attempt.
+classification flags, arbitrary lifecycle/status flags, or `--force`.
+Attempt-number authority is system-owned by the persistence layer. For the same
+task id, source revision, work item, and batch binding, AEOS validates
+authoritative persisted attempts under `.aeos/state/executions/<task-id>` and
+chooses the smallest missing positive integer. Corrupt, unsafe, symlinked, or
+identity-conflicting attempt records fail closed. Preview uses this same
+authority path and remains read-only.
 
 Prepared means validated execution candidate, not started execution. Preview may
 show an in-memory `prepared` lifecycle and natural `attempt_prepared` event, but
@@ -287,15 +291,39 @@ policy requirements, preparation allowance, collision details when present, and
 explicit read-only safety flags.
 
 ### `aeos task execution prepare`
-Non-preview execution preparation apply is not implemented:
+Persists one prepared execution attempt when explicitly requested:
 
 ```text
 aeos task execution prepare <task-id> --expected-revision <number>
 ```
 
-It fails non-zero with `task_execution_prepare_apply_not_implemented` and does
-not persist attempts, start execution, call adapters, write audit events, run
-policy or verifier runtime, mutate task state, or create completion.
+Optional selectors are:
+
+```text
+--work-item <work-item-id>
+--batch <batch-id>
+```
+
+`--expected-revision` is required and must be a positive integer. Apply does not
+trust a prior preview. It reloads and validates current authoritative task
+state, compares the expected revision, resolves selectors from that state,
+derives the next safe attempt number from persisted attempts, prepares through
+the core pure preparation API, and saves through immutable attempt persistence.
+
+Successful apply persists only `lifecycle: prepared` and the required initial
+`attempt_prepared` event. The attempt id is system-derived from task id, source
+revision, attempt number, work item, and batch. The command rejects
+operator-supplied attempt ids, attempt numbers, lifecycle/status flags,
+retry/failure flags, and `--force`.
+
+Apply is create-only and never overwrites an existing attempt. It does not start
+execution, call model/tool adapters, write audit runtime events, run policy or
+verifier runtime, mark work completed, mutate task state, increment task
+revision, satisfy verifier state, or create task completion. The CLI checks task
+state bytes before and after a successful save and reports
+`taskStateModified: false`.
+
+There is no `aeos task execution start` command in this MVP.
 
 ### `aeos task status`
 Loads authoritative persisted task state by task id from the project-local state

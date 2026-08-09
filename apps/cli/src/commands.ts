@@ -3,9 +3,9 @@ import {
   createCliTaskPlanPlannerIntegrationResult,
   createFilesystemGenerationAdapter,
   createTaskResumeHandoff,
+  deriveNextTaskExecutionAttemptNumber,
   evaluateTaskStateTransition,
   loadTaskResumeHandoff,
-  loadTaskExecutionAttempt,
   loadTaskState,
   mapTaskContractToRunnerPlanningInput,
   parseTaskPlanInputFile,
@@ -13,6 +13,7 @@ import {
   prepareTaskExecutionAttempt,
   runAgenticRunnerDryRun,
   runInitPipeline,
+  saveTaskExecutionAttempt,
   saveTaskState,
   transitionPersistedTaskState,
   validateAeosTask,
@@ -98,6 +99,8 @@ Commands:
   task state transition <task-id> --intent <intent> --expected-revision <number> --json
   task execution prepare --preview <task-id> --expected-revision <number>
   task execution prepare --preview <task-id> --expected-revision <number> --json
+  task execution prepare <task-id> --expected-revision <number>
+  task execution prepare <task-id> --expected-revision <number> --json
   task status <task-id>
   task status <task-id> --json
   task resume --preview <task-id>
@@ -488,8 +491,7 @@ type TaskExecutionPreparationPreviewJsonOutput =
         | "invalid_arguments"
         | "task_state_revision_conflict"
         | "execution_preparation_blocked"
-        | "task_execution_attempt_already_exists"
-        | "task_execution_prepare_apply_not_implemented";
+        | "task_execution_attempt_already_exists";
       readonly taskId: string;
       readonly sourceRevision: number | null;
       readonly expectedRevision: number | null;
@@ -510,6 +512,73 @@ type TaskExecutionPreparationPreviewJsonOutput =
         readonly persistedAttemptExists: true;
       } | null;
       readonly safety: TaskExecutionPreparationPreviewSafety;
+      readonly error: {
+        readonly code: string;
+        readonly message: string;
+        readonly category: string;
+      };
+      readonly issues: readonly TaskStateCliIssue[];
+    };
+
+type TaskExecutionPreparationApplySafety = {
+  readonly attemptPersisted: true;
+  readonly executionPerformed: false;
+  readonly adapterCalls: false;
+  readonly auditWrites: false;
+  readonly verifierRun: false;
+  readonly taskStateModified: false;
+  readonly workCompleted: false;
+  readonly taskCompleted: false;
+};
+
+type TaskExecutionPreparationApplyFailureSafety = {
+  readonly attemptPersisted: boolean;
+  readonly executionPerformed: false;
+  readonly adapterCalls: false;
+  readonly auditWrites: false;
+  readonly verifierRun: false;
+  readonly taskStateModified: boolean;
+  readonly workCompleted: false;
+  readonly taskCompleted: false;
+};
+
+type TaskExecutionPreparationApplyJsonOutput =
+  | {
+      readonly ok: true;
+      readonly status: "execution_preparation_persisted";
+      readonly taskId: string;
+      readonly sourceRevision: number;
+      readonly attempt: {
+        readonly attemptId: string;
+        readonly attemptNumber: number;
+        readonly lifecycle: "prepared";
+        readonly workItemId: string | null;
+        readonly batchId: string | null;
+      };
+      readonly safety: TaskExecutionPreparationApplySafety;
+      readonly issues: readonly TaskStateCliIssue[];
+    }
+  | {
+      readonly ok: false;
+      readonly status:
+        | "failed_to_load"
+        | "invalid_arguments"
+        | "task_state_revision_conflict"
+        | "execution_preparation_blocked"
+        | "task_execution_attempt_already_exists"
+        | "task_state_modified";
+      readonly taskId: string;
+      readonly sourceRevision: number | null;
+      readonly expectedRevision: number | null;
+      readonly attempt: {
+        readonly attemptId: string;
+        readonly attemptNumber: number;
+        readonly lifecycle: string;
+        readonly workItemId: string | null;
+        readonly batchId: string | null;
+      } | null;
+      readonly preparationAllowed: false;
+      readonly safety: TaskExecutionPreparationApplyFailureSafety;
       readonly error: {
         readonly code: string;
         readonly message: string;
@@ -1137,7 +1206,9 @@ function writeTaskStateTransitionApplyJson(
 }
 
 function writeTaskExecutionPreparationPreviewJson(
-  value: TaskExecutionPreparationPreviewJsonOutput,
+  value:
+    | TaskExecutionPreparationPreviewJsonOutput
+    | TaskExecutionPreparationApplyJsonOutput,
 ): void {
   writeJsonLine(value);
 }
@@ -3057,6 +3128,30 @@ const taskExecutionPreparationPreviewSafety:
     taskCompleted: false,
   };
 
+const taskExecutionPreparationApplySafety:
+  TaskExecutionPreparationApplySafety = {
+    attemptPersisted: true,
+    executionPerformed: false,
+    adapterCalls: false,
+    auditWrites: false,
+    verifierRun: false,
+    taskStateModified: false,
+    workCompleted: false,
+    taskCompleted: false,
+  };
+
+const taskExecutionPreparationApplyFailureSafety:
+  TaskExecutionPreparationApplyFailureSafety = {
+    attemptPersisted: false,
+    executionPerformed: false,
+    adapterCalls: false,
+    auditWrites: false,
+    verifierRun: false,
+    taskStateModified: false,
+    workCompleted: false,
+    taskCompleted: false,
+  };
+
 function parseExpectedExecutionPreparationRevision(
   value: string | undefined,
 ): { readonly ok: true; readonly value: number } | { readonly ok: false; readonly error: AeosError } {
@@ -3066,7 +3161,7 @@ function parseExpectedExecutionPreparationRevision(
       error: createTaskStateCliError({
         code: "task_execution_prepare_expected_revision_required",
         message:
-          "Task execution preparation preview requires --expected-revision <number>.",
+          "Task execution preparation requires --expected-revision <number>.",
       }),
     };
   }
@@ -3168,6 +3263,74 @@ function createTaskExecutionPreparationPreviewJsonOutput(input: {
   };
 }
 
+function createTaskExecutionPreparationApplyErrorJsonOutput(input: {
+  readonly taskId?: string;
+  readonly sourceRevision?: number | null;
+  readonly expectedRevision?: number | null;
+  readonly attempt?: TaskExecutionAttempt | null;
+  readonly error: AeosError;
+  readonly safety?: TaskExecutionPreparationApplyFailureSafety;
+  readonly status?: Extract<
+    TaskExecutionPreparationApplyJsonOutput,
+    { readonly ok: false }
+  >["status"];
+}): Extract<TaskExecutionPreparationApplyJsonOutput, { readonly ok: false }> {
+  return {
+    ok: false,
+    status:
+      input.status ??
+      (input.error.code === "task_state_revision_conflict"
+        ? "task_state_revision_conflict"
+        : input.error.category === "not_found" ||
+            input.error.code.startsWith("task_state_")
+          ? "failed_to_load"
+          : input.error.code === "task_execution_attempt_already_exists"
+            ? "task_execution_attempt_already_exists"
+            : "execution_preparation_blocked"),
+    taskId: input.taskId ?? input.attempt?.taskId ?? "",
+    sourceRevision: input.sourceRevision ?? input.attempt?.taskStateRevision ?? null,
+    expectedRevision: input.expectedRevision ?? null,
+    attempt:
+      input.attempt === undefined || input.attempt === null
+        ? null
+        : {
+            attemptId: input.attempt.attemptId,
+            attemptNumber: input.attempt.attemptNumber,
+            lifecycle: input.attempt.lifecycle,
+            workItemId: input.attempt.workItemId ?? null,
+            batchId: input.attempt.batchId ?? null,
+    },
+    preparationAllowed: false,
+    safety: input.safety ?? taskExecutionPreparationApplyFailureSafety,
+    error: {
+      code: input.error.code,
+      message: input.error.message,
+      category: input.error.category,
+    },
+    issues: [createTaskStateCliIssueFromError(input.error)],
+  };
+}
+
+function createTaskExecutionPreparationApplyJsonOutput(input: {
+  readonly attempt: TaskExecutionAttempt;
+}): Extract<TaskExecutionPreparationApplyJsonOutput, { readonly ok: true }> {
+  return {
+    ok: true,
+    status: "execution_preparation_persisted",
+    taskId: input.attempt.taskId,
+    sourceRevision: input.attempt.taskStateRevision,
+    attempt: {
+      attemptId: input.attempt.attemptId,
+      attemptNumber: input.attempt.attemptNumber,
+      lifecycle: "prepared",
+      workItemId: input.attempt.workItemId ?? null,
+      batchId: input.attempt.batchId ?? null,
+    },
+    safety: taskExecutionPreparationApplySafety,
+    issues: [],
+  };
+}
+
 function printTaskExecutionPreparationPreviewOutput(
   output: Extract<TaskExecutionPreparationPreviewJsonOutput, { readonly ok: true }>,
 ): void {
@@ -3222,6 +3385,54 @@ function printTaskExecutionPreparationPreviewError(
   console.error("Task state modified: false");
   console.error("Work completed: false");
   console.error("Task completed: false");
+}
+
+function printTaskExecutionPreparationApplyOutput(
+  output: Extract<TaskExecutionPreparationApplyJsonOutput, { readonly ok: true }>,
+): void {
+  console.log("Task Execution Preparation Persisted");
+  console.log("");
+  console.log(`Task id: ${output.taskId}`);
+  console.log(`Task revision: ${output.sourceRevision}`);
+  console.log(`Attempt id: ${output.attempt.attemptId}`);
+  console.log(`Attempt number: ${output.attempt.attemptNumber}`);
+  console.log(`Lifecycle: ${output.attempt.lifecycle}`);
+  console.log(`Work item: ${output.attempt.workItemId ?? "none"}`);
+  console.log(`Batch: ${output.attempt.batchId ?? "none"}`);
+  console.log(`Attempt persisted: ${String(output.safety.attemptPersisted)}`);
+  console.log("");
+  console.log(`Execution performed: ${String(output.safety.executionPerformed)}`);
+  console.log(`Adapter calls: ${String(output.safety.adapterCalls)}`);
+  console.log(`Audit writes: ${String(output.safety.auditWrites)}`);
+  console.log(`Verifier run: ${String(output.safety.verifierRun)}`);
+  console.log(`Task state modified: ${String(output.safety.taskStateModified)}`);
+  console.log(`Work completed: ${String(output.safety.workCompleted)}`);
+  console.log(`Task completed: ${String(output.safety.taskCompleted)}`);
+  console.log("");
+  console.log(`Issues: ${output.issues.length}`);
+}
+
+function printTaskExecutionPreparationApplyError(
+  output: Extract<TaskExecutionPreparationApplyJsonOutput, { readonly ok: false }>,
+): void {
+  console.error("Task Execution Preparation Apply");
+  console.error(`Task id: ${output.taskId}`);
+  console.error(`Status: ${output.status}`);
+  console.error(`Error: ${output.error.code}`);
+  console.error(`Message: ${output.error.message}`);
+  if (output.attempt !== null) {
+    console.error(`Attempt id: ${output.attempt.attemptId}`);
+    console.error(`Attempt number: ${output.attempt.attemptNumber}`);
+    console.error(`Lifecycle: ${output.attempt.lifecycle}`);
+  }
+  console.error(`Attempt persisted: ${String(output.safety.attemptPersisted)}`);
+  console.error(`Execution performed: ${String(output.safety.executionPerformed)}`);
+  console.error(`Adapter calls: ${String(output.safety.adapterCalls)}`);
+  console.error(`Audit writes: ${String(output.safety.auditWrites)}`);
+  console.error(`Verifier run: ${String(output.safety.verifierRun)}`);
+  console.error(`Task state modified: ${String(output.safety.taskStateModified)}`);
+  console.error(`Work completed: ${String(output.safety.workCompleted)}`);
+  console.error(`Task completed: ${String(output.safety.taskCompleted)}`);
 }
 
 function parseTaskStateTransitionArgs(args: readonly string[]): {
@@ -3879,7 +4090,7 @@ function parseTaskExecutionPreparationArgs(args: readonly string[]): {
           error: createTaskStateCliError({
             code: "task_execution_prepare_expected_revision_required",
             message:
-              "Task execution preparation preview requires --expected-revision <number>.",
+              "Task execution preparation requires --expected-revision <number>.",
           }),
         };
       }
@@ -3895,7 +4106,7 @@ function parseTaskExecutionPreparationArgs(args: readonly string[]): {
           error: createTaskStateCliError({
             code: "task_execution_prepare_duplicate_expected_revision",
             message:
-              "Task execution preparation preview accepts one expected revision.",
+              "Task execution preparation accepts one expected revision.",
           }),
         };
       }
@@ -3919,7 +4130,7 @@ function parseTaskExecutionPreparationArgs(args: readonly string[]): {
           error: createTaskStateCliError({
             code: "task_execution_prepare_work_item_required",
             message:
-              "Task execution preparation preview requires --work-item <work-item-id> when the selector flag is used.",
+              "Task execution preparation requires --work-item <work-item-id> when the selector flag is used.",
           }),
         };
       }
@@ -3935,7 +4146,7 @@ function parseTaskExecutionPreparationArgs(args: readonly string[]): {
           error: createTaskStateCliError({
             code: "task_execution_prepare_duplicate_work_item",
             message:
-              "Task execution preparation preview accepts one work-item selector.",
+              "Task execution preparation accepts one work-item selector.",
           }),
         };
       }
@@ -3959,7 +4170,7 @@ function parseTaskExecutionPreparationArgs(args: readonly string[]): {
           error: createTaskStateCliError({
             code: "task_execution_prepare_batch_required",
             message:
-              "Task execution preparation preview requires --batch <batch-id> when the selector flag is used.",
+              "Task execution preparation requires --batch <batch-id> when the selector flag is used.",
           }),
         };
       }
@@ -3975,7 +4186,7 @@ function parseTaskExecutionPreparationArgs(args: readonly string[]): {
           error: createTaskStateCliError({
             code: "task_execution_prepare_duplicate_batch",
             message:
-              "Task execution preparation preview accepts one batch selector.",
+              "Task execution preparation accepts one batch selector.",
           }),
         };
       }
@@ -3996,7 +4207,7 @@ function parseTaskExecutionPreparationArgs(args: readonly string[]): {
         error: createTaskStateCliError({
           code: "task_execution_prepare_attempt_id_forbidden",
           message:
-            "Task execution preparation preview derives attempt identity from system state and does not accept --attempt-id.",
+            "Task execution preparation derives attempt identity from system state and does not accept --attempt-id.",
         }),
       };
     }
@@ -4012,7 +4223,7 @@ function parseTaskExecutionPreparationArgs(args: readonly string[]): {
         error: createTaskStateCliError({
           code: "task_execution_prepare_attempt_number_forbidden",
           message:
-            "Task execution preparation preview does not accept operator attempt numbers in this MVP.",
+            "Task execution preparation does not accept operator attempt numbers.",
         }),
       };
     }
@@ -4032,7 +4243,7 @@ function parseTaskExecutionPreparationArgs(args: readonly string[]): {
         error: createTaskStateCliError({
           code: "task_execution_prepare_failure_authority_forbidden",
           message:
-            "Task execution preparation preview does not accept retry or failure authority.",
+            "Task execution preparation does not accept retry or failure authority.",
         }),
       };
     }
@@ -4053,7 +4264,7 @@ function parseTaskExecutionPreparationArgs(args: readonly string[]): {
         error: createTaskStateCliError({
           code: "task_execution_prepare_lifecycle_authority_forbidden",
           message:
-            "Task execution preparation preview cannot accept operator lifecycle authority.",
+            "Task execution preparation cannot accept operator lifecycle authority.",
         }),
       };
     }
@@ -4068,7 +4279,7 @@ function parseTaskExecutionPreparationArgs(args: readonly string[]): {
         batchId,
         error: createTaskStateCliError({
           code: "task_execution_prepare_force_forbidden",
-          message: "Task execution preparation preview has no --force mode.",
+          message: "Task execution preparation has no --force mode.",
         }),
       };
     }
@@ -4098,7 +4309,7 @@ function parseTaskExecutionPreparationArgs(args: readonly string[]): {
         batchId,
         error: createTaskStateCliError({
           code: "task_execution_prepare_task_id_ambiguous",
-          message: "Task execution preparation preview accepts one task id.",
+          message: "Task execution preparation accepts one task id.",
         }),
       };
     }
@@ -4119,39 +4330,29 @@ function parseTaskExecutionPreparationArgs(args: readonly string[]): {
 async function handleTaskExecutionPrepare(args: readonly string[]): Promise<void> {
   const parsedArgs = parseTaskExecutionPreparationArgs(args);
 
-  if (!parsedArgs.preview) {
-    const error = createTaskStateCliError({
-      code: "task_execution_prepare_apply_not_implemented",
-      message:
-        "Task execution preparation apply is not implemented; use --preview for a read-only preparation preview.",
-    });
-    const output = createTaskExecutionPreparationErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      error,
-      status: "task_execution_prepare_apply_not_implemented",
-    });
-
-    if (parsedArgs.json) {
-      writeTaskExecutionPreparationPreviewJson(output);
-    } else {
-      printTaskExecutionPreparationPreviewError(output);
-    }
-
-    setExitCode(1);
-    return;
-  }
-
   if (parsedArgs.error !== undefined) {
-    const output = createTaskExecutionPreparationErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      error: parsedArgs.error,
-      status: "invalid_arguments",
-    });
+    const output = parsedArgs.preview
+      ? createTaskExecutionPreparationErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          error: parsedArgs.error,
+          status: "invalid_arguments",
+        })
+      : createTaskExecutionPreparationApplyErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          error: parsedArgs.error,
+          status: "invalid_arguments",
+        });
 
     if (parsedArgs.json) {
       writeTaskExecutionPreparationPreviewJson(output);
+    } else if (parsedArgs.preview) {
+      printTaskExecutionPreparationPreviewError(
+        output as Extract<TaskExecutionPreparationPreviewJsonOutput, { readonly ok: false }>,
+      );
     } else {
-      printTaskExecutionPreparationPreviewError(output);
+      printTaskExecutionPreparationApplyError(
+        output as Extract<TaskExecutionPreparationApplyJsonOutput, { readonly ok: false }>,
+      );
     }
 
     setExitCode(1);
@@ -4161,17 +4362,30 @@ async function handleTaskExecutionPrepare(args: readonly string[]): Promise<void
   if (parsedArgs.taskId === undefined || parsedArgs.taskId.trim().length === 0) {
     const error = createTaskStateCliError({
       code: "task_execution_prepare_task_id_required",
-      message: "Task execution preparation preview requires a task id.",
+      message: parsedArgs.preview
+        ? "Task execution preparation preview requires a task id."
+        : "Task execution preparation apply requires a task id.",
     });
-    const output = createTaskExecutionPreparationErrorJsonOutput({
-      error,
-      status: "invalid_arguments",
-    });
+    const output = parsedArgs.preview
+      ? createTaskExecutionPreparationErrorJsonOutput({
+          error,
+          status: "invalid_arguments",
+        })
+      : createTaskExecutionPreparationApplyErrorJsonOutput({
+          error,
+          status: "invalid_arguments",
+        });
 
     if (parsedArgs.json) {
       writeTaskExecutionPreparationPreviewJson(output);
+    } else if (parsedArgs.preview) {
+      printTaskExecutionPreparationPreviewError(
+        output as Extract<TaskExecutionPreparationPreviewJsonOutput, { readonly ok: false }>,
+      );
     } else {
-      printTaskExecutionPreparationPreviewError(output);
+      printTaskExecutionPreparationApplyError(
+        output as Extract<TaskExecutionPreparationApplyJsonOutput, { readonly ok: false }>,
+      );
     }
 
     setExitCode(1);
@@ -4183,16 +4397,28 @@ async function handleTaskExecutionPrepare(args: readonly string[]): Promise<void
   );
 
   if (!expectedRevisionResult.ok) {
-    const output = createTaskExecutionPreparationErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      error: expectedRevisionResult.error,
-      status: "invalid_arguments",
-    });
+    const output = parsedArgs.preview
+      ? createTaskExecutionPreparationErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          error: expectedRevisionResult.error,
+          status: "invalid_arguments",
+        })
+      : createTaskExecutionPreparationApplyErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          error: expectedRevisionResult.error,
+          status: "invalid_arguments",
+        });
 
     if (parsedArgs.json) {
       writeTaskExecutionPreparationPreviewJson(output);
+    } else if (parsedArgs.preview) {
+      printTaskExecutionPreparationPreviewError(
+        output as Extract<TaskExecutionPreparationPreviewJsonOutput, { readonly ok: false }>,
+      );
     } else {
-      printTaskExecutionPreparationPreviewError(output);
+      printTaskExecutionPreparationApplyError(
+        output as Extract<TaskExecutionPreparationApplyJsonOutput, { readonly ok: false }>,
+      );
     }
 
     setExitCode(1);
@@ -4205,17 +4431,30 @@ async function handleTaskExecutionPrepare(args: readonly string[]): Promise<void
   });
 
   if (!loadResult.ok) {
-    const output = createTaskExecutionPreparationErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      expectedRevision: expectedRevisionResult.value,
-      error: loadResult.error,
-      status: "failed_to_load",
-    });
+    const output = parsedArgs.preview
+      ? createTaskExecutionPreparationErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          expectedRevision: expectedRevisionResult.value,
+          error: loadResult.error,
+          status: "failed_to_load",
+        })
+      : createTaskExecutionPreparationApplyErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          expectedRevision: expectedRevisionResult.value,
+          error: loadResult.error,
+          status: "failed_to_load",
+        });
 
     if (parsedArgs.json) {
       writeTaskExecutionPreparationPreviewJson(output);
+    } else if (parsedArgs.preview) {
+      printTaskExecutionPreparationPreviewError(
+        output as Extract<TaskExecutionPreparationPreviewJsonOutput, { readonly ok: false }>,
+      );
     } else {
-      printTaskExecutionPreparationPreviewError(output);
+      printTaskExecutionPreparationApplyError(
+        output as Extract<TaskExecutionPreparationApplyJsonOutput, { readonly ok: false }>,
+      );
     }
 
     setExitCode(1);
@@ -4223,24 +4462,39 @@ async function handleTaskExecutionPrepare(args: readonly string[]): Promise<void
   }
 
   const state = loadResult.value.state;
+  const stateBytesBefore = getFs().readFileSync(loadResult.value.path, "utf8");
 
   if (state.revision !== expectedRevisionResult.value) {
     const error = createTaskStateRevisionConflictError({
       expectedRevision: expectedRevisionResult.value,
       actualRevision: state.revision,
     });
-    const output = createTaskExecutionPreparationErrorJsonOutput({
-      taskId: state.taskId,
-      sourceRevision: state.revision,
-      expectedRevision: expectedRevisionResult.value,
-      error,
-      status: "task_state_revision_conflict",
-    });
+    const output = parsedArgs.preview
+      ? createTaskExecutionPreparationErrorJsonOutput({
+          taskId: state.taskId,
+          sourceRevision: state.revision,
+          expectedRevision: expectedRevisionResult.value,
+          error,
+          status: "task_state_revision_conflict",
+        })
+      : createTaskExecutionPreparationApplyErrorJsonOutput({
+          taskId: state.taskId,
+          sourceRevision: state.revision,
+          expectedRevision: expectedRevisionResult.value,
+          error,
+          status: "task_state_revision_conflict",
+        });
 
     if (parsedArgs.json) {
       writeTaskExecutionPreparationPreviewJson(output);
+    } else if (parsedArgs.preview) {
+      printTaskExecutionPreparationPreviewError(
+        output as Extract<TaskExecutionPreparationPreviewJsonOutput, { readonly ok: false }>,
+      );
     } else {
-      printTaskExecutionPreparationPreviewError(output);
+      printTaskExecutionPreparationApplyError(
+        output as Extract<TaskExecutionPreparationApplyJsonOutput, { readonly ok: false }>,
+      );
     }
 
     setExitCode(1);
@@ -4254,21 +4508,78 @@ async function handleTaskExecutionPrepare(args: readonly string[]): Promise<void
   ) {
     const error = createTaskStateCliError({
       code: "task_execution_prepare_target_required",
-      message:
-        "Task execution preparation preview requires --work-item or --batch when persisted state does not expose an authoritative next batch.",
+      message: parsedArgs.preview
+        ? "Task execution preparation preview requires --work-item or --batch when persisted state does not expose an authoritative next batch."
+        : "Task execution preparation apply requires --work-item or --batch when persisted state does not expose an authoritative next batch.",
     });
-    const output = createTaskExecutionPreparationErrorJsonOutput({
-      taskId: state.taskId,
-      sourceRevision: state.revision,
-      expectedRevision: expectedRevisionResult.value,
-      error,
-      status: "invalid_arguments",
-    });
+    const output = parsedArgs.preview
+      ? createTaskExecutionPreparationErrorJsonOutput({
+          taskId: state.taskId,
+          sourceRevision: state.revision,
+          expectedRevision: expectedRevisionResult.value,
+          error,
+          status: "invalid_arguments",
+        })
+      : createTaskExecutionPreparationApplyErrorJsonOutput({
+          taskId: state.taskId,
+          sourceRevision: state.revision,
+          expectedRevision: expectedRevisionResult.value,
+          error,
+          status: "invalid_arguments",
+        });
 
     if (parsedArgs.json) {
       writeTaskExecutionPreparationPreviewJson(output);
+    } else if (parsedArgs.preview) {
+      printTaskExecutionPreparationPreviewError(
+        output as Extract<TaskExecutionPreparationPreviewJsonOutput, { readonly ok: false }>,
+      );
     } else {
-      printTaskExecutionPreparationPreviewError(output);
+      printTaskExecutionPreparationApplyError(
+        output as Extract<TaskExecutionPreparationApplyJsonOutput, { readonly ok: false }>,
+      );
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  const selectedBatchId = parsedArgs.batchId ?? state.nextBatchId;
+  const attemptNumberResult = await deriveNextTaskExecutionAttemptNumber({
+    projectRoot: getCwd(),
+    taskId: state.taskId,
+    taskStateRevision: state.revision,
+    workItemId: parsedArgs.workItemId,
+    batchId: selectedBatchId,
+  });
+
+  if (!attemptNumberResult.ok) {
+    const output = parsedArgs.preview
+      ? createTaskExecutionPreparationErrorJsonOutput({
+          taskId: state.taskId,
+          sourceRevision: state.revision,
+          expectedRevision: expectedRevisionResult.value,
+          error: attemptNumberResult.error,
+          status: "execution_preparation_blocked",
+        })
+      : createTaskExecutionPreparationApplyErrorJsonOutput({
+          taskId: state.taskId,
+          sourceRevision: state.revision,
+          expectedRevision: expectedRevisionResult.value,
+          error: attemptNumberResult.error,
+          status: "execution_preparation_blocked",
+        });
+
+    if (parsedArgs.json) {
+      writeTaskExecutionPreparationPreviewJson(output);
+    } else if (parsedArgs.preview) {
+      printTaskExecutionPreparationPreviewError(
+        output as Extract<TaskExecutionPreparationPreviewJsonOutput, { readonly ok: false }>,
+      );
+    } else {
+      printTaskExecutionPreparationApplyError(
+        output as Extract<TaskExecutionPreparationApplyJsonOutput, { readonly ok: false }>,
+      );
     }
 
     setExitCode(1);
@@ -4279,23 +4590,37 @@ async function handleTaskExecutionPrepare(args: readonly string[]): Promise<void
     state,
     expectedRevision: expectedRevisionResult.value,
     workItemId: parsedArgs.workItemId,
-    batchId: parsedArgs.batchId ?? state.nextBatchId,
-    attemptNumber: 1,
+    batchId: selectedBatchId,
+    attemptNumber: attemptNumberResult.value,
   });
 
   if (!prepareResult.ok) {
-    const output = createTaskExecutionPreparationErrorJsonOutput({
-      taskId: state.taskId,
-      sourceRevision: state.revision,
-      expectedRevision: expectedRevisionResult.value,
-      error: prepareResult.error,
-      status: "execution_preparation_blocked",
-    });
+    const output = parsedArgs.preview
+      ? createTaskExecutionPreparationErrorJsonOutput({
+          taskId: state.taskId,
+          sourceRevision: state.revision,
+          expectedRevision: expectedRevisionResult.value,
+          error: prepareResult.error,
+          status: "execution_preparation_blocked",
+        })
+      : createTaskExecutionPreparationApplyErrorJsonOutput({
+          taskId: state.taskId,
+          sourceRevision: state.revision,
+          expectedRevision: expectedRevisionResult.value,
+          error: prepareResult.error,
+          status: "execution_preparation_blocked",
+        });
 
     if (parsedArgs.json) {
       writeTaskExecutionPreparationPreviewJson(output);
+    } else if (parsedArgs.preview) {
+      printTaskExecutionPreparationPreviewError(
+        output as Extract<TaskExecutionPreparationPreviewJsonOutput, { readonly ok: false }>,
+      );
     } else {
-      printTaskExecutionPreparationPreviewError(output);
+      printTaskExecutionPreparationApplyError(
+        output as Extract<TaskExecutionPreparationApplyJsonOutput, { readonly ok: false }>,
+      );
     }
 
     setExitCode(1);
@@ -4303,72 +4628,123 @@ async function handleTaskExecutionPrepare(args: readonly string[]): Promise<void
   }
 
   const attempt = prepareResult.value.attempt;
-  const collisionResult = await loadTaskExecutionAttempt({
-    projectRoot: getCwd(),
-    taskId: attempt.taskId,
-    attemptId: attempt.attemptId,
-  });
 
-  if (collisionResult.ok) {
+  if (parsedArgs.preview) {
+    const output = createTaskExecutionPreparationPreviewJsonOutput({
+      attempt,
+      expectedRevision: expectedRevisionResult.value,
+    });
+
+    if (parsedArgs.json) {
+      writeTaskExecutionPreparationPreviewJson(output);
+    } else {
+      printTaskExecutionPreparationPreviewOutput(output);
+    }
+
+    return;
+  }
+
+  const stateBytesBeforeSave = getFs().readFileSync(loadResult.value.path, "utf8");
+
+  if (stateBytesBeforeSave !== stateBytesBefore) {
     const error = createTaskStateCliError({
-      code: "task_execution_attempt_already_exists",
+      code: "task_execution_prepare_task_state_modified",
       message:
-        "Prepared task execution attempt identity already exists and cannot be safely persisted.",
+        "Task execution preparation apply detected task-state mutation before attempt persistence.",
       category: "conflict",
     });
-    const output = createTaskExecutionPreparationErrorJsonOutput({
-      taskId: attempt.taskId,
-      sourceRevision: attempt.taskStateRevision,
+    const output = createTaskExecutionPreparationApplyErrorJsonOutput({
+      taskId: parsedArgs.taskId,
+      sourceRevision: state.revision,
       expectedRevision: expectedRevisionResult.value,
       attempt,
       error,
-      status: "task_execution_attempt_already_exists",
-      collision: {
-        attemptId: attempt.attemptId,
-        wouldOverwrite: false,
-        persistedAttemptExists: true,
+      status: "task_state_modified",
+      safety: {
+        ...taskExecutionPreparationApplyFailureSafety,
+        taskStateModified: true,
       },
     });
 
     if (parsedArgs.json) {
       writeTaskExecutionPreparationPreviewJson(output);
     } else {
-      printTaskExecutionPreparationPreviewError(output);
+      printTaskExecutionPreparationApplyError(output);
     }
 
     setExitCode(1);
     return;
   }
 
-  if (collisionResult.error.code !== "task_execution_attempt_not_found") {
-    const output = createTaskExecutionPreparationErrorJsonOutput({
+  const saveResult = await saveTaskExecutionAttempt({
+    projectRoot: getCwd(),
+    attempt,
+  });
+
+  if (!saveResult.ok) {
+    const output = createTaskExecutionPreparationApplyErrorJsonOutput({
       taskId: attempt.taskId,
       sourceRevision: attempt.taskStateRevision,
       expectedRevision: expectedRevisionResult.value,
       attempt,
-      error: collisionResult.error,
-      status: "execution_preparation_blocked",
+      error: saveResult.error,
+      status:
+        saveResult.error.code === "task_execution_attempt_already_exists"
+          ? "task_execution_attempt_already_exists"
+          : "execution_preparation_blocked",
     });
 
     if (parsedArgs.json) {
       writeTaskExecutionPreparationPreviewJson(output);
     } else {
-      printTaskExecutionPreparationPreviewError(output);
+      printTaskExecutionPreparationApplyError(output);
     }
 
     setExitCode(1);
     return;
   }
 
-  const output = createTaskExecutionPreparationPreviewJsonOutput({
+  const stateBytesAfter = getFs().readFileSync(loadResult.value.path, "utf8");
+
+  if (stateBytesAfter !== stateBytesBefore) {
+    const error = createTaskStateCliError({
+      code: "task_execution_prepare_task_state_modified",
+      message:
+        "Task execution preparation apply detected task-state mutation and cannot report success.",
+      category: "conflict",
+    });
+    const output = createTaskExecutionPreparationApplyErrorJsonOutput({
+      taskId: parsedArgs.taskId,
+      sourceRevision: state.revision,
+      expectedRevision: expectedRevisionResult.value,
+      attempt,
+      error,
+      status: "task_state_modified",
+      safety: {
+        ...taskExecutionPreparationApplyFailureSafety,
+        attemptPersisted: true,
+        taskStateModified: true,
+      },
+    });
+
+    if (parsedArgs.json) {
+      writeTaskExecutionPreparationPreviewJson(output);
+    } else {
+      printTaskExecutionPreparationApplyError(output);
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  const output = createTaskExecutionPreparationApplyJsonOutput({
     attempt,
-    expectedRevision: expectedRevisionResult.value,
   });
 
   if (parsedArgs.json) {
     writeTaskExecutionPreparationPreviewJson(output);
   } else {
-    printTaskExecutionPreparationPreviewOutput(output);
+    printTaskExecutionPreparationApplyOutput(output);
   }
 }
 
@@ -4390,6 +4766,9 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
       console.error("Error: unknown task execution command.");
       console.error(
         "Usage: aeos task execution prepare --preview <task-id> --expected-revision <number> [--work-item <work-item-id>] [--batch <batch-id>] [--json]",
+      );
+      console.error(
+        "Usage: aeos task execution prepare <task-id> --expected-revision <number> [--work-item <work-item-id>] [--batch <batch-id>] [--json]",
       );
     }
 
@@ -6479,6 +6858,9 @@ async function handleTask(args: readonly string[]): Promise<void> {
     );
     console.error(
       "Usage: aeos task execution prepare --preview <task-id> --expected-revision <number> [--work-item <work-item-id>] [--batch <batch-id>] [--json]",
+    );
+    console.error(
+      "Usage: aeos task execution prepare <task-id> --expected-revision <number> [--work-item <work-item-id>] [--batch <batch-id>] [--json]",
     );
     console.error("Usage: aeos task status <task-id> [--json]");
     console.error("Usage: aeos task resume --preview <task-id> [--json]");

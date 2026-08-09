@@ -327,6 +327,16 @@ corrupt JSON fails closed, and symlink/non-directory state-root or symlink targe
 escapes are rejected. The write strategy mirrors task-state persistence:
 temporary file, fsync, and rename.
 
+Attempt-number authority comes from the attempt persistence layer, not CLI input
+or model output. For a given task id, source task-state revision, work item, and
+batch binding, AEOS inspects only
+`.aeos/state/executions/<task-id>`, validates every authoritative attempt record,
+requires filename/record identity agreement, rejects corrupt or unsafe records,
+and chooses the smallest missing positive integer. Existing numbers in that
+context are never reused, gaps are filled deterministically, and directory
+iteration order cannot change the result. Operators cannot pass arbitrary
+attempt ids or attempt numbers.
+
 The stale-attempt invariant is explicit: an attempt prepared from task revision
 `N` is not execution-authoritative for a current task state at revision `N+1`.
 `validateTaskExecutionAttemptForTaskState` rejects that mismatch for future
@@ -358,12 +368,13 @@ completion gate, or create completed task state.
 Current limitations:
 
 - no real execution runtime;
-- execution-attempt CLI is preview-only;
+- execution-attempt CLI can persist `prepared` attempts only;
 - no retry execution;
 - no audit runtime integration;
 - no verifier runtime integration;
 - no policy runtime integration;
 - no automatic resume or retry;
+- no execution start command;
 - no terminal success/completion attempt state.
 
 ## Execution Preparation Preview
@@ -394,11 +405,11 @@ A previous preview is not execution authorization.
 Attempt identity is system-derived from task id, source revision, attempt
 number, work item, and batch. The CLI does not accept `--attempt-id`,
 `--attempt-number`, retry flags, failure classification flags, lifecycle flags,
-or `--force`. The current preview uses attempt number `1` as the MVP candidate
-and checks that deterministic identity through the existing safe load API. If
-the attempt already exists, preview reports `task_execution_attempt_already_exists`
-and marks preparation as not allowed instead of overwriting or choosing another
-number.
+or `--force`. Preview derives the next safe attempt number from authoritative
+persisted attempts using the same persistence-layer authority API as apply. If
+attempt `1` already exists for the same source/work/batch context, preview shows
+the next deterministic candidate instead of reusing or overwriting the existing
+identity.
 
 Preview may contain an in-memory `attempt_prepared` event because the pure
 preparation API naturally creates it. It does not persist events and does not
@@ -408,9 +419,37 @@ approval, or verifier-pass events.
 Prepared does not mean started. The preview does not persist an attempt, mark
 an attempt started, execute work, call model or tool adapters, write audit
 events, run policy or verifier runtime, mutate task state, increment revision,
-complete work, satisfy the verifier, or create task completion. Non-preview
-preparation is unavailable and fails closed with
-`task_execution_prepare_apply_not_implemented`.
+complete work, satisfy the verifier, or create task completion.
+
+## Execution Preparation Apply
+`aeos task execution prepare <task-id> --expected-revision <number>` is the
+explicit operator-controlled create boundary for a durable prepared execution
+attempt. `--json` emits one deterministic JSON object only.
+
+Apply does not trust prior preview output. It reloads authoritative task state,
+validates it, compares the positive integer expected revision, resolves
+work/batch selectors from the current persisted state, derives the next safe
+attempt number from persisted attempts, prepares through the core pure
+preparation API, and saves through immutable attempt persistence.
+
+Successful apply persists only:
+
+- `lifecycle: "prepared"`
+- one initial `attempt_prepared` event
+- system-derived attempt id
+- task id, source revision, work item, batch, and attempt-number bindings
+
+It does not start execution, call model/tool adapters, write audit runtime
+events, run policy or verifier runtime, transition to failure/interruption, mark
+work completed, mutate task state, increment task revision, satisfy verifier
+state, or mark task completion. The CLI checks task-state bytes before and after
+successful apply and reports success only when task state is unchanged.
+
+Attempt creation is immutable. If the exact derived attempt identity already
+exists at save time, apply fails closed with the persistence conflict and never
+overwrites. There is no `--force`, no arbitrary attempt id, no arbitrary attempt
+number, no arbitrary lifecycle, no retry/failure injection, and no
+`aeos task execution start` command.
 
 ## Read-Only CLI Inspection
 `aeos task status <task-id>` reads the authoritative persisted state from:
@@ -443,9 +482,6 @@ errors.
 
 `aeos task resume <task-id>` without `--preview` remains unavailable and fails
 closed with `task_resume_execution_not_implemented`.
-
-`aeos task execution prepare <task-id>` without `--preview` remains unavailable
-and fails closed with `task_execution_prepare_apply_not_implemented`.
 
 ## Plan And Dry-Run
 `aeos task plan` remains read-only.

@@ -73,6 +73,8 @@ condition.
 - TASK-0285: Design authoritative execution-attempt/event state foundation.
 - TASK-0286: Execution-attempt targeted safety review and read-only
   execution-preparation CLI preview.
+- TASK-0287: Design and implement explicit execution-attempt
+  persistence/preparation apply CLI.
 
 ## Do Not Load By Default
 
@@ -83,11 +85,11 @@ condition.
 
 ## Next Task
 
-TASK-0287 Design and implement explicit execution-attempt
-persistence/preparation apply CLI.
+TASK-0288 Execution-attempt persistence targeted safety review and
+execution-start authorization foundation.
 
-Purpose: Add an explicit CLI apply path that may persist a PREPARED attempt
-only, while still not starting real execution.
+Purpose: Review prepared-attempt persistence safety and design/start the
+execution-start authorization boundary without calling real adapters.
 
 ## Current Plans
 

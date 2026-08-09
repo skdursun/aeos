@@ -1365,6 +1365,60 @@ function expectTaskExecutionPreparationErrorJsonShape(message, value, expectedCo
   }
 }
 
+function expectTaskExecutionPreparationApplyJsonShape(message, value, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== true ||
+    value.status !== "execution_preparation_persisted" ||
+    typeof value.taskId !== "string" ||
+    typeof value.sourceRevision !== "number" ||
+    typeof value.attempt !== "object" ||
+    value.attempt === null ||
+    typeof value.attempt.attemptId !== "string" ||
+    typeof value.attempt.attemptNumber !== "number" ||
+    value.attempt.lifecycle !== "prepared" ||
+    value.safety?.attemptPersisted !== true ||
+    value.safety?.executionPerformed !== false ||
+    value.safety?.adapterCalls !== false ||
+    value.safety?.auditWrites !== false ||
+    value.safety?.verifierRun !== false ||
+    value.safety?.taskStateModified !== false ||
+    value.safety?.workCompleted !== false ||
+    value.safety?.taskCompleted !== false ||
+    !Array.isArray(value.issues) ||
+    value.issues.length !== 0
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectTaskExecutionPreparationApplyErrorJsonShape(message, value, expectedCode, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== false ||
+    value.preparationAllowed !== false ||
+    typeof value.error !== "object" ||
+    value.error === null ||
+    value.error.code !== expectedCode ||
+    typeof value.error.message !== "string" ||
+    value.error.message.length === 0 ||
+    value.safety?.attemptPersisted !== false ||
+    value.safety?.executionPerformed !== false ||
+    value.safety?.adapterCalls !== false ||
+    value.safety?.auditWrites !== false ||
+    value.safety?.verifierRun !== false ||
+    value.safety?.taskStateModified !== false ||
+    value.safety?.workCompleted !== false ||
+    value.safety?.taskCompleted !== false ||
+    !Array.isArray(value.issues) ||
+    !value.issues.some((issue) => issue.code === expectedCode)
+  ) {
+    fail(message, result);
+  }
+}
+
 function expectTaskStateInitSuccessJsonShape(message, value, result) {
   if (
     typeof value !== "object" ||
@@ -1559,6 +1613,26 @@ expectOutputIncludes(
   'help output did not include "task state transition <task-id> --intent <intent> --expected-revision <number> --json"',
   helpCommand,
   "task state transition <task-id> --intent <intent> --expected-revision <number> --json",
+);
+expectOutputIncludes(
+  'help output did not include "task execution prepare --preview <task-id> --expected-revision <number>"',
+  helpCommand,
+  "task execution prepare --preview <task-id> --expected-revision <number>",
+);
+expectOutputIncludes(
+  'help output did not include "task execution prepare --preview <task-id> --expected-revision <number> --json"',
+  helpCommand,
+  "task execution prepare --preview <task-id> --expected-revision <number> --json",
+);
+expectOutputIncludes(
+  'help output did not include "task execution prepare <task-id> --expected-revision <number>"',
+  helpCommand,
+  "task execution prepare <task-id> --expected-revision <number>",
+);
+expectOutputIncludes(
+  'help output did not include "task execution prepare <task-id> --expected-revision <number> --json"',
+  helpCommand,
+  "task execution prepare <task-id> --expected-revision <number> --json",
 );
 expectOutputIncludes(
   'help output did not include "task status <task-id>"',
@@ -5430,6 +5504,24 @@ try {
     "task_execution_prepare_expected_revision_required",
     missingRevisionExecutionPreviewJson,
   );
+  const missingRevisionExecutionApplyJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    statusTaskId,
+    "--json",
+  ]);
+  expectNonzero("task execution preparation apply missing revision exited zero", missingRevisionExecutionApplyJson);
+  const parsedMissingRevisionExecutionApplyJson = parseJsonOnlyStdout(
+    "task execution preparation apply missing revision output was not valid JSON only",
+    missingRevisionExecutionApplyJson,
+  );
+  expectTaskExecutionPreparationApplyErrorJsonShape(
+    "task execution preparation apply missing revision did not fail closed",
+    parsedMissingRevisionExecutionApplyJson,
+    "task_execution_prepare_expected_revision_required",
+    missingRevisionExecutionApplyJson,
+  );
 
   for (const malformedRevision of ["0", "-1", "1.5", "abc"]) {
     const malformedExecutionPreviewJson = runCliFrom(taskStateCliRoot, [
@@ -5456,10 +5548,35 @@ try {
       "task_execution_prepare_expected_revision_invalid",
       malformedExecutionPreviewJson,
     );
+
+    const malformedExecutionApplyJson = runCliFrom(taskStateCliRoot, [
+      "task",
+      "execution",
+      "prepare",
+      statusTaskId,
+      "--expected-revision",
+      malformedRevision,
+      "--json",
+    ]);
+    expectNonzero(
+      `task execution preparation apply malformed revision ${malformedRevision} exited zero`,
+      malformedExecutionApplyJson,
+    );
+    const parsedMalformedExecutionApplyJson = parseJsonOnlyStdout(
+      `task execution preparation apply malformed revision ${malformedRevision} output was not valid JSON only`,
+      malformedExecutionApplyJson,
+    );
+    expectTaskExecutionPreparationApplyErrorJsonShape(
+      `task execution preparation apply malformed revision ${malformedRevision} did not fail closed`,
+      parsedMalformedExecutionApplyJson,
+      "task_execution_prepare_expected_revision_invalid",
+      malformedExecutionApplyJson,
+    );
   }
 
   for (const [flag, value, expectedCode] of [
     ["--attempt-id", "operator-attempt", "task_execution_prepare_attempt_id_forbidden"],
+    ["--attempt-number", "7", "task_execution_prepare_attempt_number_forbidden"],
     ["--retryable", "true", "task_execution_prepare_failure_authority_forbidden"],
     ["--failure-code", "model-failure", "task_execution_prepare_failure_authority_forbidden"],
     ["--lifecycle", "completed", "task_execution_prepare_lifecycle_authority_forbidden"],
@@ -5491,9 +5608,37 @@ try {
       expectedCode,
       authorityPreviewJson,
     );
+
+    const authorityApplyArgs = [
+      "task",
+      "execution",
+      "prepare",
+      statusTaskId,
+      "--expected-revision",
+      "1",
+      flag,
+    ];
+    if (value !== undefined) {
+      authorityApplyArgs.push(value);
+    }
+    authorityApplyArgs.push("--json");
+    const authorityApplyJson = runCliFrom(taskStateCliRoot, authorityApplyArgs);
+    expectNonzero(`task execution preparation apply forbidden ${flag} exited zero`, authorityApplyJson);
+    const parsedAuthorityApplyJson = parseJsonOnlyStdout(
+      `task execution preparation apply forbidden ${flag} output was not valid JSON only`,
+      authorityApplyJson,
+    );
+    expectTaskExecutionPreparationApplyErrorJsonShape(
+      `task execution preparation apply forbidden ${flag} did not fail closed`,
+      parsedAuthorityApplyJson,
+      expectedCode,
+      authorityApplyJson,
+    );
   }
 
-  const nonPreviewExecutionPrepareJson = runCliFrom(taskStateCliRoot, [
+  const applySnapshotBefore = stateFileSnapshot(statusStatePath);
+  const applyExecutionSnapshotBefore = executionSnapshot(taskStateCliRoot);
+  const executionPrepareApplyJson = runCliFrom(taskStateCliRoot, [
     "task",
     "execution",
     "prepare",
@@ -5502,29 +5647,132 @@ try {
     "1",
     "--json",
   ]);
-  expectNonzero("task execution preparation non-preview exited zero", nonPreviewExecutionPrepareJson);
-  const parsedNonPreviewExecutionPrepareJson = parseJsonOnlyStdout(
-    "task execution preparation non-preview output was not valid JSON only",
-    nonPreviewExecutionPrepareJson,
+  expectExitCode("task execution preparation apply exited nonzero", executionPrepareApplyJson, 0);
+  const parsedExecutionPrepareApplyJson = parseJsonOnlyStdout(
+    "task execution preparation apply output was not valid JSON only",
+    executionPrepareApplyJson,
   );
-  expectTaskExecutionPreparationErrorJsonShape(
-    "task execution preparation non-preview did not fail closed",
-    parsedNonPreviewExecutionPrepareJson,
-    "task_execution_prepare_apply_not_implemented",
-    nonPreviewExecutionPrepareJson,
+  expectTaskExecutionPreparationApplyJsonShape(
+    "task execution preparation apply shape was invalid",
+    parsedExecutionPrepareApplyJson,
+    executionPrepareApplyJson,
+  );
+  if (
+    parsedExecutionPrepareApplyJson.taskId !== statusTaskId ||
+    parsedExecutionPrepareApplyJson.sourceRevision !== 1 ||
+    !parsedExecutionPrepareApplyJson.attempt.attemptId.startsWith(
+      "attempt-TASK-STATUS-SMOKE-r1-n1-",
+    ) ||
+    parsedExecutionPrepareApplyJson.attempt.attemptNumber !== 1 ||
+    parsedExecutionPrepareApplyJson.attempt.lifecycle !== "prepared" ||
+    parsedExecutionPrepareApplyJson.attempt.workItemId !== null ||
+    parsedExecutionPrepareApplyJson.attempt.batchId !== "batch-main"
+  ) {
+    fail(
+      "task execution preparation apply did not expose persisted authoritative attempt",
+      executionPrepareApplyJson,
+    );
+  }
+  const persistedAttemptPath = join(
+    taskStateCliRoot,
+    ".aeos",
+    "state",
+    "executions",
+    statusTaskId,
+    `${parsedExecutionPrepareApplyJson.attempt.attemptId}.json`,
+  );
+  if (!existsSync(persistedAttemptPath)) {
+    fail("task execution preparation apply did not persist at expected location", executionPrepareApplyJson);
+  }
+  const persistedAttempt = JSON.parse(readFileSync(persistedAttemptPath, "utf8"));
+  if (
+    persistedAttempt.attemptId !== parsedExecutionPrepareApplyJson.attempt.attemptId ||
+    persistedAttempt.taskId !== statusTaskId ||
+    persistedAttempt.taskStateRevision !== 1 ||
+    persistedAttempt.attemptNumber !== 1 ||
+    persistedAttempt.lifecycle !== "prepared" ||
+    persistedAttempt.batchId !== "batch-main" ||
+    persistedAttempt.events.length !== 1 ||
+    persistedAttempt.events[0]?.kind !== "attempt_prepared" ||
+    persistedAttempt.safety.executionPerformed !== false ||
+    persistedAttempt.safety.adapterCalls !== false ||
+    persistedAttempt.safety.auditWrites !== false ||
+    persistedAttempt.safety.verifierRun !== false ||
+    persistedAttempt.safety.completedStateCreated !== false ||
+    persistedAttempt.safety.verifiedStateCreated !== false
+  ) {
+    fail("task execution preparation apply persisted unsafe attempt", executionPrepareApplyJson);
+  }
+  expectStateFileSnapshotSame(
+    "task execution preparation apply modified state",
+    statusStatePath,
+    applySnapshotBefore,
+    executionPrepareApplyJson,
+  );
+  const applyExecutionSnapshotAfter = executionSnapshot(taskStateCliRoot);
+  if (
+    applyExecutionSnapshotAfter.files.length !==
+      applyExecutionSnapshotBefore.files.length + 1 ||
+    !applyExecutionSnapshotAfter.files.includes(
+      `${statusTaskId}/${parsedExecutionPrepareApplyJson.attempt.attemptId}.json`,
+    )
+  ) {
+    fail("task execution preparation apply did not create exactly one attempt file", executionPrepareApplyJson);
+  }
+
+  const previewAfterPersistedAttemptJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    statusTaskId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectExitCode(
+    "task execution preparation preview after persisted attempt exited nonzero",
+    previewAfterPersistedAttemptJson,
+    0,
+  );
+  const parsedPreviewAfterPersistedAttemptJson = parseJsonOnlyStdout(
+    "task execution preparation preview after persisted attempt output was not valid JSON only",
+    previewAfterPersistedAttemptJson,
+  );
+  expectTaskExecutionPreparationPreviewJsonShape(
+    "task execution preparation preview after persisted attempt shape was invalid",
+    parsedPreviewAfterPersistedAttemptJson,
+    previewAfterPersistedAttemptJson,
+  );
+  if (
+    parsedPreviewAfterPersistedAttemptJson.attempt.attemptNumber !== 2 ||
+    !parsedPreviewAfterPersistedAttemptJson.attempt.attemptId.startsWith(
+      "attempt-TASK-STATUS-SMOKE-r1-n2-",
+    )
+  ) {
+    fail(
+      "task execution preparation preview after persisted attempt did not expose next authority",
+      previewAfterPersistedAttemptJson,
+    );
+  }
+  expectStateFileSnapshotSame(
+    "task execution preparation preview after persisted attempt modified state",
+    statusStatePath,
+    applySnapshotBefore,
+    previewAfterPersistedAttemptJson,
   );
   expectExecutionSnapshotSame(
-    "task execution preparation non-preview created execution files",
+    "task execution preparation preview after persisted attempt changed execution files",
     taskStateCliRoot,
-    executionPreviewSnapshotBefore,
-    nonPreviewExecutionPrepareJson,
+    applyExecutionSnapshotAfter,
+    previewAfterPersistedAttemptJson,
   );
 
   const collisionPreparedAttempt = prepareTaskExecutionAttempt({
     state: JSON.parse(readFileSync(statusStatePath, "utf8")),
     expectedRevision: 1,
     batchId: "batch-main",
-    attemptNumber: 1,
+    attemptNumber: 2,
     createdAt: "2026-08-09T00:00:00.000Z",
   });
   if (!collisionPreparedAttempt.ok) {
@@ -5549,26 +5797,24 @@ try {
     "1",
     "--json",
   ]);
-  expectNonzero("task execution preparation collision exited zero", collisionExecutionPreviewJson);
+  expectExitCode("task execution preparation next-authority preview exited nonzero", collisionExecutionPreviewJson, 0);
   const parsedCollisionExecutionPreviewJson = parseJsonOnlyStdout(
-    "task execution preparation collision output was not valid JSON only",
+    "task execution preparation next-authority preview output was not valid JSON only",
     collisionExecutionPreviewJson,
   );
-  expectTaskExecutionPreparationErrorJsonShape(
-    "task execution preparation collision did not fail closed",
+  expectTaskExecutionPreparationPreviewJsonShape(
+    "task execution preparation next-authority preview shape was invalid",
     parsedCollisionExecutionPreviewJson,
-    "task_execution_attempt_already_exists",
     collisionExecutionPreviewJson,
   );
   if (
-    parsedCollisionExecutionPreviewJson.collision?.attemptId !==
-      collisionPreparedAttempt.value.attempt.attemptId ||
-    parsedCollisionExecutionPreviewJson.collision?.wouldOverwrite !== false ||
-    parsedCollisionExecutionPreviewJson.collision?.persistedAttemptExists !== true ||
-    parsedCollisionExecutionPreviewJson.attempt?.lifecycle !== "prepared"
+    parsedCollisionExecutionPreviewJson.attempt.attemptNumber !== 3 ||
+    !parsedCollisionExecutionPreviewJson.attempt.attemptId.startsWith(
+      "attempt-TASK-STATUS-SMOKE-r1-n3-",
+    )
   ) {
     fail(
-      "task execution preparation collision did not report safe collision details",
+      "task execution preparation next-authority preview did not skip existing identities",
       collisionExecutionPreviewJson,
     );
   }
@@ -5583,6 +5829,69 @@ try {
     taskStateCliRoot,
     collisionExecutionSnapshot,
     collisionExecutionPreviewJson,
+  );
+
+  const staleApplyTaskId = "TASK-PREPARE-STALE-APPLY";
+  const staleApplyStatePath = await savePersistedTaskState(
+    taskStateCliRoot,
+    createPersistedTaskState(staleApplyTaskId),
+  );
+  const staleApplyPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    staleApplyTaskId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectExitCode("stale apply setup preview exited nonzero", staleApplyPreviewJson, 0);
+  const staleApplyTransitionJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "state",
+    "transition",
+    staleApplyTaskId,
+    "--intent",
+    "require_verification",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectExitCode("stale apply setup transition exited nonzero", staleApplyTransitionJson, 0);
+  const staleApplySnapshotAfterTransition = stateFileSnapshot(staleApplyStatePath);
+  const staleApplyExecutionSnapshotBefore = executionSnapshot(taskStateCliRoot);
+  const stalePreparationApplyJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    staleApplyTaskId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution preparation stale apply exited zero", stalePreparationApplyJson);
+  const parsedStalePreparationApplyJson = parseJsonOnlyStdout(
+    "task execution preparation stale apply output was not valid JSON only",
+    stalePreparationApplyJson,
+  );
+  expectTaskExecutionPreparationApplyErrorJsonShape(
+    "task execution preparation stale apply did not fail closed",
+    parsedStalePreparationApplyJson,
+    "task_state_revision_conflict",
+    stalePreparationApplyJson,
+  );
+  expectStateFileSnapshotSame(
+    "task execution preparation stale apply modified task state",
+    staleApplyStatePath,
+    staleApplySnapshotAfterTransition,
+    stalePreparationApplyJson,
+  );
+  expectExecutionSnapshotSame(
+    "task execution preparation stale apply persisted attempt",
+    taskStateCliRoot,
+    staleApplyExecutionSnapshotBefore,
+    stalePreparationApplyJson,
   );
 
   const transitionFilesBefore = listRelativeFiles(taskStateCliRoot);
@@ -6722,6 +7031,26 @@ try {
     "task_state_unsafe_target",
     symlinkExecutionPreviewJson,
   );
+  const symlinkExecutionApplyJson = runCliFrom(symlinkFileRoot, [
+    "task",
+    "execution",
+    "prepare",
+    symlinkFileTaskId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution preparation state-file symlink apply exited zero", symlinkExecutionApplyJson);
+  const parsedSymlinkExecutionApplyJson = parseJsonOnlyStdout(
+    "task execution preparation state-file symlink apply output was not valid JSON only",
+    symlinkExecutionApplyJson,
+  );
+  expectTaskExecutionPreparationApplyErrorJsonShape(
+    "task execution preparation state-file symlink apply did not fail closed",
+    parsedSymlinkExecutionApplyJson,
+    "task_state_unsafe_target",
+    symlinkExecutionApplyJson,
+  );
   const symlinkTransitionApplyJson = runCliFrom(symlinkFileRoot, [
     "task",
     "state",
@@ -6813,6 +7142,26 @@ try {
     "task_state_unsafe_state_root",
     symlinkRootExecutionPreviewJson,
   );
+  const symlinkRootExecutionApplyJson = runCliFrom(symlinkRootProject, [
+    "task",
+    "execution",
+    "prepare",
+    "TASK-SYMLINK-ROOT",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution preparation state-root symlink apply exited zero", symlinkRootExecutionApplyJson);
+  const parsedSymlinkRootExecutionApplyJson = parseJsonOnlyStdout(
+    "task execution preparation state-root symlink apply output was not valid JSON only",
+    symlinkRootExecutionApplyJson,
+  );
+  expectTaskExecutionPreparationApplyErrorJsonShape(
+    "task execution preparation state-root symlink apply did not fail closed",
+    parsedSymlinkRootExecutionApplyJson,
+    "task_state_unsafe_state_root",
+    symlinkRootExecutionApplyJson,
+  );
   const symlinkRootTransitionApplyJson = runCliFrom(symlinkRootProject, [
     "task",
     "state",
@@ -6890,6 +7239,37 @@ try {
   );
   expectSameFiles(
     "task execution preparation wrote through execution-root symlink",
+    executionRootSymlinkOutsideBefore,
+    listRelativeFiles(executionRootSymlinkOutside),
+  );
+  const executionRootSymlinkApplyJson = runCliFrom(executionRootSymlinkProject, [
+    "task",
+    "execution",
+    "prepare",
+    executionRootSymlinkTaskId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution preparation execution-root symlink apply exited zero", executionRootSymlinkApplyJson);
+  const parsedExecutionRootSymlinkApplyJson = parseJsonOnlyStdout(
+    "task execution preparation execution-root symlink apply output was not valid JSON only",
+    executionRootSymlinkApplyJson,
+  );
+  expectTaskExecutionPreparationApplyErrorJsonShape(
+    "task execution preparation execution-root symlink apply did not fail closed",
+    parsedExecutionRootSymlinkApplyJson,
+    "task_execution_attempt_unsafe_state_root",
+    executionRootSymlinkApplyJson,
+  );
+  expectStateFileSnapshotSame(
+    "task execution preparation execution-root symlink apply modified task state",
+    executionRootSymlinkStatePath,
+    executionRootSymlinkStateSnapshot,
+    executionRootSymlinkApplyJson,
+  );
+  expectSameFiles(
+    "task execution preparation apply wrote through execution-root symlink",
     executionRootSymlinkOutsideBefore,
     listRelativeFiles(executionRootSymlinkOutside),
   );
@@ -6983,6 +7363,38 @@ try {
       attemptTargetRoot,
       attemptTargetExecutionSnapshot,
       attemptTargetPreviewJson,
+    );
+    const attemptTargetApplyJson = runCliFrom(attemptTargetRoot, [
+      "task",
+      "execution",
+      "prepare",
+      attemptTargetTaskId,
+      "--expected-revision",
+      "1",
+      "--json",
+    ]);
+    expectNonzero(`task execution preparation ${attemptTargetCase} attempt target apply exited zero`, attemptTargetApplyJson);
+    const parsedAttemptTargetApplyJson = parseJsonOnlyStdout(
+      `task execution preparation ${attemptTargetCase} attempt target apply output was not valid JSON only`,
+      attemptTargetApplyJson,
+    );
+    expectTaskExecutionPreparationApplyErrorJsonShape(
+      `task execution preparation ${attemptTargetCase} attempt target apply did not fail closed`,
+      parsedAttemptTargetApplyJson,
+      expectedCode,
+      attemptTargetApplyJson,
+    );
+    expectStateFileSnapshotSame(
+      `task execution preparation ${attemptTargetCase} attempt target apply modified task state`,
+      attemptTargetStatePath,
+      attemptTargetStateSnapshot,
+      attemptTargetApplyJson,
+    );
+    expectExecutionSnapshotSame(
+      `task execution preparation ${attemptTargetCase} attempt target apply changed execution files`,
+      attemptTargetRoot,
+      attemptTargetExecutionSnapshot,
+      attemptTargetApplyJson,
     );
     rmSync(attemptTargetRoot, { recursive: true, force: true });
     rmSync(attemptTargetOutside, { recursive: true, force: true });
@@ -7411,6 +7823,62 @@ try {
     );
   }
 
+  const canonicalExecutionApplyJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    canonicalTaskId,
+    "--expected-revision",
+    "1",
+    "--batch",
+    "canonical-batch",
+    "--json",
+  ]);
+  expectExitCode("400/20 task execution preparation apply exited nonzero", canonicalExecutionApplyJson, 0);
+  const parsedCanonicalExecutionApplyJson = parseJsonOnlyStdout(
+    "400/20 task execution preparation apply output was not valid JSON only",
+    canonicalExecutionApplyJson,
+  );
+  expectTaskExecutionPreparationApplyJsonShape(
+    "400/20 task execution preparation apply shape was invalid",
+    parsedCanonicalExecutionApplyJson,
+    canonicalExecutionApplyJson,
+  );
+  if (
+    parsedCanonicalExecutionApplyJson.attempt.lifecycle !== "prepared" ||
+    parsedCanonicalExecutionApplyJson.attempt.batchId !== "canonical-batch" ||
+    parsedCanonicalExecutionApplyJson.safety.taskCompleted !== false ||
+    parsedCanonicalExecutionApplyJson.safety.workCompleted !== false ||
+    parsedCanonicalExecutionApplyJson.safety.verifierRun !== false
+  ) {
+    fail(
+      "400/20 task execution preparation apply created completion authority",
+      canonicalExecutionApplyJson,
+    );
+  }
+  expectStateFileSnapshotSame(
+    "400/20 execution preparation apply modified persisted state",
+    canonicalStatePath,
+    canonicalSnapshotBefore,
+    canonicalExecutionApplyJson,
+  );
+  const canonicalStateAfterExecutionApply = JSON.parse(
+    readFileSync(canonicalStatePath, "utf8"),
+  );
+  if (
+    canonicalStateAfterExecutionApply.pendingWorkItemIds.length !== 380 ||
+    canonicalStateAfterExecutionApply.completionGate.completed !== false ||
+    canonicalStateAfterExecutionApply.completionGate.verified !== false ||
+    canonicalStateAfterExecutionApply.verifier.required !== true ||
+    canonicalStateAfterExecutionApply.verifier.status === "verified" ||
+    canonicalStateAfterExecutionApply.safety.modelSelfReportTrusted !== false
+  ) {
+    fail(
+      "400/20 task execution preparation apply changed incomplete state authority",
+      canonicalExecutionApplyJson,
+    );
+  }
+
   const canonicalTerminalTransitionJson = runCliFrom(taskStateCliRoot, [
     "task",
     "state",
@@ -7552,6 +8020,45 @@ try {
     selfReportTransitionStatePath,
     selfReportTransitionSnapshot,
     selfReportTerminalTransitionApplyJson,
+  );
+  const selfReportExecutionApplyJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    selfReportTransitionTaskId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectExitCode(
+    "self-report execution preparation apply exited nonzero",
+    selfReportExecutionApplyJson,
+    0,
+  );
+  const parsedSelfReportExecutionApplyJson = parseJsonOnlyStdout(
+    "self-report execution preparation apply output was not valid JSON only",
+    selfReportExecutionApplyJson,
+  );
+  expectTaskExecutionPreparationApplyJsonShape(
+    "self-report execution preparation apply shape was invalid",
+    parsedSelfReportExecutionApplyJson,
+    selfReportExecutionApplyJson,
+  );
+  if (
+    parsedSelfReportExecutionApplyJson.attempt.lifecycle !== "prepared" ||
+    parsedSelfReportExecutionApplyJson.safety.workCompleted !== false ||
+    parsedSelfReportExecutionApplyJson.safety.taskCompleted !== false
+  ) {
+    fail(
+      "self-report execution preparation apply created terminal authority",
+      selfReportExecutionApplyJson,
+    );
+  }
+  expectStateFileSnapshotSame(
+    "self-report execution preparation apply modified persisted state",
+    selfReportTransitionStatePath,
+    selfReportTransitionSnapshot,
+    selfReportExecutionApplyJson,
   );
 } finally {
   rmSync(taskStateCliRoot, { recursive: true, force: true });
