@@ -374,8 +374,57 @@ Current limitations:
 - no verifier runtime integration;
 - no policy runtime integration;
 - no automatic resume or retry;
-- no execution start command;
+- no execution start apply command;
 - no terminal success/completion attempt state.
+
+## Execution Start Authorization
+`authorizeTaskExecutionStart` is the current authoritative start gate. It answers
+only whether an existing persisted `prepared` attempt is still eligible to
+start against the current validated persisted task state.
+
+The authorization input is data only:
+
+- current validated task state;
+- an existing persisted attempt loaded by task id and attempt id;
+- an explicit expected task-state revision when supplied;
+- latest persisted attempt-number authority for the same task/revision/work/batch
+  context.
+
+It does not load arbitrary preview JSON, operator evidence, model prose, task
+prose, or top-level summary claims as authority. It does not transition the
+attempt to `started`, append `attempt_started`, call model or tool adapters,
+execute work, write audit runtime events, run policy or verifier runtime, mutate
+task state, complete work, or mark the task completed.
+
+Start authorization requires the persisted attempt to validate against its own
+system-derived identity: task id, source task-state revision, attempt number,
+work item, batch, and attempt id must agree. The attempt lifecycle must still be
+exactly `prepared`; `started`, `failed`, `interrupted`,
+`verification_required`, unknown lifecycle values, and terminal-like forged
+values are denied.
+
+Revision freshness is mandatory. A prepared attempt from revision `N` is denied
+when the current task state is revision `N+1`. If an explicit expected revision
+is supplied, it must also match the current task state. A previous preview is
+not reusable authorization; future start apply must reload and re-evaluate the
+current state and attempt.
+
+Work and batch eligibility are rechecked at start time from current task state.
+Missing work, missing batches, changed work/batch relationships, no remaining
+eligible work in the selected batch, and work that is no longer pending or
+retryable block start authorization. A later persisted attempt number for the
+same task/revision/work/batch context makes an older attempt obsolete and fails
+closed.
+
+Policy requirement is not approval. If current state or the attempt indicates
+policy approval is required, the MVP reports `policy_not_authorized` because no
+authoritative approval proof mechanism exists yet. Task/model/operator prose
+such as "approved" or "start now" is ignored. If policy is not required, the
+policy gate does not block.
+
+Verifier requirement remains a downstream completion gate. Start authorization
+preserves `verifierRequired` and `completionGatedByVerifier`; it does not run
+the verifier and does not mark verification passed.
 
 ## Execution Preparation Preview
 `aeos task execution prepare --preview <task-id> --expected-revision <number>`
@@ -449,7 +498,7 @@ Attempt creation is immutable. If the exact derived attempt identity already
 exists at save time, apply fails closed with the persistence conflict and never
 overwrites. There is no `--force`, no arbitrary attempt id, no arbitrary attempt
 number, no arbitrary lifecycle, no retry/failure injection, and no
-`aeos task execution start` command.
+`aeos task execution start` apply command.
 
 ## Read-Only CLI Inspection
 `aeos task status <task-id>` reads the authoritative persisted state from:

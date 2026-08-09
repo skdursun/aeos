@@ -56,6 +56,9 @@ export interface DeriveNextTaskExecutionAttemptNumberInput {
   readonly batchId?: string;
 }
 
+export interface DeriveLatestTaskExecutionAttemptNumberInput
+  extends DeriveNextTaskExecutionAttemptNumberInput {}
+
 export interface TaskExecutionAttemptPersistenceResult {
   readonly attempt: TaskExecutionAttempt;
   readonly path: string;
@@ -492,6 +495,100 @@ export async function deriveNextTaskExecutionAttemptNumber(
   }
 
   return ok(nextAttemptNumber);
+}
+
+export async function deriveLatestTaskExecutionAttemptNumber(
+  input: DeriveLatestTaskExecutionAttemptNumberInput,
+): Promise<Result<number | undefined, TaskExecutionAttemptPersistenceError>> {
+  const taskIdResult = validateSafeId({
+    value: input.taskId,
+    field: "taskId",
+  });
+
+  if (!taskIdResult.ok) {
+    return taskIdResult;
+  }
+
+  if (!isPositiveInteger(input.taskStateRevision)) {
+    return err(
+      createError(
+        "task_execution_attempt_source_revision_invalid",
+        "Task execution attempt number authority requires a positive source revision.",
+        "validation",
+      ),
+    );
+  }
+
+  const rootResult = await ensureExecutionRoot({
+    projectRoot: input.projectRoot,
+    taskId: taskIdResult.value,
+    create: false,
+    allowMissing: true,
+  });
+
+  if (!rootResult.ok) {
+    return rootResult;
+  }
+
+  let entries: readonly string[];
+
+  try {
+    entries = (await readdir(rootResult.value)).sort();
+  } catch (error) {
+    if (
+      isRecord(error) &&
+      typeof error.code === "string" &&
+      error.code === "ENOENT"
+    ) {
+      return ok(undefined);
+    }
+
+    throw error;
+  }
+
+  const usedAttemptNumbers = new Set<number>();
+  let latestAttemptNumber: number | undefined;
+
+  for (const fileName of entries) {
+    const attemptResult = await readAuthoritativeAttemptFile({
+      taskExecutionRoot: rootResult.value,
+      fileName,
+      taskId: taskIdResult.value,
+    });
+
+    if (!attemptResult.ok) {
+      return attemptResult;
+    }
+
+    const attempt = attemptResult.value;
+
+    if (
+      attempt.taskStateRevision !== input.taskStateRevision ||
+      attempt.workItemId !== input.workItemId ||
+      attempt.batchId !== input.batchId
+    ) {
+      continue;
+    }
+
+    if (usedAttemptNumbers.has(attempt.attemptNumber)) {
+      return err(
+        createError(
+          "task_execution_attempt_duplicate_number",
+          "Persisted task execution attempt authority contains duplicate numbering for the same source/work/batch context.",
+          "validation",
+          { attemptNumber: attempt.attemptNumber },
+        ),
+      );
+    }
+
+    usedAttemptNumbers.add(attempt.attemptNumber);
+    latestAttemptNumber =
+      latestAttemptNumber === undefined
+        ? attempt.attemptNumber
+        : Math.max(latestAttemptNumber, attempt.attemptNumber);
+  }
+
+  return ok(latestAttemptNumber);
 }
 
 async function readJsonAttempt(

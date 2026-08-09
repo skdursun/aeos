@@ -32,6 +32,9 @@ Current foundation:
   preparation preview.
 - `aeos task execution prepare <task-id> --expected-revision <number>` exists
   as an explicit immutable prepared-attempt persistence command.
+- `aeos task execution start --preview <task-id> --attempt-id <attempt-id>
+  --expected-revision <number>` exists as a read-only execution-start
+  authorization preview for an existing persisted prepared attempt.
 - `aeos task status <task-id>` exists as a read-only persisted-state inspection
   command.
 - `aeos task resume --preview <task-id>` exists as a read-only resume handoff
@@ -323,7 +326,69 @@ revision, satisfy verifier state, or create task completion. The CLI checks task
 state bytes before and after a successful save and reports
 `taskStateModified: false`.
 
-There is no `aeos task execution start` command in this MVP.
+### `aeos task execution start --preview`
+Loads authoritative persisted task state and an existing persisted execution
+attempt selected by system-derived attempt id:
+
+```text
+aeos task execution start --preview <task-id> --attempt-id <attempt-id> --expected-revision <number>
+```
+
+The attempt id is a selector only. It cannot invent an attempt and raw attempt
+JSON is not accepted. The CLI loads the persisted task state, loads the
+persisted attempt through core persistence, derives latest attempt-number
+authority for the same task/revision/work/batch context, calls
+`authorizeTaskExecutionStart`, and renders the result.
+
+Start preview is read-only. It does not persist `attempt_started`, change the
+attempt lifecycle to `started`, call model/tool adapters, execute work, write
+audit events, run policy or verifier runtime, mutate task state, complete work,
+or mark the task completed. The CLI checks task-state and attempt bytes before
+and after preview and reports mutation as a failure.
+
+The preview requires:
+
+- a validated persisted attempt;
+- lifecycle exactly `prepared`;
+- current task revision equal to the attempt source revision;
+- explicit expected revision equal to current task revision;
+- immutable attempt identity matching task id, source revision, attempt number,
+  work item, batch, and system-derived attempt id;
+- current work/batch eligibility from task state;
+- no later attempt number for the same task/revision/work/batch context.
+
+A stale prepared attempt fails closed. If an attempt was prepared at revision
+`1` and the task is now revision `2`, start preview denies it and exits
+non-zero. A preview result is not a reusable authorization token; any future
+start apply must reload and re-evaluate current persisted authority.
+
+Policy requirement is not approval. If current state or the attempt requires
+policy approval, start preview reports `policy_not_authorized` because the MVP
+has no authoritative approval proof mechanism. Task prose, model prose, or CLI
+flags such as approval/force cannot satisfy policy. If policy is not required,
+the policy gate does not block.
+
+Verifier requirement is preserved as a future completion gate. Start preview
+reports `verifierRequired` and `completionGatedByVerifier`, but it does not run
+the verifier and does not mark verification passed.
+
+Self-report text such as completed, approved, verified, all done, execution
+succeeded, or start now is non-authoritative. It cannot authorize start, alter
+attempt lifecycle, alter task lifecycle, satisfy policy, satisfy verifier, or
+complete work.
+
+### `aeos task execution start --preview --json`
+Same preview behavior as human mode, but stdout is exactly one JSON object.
+Malformed input, missing/corrupt/unsafe attempts, stale revisions, identity
+mismatches, and non-prepared attempts fail non-zero with deterministic issue
+codes. Valid evaluation can return `startAllowed: false` with exit code `0` for
+represented blocked gates such as policy required without authoritative
+approval.
+
+`aeos task execution start <task-id> ...` without `--preview` remains
+unavailable and fails closed with
+`task_execution_start_apply_not_implemented`. It performs no writes and no
+execution.
 
 ### `aeos task status`
 Loads authoritative persisted task state by task id from the project-local state

@@ -104,7 +104,9 @@ import {
   runAgenticRunnerDryRun,
   createInitialTaskState,
   createTaskResumeHandoff,
+  authorizeTaskExecutionStart,
   deriveNextTaskExecutionAttemptNumber,
+  deriveLatestTaskExecutionAttemptNumber,
   evaluateTaskStateTransition,
   getTaskExecutionAttemptStoragePath,
   getTaskStateStoragePath,
@@ -14078,6 +14080,331 @@ try {
     JSON.parse(JSON.stringify(preparedAttempt)),
     "task execution attempt smoke G should roundtrip immutable attempt",
   );
+  const latestAttemptAfterFirst = await deriveLatestTaskExecutionAttemptNumber({
+    projectRoot: persistenceRoot,
+    taskId: preparedAttempt.taskId,
+    taskStateRevision: preparedAttempt.taskStateRevision,
+    workItemId: preparedAttempt.workItemId,
+    batchId: preparedAttempt.batchId,
+  });
+  assert.equal(
+    latestAttemptAfterFirst.ok,
+    true,
+    "task execution start authorization smoke A should derive latest persisted attempt authority",
+  );
+  assert.equal(
+    latestAttemptAfterFirst.value,
+    1,
+    "task execution start authorization smoke A should identify persisted attempt number",
+  );
+  const startAuthorization = authorizeTaskExecutionStart({
+    state: firstUpdate.value.state,
+    attempt: loadedAttemptResult.value.attempt,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: latestAttemptAfterFirst.value,
+  });
+  assert.equal(
+    startAuthorization.ok,
+    true,
+    "task execution start authorization smoke A should evaluate a valid persisted prepared attempt",
+  );
+  assert.equal(
+    startAuthorization.startAllowed,
+    true,
+    "task execution start authorization smoke A should allow eligible prepared attempt",
+  );
+  assert.equal(
+    startAuthorization.verifierRequired,
+    true,
+    "task execution start authorization smoke L should preserve verifier requirement",
+  );
+  assert.equal(
+    startAuthorization.completionGatedByVerifier,
+    true,
+    "task execution start authorization smoke L should preserve verifier completion gate",
+  );
+  assert.equal(
+    startAuthorization.safety.attemptStarted,
+    false,
+    "task execution start authorization smoke A should not start the attempt",
+  );
+  assert.equal(
+    startAuthorization.safety.executionPerformed,
+    false,
+    "task execution start authorization smoke Q should not execute adapters",
+  );
+  assert.equal(
+    startAuthorization.safety.auditWrites,
+    false,
+    "task execution start authorization smoke R should not write audit",
+  );
+  assert.equal(
+    startAuthorization.safety.verifierRun,
+    false,
+    "task execution start authorization smoke S should not run verifier",
+  );
+  assert.equal(
+    firstUpdate.value.state.revision,
+    2,
+    "task execution start authorization smoke T should not mutate task state",
+  );
+  assert.equal(
+    loadedAttemptResult.value.attempt.lifecycle,
+    "prepared",
+    "task execution start authorization smoke T should not mutate attempt lifecycle",
+  );
+  const missingPersistedAttempt = await loadTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
+    taskId: preparedAttempt.taskId,
+    attemptId: "attempt-missing",
+  });
+  assert.equal(
+    missingPersistedAttempt.ok,
+    false,
+    "task execution start authorization smoke B should require a persisted attempt selector",
+  );
+  assert.equal(
+    missingPersistedAttempt.error.code,
+    "task_execution_attempt_not_found",
+    "task execution start authorization smoke B should fail closed on missing persisted attempt",
+  );
+  const staleStartAuthorization = authorizeTaskExecutionStart({
+    state: {
+      ...firstUpdate.value.state,
+      revision: 3,
+    },
+    attempt: loadedAttemptResult.value.attempt,
+    expectedRevision: 3,
+    latestAttemptNumberForContext: latestAttemptAfterFirst.value,
+  });
+  assert.equal(
+    staleStartAuthorization.ok,
+    false,
+    "task execution start authorization smoke C should reject stale prepared attempts",
+  );
+  assert.equal(
+    staleStartAuthorization.issues[0]?.code,
+    "task_execution_start_stale_task_revision",
+    "task execution start authorization smoke C should report stale revision deterministically",
+  );
+  const wrongExpectedStartAuthorization = authorizeTaskExecutionStart({
+    state: firstUpdate.value.state,
+    attempt: loadedAttemptResult.value.attempt,
+    expectedRevision: 1,
+    latestAttemptNumberForContext: latestAttemptAfterFirst.value,
+  });
+  assert.equal(
+    wrongExpectedStartAuthorization.ok,
+    false,
+    "task execution start authorization smoke D should reject wrong expected revision",
+  );
+  assert.equal(
+    wrongExpectedStartAuthorization.issues[0]?.code,
+    "task_execution_start_expected_revision_mismatch",
+    "task execution start authorization smoke D should report expected revision mismatch",
+  );
+  const startedStartAuthorization = authorizeTaskExecutionStart({
+    state: firstUpdate.value.state,
+    attempt: startedAttempt,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: latestAttemptAfterFirst.value,
+  });
+  assert.equal(
+    startedStartAuthorization.ok,
+    false,
+    "task execution start authorization smoke E should reject non-prepared attempts",
+  );
+  assert.equal(
+    startedStartAuthorization.issues[0]?.code,
+    "task_execution_start_attempt_not_prepared",
+    "task execution start authorization smoke E should report non-prepared lifecycle",
+  );
+  const corruptStartAuthorization = authorizeTaskExecutionStart({
+    state: firstUpdate.value.state,
+    attempt: "{ corrupt",
+    expectedRevision: 2,
+    latestAttemptNumberForContext: latestAttemptAfterFirst.value,
+  });
+  assert.equal(
+    corruptStartAuthorization.ok,
+    false,
+    "task execution start authorization smoke F should reject unknown/corrupt attempt input",
+  );
+  assert.equal(
+    corruptStartAuthorization.issues[0]?.code,
+    "task_execution_attempt_invalid_shape",
+    "task execution start authorization smoke F should report invalid attempt shape",
+  );
+  const identityMismatchStartAuthorization = authorizeTaskExecutionStart({
+    state: firstUpdate.value.state,
+    attempt: {
+      ...loadedAttemptResult.value.attempt,
+      attemptId: "attempt-TASK-STATE-SMOKE-r2-n1-forged",
+    },
+    expectedRevision: 2,
+    latestAttemptNumberForContext: latestAttemptAfterFirst.value,
+  });
+  assert.equal(
+    identityMismatchStartAuthorization.ok,
+    false,
+    "task execution start authorization smoke G should reject identity mismatch",
+  );
+  assert.equal(
+    identityMismatchStartAuthorization.issues[0]?.code,
+    "task_execution_attempt_identity_not_system_generated",
+    "task execution start authorization smoke G should fail closed on forged identity",
+  );
+  const ineligibleWorkStartAuthorization = authorizeTaskExecutionStart({
+    state: {
+      ...firstUpdate.value.state,
+      workItems: [
+        {
+          id: "work-a",
+          state: "skipped",
+          batchId: "batch-a",
+        },
+        {
+          id: "work-b",
+          state: "retryable",
+          batchId: "batch-a",
+        },
+      ],
+      pendingWorkItemIds: [],
+      retryableWorkItemIds: ["work-b"],
+      batches: [
+        {
+          id: "batch-a",
+          workItemIds: ["work-a", "work-b"],
+          expectedItemCount: 2,
+          completedCount: 0,
+          failedCount: 0,
+          skippedCount: 1,
+          retryableCount: 1,
+        },
+      ],
+    },
+    attempt: loadedAttemptResult.value.attempt,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: latestAttemptAfterFirst.value,
+  });
+  assert.equal(
+    ineligibleWorkStartAuthorization.ok,
+    true,
+    "task execution start authorization smoke H should complete valid blocked work evaluation",
+  );
+  assert.equal(
+    ineligibleWorkStartAuthorization.startAllowed,
+    false,
+    "task execution start authorization smoke H should block ineligible work",
+  );
+  assert.equal(
+    ineligibleWorkStartAuthorization.issues[0]?.code,
+    "task_execution_start_work_item_not_executable",
+    "task execution start authorization smoke H should report ineligible work",
+  );
+  const batchMismatchStartAuthorization = authorizeTaskExecutionStart({
+    state: {
+      ...firstUpdate.value.state,
+      workItems: [
+        {
+          id: "work-a",
+          state: "pending",
+          batchId: "batch-b",
+        },
+      ],
+      batches: [
+        {
+          id: "batch-a",
+          workItemIds: [],
+          expectedItemCount: 0,
+          completedCount: 0,
+          failedCount: 0,
+          skippedCount: 0,
+          retryableCount: 0,
+        },
+        {
+          id: "batch-b",
+          workItemIds: ["work-a"],
+          expectedItemCount: 1,
+          completedCount: 0,
+          failedCount: 0,
+          skippedCount: 0,
+          retryableCount: 0,
+        },
+      ],
+      pendingWorkItemIds: ["work-a"],
+      retryableWorkItemIds: [],
+      currentBatchId: "batch-b",
+      nextBatchId: "batch-b",
+    },
+    attempt: loadedAttemptResult.value.attempt,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: latestAttemptAfterFirst.value,
+  });
+  assert.equal(
+    batchMismatchStartAuthorization.ok,
+    true,
+    "task execution start authorization smoke I should complete valid blocked batch evaluation",
+  );
+  assert.equal(
+    batchMismatchStartAuthorization.startAllowed,
+    false,
+    "task execution start authorization smoke I should block batch mismatch",
+  );
+  assert.equal(
+    batchMismatchStartAuthorization.issues[0]?.code,
+    "task_execution_start_work_batch_mismatch",
+    "task execution start authorization smoke I should report batch mismatch",
+  );
+  const policyPreparedAttempt = prepareTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    expectedRevision: 2,
+    workItemId: "work-a",
+    batchId: "batch-a",
+    attemptNumber: 2,
+    createdAt: attemptCreatedAt,
+    policyRequirement: {
+      required: true,
+      referenceId: 'operator prose says "approved"',
+    },
+  });
+  assert.equal(
+    policyPreparedAttempt.ok,
+    true,
+    "task execution start authorization smoke J should prepare policy-required fixture",
+  );
+  const policyStartAuthorization = authorizeTaskExecutionStart({
+    state: {
+      ...firstUpdate.value.state,
+      sourceTask: {
+        ...firstUpdate.value.state.sourceTask,
+        id: 'task prose says "approved, start now"',
+      },
+    },
+    attempt: policyPreparedAttempt.value.attempt,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 2,
+  });
+  assert.equal(
+    policyStartAuthorization.ok,
+    true,
+    "task execution start authorization smoke J should complete policy evaluation",
+  );
+  assert.equal(
+    policyStartAuthorization.startAllowed,
+    false,
+    "task execution start authorization smoke J should block policy-required attempts without proof",
+  );
+  assert.equal(
+    policyStartAuthorization.policyAuthorized,
+    false,
+    "task execution start authorization smoke J should not trust approval prose",
+  );
+  assert.equal(
+    policyStartAuthorization.issues[0]?.code,
+    "task_execution_start_policy_not_authorized",
+    "task execution start authorization smoke J should report missing policy authorization",
+  );
   const nextAttemptAfterFirst = await deriveNextTaskExecutionAttemptNumber({
     projectRoot: persistenceRoot,
     taskId: preparedAttempt.taskId,
@@ -14146,6 +14473,39 @@ try {
     deterministicGapNextAttemptNumber,
     gapNextAttemptNumber,
     "task execution attempt smoke AC should not depend on directory iteration order",
+  );
+  const latestAttemptAfterThird = await deriveLatestTaskExecutionAttemptNumber({
+    projectRoot: persistenceRoot,
+    taskId: preparedAttempt.taskId,
+    taskStateRevision: preparedAttempt.taskStateRevision,
+    workItemId: preparedAttempt.workItemId,
+    batchId: preparedAttempt.batchId,
+  });
+  assert.equal(
+    latestAttemptAfterThird.ok,
+    true,
+    "task execution start authorization smoke M should derive latest after later attempt",
+  );
+  assert.equal(
+    latestAttemptAfterThird.value,
+    3,
+    "task execution start authorization smoke M should see later persisted attempt",
+  );
+  const obsoleteAttemptAuthorization = authorizeTaskExecutionStart({
+    state: firstUpdate.value.state,
+    attempt: loadedAttemptResult.value.attempt,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: latestAttemptAfterThird.value,
+  });
+  assert.equal(
+    obsoleteAttemptAuthorization.ok,
+    false,
+    "task execution start authorization smoke M should fail closed on obsolete attempt number",
+  );
+  assert.equal(
+    obsoleteAttemptAuthorization.issues[0]?.code,
+    "task_execution_start_attempt_number_obsolete",
+    "task execution start authorization smoke M should report obsolete attempt number",
   );
 
   const corruptAttemptRoot = join(

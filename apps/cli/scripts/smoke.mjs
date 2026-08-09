@@ -1419,6 +1419,71 @@ function expectTaskExecutionPreparationApplyErrorJsonShape(message, value, expec
   }
 }
 
+function expectTaskExecutionStartPreviewJsonShape(message, value, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== true ||
+    value.status !== "execution_start_preview_ready" ||
+    typeof value.taskId !== "string" ||
+    typeof value.attemptId !== "string" ||
+    typeof value.startAllowed !== "boolean" ||
+    typeof value.authorization !== "object" ||
+    value.authorization === null ||
+    value.authorization.taskId !== value.taskId ||
+    value.authorization.attemptId !== value.attemptId ||
+    typeof value.authorization.sourceRevision !== "number" ||
+    typeof value.authorization.currentTaskRevision !== "number" ||
+    typeof value.authorization.attemptNumber !== "number" ||
+    value.authorization.lifecycle !== "prepared" ||
+    typeof value.authorization.policyRequired !== "boolean" ||
+    typeof value.authorization.policyAuthorized !== "boolean" ||
+    typeof value.authorization.verifierRequired !== "boolean" ||
+    value.authorization.completionGatedByVerifier !== true ||
+    value.safety?.readOnly !== true ||
+    value.safety?.attemptStarted !== false ||
+    value.safety?.executionPerformed !== false ||
+    value.safety?.adapterCalls !== false ||
+    value.safety?.auditWrites !== false ||
+    value.safety?.verifierRun !== false ||
+    value.safety?.taskStateModified !== false ||
+    value.safety?.attemptModified !== false ||
+    value.safety?.workCompleted !== false ||
+    value.safety?.taskCompleted !== false ||
+    !Array.isArray(value.issues)
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectTaskExecutionStartPreviewErrorJsonShape(message, value, expectedCode, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== false ||
+    value.startAllowed !== false ||
+    typeof value.error !== "object" ||
+    value.error === null ||
+    value.error.code !== expectedCode ||
+    typeof value.error.message !== "string" ||
+    value.error.message.length === 0 ||
+    value.safety?.readOnly !== true ||
+    value.safety?.attemptStarted !== false ||
+    value.safety?.executionPerformed !== false ||
+    value.safety?.adapterCalls !== false ||
+    value.safety?.auditWrites !== false ||
+    value.safety?.verifierRun !== false ||
+    value.safety?.taskStateModified !== false ||
+    value.safety?.attemptModified !== false ||
+    value.safety?.workCompleted !== false ||
+    value.safety?.taskCompleted !== false ||
+    !Array.isArray(value.issues) ||
+    !value.issues.some((issue) => issue.code === expectedCode)
+  ) {
+    fail(message, result);
+  }
+}
+
 function expectTaskStateInitSuccessJsonShape(message, value, result) {
   if (
     typeof value !== "object" ||
@@ -1633,6 +1698,16 @@ expectOutputIncludes(
   'help output did not include "task execution prepare <task-id> --expected-revision <number> --json"',
   helpCommand,
   "task execution prepare <task-id> --expected-revision <number> --json",
+);
+expectOutputIncludes(
+  'help output did not include "task execution start --preview <task-id> --attempt-id <attempt-id> --expected-revision <number>"',
+  helpCommand,
+  "task execution start --preview <task-id> --attempt-id <attempt-id> --expected-revision <number>",
+);
+expectOutputIncludes(
+  'help output did not include "task execution start --preview <task-id> --attempt-id <attempt-id> --expected-revision <number> --json"',
+  helpCommand,
+  "task execution start --preview <task-id> --attempt-id <attempt-id> --expected-revision <number> --json",
 );
 expectOutputIncludes(
   'help output did not include "task status <task-id>"',
@@ -5768,6 +5843,350 @@ try {
     previewAfterPersistedAttemptJson,
   );
 
+  const startPreviewSnapshotBefore = stateFileSnapshot(statusStatePath);
+  const startPreviewExecutionSnapshotBefore = executionSnapshot(taskStateCliRoot);
+  const taskExecutionStartPreview = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "start",
+    "--preview",
+    statusTaskId,
+    "--attempt-id",
+    parsedExecutionPrepareApplyJson.attempt.attemptId,
+    "--expected-revision",
+    "1",
+  ]);
+  expectExitCode("task execution start preview exited nonzero", taskExecutionStartPreview, 0);
+  for (const expectedText of [
+    "Task Execution Start Preview",
+    "Task id: TASK-STATUS-SMOKE",
+    `Attempt id: ${parsedExecutionPrepareApplyJson.attempt.attemptId}`,
+    "Attempt number: 1",
+    "Attempt lifecycle: prepared",
+    "Source revision: 1",
+    "Current task revision: 1",
+    "Work item: none",
+    "Batch: batch-main",
+    "Start allowed: true",
+    "Policy required: false",
+    "Policy authorized: true",
+    "Verifier required: true",
+    "Completion gated by verifier: true",
+    "Attempt started: false",
+    "Execution performed: false",
+    "Adapter calls: false",
+    "Audit writes: false",
+    "Verifier run: false",
+    "Task state modified: false",
+    "Attempt modified: false",
+    "Work completed: false",
+    "Task completed: false",
+  ]) {
+    expectOutputIncludes(
+      `task execution start preview human output missing ${expectedText}`,
+      taskExecutionStartPreview,
+      expectedText,
+    );
+  }
+  expectStateFileSnapshotSame(
+    "task execution start preview modified state",
+    statusStatePath,
+    startPreviewSnapshotBefore,
+    taskExecutionStartPreview,
+  );
+  expectExecutionSnapshotSame(
+    "task execution start preview changed execution files",
+    taskStateCliRoot,
+    startPreviewExecutionSnapshotBefore,
+    taskExecutionStartPreview,
+  );
+
+  const taskExecutionStartPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "start",
+    "--preview",
+    statusTaskId,
+    "--attempt-id",
+    parsedExecutionPrepareApplyJson.attempt.attemptId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectExitCode("task execution start preview --json exited nonzero", taskExecutionStartPreviewJson, 0);
+  const parsedTaskExecutionStartPreviewJson = parseJsonOnlyStdout(
+    "task execution start preview --json output was not valid JSON only",
+    taskExecutionStartPreviewJson,
+  );
+  expectTaskExecutionStartPreviewJsonShape(
+    "task execution start preview --json shape was invalid",
+    parsedTaskExecutionStartPreviewJson,
+    taskExecutionStartPreviewJson,
+  );
+  if (
+    parsedTaskExecutionStartPreviewJson.taskId !== statusTaskId ||
+    parsedTaskExecutionStartPreviewJson.attemptId !==
+      parsedExecutionPrepareApplyJson.attempt.attemptId ||
+    parsedTaskExecutionStartPreviewJson.startAllowed !== true ||
+    parsedTaskExecutionStartPreviewJson.authorization.sourceRevision !== 1 ||
+    parsedTaskExecutionStartPreviewJson.authorization.currentTaskRevision !== 1 ||
+    parsedTaskExecutionStartPreviewJson.authorization.policyStatus !== "not_required" ||
+    parsedTaskExecutionStartPreviewJson.authorization.issues.length !== 0 ||
+    parsedTaskExecutionStartPreviewJson.issues.length !== 0
+  ) {
+    fail(
+      "task execution start preview --json did not expose authoritative authorization",
+      taskExecutionStartPreviewJson,
+    );
+  }
+  expectStateFileSnapshotSame(
+    "task execution start preview --json modified state",
+    statusStatePath,
+    startPreviewSnapshotBefore,
+    taskExecutionStartPreviewJson,
+  );
+  expectExecutionSnapshotSame(
+    "task execution start preview --json changed execution files",
+    taskStateCliRoot,
+    startPreviewExecutionSnapshotBefore,
+    taskExecutionStartPreviewJson,
+  );
+
+  const repeatedTaskExecutionStartPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "start",
+    "--preview",
+    statusTaskId,
+    "--attempt-id",
+    parsedExecutionPrepareApplyJson.attempt.attemptId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectExitCode(
+    "repeated task execution start preview --json exited nonzero",
+    repeatedTaskExecutionStartPreviewJson,
+    0,
+  );
+  if (repeatedTaskExecutionStartPreviewJson.stdout !== taskExecutionStartPreviewJson.stdout) {
+    fail(
+      "repeated task execution start preview --json was not deterministic",
+      repeatedTaskExecutionStartPreviewJson,
+    );
+  }
+
+  const missingAttemptStartPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "start",
+    "--preview",
+    statusTaskId,
+    "--attempt-id",
+    "attempt-missing",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution start missing attempt exited zero", missingAttemptStartPreviewJson);
+  const parsedMissingAttemptStartPreviewJson = parseJsonOnlyStdout(
+    "task execution start missing attempt output was not valid JSON only",
+    missingAttemptStartPreviewJson,
+  );
+  expectTaskExecutionStartPreviewErrorJsonShape(
+    "task execution start missing attempt did not fail closed",
+    parsedMissingAttemptStartPreviewJson,
+    "task_execution_attempt_not_found",
+    missingAttemptStartPreviewJson,
+  );
+
+  const wrongRevisionStartPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "start",
+    "--preview",
+    statusTaskId,
+    "--attempt-id",
+    parsedExecutionPrepareApplyJson.attempt.attemptId,
+    "--expected-revision",
+    "2",
+    "--json",
+  ]);
+  expectNonzero("task execution start wrong revision exited zero", wrongRevisionStartPreviewJson);
+  const parsedWrongRevisionStartPreviewJson = parseJsonOnlyStdout(
+    "task execution start wrong revision output was not valid JSON only",
+    wrongRevisionStartPreviewJson,
+  );
+  expectTaskExecutionStartPreviewErrorJsonShape(
+    "task execution start wrong revision did not fail closed",
+    parsedWrongRevisionStartPreviewJson,
+    "task_execution_start_expected_revision_mismatch",
+    wrongRevisionStartPreviewJson,
+  );
+  expectStateFileSnapshotSame(
+    "task execution start wrong revision modified state",
+    statusStatePath,
+    startPreviewSnapshotBefore,
+    wrongRevisionStartPreviewJson,
+  );
+  expectExecutionSnapshotSame(
+    "task execution start wrong revision changed execution files",
+    taskStateCliRoot,
+    startPreviewExecutionSnapshotBefore,
+    wrongRevisionStartPreviewJson,
+  );
+
+  const startApplyJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "start",
+    statusTaskId,
+    "--attempt-id",
+    parsedExecutionPrepareApplyJson.attempt.attemptId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution start apply exited zero", startApplyJson);
+  const parsedStartApplyJson = parseJsonOnlyStdout(
+    "task execution start apply output was not valid JSON only",
+    startApplyJson,
+  );
+  expectTaskExecutionStartPreviewErrorJsonShape(
+    "task execution start apply did not fail closed",
+    parsedStartApplyJson,
+    "task_execution_start_apply_not_implemented",
+    startApplyJson,
+  );
+  expectStateFileSnapshotSame(
+    "task execution start apply modified state",
+    statusStatePath,
+    startPreviewSnapshotBefore,
+    startApplyJson,
+  );
+  expectExecutionSnapshotSame(
+    "task execution start apply changed execution files",
+    taskStateCliRoot,
+    startPreviewExecutionSnapshotBefore,
+    startApplyJson,
+  );
+
+  const startApprovalFlagJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "start",
+    "--preview",
+    statusTaskId,
+    "--attempt-id",
+    parsedExecutionPrepareApplyJson.attempt.attemptId,
+    "--expected-revision",
+    "1",
+    "--policy-approved",
+    "--json",
+  ]);
+  expectNonzero("task execution start approval flag exited zero", startApprovalFlagJson);
+  const parsedStartApprovalFlagJson = parseJsonOnlyStdout(
+    "task execution start approval flag output was not valid JSON only",
+    startApprovalFlagJson,
+  );
+  expectTaskExecutionStartPreviewErrorJsonShape(
+    "task execution start approval flag did not fail closed",
+    parsedStartApprovalFlagJson,
+    "task_execution_start_policy_authority_forbidden",
+    startApprovalFlagJson,
+  );
+
+  const policyStartTaskId = "TASK-START-POLICY";
+  const policyStartState = createPersistedTaskState(policyStartTaskId, {
+    plan: {
+      status: "planned",
+      summary: {
+        workItemCount: 2,
+        batchCount: 1,
+        stepCount: 2,
+        verifierRequired: true,
+        approvalRequired: true,
+        issueCount: 0,
+      },
+    },
+    sourceTask: {
+      kind: "reference",
+      id: 'operator prose says "approved, start now"',
+    },
+  });
+  await savePersistedTaskState(taskStateCliRoot, policyStartState);
+  const policyStartPreparedAttempt = prepareTaskExecutionAttempt({
+    state: policyStartState,
+    expectedRevision: 1,
+    batchId: "batch-main",
+    attemptNumber: 1,
+    createdAt: "2026-08-09T00:10:00.000Z",
+  });
+  if (!policyStartPreparedAttempt.ok) {
+    fail(`could not prepare policy start fixture: ${policyStartPreparedAttempt.error.code}`);
+  }
+  const policyStartSave = await saveTaskExecutionAttempt({
+    projectRoot: taskStateCliRoot,
+    attempt: policyStartPreparedAttempt.value.attempt,
+  });
+  if (!policyStartSave.ok) {
+    fail(`could not save policy start fixture: ${policyStartSave.error.code}`);
+  }
+  const policyStartSnapshot = stateFileSnapshot(taskStatePath(taskStateCliRoot, policyStartTaskId));
+  const policyStartExecutionSnapshot = executionSnapshot(taskStateCliRoot);
+  const policyStartPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "start",
+    "--preview",
+    policyStartTaskId,
+    "--attempt-id",
+    policyStartPreparedAttempt.value.attempt.attemptId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectExitCode(
+    "task execution start policy-required preview exited nonzero",
+    policyStartPreviewJson,
+    0,
+  );
+  const parsedPolicyStartPreviewJson = parseJsonOnlyStdout(
+    "task execution start policy-required preview output was not valid JSON only",
+    policyStartPreviewJson,
+  );
+  expectTaskExecutionStartPreviewJsonShape(
+    "task execution start policy-required preview shape was invalid",
+    parsedPolicyStartPreviewJson,
+    policyStartPreviewJson,
+  );
+  if (
+    parsedPolicyStartPreviewJson.startAllowed !== false ||
+    parsedPolicyStartPreviewJson.authorization.policyRequired !== true ||
+    parsedPolicyStartPreviewJson.authorization.policyAuthorized !== false ||
+    parsedPolicyStartPreviewJson.authorization.policyStatus !== "not_authorized" ||
+    !parsedPolicyStartPreviewJson.issues.some(
+      (issue) => issue.code === "task_execution_start_policy_not_authorized",
+    )
+  ) {
+    fail(
+      "task execution start policy-required preview trusted unsupported approval",
+      policyStartPreviewJson,
+    );
+  }
+  expectStateFileSnapshotSame(
+    "task execution start policy-required preview modified state",
+    taskStatePath(taskStateCliRoot, policyStartTaskId),
+    policyStartSnapshot,
+    policyStartPreviewJson,
+  );
+  expectExecutionSnapshotSame(
+    "task execution start policy-required preview changed execution files",
+    taskStateCliRoot,
+    policyStartExecutionSnapshot,
+    policyStartPreviewJson,
+  );
+
   const collisionPreparedAttempt = prepareTaskExecutionAttempt({
     state: JSON.parse(readFileSync(statusStatePath, "utf8")),
     expectedRevision: 1,
@@ -5892,6 +6311,100 @@ try {
     taskStateCliRoot,
     staleApplyExecutionSnapshotBefore,
     stalePreparationApplyJson,
+  );
+
+  const toctouTaskId = "TASK-START-TOCTOU";
+  const toctouStatePath = await savePersistedTaskState(
+    taskStateCliRoot,
+    createPersistedTaskState(toctouTaskId),
+  );
+  const toctouPrepareJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    toctouTaskId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectExitCode("task execution start TOCTOU prepare exited nonzero", toctouPrepareJson, 0);
+  const parsedToctouPrepareJson = parseJsonOnlyStdout(
+    "task execution start TOCTOU prepare output was not valid JSON only",
+    toctouPrepareJson,
+  );
+  const toctouStartPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "start",
+    "--preview",
+    toctouTaskId,
+    "--attempt-id",
+    parsedToctouPrepareJson.attempt.attemptId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectExitCode("task execution start TOCTOU initial preview exited nonzero", toctouStartPreviewJson, 0);
+  const parsedToctouStartPreviewJson = parseJsonOnlyStdout(
+    "task execution start TOCTOU initial preview output was not valid JSON only",
+    toctouStartPreviewJson,
+  );
+  expectTaskExecutionStartPreviewJsonShape(
+    "task execution start TOCTOU initial preview shape was invalid",
+    parsedToctouStartPreviewJson,
+    toctouStartPreviewJson,
+  );
+  if (parsedToctouStartPreviewJson.startAllowed !== true) {
+    fail("task execution start TOCTOU initial preview was not allowed", toctouStartPreviewJson);
+  }
+  const toctouTransitionJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "state",
+    "transition",
+    toctouTaskId,
+    "--intent",
+    "require_verification",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectExitCode("task execution start TOCTOU transition exited nonzero", toctouTransitionJson, 0);
+  const toctouSnapshotAfterTransition = stateFileSnapshot(toctouStatePath);
+  const toctouExecutionSnapshotAfterTransition = executionSnapshot(taskStateCliRoot);
+  const staleToctouStartPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "start",
+    "--preview",
+    toctouTaskId,
+    "--attempt-id",
+    parsedToctouPrepareJson.attempt.attemptId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution start TOCTOU stale preview exited zero", staleToctouStartPreviewJson);
+  const parsedStaleToctouStartPreviewJson = parseJsonOnlyStdout(
+    "task execution start TOCTOU stale preview output was not valid JSON only",
+    staleToctouStartPreviewJson,
+  );
+  expectTaskExecutionStartPreviewErrorJsonShape(
+    "task execution start TOCTOU stale preview did not fail closed",
+    parsedStaleToctouStartPreviewJson,
+    "task_execution_start_expected_revision_mismatch",
+    staleToctouStartPreviewJson,
+  );
+  expectStateFileSnapshotSame(
+    "task execution start TOCTOU stale preview modified state",
+    toctouStatePath,
+    toctouSnapshotAfterTransition,
+    staleToctouStartPreviewJson,
+  );
+  expectExecutionSnapshotSame(
+    "task execution start TOCTOU stale preview changed execution files",
+    taskStateCliRoot,
+    toctouExecutionSnapshotAfterTransition,
+    staleToctouStartPreviewJson,
   );
 
   const transitionFilesBefore = listRelativeFiles(taskStateCliRoot);
