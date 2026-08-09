@@ -71,6 +71,8 @@ condition.
 - TASK-0284: Design and implement explicit revision-guarded transition apply
   CLI.
 - TASK-0285: Design authoritative execution-attempt/event state foundation.
+- TASK-0286: Execution-attempt targeted safety review and read-only
+  execution-preparation CLI preview.
 
 ## Do Not Load By Default
 
@@ -81,11 +83,11 @@ condition.
 
 ## Next Task
 
-TASK-0286 Execution-attempt targeted safety review and execution-preparation CLI
-preview.
+TASK-0287 Design and implement explicit execution-attempt
+persistence/preparation apply CLI.
 
-Purpose: Review the execution-attempt/event foundation and expose read-only
-preparation visibility before any actual model/tool execution.
+Purpose: Add an explicit CLI apply path that may persist a PREPARED attempt
+only, while still not starting real execution.
 
 ## Current Plans
 

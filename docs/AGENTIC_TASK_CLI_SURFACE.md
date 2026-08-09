@@ -27,6 +27,9 @@ Current foundation:
 - `aeos task state transition <task-id> --intent <intent>
   --expected-revision <number>` exists as an explicit revision-guarded
   persisted-state transition apply command for the same closed intents.
+- `aeos task execution prepare --preview <task-id>
+  --expected-revision <number>` exists as a read-only execution-attempt
+  preparation preview.
 - `aeos task status <task-id>` exists as a read-only persisted-state inspection
   command.
 - `aeos task resume --preview <task-id>` exists as a read-only resume handoff
@@ -231,6 +234,68 @@ reliable mtime.
 Same apply behavior as human mode, but stdout is exactly one JSON object.
 Failures are JSON-only with deterministic issue codes and no raw runtime stack
 traces.
+
+### `aeos task execution prepare --preview`
+Loads authoritative persisted task state and renders the pure execution-attempt
+preparation candidate without writing:
+
+```text
+aeos task execution prepare --preview <task-id> --expected-revision <number>
+```
+
+Optional selectors are:
+
+```text
+--work-item <work-item-id>
+--batch <batch-id>
+```
+
+`--expected-revision` is required and must be a positive integer. Missing,
+zero, negative, decimal, and malformed values fail closed before preparation.
+If the current persisted revision differs from the expected revision, the
+command returns `task_state_revision_conflict`. Preview is never later execution
+authorization.
+
+Work and batch flags are selectors, not authority. They must reference validated
+persisted work and batches. Unknown work, unknown batches, mismatches,
+completed or verified work, inconsistent references, corrupt state, and unsafe
+task ids fail closed. If no selector is provided, the CLI uses the persisted
+authoritative `nextBatchId` when available; otherwise it requires explicit
+selection.
+
+Attempt id is system-derived by the core attempt preparation algorithm. The CLI
+does not accept `--attempt-id`, `--attempt-number`, retryability flags, failure
+classification flags, arbitrary lifecycle/status flags, or `--force`. The
+current MVP previews attempt number `1` only; if that deterministic identity
+already exists, the preview reports `task_execution_attempt_already_exists`,
+keeps `preparationAllowed: false`, and does not overwrite or reuse the existing
+attempt.
+
+Prepared means validated execution candidate, not started execution. Preview may
+show an in-memory `prepared` lifecycle and natural `attempt_prepared` event, but
+it must not persist the attempt or events, transition to started, call model or
+tool adapters, write audit events, run policy or verifier runtime, mutate task
+state, complete work, satisfy completion gates, or create task completion.
+Model/task prose such as completed, approved, verified, all done, execution
+succeeded, or retry this is non-authoritative.
+
+### `aeos task execution prepare --preview --json`
+Same preview behavior as human mode, but stdout is exactly one JSON object.
+The JSON includes the task id, source revision, system-derived attempt id,
+attempt number, lifecycle, work/batch binding, retryable flag, verifier and
+policy requirements, preparation allowance, collision details when present, and
+explicit read-only safety flags.
+
+### `aeos task execution prepare`
+Non-preview execution preparation apply is not implemented:
+
+```text
+aeos task execution prepare <task-id> --expected-revision <number>
+```
+
+It fails non-zero with `task_execution_prepare_apply_not_implemented` and does
+not persist attempts, start execution, call adapters, write audit events, run
+policy or verifier runtime, mutate task state, or create completion.
 
 ### `aeos task status`
 Loads authoritative persisted task state by task id from the project-local state

@@ -358,13 +358,59 @@ completion gate, or create completed task state.
 Current limitations:
 
 - no real execution runtime;
-- no execution-attempt CLI;
+- execution-attempt CLI is preview-only;
 - no retry execution;
 - no audit runtime integration;
 - no verifier runtime integration;
 - no policy runtime integration;
 - no automatic resume or retry;
 - no terminal success/completion attempt state.
+
+## Execution Preparation Preview
+`aeos task execution prepare --preview <task-id> --expected-revision <number>`
+loads authoritative persisted task state, validates it, checks the explicit
+expected revision, resolves work or batch selectors against that state, prepares
+an in-memory `prepared` attempt through `prepareTaskExecutionAttempt`, and
+renders the result.
+
+Optional selectors are:
+
+```text
+--work-item <work-item-id>
+--batch <batch-id>
+```
+
+Selectors are lookup keys only. They cannot define new work or batches.
+Unknown work, unknown batches, mismatches, completed or verified work, invalid
+references, unsafe task ids, corrupt state, and stale revisions fail closed.
+If no selector is supplied, the CLI uses the persisted authoritative
+`nextBatchId` when present; otherwise it requires explicit selection.
+
+`--expected-revision` is required and must be a positive integer. Missing,
+zero, negative, decimal, or non-number values fail before preparation. If the
+loaded state revision differs, preview returns `task_state_revision_conflict`.
+A previous preview is not execution authorization.
+
+Attempt identity is system-derived from task id, source revision, attempt
+number, work item, and batch. The CLI does not accept `--attempt-id`,
+`--attempt-number`, retry flags, failure classification flags, lifecycle flags,
+or `--force`. The current preview uses attempt number `1` as the MVP candidate
+and checks that deterministic identity through the existing safe load API. If
+the attempt already exists, preview reports `task_execution_attempt_already_exists`
+and marks preparation as not allowed instead of overwriting or choosing another
+number.
+
+Preview may contain an in-memory `attempt_prepared` event because the pure
+preparation API naturally creates it. It does not persist events and does not
+fabricate `attempt_started`, failure, verification, audit, success, completion,
+approval, or verifier-pass events.
+
+Prepared does not mean started. The preview does not persist an attempt, mark
+an attempt started, execute work, call model or tool adapters, write audit
+events, run policy or verifier runtime, mutate task state, increment revision,
+complete work, satisfy the verifier, or create task completion. Non-preview
+preparation is unavailable and fails closed with
+`task_execution_prepare_apply_not_implemented`.
 
 ## Read-Only CLI Inspection
 `aeos task status <task-id>` reads the authoritative persisted state from:
@@ -397,6 +443,9 @@ errors.
 
 `aeos task resume <task-id>` without `--preview` remains unavailable and fails
 closed with `task_resume_execution_not_implemented`.
+
+`aeos task execution prepare <task-id>` without `--preview` remains unavailable
+and fails closed with `task_execution_prepare_apply_not_implemented`.
 
 ## Plan And Dry-Run
 `aeos task plan` remains read-only.

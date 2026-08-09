@@ -18,7 +18,9 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createInitialTaskState,
+  prepareTaskExecutionAttempt,
   saveTaskState,
+  saveTaskExecutionAttempt,
 } from "../../../packages/core/dist/index.js";
 
 const cliPath = fileURLToPath(new URL("../dist/index.js", import.meta.url));
@@ -706,6 +708,29 @@ function expectTaskStateSnapshotSame(message, rootPath, before, result) {
   expectSameFiles(`${message}: task state files changed`, before.files, after.files);
 }
 
+function executionSnapshot(rootPath) {
+  const executionRoot = join(rootPath, ".aeos", "state", "executions");
+
+  return {
+    exists: existsSync(executionRoot),
+    files: listRelativeFiles(executionRoot),
+  };
+}
+
+function expectExecutionSnapshotSame(message, rootPath, before, result) {
+  const after = executionSnapshot(rootPath);
+
+  if (before.exists !== after.exists) {
+    fail(`${message}: execution root existence changed`, result);
+  }
+
+  expectSameFiles(
+    `${message}: execution files changed`,
+    before.files,
+    after.files,
+  );
+}
+
 function expectTaskPlanParserOnlySafety(message, outputText, result) {
   for (const expectedText of [
     "executionEnabled\":false",
@@ -1270,6 +1295,69 @@ function expectTaskStateTransitionApplyErrorJsonShape(message, value, expectedCo
     value.safety?.verifierRun !== false ||
     value.safety?.completedStateCreated !== false ||
     value.safety?.verifiedStateCreated !== false ||
+    !Array.isArray(value.issues) ||
+    !value.issues.some((issue) => issue.code === expectedCode)
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectTaskExecutionPreparationPreviewJsonShape(message, value, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== true ||
+    value.status !== "execution_preparation_preview_ready" ||
+    typeof value.taskId !== "string" ||
+    typeof value.sourceRevision !== "number" ||
+    typeof value.expectedRevision !== "number" ||
+    typeof value.attempt !== "object" ||
+    value.attempt === null ||
+    typeof value.attempt.attemptId !== "string" ||
+    typeof value.attempt.attemptNumber !== "number" ||
+    value.attempt.lifecycle !== "prepared" ||
+    typeof value.retryable !== "boolean" ||
+    typeof value.verifierRequired !== "boolean" ||
+    typeof value.policyRequired !== "boolean" ||
+    value.preparationAllowed !== true ||
+    value.collision !== null ||
+    value.safety?.readOnly !== true ||
+    value.safety?.attemptPersisted !== false ||
+    value.safety?.executionPerformed !== false ||
+    value.safety?.adapterCalls !== false ||
+    value.safety?.auditWrites !== false ||
+    value.safety?.verifierRun !== false ||
+    value.safety?.policyRun !== false ||
+    value.safety?.taskStateModified !== false ||
+    value.safety?.workCompleted !== false ||
+    value.safety?.taskCompleted !== false ||
+    !Array.isArray(value.issues)
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectTaskExecutionPreparationErrorJsonShape(message, value, expectedCode, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== false ||
+    value.preparationAllowed !== false ||
+    typeof value.error !== "object" ||
+    value.error === null ||
+    value.error.code !== expectedCode ||
+    typeof value.error.message !== "string" ||
+    value.error.message.length === 0 ||
+    value.safety?.readOnly !== true ||
+    value.safety?.attemptPersisted !== false ||
+    value.safety?.executionPerformed !== false ||
+    value.safety?.adapterCalls !== false ||
+    value.safety?.auditWrites !== false ||
+    value.safety?.verifierRun !== false ||
+    value.safety?.policyRun !== false ||
+    value.safety?.taskStateModified !== false ||
+    value.safety?.workCompleted !== false ||
+    value.safety?.taskCompleted !== false ||
     !Array.isArray(value.issues) ||
     !value.issues.some((issue) => issue.code === expectedCode)
   ) {
@@ -5062,6 +5150,441 @@ try {
     );
   }
 
+  const executionPreviewFilesBefore = listRelativeFiles(taskStateCliRoot);
+  const executionPreviewSnapshotBefore = executionSnapshot(taskStateCliRoot);
+  const taskExecutionPreparationPreview = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    statusTaskId,
+    "--expected-revision",
+    "1",
+  ]);
+  expectExitCode(
+    "task execution preparation preview exited nonzero",
+    taskExecutionPreparationPreview,
+    0,
+  );
+  for (const expectedText of [
+    "Task Execution Preparation Preview",
+    "Task id: TASK-STATUS-SMOKE",
+    "Task revision: 1",
+    "Attempt id: attempt-TASK-STATUS-SMOKE-r1-n1-",
+    "Attempt number: 1",
+    "Lifecycle: prepared",
+    "Work item: none",
+    "Batch: batch-main",
+    "Retryable: false",
+    "Verifier required: true",
+    "Policy required: false",
+    "Preparation allowed: true",
+    "Persist attempt: false",
+    "Execution performed: false",
+    "Adapter calls: false",
+    "Audit writes: false",
+    "Verifier run: false",
+    "Policy run: false",
+    "Task state modified: false",
+    "Work completed: false",
+    "Task completed: false",
+  ]) {
+    expectOutputIncludes(
+      `task execution preparation preview human output missing ${expectedText}`,
+      taskExecutionPreparationPreview,
+      expectedText,
+    );
+  }
+  expectStateFileSnapshotSame(
+    "task execution preparation preview modified state",
+    statusStatePath,
+    statusSnapshotBefore,
+    taskExecutionPreparationPreview,
+  );
+  expectExecutionSnapshotSame(
+    "task execution preparation preview created execution files",
+    taskStateCliRoot,
+    executionPreviewSnapshotBefore,
+    taskExecutionPreparationPreview,
+  );
+  expectSameFiles(
+    "task execution preparation preview created unexpected files",
+    executionPreviewFilesBefore,
+    listRelativeFiles(taskStateCliRoot),
+  );
+
+  const taskExecutionPreparationPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    statusTaskId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectExitCode(
+    "task execution preparation preview --json exited nonzero",
+    taskExecutionPreparationPreviewJson,
+    0,
+  );
+  const parsedTaskExecutionPreparationPreviewJson = parseJsonOnlyStdout(
+    "task execution preparation preview --json output was not valid JSON only",
+    taskExecutionPreparationPreviewJson,
+  );
+  expectTaskExecutionPreparationPreviewJsonShape(
+    "task execution preparation preview --json shape was invalid",
+    parsedTaskExecutionPreparationPreviewJson,
+    taskExecutionPreparationPreviewJson,
+  );
+  if (
+    parsedTaskExecutionPreparationPreviewJson.taskId !== statusTaskId ||
+    parsedTaskExecutionPreparationPreviewJson.sourceRevision !== 1 ||
+    parsedTaskExecutionPreparationPreviewJson.expectedRevision !== 1 ||
+    !parsedTaskExecutionPreparationPreviewJson.attempt.attemptId.startsWith(
+      "attempt-TASK-STATUS-SMOKE-r1-n1-",
+    ) ||
+    parsedTaskExecutionPreparationPreviewJson.attempt.attemptNumber !== 1 ||
+    parsedTaskExecutionPreparationPreviewJson.attempt.workItemId !== null ||
+    parsedTaskExecutionPreparationPreviewJson.attempt.batchId !== "batch-main" ||
+    parsedTaskExecutionPreparationPreviewJson.retryable !== false ||
+    parsedTaskExecutionPreparationPreviewJson.verifierRequired !== true ||
+    parsedTaskExecutionPreparationPreviewJson.policyRequired !== false ||
+    parsedTaskExecutionPreparationPreviewJson.issues.length !== 0
+  ) {
+    fail(
+      "task execution preparation preview --json did not expose authoritative attempt",
+      taskExecutionPreparationPreviewJson,
+    );
+  }
+  expectStateFileSnapshotSame(
+    "task execution preparation preview --json modified state",
+    statusStatePath,
+    statusSnapshotBefore,
+    taskExecutionPreparationPreviewJson,
+  );
+  expectExecutionSnapshotSame(
+    "task execution preparation preview --json created execution files",
+    taskStateCliRoot,
+    executionPreviewSnapshotBefore,
+    taskExecutionPreparationPreviewJson,
+  );
+
+  const repeatedTaskExecutionPreparationPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    statusTaskId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectExitCode(
+    "repeated task execution preparation preview --json exited nonzero",
+    repeatedTaskExecutionPreparationPreviewJson,
+    0,
+  );
+  if (
+    repeatedTaskExecutionPreparationPreviewJson.stdout !==
+    taskExecutionPreparationPreviewJson.stdout
+  ) {
+    fail(
+      "repeated task execution preparation preview --json was not deterministic",
+      repeatedTaskExecutionPreparationPreviewJson,
+    );
+  }
+
+  const workSelectedExecutionPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    statusTaskId,
+    "--expected-revision",
+    "1",
+    "--work-item",
+    "work-pending",
+    "--batch",
+    "batch-main",
+    "--json",
+  ]);
+  expectExitCode(
+    "task execution preparation work selector --json exited nonzero",
+    workSelectedExecutionPreviewJson,
+    0,
+  );
+  const parsedWorkSelectedExecutionPreviewJson = parseJsonOnlyStdout(
+    "task execution preparation work selector --json output was not valid JSON only",
+    workSelectedExecutionPreviewJson,
+  );
+  expectTaskExecutionPreparationPreviewJsonShape(
+    "task execution preparation work selector shape was invalid",
+    parsedWorkSelectedExecutionPreviewJson,
+    workSelectedExecutionPreviewJson,
+  );
+  if (
+    parsedWorkSelectedExecutionPreviewJson.attempt.workItemId !== "work-pending" ||
+    parsedWorkSelectedExecutionPreviewJson.attempt.batchId !== "batch-main"
+  ) {
+    fail(
+      "task execution preparation work selector did not bind selected work and batch",
+      workSelectedExecutionPreviewJson,
+    );
+  }
+
+  const unknownWorkExecutionPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    statusTaskId,
+    "--expected-revision",
+    "1",
+    "--work-item",
+    "missing-work",
+    "--json",
+  ]);
+  expectNonzero("task execution preparation unknown work exited zero", unknownWorkExecutionPreviewJson);
+  const parsedUnknownWorkExecutionPreviewJson = parseJsonOnlyStdout(
+    "task execution preparation unknown work output was not valid JSON only",
+    unknownWorkExecutionPreviewJson,
+  );
+  expectTaskExecutionPreparationErrorJsonShape(
+    "task execution preparation unknown work did not fail closed",
+    parsedUnknownWorkExecutionPreviewJson,
+    "task_execution_attempt_unknown_work_item",
+    unknownWorkExecutionPreviewJson,
+  );
+
+  const mismatchedBatchExecutionPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    statusTaskId,
+    "--expected-revision",
+    "1",
+    "--work-item",
+    "work-pending",
+    "--batch",
+    "missing-batch",
+    "--json",
+  ]);
+  expectNonzero("task execution preparation mismatched batch exited zero", mismatchedBatchExecutionPreviewJson);
+  const parsedMismatchedBatchExecutionPreviewJson = parseJsonOnlyStdout(
+    "task execution preparation mismatched batch output was not valid JSON only",
+    mismatchedBatchExecutionPreviewJson,
+  );
+  expectTaskExecutionPreparationErrorJsonShape(
+    "task execution preparation mismatched batch did not fail closed",
+    parsedMismatchedBatchExecutionPreviewJson,
+    "task_execution_attempt_work_batch_mismatch",
+    mismatchedBatchExecutionPreviewJson,
+  );
+
+  const staleExecutionPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    statusTaskId,
+    "--expected-revision",
+    "2",
+    "--json",
+  ]);
+  expectNonzero("task execution preparation stale revision exited zero", staleExecutionPreviewJson);
+  const parsedStaleExecutionPreviewJson = parseJsonOnlyStdout(
+    "task execution preparation stale revision output was not valid JSON only",
+    staleExecutionPreviewJson,
+  );
+  expectTaskExecutionPreparationErrorJsonShape(
+    "task execution preparation stale revision did not fail closed",
+    parsedStaleExecutionPreviewJson,
+    "task_state_revision_conflict",
+    staleExecutionPreviewJson,
+  );
+  expectStateFileSnapshotSame(
+    "task execution preparation stale revision modified state",
+    statusStatePath,
+    statusSnapshotBefore,
+    staleExecutionPreviewJson,
+  );
+
+  const missingRevisionExecutionPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    statusTaskId,
+    "--json",
+  ]);
+  expectNonzero("task execution preparation missing revision exited zero", missingRevisionExecutionPreviewJson);
+  const parsedMissingRevisionExecutionPreviewJson = parseJsonOnlyStdout(
+    "task execution preparation missing revision output was not valid JSON only",
+    missingRevisionExecutionPreviewJson,
+  );
+  expectTaskExecutionPreparationErrorJsonShape(
+    "task execution preparation missing revision did not fail closed",
+    parsedMissingRevisionExecutionPreviewJson,
+    "task_execution_prepare_expected_revision_required",
+    missingRevisionExecutionPreviewJson,
+  );
+
+  for (const malformedRevision of ["0", "-1", "1.5", "abc"]) {
+    const malformedExecutionPreviewJson = runCliFrom(taskStateCliRoot, [
+      "task",
+      "execution",
+      "prepare",
+      "--preview",
+      statusTaskId,
+      "--expected-revision",
+      malformedRevision,
+      "--json",
+    ]);
+    expectNonzero(
+      `task execution preparation malformed revision ${malformedRevision} exited zero`,
+      malformedExecutionPreviewJson,
+    );
+    const parsedMalformedExecutionPreviewJson = parseJsonOnlyStdout(
+      `task execution preparation malformed revision ${malformedRevision} output was not valid JSON only`,
+      malformedExecutionPreviewJson,
+    );
+    expectTaskExecutionPreparationErrorJsonShape(
+      `task execution preparation malformed revision ${malformedRevision} did not fail closed`,
+      parsedMalformedExecutionPreviewJson,
+      "task_execution_prepare_expected_revision_invalid",
+      malformedExecutionPreviewJson,
+    );
+  }
+
+  for (const [flag, value, expectedCode] of [
+    ["--attempt-id", "operator-attempt", "task_execution_prepare_attempt_id_forbidden"],
+    ["--retryable", "true", "task_execution_prepare_failure_authority_forbidden"],
+    ["--failure-code", "model-failure", "task_execution_prepare_failure_authority_forbidden"],
+    ["--lifecycle", "completed", "task_execution_prepare_lifecycle_authority_forbidden"],
+    ["--force", undefined, "task_execution_prepare_force_forbidden"],
+  ]) {
+    const authorityArgs = [
+      "task",
+      "execution",
+      "prepare",
+      "--preview",
+      statusTaskId,
+      "--expected-revision",
+      "1",
+      flag,
+    ];
+    if (value !== undefined) {
+      authorityArgs.push(value);
+    }
+    authorityArgs.push("--json");
+    const authorityPreviewJson = runCliFrom(taskStateCliRoot, authorityArgs);
+    expectNonzero(`task execution preparation forbidden ${flag} exited zero`, authorityPreviewJson);
+    const parsedAuthorityPreviewJson = parseJsonOnlyStdout(
+      `task execution preparation forbidden ${flag} output was not valid JSON only`,
+      authorityPreviewJson,
+    );
+    expectTaskExecutionPreparationErrorJsonShape(
+      `task execution preparation forbidden ${flag} did not fail closed`,
+      parsedAuthorityPreviewJson,
+      expectedCode,
+      authorityPreviewJson,
+    );
+  }
+
+  const nonPreviewExecutionPrepareJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    statusTaskId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution preparation non-preview exited zero", nonPreviewExecutionPrepareJson);
+  const parsedNonPreviewExecutionPrepareJson = parseJsonOnlyStdout(
+    "task execution preparation non-preview output was not valid JSON only",
+    nonPreviewExecutionPrepareJson,
+  );
+  expectTaskExecutionPreparationErrorJsonShape(
+    "task execution preparation non-preview did not fail closed",
+    parsedNonPreviewExecutionPrepareJson,
+    "task_execution_prepare_apply_not_implemented",
+    nonPreviewExecutionPrepareJson,
+  );
+  expectExecutionSnapshotSame(
+    "task execution preparation non-preview created execution files",
+    taskStateCliRoot,
+    executionPreviewSnapshotBefore,
+    nonPreviewExecutionPrepareJson,
+  );
+
+  const collisionPreparedAttempt = prepareTaskExecutionAttempt({
+    state: JSON.parse(readFileSync(statusStatePath, "utf8")),
+    expectedRevision: 1,
+    batchId: "batch-main",
+    attemptNumber: 1,
+    createdAt: "2026-08-09T00:00:00.000Z",
+  });
+  if (!collisionPreparedAttempt.ok) {
+    fail(`could not prepare collision attempt: ${collisionPreparedAttempt.error.code}`);
+  }
+  const collisionSave = await saveTaskExecutionAttempt({
+    projectRoot: taskStateCliRoot,
+    attempt: collisionPreparedAttempt.value.attempt,
+  });
+  if (!collisionSave.ok) {
+    fail(`could not save collision attempt: ${collisionSave.error.code}`);
+  }
+  const collisionStateSnapshot = stateFileSnapshot(statusStatePath);
+  const collisionExecutionSnapshot = executionSnapshot(taskStateCliRoot);
+  const collisionExecutionPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    statusTaskId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution preparation collision exited zero", collisionExecutionPreviewJson);
+  const parsedCollisionExecutionPreviewJson = parseJsonOnlyStdout(
+    "task execution preparation collision output was not valid JSON only",
+    collisionExecutionPreviewJson,
+  );
+  expectTaskExecutionPreparationErrorJsonShape(
+    "task execution preparation collision did not fail closed",
+    parsedCollisionExecutionPreviewJson,
+    "task_execution_attempt_already_exists",
+    collisionExecutionPreviewJson,
+  );
+  if (
+    parsedCollisionExecutionPreviewJson.collision?.attemptId !==
+      collisionPreparedAttempt.value.attempt.attemptId ||
+    parsedCollisionExecutionPreviewJson.collision?.wouldOverwrite !== false ||
+    parsedCollisionExecutionPreviewJson.collision?.persistedAttemptExists !== true ||
+    parsedCollisionExecutionPreviewJson.attempt?.lifecycle !== "prepared"
+  ) {
+    fail(
+      "task execution preparation collision did not report safe collision details",
+      collisionExecutionPreviewJson,
+    );
+  }
+  expectStateFileSnapshotSame(
+    "task execution preparation collision modified state",
+    statusStatePath,
+    collisionStateSnapshot,
+    collisionExecutionPreviewJson,
+  );
+  expectExecutionSnapshotSame(
+    "task execution preparation collision changed execution files",
+    taskStateCliRoot,
+    collisionExecutionSnapshot,
+    collisionExecutionPreviewJson,
+  );
+
   const transitionFilesBefore = listRelativeFiles(taskStateCliRoot);
   const taskTransitionPreview = runCliFrom(taskStateCliRoot, [
     "task",
@@ -5841,6 +6364,30 @@ try {
   if (existsSync(join(missingRoot, ".aeos"))) {
     fail("task state transition missing state created .aeos directory", missingTransitionJson);
   }
+  const missingExecutionPreviewJson = runCliFrom(missingRoot, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    "TASK-MISSING",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution preparation missing state exited zero", missingExecutionPreviewJson);
+  const parsedMissingExecutionPreviewJson = parseJsonOnlyStdout(
+    "task execution preparation missing state output was not valid JSON only",
+    missingExecutionPreviewJson,
+  );
+  expectTaskExecutionPreparationErrorJsonShape(
+    "task execution preparation missing state did not fail closed",
+    parsedMissingExecutionPreviewJson,
+    "task_state_not_found",
+    missingExecutionPreviewJson,
+  );
+  if (existsSync(join(missingRoot, ".aeos"))) {
+    fail("task execution preparation missing state created .aeos directory", missingExecutionPreviewJson);
+  }
   const missingTransitionApplyJson = runCliFrom(missingRoot, [
     "task",
     "state",
@@ -5919,6 +6466,27 @@ try {
     parsedCorruptTransitionJson,
     "task_state_corrupt_json",
     corruptTransitionJson,
+  );
+  const corruptExecutionPreviewJson = runCliFrom(corruptRoot, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    corruptTaskId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution preparation corrupt state exited zero", corruptExecutionPreviewJson);
+  const parsedCorruptExecutionPreviewJson = parseJsonOnlyStdout(
+    "task execution preparation corrupt state output was not valid JSON only",
+    corruptExecutionPreviewJson,
+  );
+  expectTaskExecutionPreparationErrorJsonShape(
+    "task execution preparation corrupt state did not fail closed",
+    parsedCorruptExecutionPreviewJson,
+    "task_state_corrupt_json",
+    corruptExecutionPreviewJson,
   );
   const corruptTransitionApplyJson = runCliFrom(corruptRoot, [
     "task",
@@ -6029,6 +6597,27 @@ try {
       expectedCode,
       invalidTransitionJson,
     );
+    const invalidExecutionPreviewJson = runCliFrom(invalidRoot, [
+      "task",
+      "execution",
+      "prepare",
+      "--preview",
+      taskId,
+      "--expected-revision",
+      "1",
+      "--json",
+    ]);
+    expectNonzero(`${taskId} execution preparation preview exited zero`, invalidExecutionPreviewJson);
+    const parsedInvalidExecutionPreviewJson = parseJsonOnlyStdout(
+      `${taskId} execution preparation preview output was not valid JSON only`,
+      invalidExecutionPreviewJson,
+    );
+    expectTaskExecutionPreparationErrorJsonShape(
+      `${taskId} execution preparation preview did not fail closed`,
+      parsedInvalidExecutionPreviewJson,
+      expectedCode,
+      invalidExecutionPreviewJson,
+    );
     const invalidTransitionApplyJson = runCliFrom(invalidRoot, [
       "task",
       "state",
@@ -6112,6 +6701,27 @@ try {
     "task_state_unsafe_target",
     symlinkTransitionJson,
   );
+  const symlinkExecutionPreviewJson = runCliFrom(symlinkFileRoot, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    symlinkFileTaskId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution preparation state-file symlink exited zero", symlinkExecutionPreviewJson);
+  const parsedSymlinkExecutionPreviewJson = parseJsonOnlyStdout(
+    "task execution preparation state-file symlink output was not valid JSON only",
+    symlinkExecutionPreviewJson,
+  );
+  expectTaskExecutionPreparationErrorJsonShape(
+    "task execution preparation state-file symlink did not fail closed",
+    parsedSymlinkExecutionPreviewJson,
+    "task_state_unsafe_target",
+    symlinkExecutionPreviewJson,
+  );
   const symlinkTransitionApplyJson = runCliFrom(symlinkFileRoot, [
     "task",
     "state",
@@ -6182,6 +6792,27 @@ try {
     "task_state_unsafe_state_root",
     symlinkRootTransitionJson,
   );
+  const symlinkRootExecutionPreviewJson = runCliFrom(symlinkRootProject, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    "TASK-SYMLINK-ROOT",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution preparation state-root symlink exited zero", symlinkRootExecutionPreviewJson);
+  const parsedSymlinkRootExecutionPreviewJson = parseJsonOnlyStdout(
+    "task execution preparation state-root symlink output was not valid JSON only",
+    symlinkRootExecutionPreviewJson,
+  );
+  expectTaskExecutionPreparationErrorJsonShape(
+    "task execution preparation state-root symlink did not fail closed",
+    parsedSymlinkRootExecutionPreviewJson,
+    "task_state_unsafe_state_root",
+    symlinkRootExecutionPreviewJson,
+  );
   const symlinkRootTransitionApplyJson = runCliFrom(symlinkRootProject, [
     "task",
     "state",
@@ -6206,6 +6837,156 @@ try {
   );
   rmSync(symlinkRootProject, { recursive: true, force: true });
   rmSync(symlinkOutsideRoot, { recursive: true, force: true });
+
+  const executionRootSymlinkProject = mkdtempSync(
+    join(tmpdir(), "aeos-cli-execution-root-link-"),
+  );
+  const executionRootSymlinkOutside = mkdtempSync(
+    join(tmpdir(), "aeos-cli-execution-root-outside-"),
+  );
+  const executionRootSymlinkTaskId = "TASK-EXECUTION-ROOT-SYMLINK";
+  const executionRootSymlinkStatePath = await savePersistedTaskState(
+    executionRootSymlinkProject,
+    createPersistedTaskState(executionRootSymlinkTaskId),
+  );
+  const executionRootSymlinkStateSnapshot = stateFileSnapshot(
+    executionRootSymlinkStatePath,
+  );
+  mkdirSync(join(executionRootSymlinkProject, ".aeos", "state"), { recursive: true });
+  symlinkSync(
+    executionRootSymlinkOutside,
+    join(executionRootSymlinkProject, ".aeos", "state", "executions"),
+    "dir",
+  );
+  const executionRootSymlinkOutsideBefore = listRelativeFiles(
+    executionRootSymlinkOutside,
+  );
+  const executionRootSymlinkPreviewJson = runCliFrom(executionRootSymlinkProject, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    executionRootSymlinkTaskId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution preparation execution-root symlink exited zero", executionRootSymlinkPreviewJson);
+  const parsedExecutionRootSymlinkPreviewJson = parseJsonOnlyStdout(
+    "task execution preparation execution-root symlink output was not valid JSON only",
+    executionRootSymlinkPreviewJson,
+  );
+  expectTaskExecutionPreparationErrorJsonShape(
+    "task execution preparation execution-root symlink did not fail closed",
+    parsedExecutionRootSymlinkPreviewJson,
+    "task_execution_attempt_unsafe_state_root",
+    executionRootSymlinkPreviewJson,
+  );
+  expectStateFileSnapshotSame(
+    "task execution preparation execution-root symlink modified task state",
+    executionRootSymlinkStatePath,
+    executionRootSymlinkStateSnapshot,
+    executionRootSymlinkPreviewJson,
+  );
+  expectSameFiles(
+    "task execution preparation wrote through execution-root symlink",
+    executionRootSymlinkOutsideBefore,
+    listRelativeFiles(executionRootSymlinkOutside),
+  );
+  rmSync(executionRootSymlinkProject, { recursive: true, force: true });
+  rmSync(executionRootSymlinkOutside, { recursive: true, force: true });
+
+  for (const [attemptTargetCase, expectedCode] of [
+    ["corrupt", "task_execution_attempt_corrupt_json"],
+    ["symlink", "task_execution_attempt_unsafe_target"],
+  ]) {
+    const attemptTargetRoot = mkdtempSync(
+      join(tmpdir(), `aeos-cli-attempt-target-${attemptTargetCase}-`),
+    );
+    const attemptTargetOutside = mkdtempSync(
+      join(tmpdir(), `aeos-cli-attempt-target-outside-${attemptTargetCase}-`),
+    );
+    const attemptTargetTaskId =
+      attemptTargetCase === "corrupt"
+        ? "TASK-ATTEMPT-CORRUPT-CLI"
+        : "TASK-ATTEMPT-SYMLINK-CLI";
+    const attemptTargetState = createPersistedTaskState(attemptTargetTaskId);
+    const attemptTargetStatePath = await savePersistedTaskState(
+      attemptTargetRoot,
+      attemptTargetState,
+    );
+    const attemptTargetStateSnapshot = stateFileSnapshot(attemptTargetStatePath);
+    const attemptTargetPrepared = prepareTaskExecutionAttempt({
+      state: attemptTargetState,
+      expectedRevision: 1,
+      batchId: "batch-main",
+      attemptNumber: 1,
+      createdAt: "2026-08-09T00:00:00.000Z",
+    });
+    if (!attemptTargetPrepared.ok) {
+      fail(
+        `could not prepare ${attemptTargetCase} attempt target fixture: ${attemptTargetPrepared.error.code}`,
+      );
+    }
+    const attemptTargetExecutionRoot = join(
+      attemptTargetRoot,
+      ".aeos",
+      "state",
+      "executions",
+      attemptTargetTaskId,
+    );
+    mkdirSync(attemptTargetExecutionRoot, { recursive: true });
+    const attemptTargetPath = join(
+      attemptTargetExecutionRoot,
+      `${attemptTargetPrepared.value.attempt.attemptId}.json`,
+    );
+    if (attemptTargetCase === "corrupt") {
+      writeFileSync(attemptTargetPath, "{ corrupt attempt json");
+    } else {
+      const outsideAttemptTargetPath = join(attemptTargetOutside, "attempt.json");
+      writeFileSync(
+        outsideAttemptTargetPath,
+        `${JSON.stringify(attemptTargetPrepared.value.attempt, null, 2)}\n`,
+      );
+      symlinkSync(outsideAttemptTargetPath, attemptTargetPath);
+    }
+    const attemptTargetExecutionSnapshot = executionSnapshot(attemptTargetRoot);
+    const attemptTargetPreviewJson = runCliFrom(attemptTargetRoot, [
+      "task",
+      "execution",
+      "prepare",
+      "--preview",
+      attemptTargetTaskId,
+      "--expected-revision",
+      "1",
+      "--json",
+    ]);
+    expectNonzero(`task execution preparation ${attemptTargetCase} attempt target exited zero`, attemptTargetPreviewJson);
+    const parsedAttemptTargetPreviewJson = parseJsonOnlyStdout(
+      `task execution preparation ${attemptTargetCase} attempt target output was not valid JSON only`,
+      attemptTargetPreviewJson,
+    );
+    expectTaskExecutionPreparationErrorJsonShape(
+      `task execution preparation ${attemptTargetCase} attempt target did not fail closed`,
+      parsedAttemptTargetPreviewJson,
+      expectedCode,
+      attemptTargetPreviewJson,
+    );
+    expectStateFileSnapshotSame(
+      `task execution preparation ${attemptTargetCase} attempt target modified task state`,
+      attemptTargetStatePath,
+      attemptTargetStateSnapshot,
+      attemptTargetPreviewJson,
+    );
+    expectExecutionSnapshotSame(
+      `task execution preparation ${attemptTargetCase} attempt target changed execution files`,
+      attemptTargetRoot,
+      attemptTargetExecutionSnapshot,
+      attemptTargetPreviewJson,
+    );
+    rmSync(attemptTargetRoot, { recursive: true, force: true });
+    rmSync(attemptTargetOutside, { recursive: true, force: true });
+  }
 
   const directoryTargetRoot = mkdtempSync(join(tmpdir(), "aeos-cli-task-state-directory-"));
   mkdirSync(taskStatePath(directoryTargetRoot, "TASK-DIRECTORY-TARGET"), {
@@ -6325,6 +7106,27 @@ try {
     "task_state_unsafe_task_id",
     traversalTransitionJson,
   );
+  const traversalExecutionPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    "../TASK-STATUS-SMOKE",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution preparation traversal id exited zero", traversalExecutionPreviewJson);
+  const parsedTraversalExecutionPreviewJson = parseJsonOnlyStdout(
+    "task execution preparation traversal id output was not valid JSON only",
+    traversalExecutionPreviewJson,
+  );
+  expectTaskExecutionPreparationErrorJsonShape(
+    "task execution preparation traversal id did not fail closed",
+    parsedTraversalExecutionPreviewJson,
+    "task_state_unsafe_task_id",
+    traversalExecutionPreviewJson,
+  );
   const traversalTransitionApplyJson = runCliFrom(taskStateCliRoot, [
     "task",
     "state",
@@ -6389,6 +7191,27 @@ try {
     parsedPathLikeTransitionJson,
     "task_state_unsafe_task_id",
     pathLikeTransitionJson,
+  );
+  const pathLikeExecutionPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    "path/like",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution preparation path-like id exited zero", pathLikeExecutionPreviewJson);
+  const parsedPathLikeExecutionPreviewJson = parseJsonOnlyStdout(
+    "task execution preparation path-like id output was not valid JSON only",
+    pathLikeExecutionPreviewJson,
+  );
+  expectTaskExecutionPreparationErrorJsonShape(
+    "task execution preparation path-like id did not fail closed",
+    parsedPathLikeExecutionPreviewJson,
+    "task_state_unsafe_task_id",
+    pathLikeExecutionPreviewJson,
   );
   const pathLikeTransitionApplyJson = runCliFrom(taskStateCliRoot, [
     "task",
@@ -6525,6 +7348,68 @@ try {
     canonicalSnapshotBefore,
     canonicalPreviewJson,
   );
+
+  const canonicalExecutionSnapshotBefore = executionSnapshot(taskStateCliRoot);
+  const canonicalExecutionPreviewJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "prepare",
+    "--preview",
+    canonicalTaskId,
+    "--expected-revision",
+    "1",
+    "--batch",
+    "canonical-batch",
+    "--json",
+  ]);
+  expectExitCode("400/20 task execution preparation preview exited nonzero", canonicalExecutionPreviewJson, 0);
+  const parsedCanonicalExecutionPreviewJson = parseJsonOnlyStdout(
+    "400/20 task execution preparation preview output was not valid JSON only",
+    canonicalExecutionPreviewJson,
+  );
+  expectTaskExecutionPreparationPreviewJsonShape(
+    "400/20 task execution preparation preview shape was invalid",
+    parsedCanonicalExecutionPreviewJson,
+    canonicalExecutionPreviewJson,
+  );
+  if (
+    parsedCanonicalExecutionPreviewJson.attempt.lifecycle !== "prepared" ||
+    parsedCanonicalExecutionPreviewJson.attempt.batchId !== "canonical-batch" ||
+    parsedCanonicalExecutionPreviewJson.safety.taskCompleted !== false ||
+    parsedCanonicalExecutionPreviewJson.safety.workCompleted !== false ||
+    parsedCanonicalExecutionPreviewJson.verifierRequired !== true
+  ) {
+    fail(
+      "400/20 task execution preparation preview created completion authority",
+      canonicalExecutionPreviewJson,
+    );
+  }
+  expectStateFileSnapshotSame(
+    "400/20 execution preparation preview modified persisted state",
+    canonicalStatePath,
+    canonicalSnapshotBefore,
+    canonicalExecutionPreviewJson,
+  );
+  expectExecutionSnapshotSame(
+    "400/20 execution preparation preview created execution files",
+    taskStateCliRoot,
+    canonicalExecutionSnapshotBefore,
+    canonicalExecutionPreviewJson,
+  );
+  const canonicalStateAfterExecutionPreview = JSON.parse(
+    readFileSync(canonicalStatePath, "utf8"),
+  );
+  if (
+    canonicalStateAfterExecutionPreview.pendingWorkItemIds.length !== 380 ||
+    canonicalStateAfterExecutionPreview.completionGate.completed !== false ||
+    canonicalStateAfterExecutionPreview.completionGate.verified !== false ||
+    canonicalStateAfterExecutionPreview.safety.modelSelfReportTrusted !== false
+  ) {
+    fail(
+      "400/20 task execution preparation preview changed incomplete state authority",
+      canonicalExecutionPreviewJson,
+    );
+  }
 
   const canonicalTerminalTransitionJson = runCliFrom(taskStateCliRoot, [
     "task",
