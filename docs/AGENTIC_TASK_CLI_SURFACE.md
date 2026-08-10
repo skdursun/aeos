@@ -35,6 +35,9 @@ Current foundation:
 - `aeos task execution start --preview <task-id> --attempt-id <attempt-id>
   --expected-revision <number>` exists as a read-only execution-start
   authorization preview for an existing persisted prepared attempt.
+- `aeos task execution start <task-id> --attempt-id <attempt-id>
+  --expected-revision <number>` exists as an explicit persisted
+  prepared-to-started attempt transition apply command.
 - `aeos task status <task-id>` exists as a read-only persisted-state inspection
   command.
 - `aeos task resume --preview <task-id>` exists as a read-only resume handoff
@@ -385,10 +388,53 @@ codes. Valid evaluation can return `startAllowed: false` with exit code `0` for
 represented blocked gates such as policy required without authoritative
 approval.
 
-`aeos task execution start <task-id> ...` without `--preview` remains
-unavailable and fails closed with
-`task_execution_start_apply_not_implemented`. It performs no writes and no
-execution.
+### `aeos task execution start`
+Applies one closed, system-owned execution-attempt transition:
+
+```text
+aeos task execution start <task-id> --attempt-id <attempt-id> --expected-revision <number>
+```
+
+The attempt id is only a selector for an existing persisted system-owned
+attempt. It cannot invent attempt authority. `--expected-revision` is required
+and must match current task state. There is no `--force`, `--approved`,
+`--override-policy`, arbitrary target lifecycle, raw attempt JSON, or prose
+approval mode.
+
+Apply is not authorized by a prior preview. It reloads current authoritative
+task state and the persisted attempt, rechecks expected revision, verifies the
+attempt source revision is current, derives latest attempt-number authority, and
+uses the same `authorizeTaskExecutionStart` logic as preview. If preview would
+return `startAllowed: false` against the same current authority, apply does not
+start.
+
+Successful apply persists only `prepared -> started` on the attempt record and
+appends exactly one authoritative `attempt_started` event after the existing
+`attempt_prepared` event. It preserves attempt id, task id, source task
+revision, attempt number, work item, and batch. It does not mutate task state,
+increment task revision, complete work, satisfy verifier state, mark task
+complete, call model/tool adapters, produce model/tool output, write audit
+runtime events, run policy runtime, run verifier runtime, retry, or resume.
+
+Duplicate start is blocked because the persisted attempt lifecycle is no longer
+`prepared`. Stale task revision, policy-required without authoritative approval
+proof, unsafe metadata, identity mismatch, ineligible work, batch mismatch,
+obsolete attempt number, corrupt records, unsafe ids, symlink targets, and
+directory targets fail closed without an attempt transition.
+
+Attempt update uses temp-file write, fsync, rename, immutable-field validation,
+current lifecycle checking, byte comparison before replacement, and a small
+per-attempt lock under `.aeos/state/executions/.locks`. This prevents normal
+sequential and cooperating-process double-start. It is not a full multi-record
+transaction across task state and attempt numbering, so non-cooperating writers
+and crash-left lock files remain documented MVP limitations.
+
+### `aeos task execution start --json`
+Same apply behavior as human mode, but stdout is exactly one JSON object. The
+success JSON reports `status: "execution_attempt_started"` plus safety flags
+showing `executionWorkPerformed`, adapter calls, audit writes, verifier run,
+task-state modification, work completion, and task completion are all false.
+Failures are JSON-only with deterministic issue codes and no raw stack traces.
 
 ### `aeos task status`
 Loads authoritative persisted task state by task id from the project-local state

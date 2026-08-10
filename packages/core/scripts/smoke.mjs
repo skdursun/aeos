@@ -120,6 +120,7 @@ import {
   transitionTaskExecutionAttempt,
   transitionTaskState,
   transitionPersistedTaskState,
+  updateTaskExecutionAttempt,
   validateTaskExecutionAttempt,
   validateTaskExecutionAttemptForTaskState,
   updateTaskState,
@@ -14152,6 +14153,148 @@ try {
     loadedAttemptResult.value.attempt.lifecycle,
     "prepared",
     "task execution start authorization smoke T should not mutate attempt lifecycle",
+  );
+  const stateContentBeforeStartApply = await readFile(firstUpdate.value.path, "utf8");
+  const attemptContentBeforeStartApply = await readFile(saveAttemptResult.value.path, "utf8");
+  const startApplyResult = await updateTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
+    taskId: preparedAttempt.taskId,
+    attemptId: preparedAttempt.attemptId,
+    expectedLifecycle: "prepared",
+    update(currentAttempt) {
+      const transitionResult = transitionTaskExecutionAttempt({
+        attempt: currentAttempt,
+        intent: {
+          kind: "start",
+        },
+        occurredAt: "2026-08-08T00:01:40.000Z",
+      });
+
+      return transitionResult.ok
+        ? { ok: true, value: transitionResult.value.attempt }
+        : transitionResult;
+    },
+  });
+  assert.equal(
+    startApplyResult.ok,
+    true,
+    "task execution start apply smoke A should persist prepared -> started",
+  );
+  assert.equal(
+    startApplyResult.value.attempt.lifecycle,
+    "started",
+    "task execution start apply smoke B should persist started lifecycle",
+  );
+  assert.equal(
+    startApplyResult.value.attempt.events.length,
+    2,
+    "task execution start apply smoke C should append exactly one started event",
+  );
+  assert.equal(
+    startApplyResult.value.attempt.events[0]?.kind,
+    "attempt_prepared",
+    "task execution start apply smoke D should preserve prepared event first",
+  );
+  assert.equal(
+    startApplyResult.value.attempt.events[1]?.kind,
+    "attempt_started",
+    "task execution start apply smoke C should append attempt_started",
+  );
+  assert.equal(
+    startApplyResult.value.attempt.noExecution,
+    true,
+    "task execution start apply smoke J should remain non-executing",
+  );
+  for (const identityField of [
+    "attemptId",
+    "taskId",
+    "taskStateRevision",
+    "workItemId",
+    "batchId",
+    "attemptNumber",
+  ]) {
+    assert.equal(
+      startApplyResult.value.attempt[identityField],
+      preparedAttempt[identityField],
+      `task execution start apply smoke E should keep ${identityField} immutable`,
+    );
+  }
+  assert.equal(
+    await readFile(firstUpdate.value.path, "utf8"),
+    stateContentBeforeStartApply,
+    "task execution start apply smoke F should not mutate task state bytes",
+  );
+  assert.equal(
+    firstUpdate.value.state.revision,
+    2,
+    "task execution start apply smoke G should not increment task revision",
+  );
+  assert.equal(
+    firstUpdate.value.state.workItems.find((item) => item.id === "work-a")?.state,
+    "pending",
+    "task execution start apply smoke H should not complete work",
+  );
+  assert.equal(
+    firstUpdate.value.state.completionGate.completed,
+    false,
+    "task execution start apply smoke I should not complete task",
+  );
+  assert.equal(
+    startApplyResult.value.attempt.safety.adapterCalls,
+    false,
+    "task execution start apply smoke J should not call adapters",
+  );
+  assert.equal(
+    startApplyResult.value.attempt.safety.auditWrites,
+    false,
+    "task execution start apply smoke K should not write audit",
+  );
+  assert.equal(
+    startApplyResult.value.attempt.safety.verifierRun,
+    false,
+    "task execution start apply smoke L should not run verifier",
+  );
+  const duplicatePersistedStart = await updateTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
+    taskId: preparedAttempt.taskId,
+    attemptId: preparedAttempt.attemptId,
+    expectedLifecycle: "prepared",
+    update(currentAttempt) {
+      const transitionResult = transitionTaskExecutionAttempt({
+        attempt: currentAttempt,
+        intent: {
+          kind: "start",
+        },
+        occurredAt: "2026-08-08T00:01:41.000Z",
+      });
+
+      return transitionResult.ok
+        ? { ok: true, value: transitionResult.value.attempt }
+        : transitionResult;
+    },
+  });
+  assert.equal(
+    duplicatePersistedStart.ok,
+    false,
+    "task execution start apply smoke N should reject duplicate persisted start",
+  );
+  assert.equal(
+    duplicatePersistedStart.error.code,
+    "task_execution_attempt_lifecycle_conflict",
+    "task execution start apply smoke N should report lifecycle conflict",
+  );
+  const attemptAfterDuplicateStart = JSON.parse(
+    await readFile(saveAttemptResult.value.path, "utf8"),
+  );
+  assert.equal(
+    attemptAfterDuplicateStart.events.length,
+    2,
+    "task execution start apply smoke N should not append duplicate start event",
+  );
+  assert.notEqual(
+    await readFile(saveAttemptResult.value.path, "utf8"),
+    attemptContentBeforeStartApply,
+    "task execution start apply smoke A should durably update attempt bytes",
   );
   const missingPersistedAttempt = await loadTaskExecutionAttempt({
     projectRoot: persistenceRoot,

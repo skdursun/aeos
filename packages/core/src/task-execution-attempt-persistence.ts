@@ -48,6 +48,14 @@ export interface SaveTaskExecutionAttemptInput {
 export interface LoadTaskExecutionAttemptInput
   extends TaskExecutionAttemptStorageInput {}
 
+export interface UpdateTaskExecutionAttemptInput
+  extends TaskExecutionAttemptStorageInput {
+  readonly expectedLifecycle: "prepared";
+  readonly update: (
+    attempt: TaskExecutionAttempt,
+  ) => Result<TaskExecutionAttempt, TaskExecutionAttemptPersistenceError>;
+}
+
 export interface DeriveNextTaskExecutionAttemptNumberInput {
   readonly projectRoot: string;
   readonly taskId: AgenticTaskId;
@@ -119,6 +127,10 @@ function isInsideOrEqual(parentPath: string, childPath: string): boolean {
     relativePath === "" ||
     (!relativePath.startsWith("..") && !isAbsolute(relativePath))
   );
+}
+
+function jsonContent(value: TaskExecutionAttempt): string {
+  return `${JSON.stringify(value, null, 2)}\n`;
 }
 
 function validateSafeId(input: {
@@ -333,6 +345,106 @@ async function ensureExecutionRoot(input: {
   }
 
   return ok(taskExecutionRootRealPath);
+}
+
+async function ensureAttemptLockRoot(input: {
+  readonly projectRoot: string;
+  readonly taskId: AgenticTaskId;
+}): Promise<Result<string, TaskExecutionAttemptPersistenceError>> {
+  let projectRootRealPath: string;
+
+  try {
+    projectRootRealPath = await realpath(resolve(input.projectRoot));
+  } catch {
+    return err(
+      createError(
+        "task_execution_attempt_project_root_missing",
+        "Task execution attempt project root was not found.",
+        "not_found",
+      ),
+    );
+  }
+
+  const lockRoot = join(
+    projectRootRealPath,
+    AEOS_TASK_EXECUTION_ATTEMPT_ROOT_RELATIVE_PATH,
+    ".locks",
+    input.taskId,
+  );
+  const segments = [
+    ...AEOS_TASK_EXECUTION_ATTEMPT_ROOT_RELATIVE_PATH.split("/"),
+    ".locks",
+    input.taskId,
+  ];
+  let currentPath = projectRootRealPath;
+
+  for (const segment of segments) {
+    currentPath = join(currentPath, segment);
+
+    try {
+      const stats = await lstat(currentPath);
+
+      if (stats.isSymbolicLink() || !stats.isDirectory()) {
+        return err(
+          createError(
+            "task_execution_attempt_unsafe_lock_root",
+            "AEOS task execution attempt lock root contains an unsafe symlink or non-directory path.",
+            "permission",
+          ),
+        );
+      }
+
+      const currentRealPath = await realpath(currentPath);
+
+      if (!isInsideOrEqual(projectRootRealPath, currentRealPath)) {
+        return err(
+          createError(
+            "task_execution_attempt_lock_root_escape",
+            "AEOS task execution attempt lock root resolves outside the project root.",
+            "permission",
+          ),
+        );
+      }
+    } catch (error) {
+      if (
+        isRecord(error) &&
+        typeof error.code === "string" &&
+        error.code === "ENOENT"
+      ) {
+        break;
+      }
+
+      throw error;
+    }
+  }
+
+  await mkdir(lockRoot, { recursive: true });
+
+  const lockStats = await lstat(lockRoot);
+
+  if (lockStats.isSymbolicLink() || !lockStats.isDirectory()) {
+    return err(
+      createError(
+        "task_execution_attempt_unsafe_lock_root",
+        "AEOS task execution attempt lock root is not a safe directory.",
+        "permission",
+      ),
+    );
+  }
+
+  const lockRootRealPath = await realpath(lockRoot);
+
+  if (!isInsideOrEqual(projectRootRealPath, lockRootRealPath)) {
+    return err(
+      createError(
+        "task_execution_attempt_lock_root_escape",
+        "AEOS task execution attempt lock root resolves outside the project root.",
+        "permission",
+      ),
+    );
+  }
+
+  return ok(lockRootRealPath);
 }
 
 async function readAuthoritativeAttemptFile(input: {
@@ -629,6 +741,34 @@ async function readJsonAttempt(
   }
 }
 
+async function readAttemptContent(
+  path: string,
+): Promise<Result<string, TaskExecutionAttemptPersistenceError>> {
+  if (await existingPathIsMissing(path)) {
+    return err(
+      createError(
+        "task_execution_attempt_not_found",
+        "Persisted task execution attempt was not found.",
+        "not_found",
+      ),
+    );
+  }
+
+  const stats = await lstat(path);
+
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    return err(
+      createError(
+        "task_execution_attempt_unsafe_target",
+        "Persisted task execution attempt target is not a safe file path.",
+        "permission",
+      ),
+    );
+  }
+
+  return ok(await readFile(path, "utf8"));
+}
+
 async function readExistingAttempt(
   path: string,
 ): Promise<
@@ -781,7 +921,7 @@ export async function saveTaskExecutionAttempt(
   }
 
   const tempPath = `${targetPath}.tmp-${Date.now()}-${randomUUID()}`;
-  const content = `${JSON.stringify(attemptResult.value, null, 2)}\n`;
+  const content = jsonContent(attemptResult.value);
   let fileHandle: Awaited<ReturnType<typeof open>> | undefined;
 
   try {
@@ -804,4 +944,261 @@ export async function saveTaskExecutionAttempt(
     attempt: attemptResult.value,
     path: targetPath,
   });
+}
+
+function immutableAttemptIdentityChanged(input: {
+  readonly current: TaskExecutionAttempt;
+  readonly updated: TaskExecutionAttempt;
+}): boolean {
+  return (
+    input.updated.attemptId !== input.current.attemptId ||
+    input.updated.taskId !== input.current.taskId ||
+    input.updated.taskStateRevision !== input.current.taskStateRevision ||
+    input.updated.attemptNumber !== input.current.attemptNumber ||
+    input.updated.workItemId !== input.current.workItemId ||
+    input.updated.batchId !== input.current.batchId ||
+    input.updated.priorAttemptId !== input.current.priorAttemptId ||
+    input.updated.createdAt !== input.current.createdAt ||
+    input.updated.finishedAt !== input.current.finishedAt ||
+    input.updated.retryable !== input.current.retryable ||
+    JSON.stringify(input.updated.failure) !== JSON.stringify(input.current.failure) ||
+    JSON.stringify(input.updated.adapterReferences) !==
+      JSON.stringify(input.current.adapterReferences) ||
+    JSON.stringify(input.updated.policyRequirement) !==
+      JSON.stringify(input.current.policyRequirement) ||
+    JSON.stringify(input.updated.verifierRequirement) !==
+      JSON.stringify(input.current.verifierRequirement) ||
+    input.updated.noExecution !== input.current.noExecution ||
+    JSON.stringify(input.updated.safety) !== JSON.stringify(input.current.safety) ||
+    JSON.stringify(input.updated.issues) !== JSON.stringify(input.current.issues)
+  );
+}
+
+export async function updateTaskExecutionAttempt(
+  input: UpdateTaskExecutionAttemptInput,
+): Promise<
+  Result<
+    TaskExecutionAttemptPersistenceResult,
+    TaskExecutionAttemptPersistenceError
+  >
+> {
+  const pathResult = getTaskExecutionAttemptStoragePath(input);
+
+  if (!pathResult.ok) {
+    return pathResult;
+  }
+
+  const rootResult = await ensureExecutionRoot({
+    projectRoot: input.projectRoot,
+    taskId: input.taskId,
+    create: false,
+  });
+
+  if (!rootResult.ok) {
+    return rootResult;
+  }
+
+  const lockRootResult = await ensureAttemptLockRoot({
+    projectRoot: input.projectRoot,
+    taskId: input.taskId,
+  });
+
+  if (!lockRootResult.ok) {
+    return lockRootResult;
+  }
+
+  const targetPath = join(rootResult.value, `${input.attemptId}.json`);
+  const lockPath = join(lockRootResult.value, `${input.attemptId}.lock`);
+
+  if (!isInsideOrEqual(lockRootResult.value, lockPath)) {
+    return err(
+      createError(
+        "task_execution_attempt_lock_path_outside_root",
+        "Task execution attempt lock path escaped the AEOS execution lock root.",
+        "permission",
+      ),
+    );
+  }
+
+  let lockHandle: Awaited<ReturnType<typeof open>> | undefined;
+
+  try {
+    try {
+      lockHandle = await open(lockPath, "wx");
+      await lockHandle.writeFile(
+        `${JSON.stringify({
+          taskId: input.taskId,
+          attemptId: input.attemptId,
+          createdAt: new Date().toISOString(),
+        })}\n`,
+        "utf8",
+      );
+      await lockHandle.sync();
+      await lockHandle.close();
+      lockHandle = undefined;
+    } catch (error) {
+      if (
+        isRecord(error) &&
+        typeof error.code === "string" &&
+        error.code === "EEXIST"
+      ) {
+        const lockStats = await lstat(lockPath).catch(() => undefined);
+
+        if (lockStats?.isSymbolicLink() === true) {
+          return err(
+            createError(
+              "task_execution_attempt_unsafe_lock_target",
+              "Task execution attempt update lock target is unsafe.",
+              "permission",
+            ),
+          );
+        }
+
+        return err(
+          createError(
+            "task_execution_attempt_update_locked",
+            "Persisted task execution attempt is already locked for update.",
+            "conflict",
+            {
+              taskId: input.taskId,
+              attemptId: input.attemptId,
+            },
+          ),
+        );
+      }
+
+      throw error;
+    }
+
+    const initialContentResult = await readAttemptContent(targetPath);
+
+    if (!initialContentResult.ok) {
+      return initialContentResult;
+    }
+
+    const existingAttemptResult = await readExistingAttempt(targetPath);
+
+    if (!existingAttemptResult.ok) {
+      return existingAttemptResult;
+    }
+
+    const currentAttempt = existingAttemptResult.value;
+
+    if (currentAttempt === undefined) {
+      return err(
+        createError(
+          "task_execution_attempt_not_found",
+          "Persisted task execution attempt was not found.",
+          "not_found",
+        ),
+      );
+    }
+
+    if (
+      currentAttempt.taskId !== input.taskId ||
+      currentAttempt.attemptId !== input.attemptId
+    ) {
+      return err(
+        createError(
+          "task_execution_attempt_identity_mismatch",
+          "Persisted task execution attempt identity did not match the requested identity.",
+          "validation",
+        ),
+      );
+    }
+
+    if (currentAttempt.lifecycle !== input.expectedLifecycle) {
+      return err(
+        createError(
+          "task_execution_attempt_lifecycle_conflict",
+          "Persisted task execution attempt lifecycle did not match the expected lifecycle.",
+          "conflict",
+          {
+            expectedLifecycle: input.expectedLifecycle,
+            actualLifecycle: currentAttempt.lifecycle,
+          },
+        ),
+      );
+    }
+
+    const updatedAttemptResult = input.update(currentAttempt);
+
+    if (!updatedAttemptResult.ok) {
+      return updatedAttemptResult;
+    }
+
+    const updatedAttemptValidation = validateTaskExecutionAttempt(
+      updatedAttemptResult.value,
+    );
+
+    if (!updatedAttemptValidation.ok) {
+      return updatedAttemptValidation;
+    }
+
+    if (
+      immutableAttemptIdentityChanged({
+        current: currentAttempt,
+        updated: updatedAttemptValidation.value,
+      })
+    ) {
+      return err(
+        createError(
+          "task_execution_attempt_immutable_field_changed",
+          "Task execution attempt update cannot change immutable identity or non-transition authority fields.",
+          "validation",
+        ),
+      );
+    }
+
+    const latestContentResult = await readAttemptContent(targetPath);
+
+    if (!latestContentResult.ok) {
+      return latestContentResult;
+    }
+
+    if (latestContentResult.value !== initialContentResult.value) {
+      return err(
+        createError(
+          "task_execution_attempt_update_conflict",
+          "Persisted task execution attempt changed before update could be applied.",
+          "conflict",
+          {
+            taskId: input.taskId,
+            attemptId: input.attemptId,
+          },
+        ),
+      );
+    }
+
+    const tempPath = `${targetPath}.tmp-${Date.now()}-${randomUUID()}`;
+    const content = jsonContent(updatedAttemptValidation.value);
+    let fileHandle: Awaited<ReturnType<typeof open>> | undefined;
+
+    try {
+      fileHandle = await open(tempPath, "wx");
+      await fileHandle.writeFile(content, "utf8");
+      await fileHandle.sync();
+      await fileHandle.close();
+      fileHandle = undefined;
+      await rename(tempPath, targetPath);
+    } catch (error) {
+      if (fileHandle !== undefined) {
+        await fileHandle.close();
+      }
+
+      await unlink(tempPath).catch(() => undefined);
+      throw error;
+    }
+
+    return ok({
+      attempt: updatedAttemptValidation.value,
+      path: targetPath,
+    });
+  } finally {
+    if (lockHandle !== undefined) {
+      await lockHandle.close().catch(() => undefined);
+    }
+
+    await unlink(lockPath).catch(() => undefined);
+  }
 }

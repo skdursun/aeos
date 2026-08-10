@@ -368,13 +368,11 @@ completion gate, or create completed task state.
 Current limitations:
 
 - no real execution runtime;
-- execution-attempt CLI can persist `prepared` attempts only;
 - no retry execution;
 - no audit runtime integration;
 - no verifier runtime integration;
 - no policy runtime integration;
 - no automatic resume or retry;
-- no execution start apply command;
 - no terminal success/completion attempt state.
 
 ## Execution Start Authorization
@@ -425,6 +423,57 @@ policy gate does not block.
 Verifier requirement remains a downstream completion gate. Start authorization
 preserves `verifierRequired` and `completionGatedByVerifier`; it does not run
 the verifier and does not mark verification passed.
+
+## Execution Start Apply
+`aeos task execution start <task-id> --attempt-id <attempt-id>
+--expected-revision <number>` is the explicit operator-controlled apply boundary
+for the system-owned `prepared -> started` attempt transition. `--json` emits one
+deterministic JSON object only.
+
+Apply does not trust prior `start --preview` output. It reloads current
+authoritative task state, validates it, loads the persisted attempt selected by
+`--attempt-id`, validates attempt identity, compares the expected revision
+against current task state, derives latest attempt-number authority for the same
+task/revision/work/batch context, and calls `authorizeTaskExecutionStart`.
+Only when that current authorization returns `startAllowed: true` does apply
+transition the loaded attempt through the closed attempt lifecycle logic and
+persist the replacement.
+
+Successful apply persists only:
+
+- `lifecycle: "started"`
+- a system-owned `startedAt` timestamp
+- the existing `attempt_prepared` event as sequence `1`
+- exactly one appended `attempt_started` event as sequence `2`
+
+Attempt identity remains immutable: `attemptId`, `taskId`,
+`taskStateRevision`, `attemptNumber`, `workItemId`, and `batchId` are preserved.
+Preparation, policy, verifier, adapter-reference, retry, failure, and safety
+authority fields are not operator-editable during start.
+
+Started does not mean executed. Start apply does not call model adapters, call
+tool adapters, produce model output, produce tool output, write audit runtime
+events, run policy runtime, run verifier runtime, automatically resume,
+automatically retry, complete work, satisfy verifier state, mutate task state,
+increment task revision, mark task completed, or mark task verified. Attempt
+events remain attempt lifecycle evidence, not audit log events.
+
+Failed apply, including stale expected revision, stale source task revision,
+policy-required without authoritative approval proof, non-prepared lifecycle,
+corrupt attempt, identity mismatch, ineligible work, batch mismatch, obsolete
+attempt number, unsafe task id, unsafe attempt id, execution-root symlink,
+attempt-file symlink, and directory target, fails closed without mutating task
+state or the attempt record. Duplicate start is blocked because a started
+attempt no longer satisfies the required current lifecycle `prepared`.
+
+The persistence update uses the same path protections as attempt creation, a
+temporary file plus fsync plus rename replacement, a per-attempt lock file under
+`.aeos/state/executions/.locks`, immutable-field validation, and a compare of
+the current attempt bytes before replacement. This prevents normal sequential
+double-start and cooperating-process double-start. It is still not a full
+cross-process transaction across task state, attempt numbering, and attempt
+record replacement; a non-cooperating writer or a process crash leaving a lock
+file may require manual recovery before retry.
 
 ## Execution Preparation Preview
 `aeos task execution prepare --preview <task-id> --expected-revision <number>`
@@ -498,7 +547,7 @@ Attempt creation is immutable. If the exact derived attempt identity already
 exists at save time, apply fails closed with the persistence conflict and never
 overwrites. There is no `--force`, no arbitrary attempt id, no arbitrary attempt
 number, no arbitrary lifecycle, no retry/failure injection, and no
-`aeos task execution start` apply command.
+operator-supplied approval proof.
 
 ## Read-Only CLI Inspection
 `aeos task status <task-id>` reads the authoritative persisted state from:

@@ -18,7 +18,9 @@ import {
   runInitPipeline,
   saveTaskExecutionAttempt,
   saveTaskState,
+  transitionTaskExecutionAttempt,
   transitionPersistedTaskState,
+  updateTaskExecutionAttempt,
   validateAeosTask,
 } from "@aeos/core";
 import type {
@@ -107,6 +109,8 @@ Commands:
   task execution prepare <task-id> --expected-revision <number> --json
   task execution start --preview <task-id> --attempt-id <attempt-id> --expected-revision <number>
   task execution start --preview <task-id> --attempt-id <attempt-id> --expected-revision <number> --json
+  task execution start <task-id> --attempt-id <attempt-id> --expected-revision <number>
+  task execution start <task-id> --attempt-id <attempt-id> --expected-revision <number> --json
   task status <task-id>
   task status <task-id> --json
   task resume --preview <task-id>
@@ -624,7 +628,6 @@ type TaskExecutionStartPreviewJsonOutput =
         | "invalid_arguments"
         | "task_state_revision_conflict"
         | "execution_start_blocked"
-        | "task_execution_start_apply_not_implemented"
         | "task_state_modified"
         | "task_execution_attempt_modified";
       readonly taskId: string;
@@ -632,6 +635,60 @@ type TaskExecutionStartPreviewJsonOutput =
       readonly startAllowed: false;
       readonly authorization: TaskExecutionStartAuthorizationResult | null;
       readonly safety: TaskExecutionStartPreviewSafety;
+      readonly error: {
+        readonly code: string;
+        readonly message: string;
+        readonly category: string;
+      };
+      readonly issues: readonly TaskStateCliIssue[];
+    };
+
+type TaskExecutionStartApplySafety = {
+  readonly attemptStarted: boolean;
+  readonly executionWorkPerformed: false;
+  readonly adapterCalls: false;
+  readonly auditWrites: false;
+  readonly verifierRun: false;
+  readonly taskStateModified: boolean;
+  readonly workCompleted: false;
+  readonly taskCompleted: false;
+};
+
+type TaskExecutionStartApplyJsonOutput =
+  | {
+      readonly ok: true;
+      readonly status: "execution_attempt_started";
+      readonly taskId: string;
+      readonly attemptId: string;
+      readonly sourceRevision: number;
+      readonly attemptNumber: number;
+      readonly workItemId: string | null;
+      readonly batchId: string | null;
+      readonly startApplied: true;
+      readonly attempt: {
+        readonly lifecycle: "started";
+        readonly events: TaskExecutionAttempt["events"];
+      };
+      readonly safety: TaskExecutionStartApplySafety;
+      readonly authorization: TaskExecutionStartAuthorizationResult;
+      readonly issues: readonly TaskStateCliIssue[];
+    }
+  | {
+      readonly ok: false;
+      readonly status:
+        | "failed_to_load"
+        | "invalid_arguments"
+        | "task_state_revision_conflict"
+        | "execution_start_blocked"
+        | "task_state_modified"
+        | "task_execution_attempt_modified";
+      readonly taskId: string;
+      readonly attemptId: string | null;
+      readonly sourceRevision: number | null;
+      readonly expectedRevision: number | null;
+      readonly startApplied: false;
+      readonly authorization: TaskExecutionStartAuthorizationResult | null;
+      readonly safety: TaskExecutionStartApplySafety;
       readonly error: {
         readonly code: string;
         readonly message: string;
@@ -1267,7 +1324,7 @@ function writeTaskExecutionPreparationPreviewJson(
 }
 
 function writeTaskExecutionStartPreviewJson(
-  value: TaskExecutionStartPreviewJsonOutput,
+  value: TaskExecutionStartPreviewJsonOutput | TaskExecutionStartApplyJsonOutput,
 ): void {
   writeJsonLine(value);
 }
@@ -3224,6 +3281,28 @@ const taskExecutionStartPreviewSafety: TaskExecutionStartPreviewSafety = {
   taskCompleted: false,
 };
 
+const taskExecutionStartApplySuccessSafety: TaskExecutionStartApplySafety = {
+  attemptStarted: true,
+  executionWorkPerformed: false,
+  adapterCalls: false,
+  auditWrites: false,
+  verifierRun: false,
+  taskStateModified: false,
+  workCompleted: false,
+  taskCompleted: false,
+};
+
+const taskExecutionStartApplyFailureSafety: TaskExecutionStartApplySafety = {
+  attemptStarted: false,
+  executionWorkPerformed: false,
+  adapterCalls: false,
+  auditWrites: false,
+  verifierRun: false,
+  taskStateModified: false,
+  workCompleted: false,
+  taskCompleted: false,
+};
+
 function parseExpectedExecutionPreparationRevision(
   value: string | undefined,
 ): { readonly ok: true; readonly value: number } | { readonly ok: false; readonly error: AeosError } {
@@ -3264,7 +3343,7 @@ function parseExpectedExecutionStartRevision(
       error: createTaskStateCliError({
         code: "task_execution_start_expected_revision_required",
         message:
-          "Task execution start preview requires --expected-revision <number>.",
+          "Task execution start requires --expected-revision <number>.",
       }),
     };
   }
@@ -3553,9 +3632,7 @@ function createTaskExecutionStartPreviewErrorJsonOutput(input: {
     ok: false,
     status:
       input.status ??
-      (input.error.code === "task_execution_start_apply_not_implemented"
-        ? "task_execution_start_apply_not_implemented"
-        : input.error.code === "task_execution_start_expected_revision_mismatch" ||
+      (input.error.code === "task_execution_start_expected_revision_mismatch" ||
             input.error.code === "task_execution_start_stale_task_revision" ||
             input.error.code === "task_state_revision_conflict"
           ? "task_state_revision_conflict"
@@ -3584,6 +3661,83 @@ function createTaskExecutionStartPreviewErrorJsonOutput(input: {
               category: item.category,
             }),
           ),
+  };
+}
+
+function createTaskExecutionStartApplyErrorJsonOutput(input: {
+  readonly taskId?: string;
+  readonly attemptId?: string | null;
+  readonly sourceRevision?: number | null;
+  readonly expectedRevision?: number | null;
+  readonly authorization?: TaskExecutionStartAuthorizationResult | null;
+  readonly error: AeosError;
+  readonly status?: Extract<
+    TaskExecutionStartApplyJsonOutput,
+    { readonly ok: false }
+  >["status"];
+  readonly safety?: TaskExecutionStartApplySafety;
+}): Extract<TaskExecutionStartApplyJsonOutput, { readonly ok: false }> {
+  return {
+    ok: false,
+    status:
+      input.status ??
+      (input.error.code === "task_execution_start_expected_revision_mismatch" ||
+        input.error.code === "task_execution_start_stale_task_revision" ||
+        input.error.code === "task_state_revision_conflict"
+        ? "task_state_revision_conflict"
+        : input.error.category === "not_found" ||
+            input.error.code.startsWith("task_state_") ||
+            input.error.code.startsWith("task_execution_attempt_")
+          ? "failed_to_load"
+          : "execution_start_blocked"),
+    taskId: input.taskId ?? input.authorization?.taskId ?? "",
+    attemptId: input.attemptId ?? input.authorization?.attemptId ?? null,
+    sourceRevision:
+      input.sourceRevision ?? input.authorization?.sourceRevision ?? null,
+    expectedRevision:
+      input.expectedRevision ?? input.authorization?.expectedRevision ?? null,
+    startApplied: false,
+    authorization: input.authorization ?? null,
+    safety: input.safety ?? taskExecutionStartApplyFailureSafety,
+    error: {
+      code: input.error.code,
+      message: input.error.message,
+      category: input.error.category,
+    },
+    issues:
+      input.authorization === undefined || input.authorization === null
+        ? [createTaskStateCliIssueFromError(input.error)]
+        : input.authorization.issues.map((item) =>
+            createTaskStateCliIssue({
+              code: item.code,
+              message: item.message,
+              category: item.category,
+            }),
+          ),
+  };
+}
+
+function createTaskExecutionStartApplyJsonOutput(input: {
+  readonly attempt: TaskExecutionAttempt;
+  readonly authorization: TaskExecutionStartAuthorizationResult;
+}): Extract<TaskExecutionStartApplyJsonOutput, { readonly ok: true }> {
+  return {
+    ok: true,
+    status: "execution_attempt_started",
+    taskId: input.attempt.taskId,
+    attemptId: input.attempt.attemptId,
+    sourceRevision: input.attempt.taskStateRevision,
+    attemptNumber: input.attempt.attemptNumber,
+    workItemId: input.attempt.workItemId ?? null,
+    batchId: input.attempt.batchId ?? null,
+    startApplied: true,
+    attempt: {
+      lifecycle: "started",
+      events: input.attempt.events,
+    },
+    safety: taskExecutionStartApplySuccessSafety,
+    authorization: input.authorization,
+    issues: [],
   };
 }
 
@@ -3664,6 +3818,53 @@ function printTaskExecutionStartPreviewError(
   console.error("Verifier run: false");
   console.error("Task state modified: false");
   console.error("Attempt modified: false");
+  console.error("Work completed: false");
+  console.error("Task completed: false");
+}
+
+function printTaskExecutionStartApplyOutput(
+  output: Extract<TaskExecutionStartApplyJsonOutput, { readonly ok: true }>,
+): void {
+  console.log("Execution Attempt Started");
+  console.log("");
+  console.log(`Task id: ${output.taskId}`);
+  console.log(`Attempt id: ${output.attemptId}`);
+  console.log(`Attempt number: ${output.attemptNumber}`);
+  console.log(`Attempt lifecycle: ${output.attempt.lifecycle}`);
+  console.log(`Task revision: ${output.sourceRevision}`);
+  console.log(`Work item: ${output.workItemId ?? "none"}`);
+  console.log(`Batch: ${output.batchId ?? "none"}`);
+  console.log(`Start applied: ${String(output.startApplied)}`);
+  console.log("");
+  console.log(
+    `Execution work performed: ${String(output.safety.executionWorkPerformed)}`,
+  );
+  console.log(`Adapter calls: ${String(output.safety.adapterCalls)}`);
+  console.log(`Audit writes: ${String(output.safety.auditWrites)}`);
+  console.log(`Verifier run: ${String(output.safety.verifierRun)}`);
+  console.log(`Task state modified: ${String(output.safety.taskStateModified)}`);
+  console.log(`Work completed: ${String(output.safety.workCompleted)}`);
+  console.log(`Task completed: ${String(output.safety.taskCompleted)}`);
+  console.log("");
+  console.log(`Issues: ${output.issues.length}`);
+}
+
+function printTaskExecutionStartApplyError(
+  output: Extract<TaskExecutionStartApplyJsonOutput, { readonly ok: false }>,
+): void {
+  console.error("Execution Attempt Start Apply");
+  console.error(`Task id: ${output.taskId}`);
+  console.error(`Attempt id: ${output.attemptId ?? "none"}`);
+  console.error(`Status: ${output.status}`);
+  console.error(`Error: ${output.error.code}`);
+  console.error(`Message: ${output.error.message}`);
+  console.error("Start applied: false");
+  console.error("Attempt started: false");
+  console.error("Execution work performed: false");
+  console.error("Adapter calls: false");
+  console.error("Audit writes: false");
+  console.error("Verifier run: false");
+  console.error(`Task state modified: ${String(output.safety.taskStateModified)}`);
   console.error("Work completed: false");
   console.error("Task completed: false");
 }
@@ -5166,42 +5367,33 @@ function parseTaskExecutionStartArgs(args: readonly string[]): {
 async function handleTaskExecutionStart(args: readonly string[]): Promise<void> {
   const parsedArgs = parseTaskExecutionStartArgs(args);
 
-  if (!parsedArgs.preview && parsedArgs.error === undefined) {
-    const error = createTaskStateCliError({
-      code: "task_execution_start_apply_not_implemented",
-      message:
-        "Task execution start apply is not implemented; use --preview for a read-only authorization evaluation.",
-      category: "validation",
-    });
-    const output = createTaskExecutionStartPreviewErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      attemptId: parsedArgs.attemptId,
-      error,
-      status: "task_execution_start_apply_not_implemented",
-    });
-
-    if (parsedArgs.json) {
-      writeTaskExecutionStartPreviewJson(output);
-    } else {
-      printTaskExecutionStartPreviewError(output);
-    }
-
-    setExitCode(1);
-    return;
-  }
-
   if (parsedArgs.error !== undefined) {
-    const output = createTaskExecutionStartPreviewErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      attemptId: parsedArgs.attemptId,
-      error: parsedArgs.error,
-      status: "invalid_arguments",
-    });
+    if (parsedArgs.preview) {
+      const output = createTaskExecutionStartPreviewErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        attemptId: parsedArgs.attemptId,
+        error: parsedArgs.error,
+        status: "invalid_arguments",
+      });
 
-    if (parsedArgs.json) {
-      writeTaskExecutionStartPreviewJson(output);
+      if (parsedArgs.json) {
+        writeTaskExecutionStartPreviewJson(output);
+      } else {
+        printTaskExecutionStartPreviewError(output);
+      }
     } else {
-      printTaskExecutionStartPreviewError(output);
+      const output = createTaskExecutionStartApplyErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        attemptId: parsedArgs.attemptId,
+        error: parsedArgs.error,
+        status: "invalid_arguments",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskExecutionStartPreviewJson(output);
+      } else {
+        printTaskExecutionStartApplyError(output);
+      }
     }
 
     setExitCode(1);
@@ -5211,17 +5403,28 @@ async function handleTaskExecutionStart(args: readonly string[]): Promise<void> 
   if (parsedArgs.taskId === undefined || parsedArgs.taskId.trim().length === 0) {
     const error = createTaskStateCliError({
       code: "task_execution_start_task_id_required",
-      message: "Task execution start preview requires a task id.",
+      message: "Task execution start requires a task id.",
     });
-    const output = createTaskExecutionStartPreviewErrorJsonOutput({
-      error,
-      status: "invalid_arguments",
-    });
+    const output = parsedArgs.preview
+      ? createTaskExecutionStartPreviewErrorJsonOutput({
+          error,
+          status: "invalid_arguments",
+        })
+      : createTaskExecutionStartApplyErrorJsonOutput({
+          error,
+          status: "invalid_arguments",
+        });
 
     if (parsedArgs.json) {
       writeTaskExecutionStartPreviewJson(output);
+    } else if (parsedArgs.preview) {
+      printTaskExecutionStartPreviewError(
+        output as Extract<TaskExecutionStartPreviewJsonOutput, { readonly ok: false }>,
+      );
     } else {
-      printTaskExecutionStartPreviewError(output);
+      printTaskExecutionStartApplyError(
+        output as Extract<TaskExecutionStartApplyJsonOutput, { readonly ok: false }>,
+      );
     }
 
     setExitCode(1);
@@ -5231,18 +5434,30 @@ async function handleTaskExecutionStart(args: readonly string[]): Promise<void> 
   if (parsedArgs.attemptId === undefined || parsedArgs.attemptId.trim().length === 0) {
     const error = createTaskStateCliError({
       code: "task_execution_start_attempt_id_required",
-      message: "Task execution start preview requires --attempt-id <attempt-id>.",
+      message: "Task execution start requires --attempt-id <attempt-id>.",
     });
-    const output = createTaskExecutionStartPreviewErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      error,
-      status: "invalid_arguments",
-    });
+    const output = parsedArgs.preview
+      ? createTaskExecutionStartPreviewErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          error,
+          status: "invalid_arguments",
+        })
+      : createTaskExecutionStartApplyErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          error,
+          status: "invalid_arguments",
+        });
 
     if (parsedArgs.json) {
       writeTaskExecutionStartPreviewJson(output);
+    } else if (parsedArgs.preview) {
+      printTaskExecutionStartPreviewError(
+        output as Extract<TaskExecutionStartPreviewJsonOutput, { readonly ok: false }>,
+      );
     } else {
-      printTaskExecutionStartPreviewError(output);
+      printTaskExecutionStartApplyError(
+        output as Extract<TaskExecutionStartApplyJsonOutput, { readonly ok: false }>,
+      );
     }
 
     setExitCode(1);
@@ -5254,17 +5469,30 @@ async function handleTaskExecutionStart(args: readonly string[]): Promise<void> 
   );
 
   if (!expectedRevisionResult.ok) {
-    const output = createTaskExecutionStartPreviewErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      attemptId: parsedArgs.attemptId,
-      error: expectedRevisionResult.error,
-      status: "invalid_arguments",
-    });
+    const output = parsedArgs.preview
+      ? createTaskExecutionStartPreviewErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          attemptId: parsedArgs.attemptId,
+          error: expectedRevisionResult.error,
+          status: "invalid_arguments",
+        })
+      : createTaskExecutionStartApplyErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          attemptId: parsedArgs.attemptId,
+          error: expectedRevisionResult.error,
+          status: "invalid_arguments",
+        });
 
     if (parsedArgs.json) {
       writeTaskExecutionStartPreviewJson(output);
+    } else if (parsedArgs.preview) {
+      printTaskExecutionStartPreviewError(
+        output as Extract<TaskExecutionStartPreviewJsonOutput, { readonly ok: false }>,
+      );
     } else {
-      printTaskExecutionStartPreviewError(output);
+      printTaskExecutionStartApplyError(
+        output as Extract<TaskExecutionStartApplyJsonOutput, { readonly ok: false }>,
+      );
     }
 
     setExitCode(1);
@@ -5277,17 +5505,31 @@ async function handleTaskExecutionStart(args: readonly string[]): Promise<void> 
   });
 
   if (!loadStateResult.ok) {
-    const output = createTaskExecutionStartPreviewErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      attemptId: parsedArgs.attemptId,
-      error: loadStateResult.error,
-      status: "failed_to_load",
-    });
+    const output = parsedArgs.preview
+      ? createTaskExecutionStartPreviewErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          attemptId: parsedArgs.attemptId,
+          error: loadStateResult.error,
+          status: "failed_to_load",
+        })
+      : createTaskExecutionStartApplyErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          attemptId: parsedArgs.attemptId,
+          expectedRevision: expectedRevisionResult.value,
+          error: loadStateResult.error,
+          status: "failed_to_load",
+        });
 
     if (parsedArgs.json) {
       writeTaskExecutionStartPreviewJson(output);
+    } else if (parsedArgs.preview) {
+      printTaskExecutionStartPreviewError(
+        output as Extract<TaskExecutionStartPreviewJsonOutput, { readonly ok: false }>,
+      );
     } else {
-      printTaskExecutionStartPreviewError(output);
+      printTaskExecutionStartApplyError(
+        output as Extract<TaskExecutionStartApplyJsonOutput, { readonly ok: false }>,
+      );
     }
 
     setExitCode(1);
@@ -5301,17 +5543,31 @@ async function handleTaskExecutionStart(args: readonly string[]): Promise<void> 
   });
 
   if (!loadAttemptResult.ok) {
-    const output = createTaskExecutionStartPreviewErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      attemptId: parsedArgs.attemptId,
-      error: loadAttemptResult.error,
-      status: "failed_to_load",
-    });
+    const output = parsedArgs.preview
+      ? createTaskExecutionStartPreviewErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          attemptId: parsedArgs.attemptId,
+          error: loadAttemptResult.error,
+          status: "failed_to_load",
+        })
+      : createTaskExecutionStartApplyErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          attemptId: parsedArgs.attemptId,
+          expectedRevision: expectedRevisionResult.value,
+          error: loadAttemptResult.error,
+          status: "failed_to_load",
+        });
 
     if (parsedArgs.json) {
       writeTaskExecutionStartPreviewJson(output);
+    } else if (parsedArgs.preview) {
+      printTaskExecutionStartPreviewError(
+        output as Extract<TaskExecutionStartPreviewJsonOutput, { readonly ok: false }>,
+      );
     } else {
-      printTaskExecutionStartPreviewError(output);
+      printTaskExecutionStartApplyError(
+        output as Extract<TaskExecutionStartApplyJsonOutput, { readonly ok: false }>,
+      );
     }
 
     setExitCode(1);
@@ -5329,17 +5585,31 @@ async function handleTaskExecutionStart(args: readonly string[]): Promise<void> 
   });
 
   if (!latestAttemptNumberResult.ok) {
-    const output = createTaskExecutionStartPreviewErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      attemptId: parsedArgs.attemptId,
-      error: latestAttemptNumberResult.error,
-      status: "failed_to_load",
-    });
+    const output = parsedArgs.preview
+      ? createTaskExecutionStartPreviewErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          attemptId: parsedArgs.attemptId,
+          error: latestAttemptNumberResult.error,
+          status: "failed_to_load",
+        })
+      : createTaskExecutionStartApplyErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          attemptId: parsedArgs.attemptId,
+          expectedRevision: expectedRevisionResult.value,
+          error: latestAttemptNumberResult.error,
+          status: "failed_to_load",
+        });
 
     if (parsedArgs.json) {
       writeTaskExecutionStartPreviewJson(output);
+    } else if (parsedArgs.preview) {
+      printTaskExecutionStartPreviewError(
+        output as Extract<TaskExecutionStartPreviewJsonOutput, { readonly ok: false }>,
+      );
     } else {
-      printTaskExecutionStartPreviewError(output);
+      printTaskExecutionStartApplyError(
+        output as Extract<TaskExecutionStartApplyJsonOutput, { readonly ok: false }>,
+      );
     }
 
     setExitCode(1);
@@ -5363,22 +5633,41 @@ async function handleTaskExecutionStart(args: readonly string[]): Promise<void> 
         "Task execution start preview detected task-state mutation and cannot report success.",
       category: "conflict",
     });
-    const output = createTaskExecutionStartPreviewErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      attemptId: parsedArgs.attemptId,
-      authorization,
-      error,
-      status: "task_state_modified",
-      safety: {
-        ...taskExecutionStartPreviewSafety,
-        taskStateModified: true,
-      },
-    });
+    const output = parsedArgs.preview
+      ? createTaskExecutionStartPreviewErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          attemptId: parsedArgs.attemptId,
+          authorization,
+          error,
+          status: "task_state_modified",
+          safety: {
+            ...taskExecutionStartPreviewSafety,
+            taskStateModified: true,
+          },
+        })
+      : createTaskExecutionStartApplyErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          attemptId: parsedArgs.attemptId,
+          expectedRevision: expectedRevisionResult.value,
+          authorization,
+          error,
+          status: "task_state_modified",
+          safety: {
+            ...taskExecutionStartApplyFailureSafety,
+            taskStateModified: true,
+          },
+        });
 
     if (parsedArgs.json) {
       writeTaskExecutionStartPreviewJson(output);
+    } else if (parsedArgs.preview) {
+      printTaskExecutionStartPreviewError(
+        output as Extract<TaskExecutionStartPreviewJsonOutput, { readonly ok: false }>,
+      );
     } else {
-      printTaskExecutionStartPreviewError(output);
+      printTaskExecutionStartApplyError(
+        output as Extract<TaskExecutionStartApplyJsonOutput, { readonly ok: false }>,
+      );
     }
 
     setExitCode(1);
@@ -5392,29 +5681,44 @@ async function handleTaskExecutionStart(args: readonly string[]): Promise<void> 
         "Task execution start preview detected attempt mutation and cannot report success.",
       category: "conflict",
     });
-    const output = createTaskExecutionStartPreviewErrorJsonOutput({
-      taskId: parsedArgs.taskId,
-      attemptId: parsedArgs.attemptId,
-      authorization,
-      error,
-      status: "task_execution_attempt_modified",
-      safety: {
-        ...taskExecutionStartPreviewSafety,
-        attemptModified: true,
-      },
-    });
+    const output = parsedArgs.preview
+      ? createTaskExecutionStartPreviewErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          attemptId: parsedArgs.attemptId,
+          authorization,
+          error,
+          status: "task_execution_attempt_modified",
+          safety: {
+            ...taskExecutionStartPreviewSafety,
+            attemptModified: true,
+          },
+        })
+      : createTaskExecutionStartApplyErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          attemptId: parsedArgs.attemptId,
+          expectedRevision: expectedRevisionResult.value,
+          authorization,
+          error,
+          status: "task_execution_attempt_modified",
+        });
 
     if (parsedArgs.json) {
       writeTaskExecutionStartPreviewJson(output);
+    } else if (parsedArgs.preview) {
+      printTaskExecutionStartPreviewError(
+        output as Extract<TaskExecutionStartPreviewJsonOutput, { readonly ok: false }>,
+      );
     } else {
-      printTaskExecutionStartPreviewError(output);
+      printTaskExecutionStartApplyError(
+        output as Extract<TaskExecutionStartApplyJsonOutput, { readonly ok: false }>,
+      );
     }
 
     setExitCode(1);
     return;
   }
 
-  if (!authorization.ok) {
+  if (!authorization.ok || !authorization.startAllowed) {
     const firstIssue = authorization.issues[0];
     const error = createTaskStateCliError({
       code: firstIssue?.code ?? "task_execution_start_blocked",
@@ -5423,25 +5727,265 @@ async function handleTaskExecutionStart(args: readonly string[]): Promise<void> 
         "Task execution start authorization failed closed.",
       category: firstIssue?.category ?? "validation",
     });
-    const output = createTaskExecutionStartPreviewErrorJsonOutput({
+    if (parsedArgs.preview && authorization.ok) {
+      const output = createTaskExecutionStartPreviewJsonOutput({
+        authorization,
+      });
+
+      if (parsedArgs.json) {
+        writeTaskExecutionStartPreviewJson(output);
+      } else {
+        printTaskExecutionStartPreviewOutput(output);
+      }
+
+      return;
+    }
+
+    const output = parsedArgs.preview
+      ? createTaskExecutionStartPreviewErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          attemptId: parsedArgs.attemptId,
+          authorization,
+          error,
+          status:
+            error.code === "task_execution_start_expected_revision_mismatch" ||
+            error.code === "task_execution_start_stale_task_revision"
+              ? "task_state_revision_conflict"
+              : "execution_start_blocked",
+        })
+      : createTaskExecutionStartApplyErrorJsonOutput({
+          taskId: parsedArgs.taskId,
+          attemptId: parsedArgs.attemptId,
+          expectedRevision: expectedRevisionResult.value,
+          authorization,
+          error,
+          status:
+            error.code === "task_execution_start_expected_revision_mismatch" ||
+            error.code === "task_execution_start_stale_task_revision"
+              ? "task_state_revision_conflict"
+              : "execution_start_blocked",
+        });
+
+    if (parsedArgs.json) {
+      writeTaskExecutionStartPreviewJson(output);
+    } else if (parsedArgs.preview) {
+      printTaskExecutionStartPreviewError(
+        output as Extract<TaskExecutionStartPreviewJsonOutput, { readonly ok: false }>,
+      );
+    } else {
+      printTaskExecutionStartApplyError(
+        output as Extract<TaskExecutionStartApplyJsonOutput, { readonly ok: false }>,
+      );
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  if (!parsedArgs.preview) {
+    const applyStateResult = await loadTaskState({
+      projectRoot: getCwd(),
       taskId: parsedArgs.taskId,
-      attemptId: parsedArgs.attemptId,
-      authorization,
-      error,
-      status:
-        error.code === "task_execution_start_expected_revision_mismatch" ||
-        error.code === "task_execution_start_stale_task_revision"
-          ? "task_state_revision_conflict"
-          : "execution_start_blocked",
+    });
+
+    if (!applyStateResult.ok) {
+      const output = createTaskExecutionStartApplyErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        attemptId: parsedArgs.attemptId,
+        expectedRevision: expectedRevisionResult.value,
+        authorization,
+        error: applyStateResult.error,
+        status: "failed_to_load",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskExecutionStartPreviewJson(output);
+      } else {
+        printTaskExecutionStartApplyError(output);
+      }
+
+      setExitCode(1);
+      return;
+    }
+
+    const applyStateBytesBefore = getFs().readFileSync(
+      applyStateResult.value.path,
+      "utf8",
+    );
+
+    if (applyStateBytesBefore !== stateBytesBefore) {
+      const error = createTaskStateCliError({
+        code: "task_execution_start_task_state_modified",
+        message:
+          "Task execution start apply detected task-state mutation before attempt persistence.",
+        category: "conflict",
+      });
+      const output = createTaskExecutionStartApplyErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        attemptId: parsedArgs.attemptId,
+        expectedRevision: expectedRevisionResult.value,
+        authorization,
+        error,
+        status: "task_state_modified",
+        safety: {
+          ...taskExecutionStartApplyFailureSafety,
+          taskStateModified: true,
+        },
+      });
+
+      if (parsedArgs.json) {
+        writeTaskExecutionStartPreviewJson(output);
+      } else {
+        printTaskExecutionStartApplyError(output);
+      }
+
+      setExitCode(1);
+      return;
+    }
+
+    const applyLatestAttemptNumberResult =
+      await deriveLatestTaskExecutionAttemptNumber({
+        projectRoot: getCwd(),
+        taskId: loadAttemptResult.value.attempt.taskId,
+        taskStateRevision: loadAttemptResult.value.attempt.taskStateRevision,
+        workItemId: loadAttemptResult.value.attempt.workItemId,
+        batchId: loadAttemptResult.value.attempt.batchId,
+      });
+
+    if (!applyLatestAttemptNumberResult.ok) {
+      const output = createTaskExecutionStartApplyErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        attemptId: parsedArgs.attemptId,
+        expectedRevision: expectedRevisionResult.value,
+        authorization,
+        error: applyLatestAttemptNumberResult.error,
+        status: "failed_to_load",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskExecutionStartPreviewJson(output);
+      } else {
+        printTaskExecutionStartApplyError(output);
+      }
+
+      setExitCode(1);
+      return;
+    }
+
+    let appliedAuthorization: TaskExecutionStartAuthorizationResult | undefined;
+    const updateResult = await updateTaskExecutionAttempt({
+      projectRoot: getCwd(),
+      taskId: loadAttemptResult.value.attempt.taskId,
+      attemptId: loadAttemptResult.value.attempt.attemptId,
+      expectedLifecycle: "prepared",
+      update(currentAttempt) {
+        const currentAuthorization = authorizeTaskExecutionStart({
+          state: applyStateResult.value.state,
+          attempt: currentAttempt,
+          expectedRevision: expectedRevisionResult.value,
+          latestAttemptNumberForContext: applyLatestAttemptNumberResult.value,
+        });
+        appliedAuthorization = currentAuthorization;
+
+        if (!currentAuthorization.ok || !currentAuthorization.startAllowed) {
+          const firstIssue = currentAuthorization.issues[0];
+
+          return {
+            ok: false,
+            error: createTaskStateCliError({
+              code: firstIssue?.code ?? "task_execution_start_blocked",
+              message:
+                firstIssue?.message ??
+                "Task execution start authorization failed closed.",
+              category: firstIssue?.category ?? "validation",
+            }),
+          };
+        }
+
+        const transitionResult = transitionTaskExecutionAttempt({
+          attempt: currentAttempt,
+          intent: {
+            kind: "start",
+          },
+        });
+
+        return transitionResult.ok
+          ? { ok: true, value: transitionResult.value.attempt }
+          : transitionResult;
+      },
+    });
+
+    if (!updateResult.ok) {
+      const output = createTaskExecutionStartApplyErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        attemptId: parsedArgs.attemptId,
+        expectedRevision: expectedRevisionResult.value,
+        authorization: appliedAuthorization ?? authorization,
+        error: updateResult.error,
+        status:
+          updateResult.error.code === "task_execution_attempt_lifecycle_conflict" ||
+          updateResult.error.code === "task_execution_attempt_update_conflict"
+            ? "task_execution_attempt_modified"
+            : "execution_start_blocked",
+      });
+
+      if (parsedArgs.json) {
+        writeTaskExecutionStartPreviewJson(output);
+      } else {
+        printTaskExecutionStartApplyError(output);
+      }
+
+      setExitCode(1);
+      return;
+    }
+
+    const stateBytesAfterApply = getFs().readFileSync(
+      applyStateResult.value.path,
+      "utf8",
+    );
+
+    if (stateBytesAfterApply !== applyStateBytesBefore) {
+      const error = createTaskStateCliError({
+        code: "task_execution_start_task_state_modified",
+        message:
+          "Task execution start apply detected task-state mutation and cannot report success.",
+        category: "conflict",
+      });
+      const output = createTaskExecutionStartApplyErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        attemptId: parsedArgs.attemptId,
+        expectedRevision: expectedRevisionResult.value,
+        authorization: appliedAuthorization ?? authorization,
+        error,
+        status: "task_state_modified",
+        safety: {
+          ...taskExecutionStartApplyFailureSafety,
+          attemptStarted: true,
+          taskStateModified: true,
+        },
+      });
+
+      if (parsedArgs.json) {
+        writeTaskExecutionStartPreviewJson(output);
+      } else {
+        printTaskExecutionStartApplyError(output);
+      }
+
+      setExitCode(1);
+      return;
+    }
+
+    const output = createTaskExecutionStartApplyJsonOutput({
+      attempt: updateResult.value.attempt,
+      authorization: appliedAuthorization ?? authorization,
     });
 
     if (parsedArgs.json) {
       writeTaskExecutionStartPreviewJson(output);
     } else {
-      printTaskExecutionStartPreviewError(output);
+      printTaskExecutionStartApplyOutput(output);
     }
 
-    setExitCode(1);
     return;
   }
 
@@ -5480,6 +6024,9 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
       );
       console.error(
         "Usage: aeos task execution start --preview <task-id> --attempt-id <attempt-id> --expected-revision <number> [--json]",
+      );
+      console.error(
+        "Usage: aeos task execution start <task-id> --attempt-id <attempt-id> --expected-revision <number> [--json]",
       );
     }
 

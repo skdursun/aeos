@@ -77,6 +77,8 @@ condition.
   persistence/preparation apply CLI.
 - TASK-0288: Execution-attempt persistence targeted safety review and
   execution-start authorization foundation.
+- TASK-0289: Design and implement explicit prepared-to-started execution-attempt
+  transition apply without adapter execution.
 
 ## Do Not Load By Default
 
@@ -87,12 +89,12 @@ condition.
 
 ## Next Task
 
-TASK-0289 Design and implement explicit prepared -> started attempt transition
-apply without adapter execution.
+TASK-0290 Design and implement execution invocation boundary with
+dependency-injected no-op/test adapter only.
 
-Purpose: Persist only an authoritative `attempt_started` transition for an
-eligible prepared attempt while still avoiding model/tool adapters, task work,
-audit runtime, verifier runtime, policy runtime, and completion.
+Purpose: Begin actual execution orchestration carefully with a constrained
+dependency-injected no-op/test adapter boundary, without introducing
+unrestricted production adapter calls.
 
 ## Current Plans
 

@@ -1484,6 +1484,68 @@ function expectTaskExecutionStartPreviewErrorJsonShape(message, value, expectedC
   }
 }
 
+function expectTaskExecutionStartApplyJsonShape(message, value, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== true ||
+    value.status !== "execution_attempt_started" ||
+    typeof value.taskId !== "string" ||
+    typeof value.attemptId !== "string" ||
+    typeof value.sourceRevision !== "number" ||
+    typeof value.attemptNumber !== "number" ||
+    value.startApplied !== true ||
+    typeof value.attempt !== "object" ||
+    value.attempt === null ||
+    value.attempt.lifecycle !== "started" ||
+    !Array.isArray(value.attempt.events) ||
+    value.attempt.events.length !== 2 ||
+    value.attempt.events[0]?.kind !== "attempt_prepared" ||
+    value.attempt.events[1]?.kind !== "attempt_started" ||
+    value.safety?.attemptStarted !== true ||
+    value.safety?.executionWorkPerformed !== false ||
+    value.safety?.adapterCalls !== false ||
+    value.safety?.auditWrites !== false ||
+    value.safety?.verifierRun !== false ||
+    value.safety?.taskStateModified !== false ||
+    value.safety?.workCompleted !== false ||
+    value.safety?.taskCompleted !== false ||
+    typeof value.authorization !== "object" ||
+    value.authorization === null ||
+    value.authorization.startAllowed !== true ||
+    !Array.isArray(value.issues) ||
+    value.issues.length !== 0
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectTaskExecutionStartApplyErrorJsonShape(message, value, expectedCode, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== false ||
+    value.startApplied !== false ||
+    typeof value.error !== "object" ||
+    value.error === null ||
+    value.error.code !== expectedCode ||
+    typeof value.error.message !== "string" ||
+    value.error.message.length === 0 ||
+    value.safety?.attemptStarted !== false ||
+    value.safety?.executionWorkPerformed !== false ||
+    value.safety?.adapterCalls !== false ||
+    value.safety?.auditWrites !== false ||
+    value.safety?.verifierRun !== false ||
+    value.safety?.taskStateModified !== false ||
+    value.safety?.workCompleted !== false ||
+    value.safety?.taskCompleted !== false ||
+    !Array.isArray(value.issues) ||
+    !value.issues.some((issue) => issue.code === expectedCode)
+  ) {
+    fail(message, result);
+  }
+}
+
 function expectTaskStateInitSuccessJsonShape(message, value, result) {
   if (
     typeof value !== "object" ||
@@ -6047,29 +6109,124 @@ try {
     "1",
     "--json",
   ]);
-  expectNonzero("task execution start apply exited zero", startApplyJson);
+  expectExitCode("task execution start apply exited nonzero", startApplyJson, 0);
   const parsedStartApplyJson = parseJsonOnlyStdout(
     "task execution start apply output was not valid JSON only",
     startApplyJson,
   );
-  expectTaskExecutionStartPreviewErrorJsonShape(
-    "task execution start apply did not fail closed",
+  expectTaskExecutionStartApplyJsonShape(
+    "task execution start apply shape was invalid",
     parsedStartApplyJson,
-    "task_execution_start_apply_not_implemented",
     startApplyJson,
   );
+  if (
+    parsedStartApplyJson.taskId !== statusTaskId ||
+    parsedStartApplyJson.attemptId !== parsedExecutionPrepareApplyJson.attempt.attemptId ||
+    parsedStartApplyJson.sourceRevision !== 1 ||
+    parsedStartApplyJson.attemptNumber !== 1 ||
+    parsedStartApplyJson.workItemId !== null ||
+    parsedStartApplyJson.batchId !== "batch-main" ||
+    parsedStartApplyJson.authorization.sourceRevision !== 1 ||
+    parsedStartApplyJson.authorization.currentTaskRevision !== 1
+  ) {
+    fail("task execution start apply did not expose authoritative started attempt", startApplyJson);
+  }
   expectStateFileSnapshotSame(
     "task execution start apply modified state",
     statusStatePath,
     startPreviewSnapshotBefore,
     startApplyJson,
   );
-  expectExecutionSnapshotSame(
-    "task execution start apply changed execution files",
-    taskStateCliRoot,
-    startPreviewExecutionSnapshotBefore,
-    startApplyJson,
+  const persistedStartedAttempt = JSON.parse(readFileSync(persistedAttemptPath, "utf8"));
+  if (
+    persistedStartedAttempt.attemptId !== parsedExecutionPrepareApplyJson.attempt.attemptId ||
+    persistedStartedAttempt.taskId !== statusTaskId ||
+    persistedStartedAttempt.taskStateRevision !== 1 ||
+    persistedStartedAttempt.attemptNumber !== 1 ||
+    persistedStartedAttempt.lifecycle !== "started" ||
+    persistedStartedAttempt.batchId !== "batch-main" ||
+    persistedStartedAttempt.events.length !== 2 ||
+    persistedStartedAttempt.events[0]?.kind !== "attempt_prepared" ||
+    persistedStartedAttempt.events[1]?.kind !== "attempt_started" ||
+    persistedStartedAttempt.noExecution !== true ||
+    persistedStartedAttempt.safety.executionPerformed !== false ||
+    persistedStartedAttempt.safety.adapterCalls !== false ||
+    persistedStartedAttempt.safety.auditWrites !== false ||
+    persistedStartedAttempt.safety.verifierRun !== false ||
+    persistedStartedAttempt.safety.completedStateCreated !== false ||
+    persistedStartedAttempt.safety.verifiedStateCreated !== false
+  ) {
+    fail("task execution start apply persisted unsafe started attempt", startApplyJson);
+  }
+  const statusStateAfterStartApply = JSON.parse(readFileSync(statusStatePath, "utf8"));
+  if (
+    statusStateAfterStartApply.revision !== 1 ||
+    statusStateAfterStartApply.lifecycleState !== "planned" ||
+    statusStateAfterStartApply.pendingWorkItemIds.length !== 1 ||
+    statusStateAfterStartApply.retryableWorkItemIds.length !== 1 ||
+    statusStateAfterStartApply.workItems.some((workItem) =>
+      workItem.state === "completed" || workItem.state === "verified"
+    ) ||
+    statusStateAfterStartApply.completionGate.completed !== false ||
+    statusStateAfterStartApply.completionGate.verified !== false
+  ) {
+    fail("task execution start apply changed task or work completion state", startApplyJson);
+  }
+
+  const previewAfterStartApplyJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "start",
+    "--preview",
+    statusTaskId,
+    "--attempt-id",
+    parsedExecutionPrepareApplyJson.attempt.attemptId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution start preview after apply exited zero", previewAfterStartApplyJson);
+  const parsedPreviewAfterStartApplyJson = parseJsonOnlyStdout(
+    "task execution start preview after apply output was not valid JSON only",
+    previewAfterStartApplyJson,
   );
+  expectTaskExecutionStartPreviewErrorJsonShape(
+    "task execution start preview after apply did not reject non-prepared attempt",
+    parsedPreviewAfterStartApplyJson,
+    "task_execution_start_attempt_not_prepared",
+    previewAfterStartApplyJson,
+  );
+
+  const duplicateStartApplyJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "start",
+    statusTaskId,
+    "--attempt-id",
+    parsedExecutionPrepareApplyJson.attempt.attemptId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution duplicate start apply exited zero", duplicateStartApplyJson);
+  const parsedDuplicateStartApplyJson = parseJsonOnlyStdout(
+    "task execution duplicate start apply output was not valid JSON only",
+    duplicateStartApplyJson,
+  );
+  expectTaskExecutionStartApplyErrorJsonShape(
+    "task execution duplicate start apply did not fail closed",
+    parsedDuplicateStartApplyJson,
+    "task_execution_start_attempt_not_prepared",
+    duplicateStartApplyJson,
+  );
+  const persistedAttemptAfterDuplicateStart = JSON.parse(readFileSync(persistedAttemptPath, "utf8"));
+  if (
+    persistedAttemptAfterDuplicateStart.lifecycle !== "started" ||
+    persistedAttemptAfterDuplicateStart.events.length !== 2 ||
+    persistedAttemptAfterDuplicateStart.events.filter((event) => event.kind === "attempt_started").length !== 1
+  ) {
+    fail("task execution duplicate start apply appended duplicate started event", duplicateStartApplyJson);
+  }
 
   const startApprovalFlagJson = runCliFrom(taskStateCliRoot, [
     "task",
@@ -6186,6 +6343,40 @@ try {
     policyStartExecutionSnapshot,
     policyStartPreviewJson,
   );
+  const policyStartApplyJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "start",
+    policyStartTaskId,
+    "--attempt-id",
+    policyStartPreparedAttempt.value.attempt.attemptId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution start policy-required apply exited zero", policyStartApplyJson);
+  const parsedPolicyStartApplyJson = parseJsonOnlyStdout(
+    "task execution start policy-required apply output was not valid JSON only",
+    policyStartApplyJson,
+  );
+  expectTaskExecutionStartApplyErrorJsonShape(
+    "task execution start policy-required apply did not fail closed",
+    parsedPolicyStartApplyJson,
+    "task_execution_start_policy_not_authorized",
+    policyStartApplyJson,
+  );
+  expectStateFileSnapshotSame(
+    "task execution start policy-required apply modified state",
+    taskStatePath(taskStateCliRoot, policyStartTaskId),
+    policyStartSnapshot,
+    policyStartApplyJson,
+  );
+  expectExecutionSnapshotSame(
+    "task execution start policy-required apply changed execution files",
+    taskStateCliRoot,
+    policyStartExecutionSnapshot,
+    policyStartApplyJson,
+  );
 
   const collisionPreparedAttempt = prepareTaskExecutionAttempt({
     state: JSON.parse(readFileSync(statusStatePath, "utf8")),
@@ -6248,6 +6439,59 @@ try {
     taskStateCliRoot,
     collisionExecutionSnapshot,
     collisionExecutionPreviewJson,
+  );
+  const supersedingPreparedAttempt = prepareTaskExecutionAttempt({
+    state: JSON.parse(readFileSync(statusStatePath, "utf8")),
+    expectedRevision: 1,
+    batchId: "batch-main",
+    attemptNumber: 3,
+    createdAt: "2026-08-09T00:00:01.000Z",
+  });
+  if (!supersedingPreparedAttempt.ok) {
+    fail(`could not prepare superseding attempt: ${supersedingPreparedAttempt.error.code}`);
+  }
+  const supersedingSave = await saveTaskExecutionAttempt({
+    projectRoot: taskStateCliRoot,
+    attempt: supersedingPreparedAttempt.value.attempt,
+  });
+  if (!supersedingSave.ok) {
+    fail(`could not save superseding attempt: ${supersedingSave.error.code}`);
+  }
+  const supersededStateSnapshot = stateFileSnapshot(statusStatePath);
+  const supersededExecutionSnapshot = executionSnapshot(taskStateCliRoot);
+  const obsoleteStartApplyJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "start",
+    statusTaskId,
+    "--attempt-id",
+    collisionPreparedAttempt.value.attempt.attemptId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution obsolete start apply exited zero", obsoleteStartApplyJson);
+  const parsedObsoleteStartApplyJson = parseJsonOnlyStdout(
+    "task execution obsolete start apply output was not valid JSON only",
+    obsoleteStartApplyJson,
+  );
+  expectTaskExecutionStartApplyErrorJsonShape(
+    "task execution obsolete start apply did not fail closed",
+    parsedObsoleteStartApplyJson,
+    "task_execution_start_attempt_number_obsolete",
+    obsoleteStartApplyJson,
+  );
+  expectStateFileSnapshotSame(
+    "task execution obsolete start apply modified state",
+    statusStatePath,
+    supersededStateSnapshot,
+    obsoleteStartApplyJson,
+  );
+  expectExecutionSnapshotSame(
+    "task execution obsolete start apply changed execution files",
+    taskStateCliRoot,
+    supersededExecutionSnapshot,
+    obsoleteStartApplyJson,
   );
 
   const staleApplyTaskId = "TASK-PREPARE-STALE-APPLY";
@@ -6405,6 +6649,40 @@ try {
     taskStateCliRoot,
     toctouExecutionSnapshotAfterTransition,
     staleToctouStartPreviewJson,
+  );
+  const staleToctouStartApplyJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "start",
+    toctouTaskId,
+    "--attempt-id",
+    parsedToctouPrepareJson.attempt.attemptId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution start TOCTOU stale apply exited zero", staleToctouStartApplyJson);
+  const parsedStaleToctouStartApplyJson = parseJsonOnlyStdout(
+    "task execution start TOCTOU stale apply output was not valid JSON only",
+    staleToctouStartApplyJson,
+  );
+  expectTaskExecutionStartApplyErrorJsonShape(
+    "task execution start TOCTOU stale apply did not fail closed",
+    parsedStaleToctouStartApplyJson,
+    "task_execution_start_expected_revision_mismatch",
+    staleToctouStartApplyJson,
+  );
+  expectStateFileSnapshotSame(
+    "task execution start TOCTOU stale apply modified state",
+    toctouStatePath,
+    toctouSnapshotAfterTransition,
+    staleToctouStartApplyJson,
+  );
+  expectExecutionSnapshotSame(
+    "task execution start TOCTOU stale apply changed execution files",
+    taskStateCliRoot,
+    toctouExecutionSnapshotAfterTransition,
+    staleToctouStartApplyJson,
   );
 
   const transitionFilesBefore = listRelativeFiles(taskStateCliRoot);
@@ -7786,6 +8064,39 @@ try {
     executionRootSymlinkOutsideBefore,
     listRelativeFiles(executionRootSymlinkOutside),
   );
+  const executionRootSymlinkStartApplyJson = runCliFrom(executionRootSymlinkProject, [
+    "task",
+    "execution",
+    "start",
+    executionRootSymlinkTaskId,
+    "--attempt-id",
+    "attempt-TASK-EXECUTION-ROOT-SYMLINK-r1-n1-placeholder",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution start execution-root symlink apply exited zero", executionRootSymlinkStartApplyJson);
+  const parsedExecutionRootSymlinkStartApplyJson = parseJsonOnlyStdout(
+    "task execution start execution-root symlink apply output was not valid JSON only",
+    executionRootSymlinkStartApplyJson,
+  );
+  expectTaskExecutionStartApplyErrorJsonShape(
+    "task execution start execution-root symlink apply did not fail closed",
+    parsedExecutionRootSymlinkStartApplyJson,
+    "task_execution_attempt_unsafe_state_root",
+    executionRootSymlinkStartApplyJson,
+  );
+  expectStateFileSnapshotSame(
+    "task execution start execution-root symlink apply modified task state",
+    executionRootSymlinkStatePath,
+    executionRootSymlinkStateSnapshot,
+    executionRootSymlinkStartApplyJson,
+  );
+  expectSameFiles(
+    "task execution start apply wrote through execution-root symlink",
+    executionRootSymlinkOutsideBefore,
+    listRelativeFiles(executionRootSymlinkOutside),
+  );
   rmSync(executionRootSymlinkProject, { recursive: true, force: true });
   rmSync(executionRootSymlinkOutside, { recursive: true, force: true });
 
@@ -7909,9 +8220,111 @@ try {
       attemptTargetExecutionSnapshot,
       attemptTargetApplyJson,
     );
+    const attemptTargetStartApplyJson = runCliFrom(attemptTargetRoot, [
+      "task",
+      "execution",
+      "start",
+      attemptTargetTaskId,
+      "--attempt-id",
+      attemptTargetPrepared.value.attempt.attemptId,
+      "--expected-revision",
+      "1",
+      "--json",
+    ]);
+    expectNonzero(`task execution start ${attemptTargetCase} attempt target apply exited zero`, attemptTargetStartApplyJson);
+    const parsedAttemptTargetStartApplyJson = parseJsonOnlyStdout(
+      `task execution start ${attemptTargetCase} attempt target apply output was not valid JSON only`,
+      attemptTargetStartApplyJson,
+    );
+    expectTaskExecutionStartApplyErrorJsonShape(
+      `task execution start ${attemptTargetCase} attempt target apply did not fail closed`,
+      parsedAttemptTargetStartApplyJson,
+      expectedCode,
+      attemptTargetStartApplyJson,
+    );
+    expectStateFileSnapshotSame(
+      `task execution start ${attemptTargetCase} attempt target apply modified task state`,
+      attemptTargetStatePath,
+      attemptTargetStateSnapshot,
+      attemptTargetStartApplyJson,
+    );
+    expectExecutionSnapshotSame(
+      `task execution start ${attemptTargetCase} attempt target apply changed execution files`,
+      attemptTargetRoot,
+      attemptTargetExecutionSnapshot,
+      attemptTargetStartApplyJson,
+    );
     rmSync(attemptTargetRoot, { recursive: true, force: true });
     rmSync(attemptTargetOutside, { recursive: true, force: true });
   }
+
+  const directoryAttemptRoot = mkdtempSync(
+    join(tmpdir(), "aeos-cli-attempt-directory-"),
+  );
+  const directoryAttemptTaskId = "TASK-ATTEMPT-DIRECTORY-CLI";
+  const directoryAttemptState = createPersistedTaskState(directoryAttemptTaskId);
+  const directoryAttemptStatePath = await savePersistedTaskState(
+    directoryAttemptRoot,
+    directoryAttemptState,
+  );
+  const directoryAttemptPrepared = prepareTaskExecutionAttempt({
+    state: directoryAttemptState,
+    expectedRevision: 1,
+    batchId: "batch-main",
+    attemptNumber: 1,
+    createdAt: "2026-08-09T00:00:00.000Z",
+  });
+  if (!directoryAttemptPrepared.ok) {
+    fail(`could not prepare directory attempt target fixture: ${directoryAttemptPrepared.error.code}`);
+  }
+  mkdirSync(
+    join(
+      directoryAttemptRoot,
+      ".aeos",
+      "state",
+      "executions",
+      directoryAttemptTaskId,
+      `${directoryAttemptPrepared.value.attempt.attemptId}.json`,
+    ),
+    { recursive: true },
+  );
+  const directoryAttemptStateSnapshot = stateFileSnapshot(directoryAttemptStatePath);
+  const directoryAttemptExecutionSnapshot = executionSnapshot(directoryAttemptRoot);
+  const directoryAttemptStartApplyJson = runCliFrom(directoryAttemptRoot, [
+    "task",
+    "execution",
+    "start",
+    directoryAttemptTaskId,
+    "--attempt-id",
+    directoryAttemptPrepared.value.attempt.attemptId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution start directory attempt target apply exited zero", directoryAttemptStartApplyJson);
+  const parsedDirectoryAttemptStartApplyJson = parseJsonOnlyStdout(
+    "task execution start directory attempt target apply output was not valid JSON only",
+    directoryAttemptStartApplyJson,
+  );
+  expectTaskExecutionStartApplyErrorJsonShape(
+    "task execution start directory attempt target apply did not fail closed",
+    parsedDirectoryAttemptStartApplyJson,
+    "task_execution_attempt_unsafe_target",
+    directoryAttemptStartApplyJson,
+  );
+  expectStateFileSnapshotSame(
+    "task execution start directory attempt target apply modified task state",
+    directoryAttemptStatePath,
+    directoryAttemptStateSnapshot,
+    directoryAttemptStartApplyJson,
+  );
+  expectExecutionSnapshotSame(
+    "task execution start directory attempt target apply changed execution files",
+    directoryAttemptRoot,
+    directoryAttemptExecutionSnapshot,
+    directoryAttemptStartApplyJson,
+  );
+  rmSync(directoryAttemptRoot, { recursive: true, force: true });
 
   const directoryTargetRoot = mkdtempSync(join(tmpdir(), "aeos-cli-task-state-directory-"));
   mkdirSync(taskStatePath(directoryTargetRoot, "TASK-DIRECTORY-TARGET"), {
@@ -8137,6 +8550,50 @@ try {
     parsedPathLikeExecutionPreviewJson,
     "task_state_unsafe_task_id",
     pathLikeExecutionPreviewJson,
+  );
+  const pathLikeStartApplyJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "start",
+    "path/like",
+    "--attempt-id",
+    parsedExecutionPrepareApplyJson.attempt.attemptId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution start path-like id apply exited zero", pathLikeStartApplyJson);
+  const parsedPathLikeStartApplyJson = parseJsonOnlyStdout(
+    "task execution start path-like id apply output was not valid JSON only",
+    pathLikeStartApplyJson,
+  );
+  expectTaskExecutionStartApplyErrorJsonShape(
+    "task execution start path-like id apply did not fail closed",
+    parsedPathLikeStartApplyJson,
+    "task_state_unsafe_task_id",
+    pathLikeStartApplyJson,
+  );
+  const unsafeAttemptIdStartApplyJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "start",
+    statusTaskId,
+    "--attempt-id",
+    "../escape",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution start unsafe attempt id apply exited zero", unsafeAttemptIdStartApplyJson);
+  const parsedUnsafeAttemptIdStartApplyJson = parseJsonOnlyStdout(
+    "task execution start unsafe attempt id apply output was not valid JSON only",
+    unsafeAttemptIdStartApplyJson,
+  );
+  expectTaskExecutionStartApplyErrorJsonShape(
+    "task execution start unsafe attempt id apply did not fail closed",
+    parsedUnsafeAttemptIdStartApplyJson,
+    "task_execution_attempt_unsafe_attemptId",
+    unsafeAttemptIdStartApplyJson,
   );
   const pathLikeTransitionApplyJson = runCliFrom(taskStateCliRoot, [
     "task",
@@ -8389,6 +8846,65 @@ try {
     fail(
       "400/20 task execution preparation apply changed incomplete state authority",
       canonicalExecutionApplyJson,
+    );
+  }
+
+  const canonicalStartApplyJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "start",
+    canonicalTaskId,
+    "--attempt-id",
+    parsedCanonicalExecutionApplyJson.attempt.attemptId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectExitCode("400/20 task execution start apply exited nonzero", canonicalStartApplyJson, 0);
+  const parsedCanonicalStartApplyJson = parseJsonOnlyStdout(
+    "400/20 task execution start apply output was not valid JSON only",
+    canonicalStartApplyJson,
+  );
+  expectTaskExecutionStartApplyJsonShape(
+    "400/20 task execution start apply shape was invalid",
+    parsedCanonicalStartApplyJson,
+    canonicalStartApplyJson,
+  );
+  if (
+    parsedCanonicalStartApplyJson.attempt.lifecycle !== "started" ||
+    parsedCanonicalStartApplyJson.batchId !== "canonical-batch" ||
+    parsedCanonicalStartApplyJson.safety.executionWorkPerformed !== false ||
+    parsedCanonicalStartApplyJson.safety.taskCompleted !== false ||
+    parsedCanonicalStartApplyJson.safety.workCompleted !== false ||
+    parsedCanonicalStartApplyJson.safety.verifierRun !== false
+  ) {
+    fail(
+      "400/20 task execution start apply created execution or completion authority",
+      canonicalStartApplyJson,
+    );
+  }
+  expectStateFileSnapshotSame(
+    "400/20 execution start apply modified persisted state",
+    canonicalStatePath,
+    canonicalSnapshotBefore,
+    canonicalStartApplyJson,
+  );
+  const canonicalStateAfterStartApply = JSON.parse(
+    readFileSync(canonicalStatePath, "utf8"),
+  );
+  if (
+    canonicalStateAfterStartApply.pendingWorkItemIds.length !== 380 ||
+    canonicalStateAfterStartApply.completionGate.completed !== false ||
+    canonicalStateAfterStartApply.completionGate.verified !== false ||
+    canonicalStateAfterStartApply.verifier.required !== true ||
+    canonicalStateAfterStartApply.verifier.status === "verified" ||
+    canonicalStateAfterStartApply.safety.modelSelfReportTrusted !== false ||
+    canonicalStateAfterStartApply.safety.completed !== false ||
+    canonicalStateAfterStartApply.safety.verified !== false
+  ) {
+    fail(
+      "400/20 task execution start apply changed incomplete state authority",
+      canonicalStartApplyJson,
     );
   }
 

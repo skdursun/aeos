@@ -1497,11 +1497,10 @@ export function transitionTaskExecutionAttempt(
       intentResult.value.kind === "interrupt"
         ? intentResult.value.failure
         : attempt.failure,
-    noExecution:
-      intentResult.value.kind === "start" ? false : attempt.noExecution,
+    noExecution: attempt.noExecution,
     safety:
       intentResult.value.kind === "start"
-        ? createAttemptSafety(false)
+        ? createAttemptSafety(attempt.noExecution)
         : attempt.safety,
     issues: [...attempt.issues, ...event.issues],
     events: [...attempt.events, event],
