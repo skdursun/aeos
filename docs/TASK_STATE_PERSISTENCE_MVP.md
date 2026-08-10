@@ -652,6 +652,11 @@ historical context, work/batch bindings, result or failure diagnostics, outcome
 certainty, reconciliation requirement, retryable system decision, record
 revision, and issues.
 
+Read-only status reports reconciliation required for both `invoking` and
+`outcome_unknown`. A fresh `invoking` record is still not rendered as current
+execution authority because a restart cannot prove from local state alone
+whether the dependency call crossed the external boundary.
+
 Ownership tokens are not rendered in human output, JSON output, or the status
 view model. Status output is not usable as an ownership credential; guarded
 updates still require the original system ownership proof. Raw stack traces are
@@ -665,6 +670,100 @@ This MVP still does not claim universal exactly-once execution. A crash after a
 future external dependency call but before durable returned/failed evidence
 remains `outcome_unknown` or reconciliation territory. Production adapters
 remain blocked.
+
+## Invocation Reconciliation Foundation
+`evaluateTaskExecutionInvocationReconciliation` is a pure recovery decision
+model for persisted invocation authority. It does not load files, call
+providers, call adapters, run shell/processes, execute work, write audit events,
+run policy, run verifiers, retry, resume, mutate task state, mutate attempt
+state, mutate invocation records, or complete work.
+
+The evaluator classifies invocation lifecycle records conservatively:
+
+- `reserved`: no durable proof exists that the dependency was called, but AEOS
+  still must not create a second invocation identity. Same-record reservation
+  recovery is represented only when separate system ownership/lease authority is
+  supplied; otherwise operator recovery is required.
+- `invoking`: the crash window is ambiguous. AEOS cannot know from the local
+  record alone whether the provider was never called, received the request, or
+  completed it. Blind retry is prohibited and reconciliation is required.
+- `returned`: the invocation outcome is durably known. AEOS should use the
+  persisted invocation result/reference and must not call the dependency again.
+  Returned still is not work completion or task completion.
+- `failed`: deterministic invocation-level failure is durably known. Automatic
+  retry is prohibited. If the structured system failure is retryable, future
+  retry planning requires explicit new retry authority tied to the prior
+  invocation id, prior attempt id, failure code/category, source revision, and
+  system retryable decision.
+- `outcome_unknown`: the unknown outcome is sticky for automatic behavior.
+  Elapsed time, model text, task prose, executor prose, or provider prose cannot
+  clear it, mark it failed, or authorize retry.
+
+Safe-to-retry facts are separate from lifecycle and action. `safeToBlindRetry`
+is always false for returned, failed, invoking, outcome-unknown, reserved,
+missing, corrupt, or invalid authority. `retryRequiresNewAuthority` is true only
+for structured retryable failed records where future retry is possible, and it
+still does not create a retry attempt or invocation. `reconciliationRequired` is
+true for invoking, outcome-unknown, and corrupt authority.
+
+Missing or corrupt invocation authority fails closed. Corruption is not absence:
+AEOS must not replace the record, regenerate ownership, reserve a new
+invocation, or execute again because JSON is unreadable or schema validation
+failed. Missing authority also does not prove execution is safe; it requires
+operator/system review rather than blind invocation.
+
+Historical records remain inspectable. If an invocation source task revision is
+stale against the current task revision, reconciliation reports stale context
+and does not make the historical record current execution authority.
+
+Provider reconciliation capability is represented as typed system adapter
+metadata only:
+
+- `supportsIdempotencyKey`
+- `supportsLookupByIdempotencyKey`
+- `supportsInvocationStatusQuery`
+- `supportsResultReplay`
+
+Task/model/provider prose claiming those capabilities is ignored. The current
+foundation performs no provider integration and does not trust task/model
+claims about provider behavior.
+
+Future reconciliation evidence is typed data only:
+
+- `provider_not_found`
+- `provider_in_progress`
+- `provider_returned`
+- `provider_failed`
+- `provider_status_unavailable`
+
+Typed evidence can be evaluated in memory when compatible typed provider
+capability metadata is supplied. It still does not persist resolution. TASK-0293
+does not automatically change `invoking` or `outcome_unknown` to `returned` or
+`failed`.
+
+Self-report remains non-authoritative. Text such as "failed, retry it",
+"definitely not executed", "provider never received it", "all complete",
+"verified", or "safe to retry" cannot authorize retry, resolve
+`outcome_unknown`, satisfy the verifier, satisfy the completion gate, or
+complete work.
+
+The 400/20 invariant still holds during reconciliation:
+
+```text
+400 expected work items
+20 accounted work items
+380 remaining work items
+invocation returned or provider prose says "all complete"
+```
+
+Reconciliation may classify invocation evidence, but it cannot reduce pending
+work, complete the task, mark the verifier satisfied, or satisfy the completion
+gate.
+
+Production adapters remain blocked. Minimum prerequisites before enablement are
+adapter-declared idempotency and reconciliation capabilities, invocation
+identity propagation, durable ownership, explicit `outcome_unknown` handling, a
+typed reconciliation protocol, and a no-blind-retry recovery policy.
 
 ## Execution Preparation Preview
 `aeos task execution prepare --preview <task-id> --expected-revision <number>`

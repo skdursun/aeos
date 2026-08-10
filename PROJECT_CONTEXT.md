@@ -85,6 +85,8 @@ condition.
   record foundation.
 - TASK-0292: Invocation persistence targeted safety review and read-only
   invocation status CLI.
+- TASK-0293: Design and implement invocation reconciliation/recovery foundation
+  for invoking/outcome_unknown records.
 
 ## Do Not Load By Default
 
@@ -95,12 +97,11 @@ condition.
 
 ## Next Task
 
-TASK-0293 Design and implement invocation reconciliation/recovery foundation for
-invoking/outcome_unknown records.
+TASK-0294 Implement read-only invocation reconciliation preview CLI and provider
+capability inspection model.
 
-Purpose: Design and implement reconciliation/recovery foundation for persisted
-invocation records whose durable outcome is invoking or outcome_unknown, without
-enabling production adapters or blind retries.
+Purpose: Expose invocation recovery decisions without applying them, mutating
+invocation records, enabling production adapters, or performing provider calls.
 
 ## Current Plans
 

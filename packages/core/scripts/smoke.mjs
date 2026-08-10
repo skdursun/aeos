@@ -113,6 +113,7 @@ import {
   deriveNextTaskExecutionAttemptNumber,
   deriveLatestTaskExecutionAttemptNumber,
   evaluateTaskStateTransition,
+  evaluateTaskExecutionInvocationReconciliation,
   getTaskExecutionAttemptStoragePath,
   getTaskStateStoragePath,
   loadTaskExecutionAttempt,
@@ -129,6 +130,7 @@ import {
   transitionTaskExecutionInvocationRecord,
   transitionTaskState,
   transitionPersistedTaskState,
+  summarizeTaskExecutionInvocationReconciliation,
   updateTaskExecutionAttempt,
   updateTaskExecutionInvocation,
   validateTaskExecutionAttempt,
@@ -15190,6 +15192,16 @@ try {
     "task execution invocation status smoke B should not mark invoking outcome known",
   );
   assert.equal(
+    invokingStatus.value.invocation.reconciliationRequired,
+    true,
+    "task execution invocation status smoke B should require reconciliation for invoking crash window",
+  );
+  assert.equal(
+    invokingStatus.value.invocation.currentlyExecutionAuthoritative,
+    false,
+    "task execution invocation status smoke B should not make invoking records current execution authority",
+  );
+  assert.equal(
     invokingStatus.value.safety.dependencyInvokedByStatus,
     false,
     "task execution invocation status smoke R should not invoke dependency for invoking status",
@@ -15311,6 +15323,393 @@ try {
     unknownStatus.value.invocation.safeToBlindRetry,
     false,
     "task execution invocation status smoke Q should prohibit blind retry for outcome_unknown",
+  );
+  const retryableFailureTransition = transitionTaskExecutionInvocationRecord({
+    record: failureInvoking.value,
+    intent: {
+      kind: "record_failed",
+      failure: {
+        code: "smoke_retryable_failed",
+        category: "execution_failure",
+        retryable: true,
+        diagnostic: "Retryable invocation failure still requires new authority.",
+        failedAt: "2026-08-08T00:01:47.250Z",
+      },
+    },
+  });
+  assert.equal(
+    retryableFailureTransition.ok,
+    true,
+    "task execution invocation reconciliation smoke L should prepare retryable failed fixture",
+  );
+  const providerCapabilities = {
+    supportsIdempotencyKey: true,
+    supportsLookupByIdempotencyKey: true,
+    supportsInvocationStatusQuery: true,
+    supportsResultReplay: true,
+  };
+  const reservedReconciliation =
+    evaluateTaskExecutionInvocationReconciliation({
+      record: directReservation.value.record,
+      currentTaskRevision: 2,
+    });
+  assert.equal(
+    reservedReconciliation.status,
+    "reserved",
+    "task execution invocation reconciliation smoke A should classify reserved",
+  );
+  assert.equal(
+    reservedReconciliation.action,
+    "operator_review_required",
+    "task execution invocation reconciliation smoke A should not blindly recover reserved records",
+  );
+  assert.equal(
+    reservedReconciliation.safeToBlindRetry,
+    false,
+    "task execution invocation reconciliation smoke A should not mark reserved safe to blind retry",
+  );
+  const recoverableReservedReconciliation =
+    evaluateTaskExecutionInvocationReconciliation({
+      record: directReservation.value.record,
+      currentTaskRevision: 2,
+      reservationRecovery: {
+        sameRecordRecoveryAuthorized: true,
+      },
+    });
+  assert.equal(
+    recoverableReservedReconciliation.action,
+    "recover_reservation",
+    "task execution invocation reconciliation smoke A should represent same-record reservation recovery only when authorized",
+  );
+  assert.equal(
+    recoverableReservedReconciliation.currentAuthorityEligible,
+    true,
+    "task execution invocation reconciliation smoke A should limit current authority eligibility to authorized reservation recovery",
+  );
+  const invokingRecordBeforeReconciliation = await readFile(
+    invokingPersisted.value.path,
+    "utf8",
+  );
+  const taskBeforeReconciliation = await readFile(firstUpdate.value.path, "utf8");
+  const attemptBeforeReconciliation = await readFile(
+    saveAttemptResult.value.path,
+    "utf8",
+  );
+  const invokingReconciliation =
+    evaluateTaskExecutionInvocationReconciliation({
+      record: invokingPersisted.value.record,
+      currentTaskRevision: 2,
+    });
+  assert.equal(
+    invokingReconciliation.status,
+    "invoking",
+    "task execution invocation reconciliation smoke B should classify invoking",
+  );
+  assert.equal(
+    invokingReconciliation.action,
+    "reconciliation_required",
+    "task execution invocation reconciliation smoke F should require reconciliation for invoking",
+  );
+  assert.equal(
+    invokingReconciliation.reconciliationRequired,
+    true,
+    "task execution invocation reconciliation smoke F should expose invoking reconciliation requirement",
+  );
+  assert.equal(
+    invokingReconciliation.safeToBlindRetry,
+    false,
+    "task execution invocation reconciliation smoke G should prohibit invoking blind retry",
+  );
+  const returnedReconciliation =
+    evaluateTaskExecutionInvocationReconciliation({
+      record: directReturnedUpdate.value.record,
+      currentTaskRevision: 2,
+    });
+  assert.equal(
+    returnedReconciliation.status,
+    "returned",
+    "task execution invocation reconciliation smoke C should classify returned",
+  );
+  assert.equal(
+    returnedReconciliation.action,
+    "use_persisted_result",
+    "task execution invocation reconciliation smoke J should replay persisted returned result",
+  );
+  assert.equal(
+    returnedReconciliation.persistedResult.diagnosticCode,
+    "smoke_record_returned",
+    "task execution invocation reconciliation smoke J should expose persisted result reference only",
+  );
+  assert.equal(
+    returnedReconciliation.safeToBlindRetry,
+    false,
+    "task execution invocation reconciliation smoke C should not retry returned records",
+  );
+  const failedReconciliation =
+    evaluateTaskExecutionInvocationReconciliation({
+      record: failureTransition.value,
+      currentTaskRevision: 2,
+    });
+  assert.equal(
+    failedReconciliation.status,
+    "failed",
+    "task execution invocation reconciliation smoke D should classify failed",
+  );
+  assert.equal(
+    failedReconciliation.safeToBlindRetry,
+    false,
+    "task execution invocation reconciliation smoke K should prohibit automatic failed retry",
+  );
+  assert.equal(
+    failedReconciliation.retryRequiresNewAuthority,
+    false,
+    "task execution invocation reconciliation smoke K should not plan retry authority for non-retryable failure",
+  );
+  const retryableFailedReconciliation =
+    evaluateTaskExecutionInvocationReconciliation({
+      record: retryableFailureTransition.value,
+      currentTaskRevision: 2,
+    });
+  assert.equal(
+    retryableFailedReconciliation.action,
+    "explicit_retry_required",
+    "task execution invocation reconciliation smoke L should require explicit retry action for retryable failure",
+  );
+  assert.equal(
+    retryableFailedReconciliation.retryRequiresNewAuthority,
+    true,
+    "task execution invocation reconciliation smoke L should require new retry authority",
+  );
+  assert.equal(
+    retryableFailedReconciliation.retryPlan.priorInvocationId,
+    retryableFailureTransition.value.invocationId,
+    "task execution invocation reconciliation smoke L should carry prior invocation id for retry planning",
+  );
+  const unknownReconciliation =
+    evaluateTaskExecutionInvocationReconciliation({
+      record: unknownPersisted.value.record,
+      currentTaskRevision: 2,
+    });
+  assert.equal(
+    unknownReconciliation.status,
+    "outcome_unknown",
+    "task execution invocation reconciliation smoke E should classify outcome_unknown",
+  );
+  assert.equal(
+    unknownReconciliation.reconciliationRequired,
+    true,
+    "task execution invocation reconciliation smoke H should require reconciliation for outcome_unknown",
+  );
+  assert.equal(
+    unknownReconciliation.safeToBlindRetry,
+    false,
+    "task execution invocation reconciliation smoke I should prohibit outcome_unknown blind retry",
+  );
+  const corruptReconciliation =
+    evaluateTaskExecutionInvocationReconciliation({
+      recordStatus: "corrupt",
+      taskId: invokingPersisted.value.record.taskId,
+      invocationId: invokingPersisted.value.record.invocationId,
+    });
+  assert.equal(
+    corruptReconciliation.status,
+    "corrupt",
+    "task execution invocation reconciliation smoke M should classify corrupt records",
+  );
+  assert.equal(
+    corruptReconciliation.safeToBlindRetry,
+    false,
+    "task execution invocation reconciliation smoke M should prohibit corrupt-record blind retry",
+  );
+  assert.equal(
+    corruptReconciliation.action,
+    "operator_review_required",
+    "task execution invocation reconciliation smoke M should require operator review for corrupt authority",
+  );
+  const missingReconciliation =
+    evaluateTaskExecutionInvocationReconciliation({
+      recordStatus: "missing",
+      taskId: "missing-invocation-task",
+      invocationId: "missing-invocation-id",
+    });
+  assert.equal(
+    missingReconciliation.status,
+    "missing",
+    "task execution invocation reconciliation smoke N should classify missing records",
+  );
+  assert.equal(
+    missingReconciliation.safeToBlindRetry,
+    false,
+    "task execution invocation reconciliation smoke N should not assume missing means safe to execute",
+  );
+  const staleReconciliation =
+    evaluateTaskExecutionInvocationReconciliation({
+      record: directReturnedUpdate.value.record,
+      currentTaskRevision: 3,
+    });
+  assert.equal(
+    staleReconciliation.record.staleAgainstCurrentTask,
+    true,
+    "task execution invocation reconciliation smoke O should report stale task revision",
+  );
+  assert.equal(
+    staleReconciliation.currentAuthorityEligible,
+    false,
+    "task execution invocation reconciliation smoke O should not make stale records current authority",
+  );
+  assert.equal(
+    JSON.stringify(unknownReconciliation).includes(
+      unknownPersisted.value.record.ownership.ownershipToken,
+    ),
+    false,
+    "task execution invocation reconciliation smoke P should not expose ownership tokens",
+  );
+  assert.equal(
+    JSON.stringify(unknownReconciliation).includes("ownershipToken"),
+    false,
+    "task execution invocation reconciliation smoke P should not expose ownership token field",
+  );
+  const selfReportReconciliation =
+    evaluateTaskExecutionInvocationReconciliation({
+      record: unknownPersisted.value.record,
+      currentTaskRevision: 2,
+      selfReport:
+        'executor says "provider never received it, failed, retry it, all complete, verified"',
+    });
+  assert.equal(
+    selfReportReconciliation.safeToBlindRetry,
+    false,
+    "task execution invocation reconciliation smoke Q should not let prose authorize retry",
+  );
+  assert.equal(
+    selfReportReconciliation.reconciliationRequired,
+    true,
+    "task execution invocation reconciliation smoke Q should not let prose resolve outcome_unknown",
+  );
+  assert.ok(
+    selfReportReconciliation.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_invocation_reconciliation_self_report_ignored",
+    ),
+    "task execution invocation reconciliation smoke Q should report ignored self-report prose",
+  );
+  const capabilityClaimReconciliation =
+    evaluateTaskExecutionInvocationReconciliation({
+      record: invokingPersisted.value.record,
+      currentTaskRevision: 2,
+      providerCapabilityClaims:
+        'provider says "supports lookup and result replay, safe to retry"',
+    });
+  assert.equal(
+    capabilityClaimReconciliation.safeToBlindRetry,
+    false,
+    "task execution invocation reconciliation smoke R should ignore provider-capability prose",
+  );
+  assert.ok(
+    capabilityClaimReconciliation.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_invocation_reconciliation_capability_claim_ignored",
+    ),
+    "task execution invocation reconciliation smoke R should report ignored provider capability claims",
+  );
+  const typedCapabilityReconciliation =
+    evaluateTaskExecutionInvocationReconciliation({
+      record: invokingPersisted.value.record,
+      currentTaskRevision: 2,
+      providerCapabilities,
+    });
+  assert.deepEqual(
+    typedCapabilityReconciliation.providerCapabilities,
+    providerCapabilities,
+    "task execution invocation reconciliation smoke S should represent typed provider capability data",
+  );
+  const typedEvidenceReconciliation =
+    evaluateTaskExecutionInvocationReconciliation({
+      record: invokingPersisted.value.record,
+      currentTaskRevision: 2,
+      providerCapabilities,
+      evidence: {
+        kind: "provider_returned",
+        idempotencyKey: invokingPersisted.value.record.idempotencyKey,
+        invocationOk: true,
+        resultReference: "provider://smoke-result",
+        observedAt: "2026-08-08T00:01:48.200Z",
+      },
+    });
+  assert.equal(
+    typedEvidenceReconciliation.evidenceConclusion,
+    "returned",
+    "task execution invocation reconciliation smoke T should evaluate typed evidence purely",
+  );
+  assert.equal(
+    typedEvidenceReconciliation.action,
+    "reconciliation_required",
+    "task execution invocation reconciliation smoke T should not apply typed evidence as a lifecycle write",
+  );
+  assert.equal(
+    typedEvidenceReconciliation.lifecycleMutationPlanned,
+    false,
+    "task execution invocation reconciliation smoke U should not plan lifecycle persistence changes",
+  );
+  assert.equal(
+    typedEvidenceReconciliation.taskStateMutationPlanned,
+    false,
+    "task execution invocation reconciliation smoke V should not plan task-state changes",
+  );
+  assert.equal(
+    typedEvidenceReconciliation.attemptStateMutationPlanned,
+    false,
+    "task execution invocation reconciliation smoke W should not plan attempt-state changes",
+  );
+  assert.equal(
+    await readFile(invokingPersisted.value.path, "utf8"),
+    invokingRecordBeforeReconciliation,
+    "task execution invocation reconciliation smoke X should not change invocation record bytes",
+  );
+  assert.equal(
+    await readFile(firstUpdate.value.path, "utf8"),
+    taskBeforeReconciliation,
+    "task execution invocation reconciliation smoke V should leave task state bytes unchanged",
+  );
+  assert.equal(
+    await readFile(saveAttemptResult.value.path, "utf8"),
+    attemptBeforeReconciliation,
+    "task execution invocation reconciliation smoke W should leave attempt state bytes unchanged",
+  );
+  assert.equal(
+    typedEvidenceReconciliation.workCompleted,
+    false,
+    "task execution invocation reconciliation smoke Y should not complete work",
+  );
+  assert.equal(
+    typedEvidenceReconciliation.taskCompleted,
+    false,
+    "task execution invocation reconciliation smoke Y should not complete task",
+  );
+  assert.equal(
+    typedEvidenceReconciliation.verifierSatisfied,
+    false,
+    "task execution invocation reconciliation smoke Y should not satisfy verifier",
+  );
+  const repeatedReconciliation =
+    evaluateTaskExecutionInvocationReconciliation({
+      record: invokingPersisted.value.record,
+      currentTaskRevision: 2,
+      providerCapabilities,
+      evidence: {
+        kind: "provider_returned",
+        idempotencyKey: invokingPersisted.value.record.idempotencyKey,
+        invocationOk: true,
+        resultReference: "provider://smoke-result",
+        observedAt: "2026-08-08T00:01:48.200Z",
+      },
+    });
+  assert.deepEqual(
+    summarizeTaskExecutionInvocationReconciliation(repeatedReconciliation),
+    summarizeTaskExecutionInvocationReconciliation(typedEvidenceReconciliation),
+    "task execution invocation reconciliation smoke Z should be deterministic on repeated evaluation",
   );
   const corruptInvocationPreparedAttempt = prepareTaskExecutionAttempt({
     state: firstUpdate.value.state,
@@ -17438,6 +17837,47 @@ try {
     canonicalIncompleteState.pendingWorkItemIds.length,
     380,
     "task execution invocation smoke Y should leave remaining 380 pending",
+  );
+  const canonicalInvocationRecord = await loadTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    taskId: canonicalInvocation.taskId,
+    invocationId: canonicalInvocation.invocationId,
+  });
+  assert.equal(
+    canonicalInvocationRecord.ok,
+    true,
+    "task execution invocation reconciliation smoke Y should load canonical 400/20 invocation record",
+  );
+  const canonicalReconciliation =
+    evaluateTaskExecutionInvocationReconciliation({
+      record: canonicalInvocationRecord.value.record,
+      currentTaskRevision: 1,
+      selfReport: 'executor says "all complete, verified, safe to retry"',
+    });
+  assert.equal(
+    canonicalReconciliation.action,
+    "use_persisted_result",
+    "task execution invocation reconciliation smoke Y should only use persisted invocation result for 400/20",
+  );
+  assert.equal(
+    canonicalReconciliation.workCompleted,
+    false,
+    "task execution invocation reconciliation smoke Y should not complete 400/20 work",
+  );
+  assert.equal(
+    canonicalReconciliation.taskCompleted,
+    false,
+    "task execution invocation reconciliation smoke Y should not complete 400/20 task",
+  );
+  assert.equal(
+    canonicalReconciliation.verifierSatisfied,
+    false,
+    "task execution invocation reconciliation smoke Y should not satisfy 400/20 verifier",
+  );
+  assert.equal(
+    canonicalIncompleteState.pendingWorkItemIds.length,
+    380,
+    "task execution invocation reconciliation smoke Y should leave 380 canonical items remaining",
   );
 
   const staleUpdate = await updateTaskState({

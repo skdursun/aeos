@@ -1631,7 +1631,7 @@ export async function loadTaskExecutionInvocationStatus(
     attemptContextValid &&
     staleAgainstCurrentTask === false &&
     attemptLifecycle === "started" &&
-    (record.lifecycle === "reserved" || record.lifecycle === "invoking");
+    record.lifecycle === "reserved";
 
   return ok({
     status: "invocation_status_loaded",
@@ -1660,7 +1660,9 @@ export async function loadTaskExecutionInvocationStatus(
       completionGatedByVerifier: record.request.completionGatedByVerifier,
       outcomeCertainty: record.outcomeCertainty,
       outcomeKnown: record.outcomeCertainty === "known",
-      reconciliationRequired: record.lifecycle === "outcome_unknown",
+      reconciliationRequired:
+        record.lifecycle === "invoking" ||
+        record.lifecycle === "outcome_unknown",
       safeToBlindRetry: false,
       retryable: record.failure?.retryable ?? false,
       result: resultDiagnosticForStatus(record),
