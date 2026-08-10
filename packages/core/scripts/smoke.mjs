@@ -105,6 +105,10 @@ import {
   createInitialTaskState,
   createTaskResumeHandoff,
   authorizeTaskExecutionStart,
+  createReservedTaskExecutionInvocationRecord,
+  deriveTaskExecutionInvocationIdentity,
+  deriveTaskExecutionInvocationIdentityForAttempt,
+  getTaskExecutionInvocationStoragePath,
   invokeStartedTaskExecutionAttempt,
   deriveNextTaskExecutionAttemptNumber,
   deriveLatestTaskExecutionAttemptNumber,
@@ -112,18 +116,23 @@ import {
   getTaskExecutionAttemptStoragePath,
   getTaskStateStoragePath,
   loadTaskExecutionAttempt,
+  loadTaskExecutionInvocation,
   loadTaskResumeHandoff,
   loadTaskState,
   prepareTaskExecutionAttempt,
+  reserveTaskExecutionInvocation,
   saveTaskState,
   saveTaskExecutionAttempt,
   summarizeCliTaskPlanPlannerIntegrationResult,
   transitionTaskExecutionAttempt,
+  transitionTaskExecutionInvocationRecord,
   transitionTaskState,
   transitionPersistedTaskState,
   updateTaskExecutionAttempt,
+  updateTaskExecutionInvocation,
   validateTaskExecutionAttempt,
   validateTaskExecutionAttemptForTaskState,
+  validateTaskExecutionInvocationRecord,
   updateTaskState,
   validatePersistedTaskState,
   verifyAgenticCoverage,
@@ -14306,12 +14315,12 @@ try {
   const invocationAttemptInputBefore = JSON.stringify(invocationStartedAttempt);
   const successfulNoop = createSmokeTestNoopDependency();
   const invocationResult = await invokeStartedTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
     state: firstUpdate.value.state,
     attempt: invocationStartedAttempt,
     dependency: successfulNoop.dependency,
     expectedRevision: 2,
     latestAttemptNumberForContext: 1,
-    invocationId: "smoke-invocation-started-work-a",
     allowedOperationReferences: ["smoke:operation:noop"],
   });
   assert.equal(
@@ -14361,8 +14370,16 @@ try {
   );
   assert.equal(
     successfulNoop.calls[0].idempotencyReference,
-    "smoke-invocation-started-work-a",
-    "task execution invocation smoke F should expose idempotency data only",
+    invocationResult.idempotencyKey,
+    "task execution invocation smoke F should expose system-derived idempotency data only",
+  );
+  assert.ok(
+    invocationResult.invocationId.startsWith("invocation-r2-n1-"),
+    "task execution invocation smoke A should derive deterministic invocation identity",
+  );
+  assert.ok(
+    invocationResult.idempotencyKey.startsWith("aeos-invocation-v1-"),
+    "task execution invocation smoke A should derive deterministic idempotency key",
   );
   assert.equal(
     invocationResult.dependencyKind,
@@ -14386,8 +14403,13 @@ try {
   );
   assert.equal(
     invocationResult.invocationStatus,
-    "succeeded",
-    "task execution invocation smoke I should use invocation success terminology",
+    "returned",
+    "task execution invocation smoke I should use invocation return terminology",
+  );
+  assert.equal(
+    invocationResult.summary.duplicateInvocationProtection,
+    "persisted_invocation_record",
+    "task execution invocation smoke X should disclose persisted duplicate protection",
   );
   assert.equal(
     invocationResult.output.completed,
@@ -14513,6 +14535,620 @@ try {
     JSON.stringify(invocationStartedAttempt),
     invocationAttemptInputBefore,
     "task execution invocation smoke Z should not mutate caller-owned attempt input",
+  );
+  const loadedInvocationRecord = await loadTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    taskId: invocationResult.taskId,
+    invocationId: invocationResult.invocationId,
+  });
+  assert.equal(
+    loadedInvocationRecord.ok,
+    true,
+    "task execution invocation record smoke F should load persisted invocation record",
+  );
+  assert.equal(
+    loadedInvocationRecord.value.record.lifecycle,
+    "returned",
+    "task execution invocation record smoke J should persist returned lifecycle",
+  );
+  assert.equal(
+    loadedInvocationRecord.value.record.result.invocationOk,
+    true,
+    "task execution invocation record smoke J should persist bounded returned result",
+  );
+  assert.equal(
+    loadedInvocationRecord.value.record.safety.workCompleted,
+    false,
+    "task execution invocation record smoke T should not persist work completion authority",
+  );
+  const duplicateReturnedNoop = createSmokeTestNoopDependency();
+  const duplicateReturnedInvocation = await invokeStartedTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
+    state: firstUpdate.value.state,
+    attempt: invocationStartedAttempt,
+    dependency: duplicateReturnedNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 1,
+    allowedOperationReferences: ["smoke:operation:noop"],
+  });
+  assert.equal(
+    duplicateReturnedNoop.calls.length,
+    0,
+    "task execution invocation smoke N should not invoke dependency after persisted returned record",
+  );
+  assert.equal(
+    duplicateReturnedInvocation.invocationStatus,
+    "returned",
+    "task execution invocation smoke N should return existing persisted result",
+  );
+
+  const invocationIdentityA = deriveTaskExecutionInvocationIdentityForAttempt({
+    attempt: invocationStartedAttempt,
+    dependencyKind: "test_noop",
+    verifierRequired: true,
+    completionGatedByVerifier: true,
+  });
+  const invocationIdentityB = deriveTaskExecutionInvocationIdentityForAttempt({
+    attempt: invocationStartedAttempt,
+    dependencyKind: "test_noop",
+    verifierRequired: true,
+    completionGatedByVerifier: true,
+  });
+  assert.deepEqual(
+    invocationIdentityB,
+    invocationIdentityA,
+    "task execution invocation record smoke A should derive deterministic identity/key for same context",
+  );
+  const recordPreparedAttempt = prepareTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    expectedRevision: 2,
+    workItemId: "work-a",
+    batchId: "batch-a",
+    attemptNumber: 6,
+    createdAt: attemptCreatedAt,
+  });
+  assert.equal(
+    recordPreparedAttempt.ok,
+    true,
+    "task execution invocation record smoke B should prepare record fixture",
+  );
+  const recordStartedAttempt = transitionTaskExecutionAttempt({
+    attempt: recordPreparedAttempt.value.attempt,
+    intent: {
+      kind: "start",
+    },
+    occurredAt: "2026-08-08T00:01:46.000Z",
+  });
+  assert.equal(
+    recordStartedAttempt.ok,
+    true,
+    "task execution invocation record smoke B should start record fixture",
+  );
+  const invocationIdentityDifferentAttempt = deriveTaskExecutionInvocationIdentityForAttempt({
+    attempt: recordStartedAttempt.value.attempt,
+    dependencyKind: "test_noop",
+    verifierRequired: true,
+    completionGatedByVerifier: true,
+  });
+  assert.notEqual(
+    invocationIdentityDifferentAttempt.value.idempotencyKey,
+    invocationIdentityA.value.idempotencyKey,
+    "task execution invocation record smoke A should derive different key for different attempt",
+  );
+  const invocationIdentityDifferentRevision = deriveTaskExecutionInvocationIdentity({
+    taskId: recordStartedAttempt.value.attempt.taskId,
+    taskStateRevision: 3,
+    attemptId: "attempt-TASK-STATE-SMOKE-r3-n1-identity",
+    attemptNumber: 1,
+    workItemId: recordStartedAttempt.value.attempt.workItemId,
+    batchId: recordStartedAttempt.value.attempt.batchId,
+    dependencyKind: "test_noop",
+    verifierRequired: true,
+    completionGatedByVerifier: true,
+  });
+  assert.notEqual(
+    invocationIdentityDifferentRevision.value.idempotencyKey,
+    invocationIdentityA.value.idempotencyKey,
+    "task execution invocation record smoke A should derive different key for different revision context",
+  );
+  const directReservation = await reserveTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    state: firstUpdate.value.state,
+    attempt: recordStartedAttempt.value.attempt,
+    dependencyKind: "test_noop",
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 6,
+    ownershipToken: "smoke-token-record-reservation",
+    ownerId: "smoke-owner-record-reservation",
+    claimedAt: "2026-08-08T00:01:46.100Z",
+  });
+  assert.equal(
+    directReservation.ok,
+    true,
+    "task execution invocation record smoke B should reserve valid started attempt",
+  );
+  assert.equal(
+    directReservation.value.status,
+    "reserved",
+    "task execution invocation record smoke B should create reserved record",
+  );
+  const staleReservation = await reserveTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    state: {
+      ...firstUpdate.value.state,
+      revision: 3,
+    },
+    attempt: recordStartedAttempt.value.attempt,
+    dependencyKind: "test_noop",
+    expectedRevision: 3,
+    latestAttemptNumberForContext: 6,
+  });
+  assert.equal(
+    staleReservation.ok,
+    false,
+    "task execution invocation record smoke C should reject stale task revision",
+  );
+  assert.equal(
+    staleReservation.error.code,
+    "task_execution_invocation_stale_task_revision",
+    "task execution invocation record smoke C should report stale revision",
+  );
+  const nonStartedReservation = await reserveTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    state: firstUpdate.value.state,
+    attempt: recordPreparedAttempt.value.attempt,
+    dependencyKind: "test_noop",
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 6,
+  });
+  assert.equal(
+    nonStartedReservation.ok,
+    false,
+    "task execution invocation record smoke D should reject non-started attempt",
+  );
+  assert.equal(
+    nonStartedReservation.error.code,
+    "task_execution_invocation_attempt_not_started",
+    "task execution invocation record smoke D should report non-started attempt",
+  );
+  const duplicateReservation = await reserveTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    state: firstUpdate.value.state,
+    attempt: recordStartedAttempt.value.attempt,
+    dependencyKind: "test_noop",
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 6,
+  });
+  assert.equal(
+    duplicateReservation.ok,
+    true,
+    "task execution invocation record smoke E should treat duplicate reservation deterministically",
+  );
+  assert.equal(
+    duplicateReservation.value.status,
+    "already_reserved",
+    "task execution invocation record smoke E should not overwrite existing reservation",
+  );
+  assert.equal(
+    duplicateReservation.value.record.ownership.ownershipToken,
+    "smoke-token-record-reservation",
+    "task execution invocation record smoke E should preserve original owner token",
+  );
+  const directReservationLoad = await loadTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    taskId: directReservation.value.record.taskId,
+    invocationId: directReservation.value.record.invocationId,
+  });
+  assert.deepEqual(
+    directReservationLoad.value.record,
+    directReservation.value.record,
+    "task execution invocation record smoke F should roundtrip persisted reserved record",
+  );
+  assert.equal(
+    validateTaskExecutionInvocationRecord({
+      ...directReservation.value.record,
+      lifecycle: "completed",
+    }).ok,
+    false,
+    "task execution invocation record smoke H should reject invalid/terminal lifecycle values",
+  );
+  assert.equal(
+    transitionTaskExecutionInvocationRecord({
+      record: {
+        ...directReservation.value.record,
+        attemptNumber: 7,
+      },
+      intent: {
+        kind: "enter_invocation",
+      },
+    }).ok,
+    false,
+    "task execution invocation record smoke G should reject immutable identity tampering",
+  );
+  const directInvokingUpdate = await updateTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    taskId: directReservation.value.record.taskId,
+    invocationId: directReservation.value.record.invocationId,
+    ownershipToken: directReservation.value.record.ownership.ownershipToken,
+    expectedLifecycle: "reserved",
+    intent: {
+      kind: "enter_invocation",
+      occurredAt: "2026-08-08T00:01:46.200Z",
+    },
+  });
+  assert.equal(
+    directInvokingUpdate.ok,
+    true,
+    "task execution invocation record smoke I should persist reserved -> invoking",
+  );
+  assert.equal(
+    directInvokingUpdate.value.record.lifecycle,
+    "invoking",
+    "task execution invocation record smoke I should enter invoking lifecycle",
+  );
+  const directReturnedUpdate = await updateTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    taskId: directInvokingUpdate.value.record.taskId,
+    invocationId: directInvokingUpdate.value.record.invocationId,
+    ownershipToken: directInvokingUpdate.value.record.ownership.ownershipToken,
+    expectedLifecycle: "invoking",
+    intent: {
+      kind: "record_returned",
+      result: {
+        invocationOk: true,
+        diagnosticCode: "smoke_record_returned",
+        message: "Record returned.",
+        returnedAt: "2026-08-08T00:01:46.300Z",
+      },
+    },
+  });
+  assert.equal(
+    directReturnedUpdate.ok,
+    true,
+    "task execution invocation record smoke J should persist invoking -> returned",
+  );
+  const returnedToInvoking = transitionTaskExecutionInvocationRecord({
+    record: directReturnedUpdate.value.record,
+    intent: {
+      kind: "enter_invocation",
+    },
+  });
+  assert.equal(
+    returnedToInvoking.ok,
+    false,
+    "task execution invocation record smoke M should block returned -> invoking",
+  );
+  const failureRecord = createReservedTaskExecutionInvocationRecord({
+    taskId: recordStartedAttempt.value.attempt.taskId,
+    taskStateRevision: recordStartedAttempt.value.attempt.taskStateRevision,
+    attemptId: recordStartedAttempt.value.attempt.attemptId,
+    attemptNumber: recordStartedAttempt.value.attempt.attemptNumber,
+    workItemId: recordStartedAttempt.value.attempt.workItemId,
+    batchId: recordStartedAttempt.value.attempt.batchId,
+    dependencyKind: "test_noop",
+    verifierRequired: true,
+    completionGatedByVerifier: true,
+    ownershipToken: "smoke-token-failure-record",
+    ownerId: "smoke-owner-failure-record",
+    claimedAt: "2026-08-08T00:01:47.000Z",
+  });
+  const failureInvoking = transitionTaskExecutionInvocationRecord({
+    record: failureRecord.value,
+    intent: {
+      kind: "enter_invocation",
+      occurredAt: "2026-08-08T00:01:47.100Z",
+    },
+  });
+  const failureTransition = transitionTaskExecutionInvocationRecord({
+    record: failureInvoking.value,
+    intent: {
+      kind: "record_failed",
+      failure: {
+        code: "smoke_record_failed",
+        category: "execution_failure",
+        retryable: false,
+        diagnostic: "Record failed.",
+        failedAt: "2026-08-08T00:01:47.200Z",
+      },
+    },
+  });
+  assert.equal(
+    failureTransition.value.lifecycle,
+    "failed",
+    "task execution invocation record smoke K should represent deterministic failure",
+  );
+  const unknownRecordTransition = transitionTaskExecutionInvocationRecord({
+    record: failureInvoking.value,
+    intent: {
+      kind: "mark_outcome_unknown",
+      occurredAt: "2026-08-08T00:01:47.300Z",
+    },
+  });
+  assert.equal(
+    unknownRecordTransition.value.lifecycle,
+    "outcome_unknown",
+    "task execution invocation record smoke L should represent outcome_unknown",
+  );
+  const invokingPreparedAttempt = prepareTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    expectedRevision: 2,
+    workItemId: "work-a",
+    batchId: "batch-a",
+    attemptNumber: 7,
+    createdAt: attemptCreatedAt,
+  });
+  const invokingStartedAttempt = transitionTaskExecutionAttempt({
+    attempt: invokingPreparedAttempt.value.attempt,
+    intent: {
+      kind: "start",
+    },
+    occurredAt: "2026-08-08T00:01:48.000Z",
+  });
+  const invokingReservation = await reserveTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    state: firstUpdate.value.state,
+    attempt: invokingStartedAttempt.value.attempt,
+    dependencyKind: "test_noop",
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 7,
+  });
+  const invokingPersisted = await updateTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    taskId: invokingReservation.value.record.taskId,
+    invocationId: invokingReservation.value.record.invocationId,
+    ownershipToken: invokingReservation.value.record.ownership.ownershipToken,
+    expectedLifecycle: "reserved",
+    intent: {
+      kind: "enter_invocation",
+      occurredAt: "2026-08-08T00:01:48.100Z",
+    },
+  });
+  assert.equal(
+    invokingPersisted.value.record.lifecycle,
+    "invoking",
+    "task execution invocation record smoke O should persist invoking record fixture",
+  );
+  const invokingDuplicateNoop = createSmokeTestNoopDependency();
+  const invokingDuplicate = await invokeStartedTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
+    state: firstUpdate.value.state,
+    attempt: invokingStartedAttempt.value.attempt,
+    dependency: invokingDuplicateNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 7,
+  });
+  assert.equal(
+    invokingDuplicateNoop.calls.length,
+    0,
+    "task execution invocation smoke O should not call dependency for persisted invoking record",
+  );
+  assert.equal(
+    invokingDuplicate.invocationStatus,
+    "in_progress",
+    "task execution invocation smoke O should report existing invoking record",
+  );
+  const unknownPreparedAttempt = prepareTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    expectedRevision: 2,
+    workItemId: "work-a",
+    batchId: "batch-a",
+    attemptNumber: 8,
+    createdAt: attemptCreatedAt,
+  });
+  const unknownStartedAttempt = transitionTaskExecutionAttempt({
+    attempt: unknownPreparedAttempt.value.attempt,
+    intent: {
+      kind: "start",
+    },
+    occurredAt: "2026-08-08T00:01:49.000Z",
+  });
+  const unknownReservation = await reserveTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    state: firstUpdate.value.state,
+    attempt: unknownStartedAttempt.value.attempt,
+    dependencyKind: "test_noop",
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 8,
+  });
+  const unknownEntered = await updateTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    taskId: unknownReservation.value.record.taskId,
+    invocationId: unknownReservation.value.record.invocationId,
+    ownershipToken: unknownReservation.value.record.ownership.ownershipToken,
+    expectedLifecycle: "reserved",
+    intent: {
+      kind: "enter_invocation",
+      occurredAt: "2026-08-08T00:01:49.100Z",
+    },
+  });
+  const unknownPersisted = await updateTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    taskId: unknownEntered.value.record.taskId,
+    invocationId: unknownEntered.value.record.invocationId,
+    ownershipToken: unknownEntered.value.record.ownership.ownershipToken,
+    expectedLifecycle: "invoking",
+    intent: {
+      kind: "mark_outcome_unknown",
+      occurredAt: "2026-08-08T00:01:49.200Z",
+    },
+  });
+  assert.equal(
+    unknownPersisted.value.record.lifecycle,
+    "outcome_unknown",
+    "task execution invocation record smoke Q should persist outcome_unknown fixture",
+  );
+  const unknownDuplicateNoop = createSmokeTestNoopDependency();
+  const unknownDuplicate = await invokeStartedTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
+    state: firstUpdate.value.state,
+    attempt: unknownStartedAttempt.value.attempt,
+    dependency: unknownDuplicateNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 8,
+  });
+  assert.equal(
+    unknownDuplicateNoop.calls.length,
+    0,
+    "task execution invocation smoke Q should not auto-retry outcome_unknown record",
+  );
+  assert.equal(
+    unknownDuplicate.invocationStatus,
+    "reconciliation_required",
+    "task execution invocation smoke Q should require reconciliation for outcome_unknown",
+  );
+  const corruptInvocationPreparedAttempt = prepareTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    expectedRevision: 2,
+    workItemId: "work-a",
+    batchId: "batch-a",
+    attemptNumber: 9,
+    createdAt: attemptCreatedAt,
+  });
+  const corruptInvocationStartedAttempt = transitionTaskExecutionAttempt({
+    attempt: corruptInvocationPreparedAttempt.value.attempt,
+    intent: {
+      kind: "start",
+    },
+    occurredAt: "2026-08-08T00:01:50.000Z",
+  });
+  const corruptInvocationIdentity = deriveTaskExecutionInvocationIdentityForAttempt({
+    attempt: corruptInvocationStartedAttempt.value.attempt,
+    dependencyKind: "test_noop",
+    verifierRequired: true,
+    completionGatedByVerifier: true,
+  });
+  const corruptInvocationRoot = join(
+    persistenceTempRoot,
+    "corrupt-invocation-project",
+  );
+  const corruptInvocationStateRoot = join(
+    corruptInvocationRoot,
+    ".aeos",
+    "state",
+    "invocations",
+    corruptInvocationStartedAttempt.value.attempt.taskId,
+  );
+  await mkdir(corruptInvocationStateRoot, { recursive: true });
+  await writeNodeFile(
+    join(
+      corruptInvocationStateRoot,
+      `${corruptInvocationIdentity.value.invocationId}.json`,
+    ),
+    "{ corrupt invocation json",
+  );
+  const corruptInvocationNoop = createSmokeTestNoopDependency();
+  const corruptInvocation = await invokeStartedTaskExecutionAttempt({
+    projectRoot: corruptInvocationRoot,
+    state: firstUpdate.value.state,
+    attempt: corruptInvocationStartedAttempt.value.attempt,
+    dependency: corruptInvocationNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 9,
+  });
+  assert.equal(
+    corruptInvocationNoop.calls.length,
+    0,
+    "task execution invocation smoke R should not execute when old authority is corrupt",
+  );
+  assert.equal(
+    corruptInvocation.issues[0]?.code,
+    "task_execution_invocation_corrupt_json",
+    "task execution invocation smoke R should fail closed on corrupt invocation JSON",
+  );
+  const invocationSymlinkProjectRoot = join(
+    persistenceTempRoot,
+    "invocation-symlink-project",
+  );
+  const invocationSymlinkOutsideRoot = join(
+    persistenceTempRoot,
+    "invocation-symlink-outside",
+  );
+  const invocationSymlinkParent = join(
+    invocationSymlinkProjectRoot,
+    ".aeos",
+    "state",
+  );
+  await mkdir(invocationSymlinkParent, { recursive: true });
+  await mkdir(invocationSymlinkOutsideRoot, { recursive: true });
+  await symlink(
+    invocationSymlinkOutsideRoot,
+    join(invocationSymlinkParent, "invocations"),
+    "dir",
+  );
+  const symlinkInvocationReserve = await reserveTaskExecutionInvocation({
+    projectRoot: invocationSymlinkProjectRoot,
+    state: firstUpdate.value.state,
+    attempt: recordStartedAttempt.value.attempt,
+    dependencyKind: "test_noop",
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 6,
+  });
+  assert.equal(
+    symlinkInvocationReserve.ok,
+    false,
+    "task execution invocation smoke S should reject invocation-root symlink",
+  );
+  assert.equal(
+    symlinkInvocationReserve.error.code,
+    "task_execution_invocation_unsafe_state_root",
+    "task execution invocation smoke S should report unsafe invocation root",
+  );
+  const invocationFileSymlinkProjectRoot = join(
+    persistenceTempRoot,
+    "invocation-file-symlink-project",
+  );
+  const invocationFileSymlinkRoot = join(
+    invocationFileSymlinkProjectRoot,
+    ".aeos",
+    "state",
+    "invocations",
+    recordStartedAttempt.value.attempt.taskId,
+  );
+  const invocationFileSymlinkOutsideRoot = join(
+    persistenceTempRoot,
+    "invocation-file-symlink-outside",
+  );
+  await mkdir(invocationFileSymlinkRoot, { recursive: true });
+  await mkdir(invocationFileSymlinkOutsideRoot, { recursive: true });
+  const outsideInvocationPath = join(
+    invocationFileSymlinkOutsideRoot,
+    `${directReservation.value.record.invocationId}.json`,
+  );
+  await writeNodeFile(
+    outsideInvocationPath,
+    `${JSON.stringify(directReservation.value.record, null, 2)}\n`,
+  );
+  await symlink(
+    outsideInvocationPath,
+    join(
+      invocationFileSymlinkRoot,
+      `${directReservation.value.record.invocationId}.json`,
+    ),
+  );
+  const fileSymlinkInvocationLoad = await loadTaskExecutionInvocation({
+    projectRoot: invocationFileSymlinkProjectRoot,
+    taskId: recordStartedAttempt.value.attempt.taskId,
+    invocationId: directReservation.value.record.invocationId,
+  });
+  assert.equal(
+    fileSymlinkInvocationLoad.ok,
+    false,
+    "task execution invocation smoke S should reject invocation-file symlink",
+  );
+  assert.equal(
+    fileSymlinkInvocationLoad.error.code,
+    "task_execution_invocation_unsafe_target",
+    "task execution invocation smoke S should report unsafe invocation target",
+  );
+  assert.equal(
+    await readFile(firstUpdate.value.path, "utf8"),
+    stateContentBeforeInvocation,
+    "task execution invocation smoke V should leave task state unchanged after invocation record operations",
+  );
+  assert.equal(
+    await readFile(saveAttemptResult.value.path, "utf8"),
+    attemptContentBeforeInvocation,
+    "task execution invocation smoke W should leave attempt state unchanged after invocation record operations",
   );
 
   const preparedInvocationNoop = createSmokeTestNoopDependency();
@@ -14817,12 +15453,38 @@ try {
     diagnosticCode: "smoke_non_ok",
     message: "Test/no-op dependency reported non-ok.",
   });
-  const nonOkInvocation = await invokeStartedTaskExecutionAttempt({
+  const nonOkPreparedAttempt = prepareTaskExecutionAttempt({
     state: firstUpdate.value.state,
-    attempt: invocationStartedAttempt,
+    expectedRevision: 2,
+    workItemId: "work-a",
+    batchId: "batch-a",
+    attemptNumber: 4,
+    createdAt: attemptCreatedAt,
+  });
+  assert.equal(
+    nonOkPreparedAttempt.ok,
+    true,
+    "task execution invocation smoke O should prepare deterministic non-ok fixture",
+  );
+  const nonOkStartedAttempt = transitionTaskExecutionAttempt({
+    attempt: nonOkPreparedAttempt.value.attempt,
+    intent: {
+      kind: "start",
+    },
+    occurredAt: "2026-08-08T00:01:43.000Z",
+  });
+  assert.equal(
+    nonOkStartedAttempt.ok,
+    true,
+    "task execution invocation smoke O should start deterministic non-ok fixture",
+  );
+  const nonOkInvocation = await invokeStartedTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
+    state: firstUpdate.value.state,
+    attempt: nonOkStartedAttempt.value.attempt,
     dependency: nonOkNoop.dependency,
     expectedRevision: 2,
-    latestAttemptNumberForContext: 1,
+    latestAttemptNumberForContext: 4,
   });
   assert.equal(
     nonOkInvocation.invocationStatus,
@@ -14839,14 +15501,63 @@ try {
     1,
     "task execution invocation smoke O should not retry dependency non-ok",
   );
+  const duplicateFailedInvocation = await invokeStartedTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
+    state: firstUpdate.value.state,
+    attempt: nonOkStartedAttempt.value.attempt,
+    dependency: nonOkNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 4,
+  });
+  assert.equal(
+    nonOkNoop.calls.length,
+    1,
+    "task execution invocation smoke P should not auto-retry persisted failed invocation",
+  );
+  assert.equal(
+    duplicateFailedInvocation.invocationStatus,
+    "failed",
+    "task execution invocation smoke P should return persisted failed invocation status",
+  );
+  assert.equal(
+    duplicateFailedInvocation.issues[0]?.code,
+    "smoke_non_ok",
+    "task execution invocation smoke P should expose deterministic persisted failure code",
+  );
 
   const throwingNoop = createSmokeTestNoopDependency({ throwError: true });
-  const throwingInvocation = await invokeStartedTaskExecutionAttempt({
+  const throwingPreparedAttempt = prepareTaskExecutionAttempt({
     state: firstUpdate.value.state,
-    attempt: invocationStartedAttempt,
+    expectedRevision: 2,
+    workItemId: "work-a",
+    batchId: "batch-a",
+    attemptNumber: 5,
+    createdAt: attemptCreatedAt,
+  });
+  assert.equal(
+    throwingPreparedAttempt.ok,
+    true,
+    "task execution invocation smoke U should prepare deterministic throwing fixture",
+  );
+  const throwingStartedAttempt = transitionTaskExecutionAttempt({
+    attempt: throwingPreparedAttempt.value.attempt,
+    intent: {
+      kind: "start",
+    },
+    occurredAt: "2026-08-08T00:01:44.000Z",
+  });
+  assert.equal(
+    throwingStartedAttempt.ok,
+    true,
+    "task execution invocation smoke U should start deterministic throwing fixture",
+  );
+  const throwingInvocation = await invokeStartedTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
+    state: firstUpdate.value.state,
+    attempt: throwingStartedAttempt.value.attempt,
     dependency: throwingNoop.dependency,
     expectedRevision: 2,
-    latestAttemptNumberForContext: 1,
+    latestAttemptNumberForContext: 5,
   });
   assert.equal(
     throwingInvocation.invocationStatus,
@@ -14872,6 +15583,21 @@ try {
     JSON.stringify(throwingInvocation).includes("at smoke-test"),
     false,
     "task execution invocation smoke P should not propagate raw stack frames",
+  );
+  const throwingRecord = await loadTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    taskId: throwingInvocation.taskId,
+    invocationId: throwingInvocation.invocationId,
+  });
+  assert.equal(
+    throwingRecord.ok,
+    true,
+    "task execution invocation smoke U should persist thrown dependency failure record",
+  );
+  assert.equal(
+    JSON.stringify(throwingRecord.value.record).includes("at smoke-test"),
+    false,
+    "task execution invocation smoke U should not persist raw stack frames as authority",
   );
 
   let forbiddenDependencyCalls = 0;
@@ -14906,33 +15632,37 @@ try {
 
   const repeatedNoop = createSmokeTestNoopDependency();
   const repeatedInvocationA = await invokeStartedTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
     state: firstUpdate.value.state,
     attempt: invocationStartedAttempt,
     dependency: repeatedNoop.dependency,
     expectedRevision: 2,
     latestAttemptNumberForContext: 1,
+    allowedOperationReferences: ["smoke:operation:noop"],
   });
   const repeatedInvocationB = await invokeStartedTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
     state: firstUpdate.value.state,
     attempt: invocationStartedAttempt,
     dependency: repeatedNoop.dependency,
     expectedRevision: 2,
     latestAttemptNumberForContext: 1,
+    allowedOperationReferences: ["smoke:operation:noop"],
   });
   assert.equal(
     repeatedNoop.calls.length,
-    2,
-    "task execution invocation smoke X should honestly demonstrate no persisted duplicate protection",
+    0,
+    "task execution invocation smoke X should prevent repeated dependency calls with persisted returned authority",
   );
   assert.equal(
     repeatedInvocationA.summary.duplicateInvocationProtection,
-    "not_persisted_mvp_noop_only",
-    "task execution invocation smoke X should disclose duplicate limitation",
+    "persisted_invocation_record",
+    "task execution invocation smoke X should disclose persisted duplicate protection",
   );
   assert.equal(
     repeatedInvocationB.summary.duplicateInvocationProtection,
-    "not_persisted_mvp_noop_only",
-    "task execution invocation smoke X should disclose duplicate limitation on repeated calls",
+    "persisted_invocation_record",
+    "task execution invocation smoke X should disclose persisted duplicate protection on repeated calls",
   );
   const duplicatePersistedStart = await updateTaskExecutionAttempt({
     projectRoot: persistenceRoot,
@@ -16172,6 +16902,7 @@ try {
     },
   });
   const canonicalInvocation = await invokeStartedTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
     state: canonicalIncompleteState,
     attempt: canonicalStartedAttemptResult.value.attempt,
     dependency: canonicalNoop.dependency,

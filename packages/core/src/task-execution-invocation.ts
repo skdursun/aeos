@@ -9,6 +9,16 @@ import type { PersistedTaskState } from "./task-state-persistence.js";
 import { validatePersistedTaskState } from "./task-state-persistence.js";
 import type { TaskExecutionAttempt } from "./task-execution-attempt.js";
 import { validateTaskExecutionAttempt } from "./task-execution-attempt.js";
+import type {
+  TaskExecutionInvocationFailureRecord,
+  TaskExecutionInvocationRecord,
+  TaskExecutionInvocationResultRecord,
+} from "./task-execution-invocation-record.js";
+import {
+  deriveTaskExecutionInvocationIdentityForAttempt,
+  reserveTaskExecutionInvocation,
+  updateTaskExecutionInvocation,
+} from "./task-execution-invocation-persistence.js";
 import type { AeosError, JsonObject, JsonValue } from "./types.js";
 
 export type TaskExecutionInvocationDependencyKind = "test_noop";
@@ -45,6 +55,7 @@ export interface TaskExecutionInvocationDependency {
 }
 
 export interface TaskExecutionInvocationInput {
+  readonly projectRoot?: string;
   readonly state: unknown;
   readonly attempt: unknown;
   readonly dependency: unknown;
@@ -88,14 +99,21 @@ export interface TaskExecutionInvocationSummary {
   readonly executorClaimedVerified: boolean;
   readonly executorClaimedApproved: boolean;
   readonly executorClaimedAllDone: boolean;
-  readonly duplicateInvocationProtection: "not_persisted_mvp_noop_only";
+  readonly duplicateInvocationProtection:
+    | "persisted_invocation_record"
+    | "persistence_required";
   readonly resultAuthority: "invocation_diagnostic_only";
   readonly issueCount: number;
 }
 
 export interface TaskExecutionInvocationResult {
   readonly ok: boolean;
-  readonly invocationStatus: "blocked" | "succeeded" | "failed";
+  readonly invocationStatus:
+    | "blocked"
+    | "returned"
+    | "failed"
+    | "in_progress"
+    | "reconciliation_required";
   readonly invocationAllowed: boolean;
   readonly dependencyKind: TaskExecutionInvocationDependencyKind | null;
   readonly dependencyInvoked: boolean;
@@ -110,6 +128,8 @@ export interface TaskExecutionInvocationResult {
   readonly latestAttemptNumberForContext: number | null;
   readonly workItemId: AgenticWorkItemId | null;
   readonly batchId: AgenticWorkBatchId | null;
+  readonly invocationId: string | null;
+  readonly idempotencyKey: string | null;
   readonly idempotencyReference: string | null;
   readonly verifierRequired: boolean | null;
   readonly completionGatedByVerifier: boolean | null;
@@ -179,6 +199,24 @@ function safeText(value: unknown): string | undefined {
   }
 
   return value;
+}
+
+function safeDiagnosticText(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+
+  if (
+    trimmed.length === 0 ||
+    trimmed.length > 512 ||
+    /(\n\s*at\s+|Error:|stack)/i.test(trimmed)
+  ) {
+    return undefined;
+  }
+
+  return trimmed;
 }
 
 function issue(input: {
@@ -387,6 +425,7 @@ function summarize(input: {
   readonly invocationOk: boolean;
   readonly dependencyResult?: TaskExecutionInvocationDependencyResult;
   readonly issueCount: number;
+  readonly persisted: boolean;
 }): TaskExecutionInvocationSummary {
   return {
     invocationAllowed: input.invocationAllowed,
@@ -398,7 +437,9 @@ function summarize(input: {
     executorClaimedVerified: hasTrueKey(input.dependencyResult, new Set(["verified"])),
     executorClaimedApproved: hasTrueKey(input.dependencyResult, new Set(["approved"])),
     executorClaimedAllDone: hasTrueKey(input.dependencyResult, new Set(["allDone"])),
-    duplicateInvocationProtection: "not_persisted_mvp_noop_only",
+    duplicateInvocationProtection: input.persisted
+      ? "persisted_invocation_record"
+      : "persistence_required",
     resultAuthority: "invocation_diagnostic_only",
     issueCount: input.issueCount,
   };
@@ -410,16 +451,24 @@ function baseResult(input: {
   readonly dependencyKind?: TaskExecutionInvocationDependencyKind | null;
   readonly expectedRevision?: number | null;
   readonly latestAttemptNumberForContext?: number | null;
+  readonly invocationId?: string | null;
+  readonly idempotencyKey?: string | null;
   readonly idempotencyReference?: string | null;
   readonly verifierRequired?: boolean | null;
   readonly completionGatedByVerifier?: boolean | null;
-  readonly invocationStatus: "blocked" | "succeeded" | "failed";
+  readonly invocationStatus:
+    | "blocked"
+    | "returned"
+    | "failed"
+    | "in_progress"
+    | "reconciliation_required";
   readonly invocationAllowed: boolean;
   readonly dependencyInvoked: boolean;
   readonly invocationReturned: boolean;
   readonly invocationOk: boolean;
   readonly dependencyResult?: TaskExecutionInvocationDependencyResult;
   readonly issues: readonly TaskExecutionInvocationIssue[];
+  readonly persisted?: boolean;
 }): TaskExecutionInvocationResult {
   const output =
     input.dependencyResult?.output !== undefined &&
@@ -433,7 +482,7 @@ function baseResult(input: {
       : undefined;
 
   return {
-    ok: input.invocationStatus === "succeeded",
+    ok: input.invocationStatus === "returned" && input.invocationOk,
     invocationStatus: input.invocationStatus,
     invocationAllowed: input.invocationAllowed,
     dependencyKind: input.dependencyKind ?? null,
@@ -449,6 +498,8 @@ function baseResult(input: {
     latestAttemptNumberForContext: input.latestAttemptNumberForContext ?? null,
     workItemId: input.attempt?.workItemId ?? null,
     batchId: input.attempt?.batchId ?? null,
+    invocationId: input.invocationId ?? null,
+    idempotencyKey: input.idempotencyKey ?? null,
     idempotencyReference: input.idempotencyReference ?? null,
     verifierRequired: input.verifierRequired ?? null,
     completionGatedByVerifier: input.completionGatedByVerifier ?? null,
@@ -467,18 +518,9 @@ function baseResult(input: {
       invocationOk: input.invocationOk,
       dependencyResult: input.dependencyResult,
       issueCount: input.issues.length,
+      persisted: input.persisted ?? false,
     }),
   };
-}
-
-function idempotencyReferenceFor(input: {
-  readonly invocationId?: string;
-  readonly attempt: TaskExecutionAttempt;
-}): string {
-  return (
-    input.invocationId ??
-    `invocation-${input.attempt.attemptId}-r${input.attempt.taskStateRevision}-n${input.attempt.attemptNumber}`
-  );
 }
 
 function validateAllowedOperationReferences(value: unknown): readonly string[] {
@@ -490,6 +532,194 @@ function validateAllowedOperationReferences(value: unknown): readonly string[] {
     (item): item is string =>
       typeof item === "string" && item.trim().length > 0,
   );
+}
+
+function dependencyResultFromReturnedRecord(
+  result: TaskExecutionInvocationResultRecord,
+): TaskExecutionInvocationDependencyResult {
+  return {
+    ok: result.invocationOk,
+    output: result.output,
+    outputReference: result.outputReference,
+    diagnosticCode: result.diagnosticCode,
+    message: result.message,
+    metadata: result.metadata,
+  };
+}
+
+function issueFromFailureRecord(input: {
+  readonly record: TaskExecutionInvocationRecord;
+  readonly failure: TaskExecutionInvocationFailureRecord;
+}): TaskExecutionInvocationIssue {
+  return issue({
+    code: input.failure.code,
+    message:
+      input.failure.diagnostic ??
+      "Persisted invocation failure blocks automatic duplicate execution.",
+    category: input.failure.category === "policy_failure" ? "policy" : "unknown",
+    taskId: input.record.taskId,
+    attemptId: input.record.attemptId,
+    workItemId: input.record.workItemId,
+    batchId: input.record.batchId,
+  });
+}
+
+function resultFromExistingRecord(input: {
+  readonly state: PersistedTaskState;
+  readonly attempt: TaskExecutionAttempt;
+  readonly record: TaskExecutionInvocationRecord;
+  readonly dependencyKind: TaskExecutionInvocationDependencyKind | null;
+  readonly expectedRevision?: number | null;
+  readonly latestAttemptNumberForContext?: number | null;
+  readonly verifierRequired: boolean;
+  readonly completionGatedByVerifier: boolean;
+}): TaskExecutionInvocationResult {
+  if (input.record.lifecycle === "returned" && input.record.result !== undefined) {
+    return baseResult({
+      state: input.state,
+      attempt: input.attempt,
+      dependencyKind: input.dependencyKind,
+      expectedRevision: input.expectedRevision ?? null,
+      latestAttemptNumberForContext: input.latestAttemptNumberForContext ?? null,
+      invocationId: input.record.invocationId,
+      idempotencyKey: input.record.idempotencyKey,
+      idempotencyReference: input.record.idempotencyKey,
+      verifierRequired: input.verifierRequired,
+      completionGatedByVerifier: input.completionGatedByVerifier,
+      invocationStatus: "returned",
+      invocationAllowed: true,
+      dependencyInvoked: false,
+      invocationReturned: true,
+      invocationOk: input.record.result.invocationOk,
+      dependencyResult: dependencyResultFromReturnedRecord(input.record.result),
+      issues: [],
+      persisted: true,
+    });
+  }
+
+  if (input.record.lifecycle === "failed" && input.record.failure !== undefined) {
+    return baseResult({
+      state: input.state,
+      attempt: input.attempt,
+      dependencyKind: input.dependencyKind,
+      expectedRevision: input.expectedRevision ?? null,
+      latestAttemptNumberForContext: input.latestAttemptNumberForContext ?? null,
+      invocationId: input.record.invocationId,
+      idempotencyKey: input.record.idempotencyKey,
+      idempotencyReference: input.record.idempotencyKey,
+      verifierRequired: input.verifierRequired,
+      completionGatedByVerifier: input.completionGatedByVerifier,
+      invocationStatus: "failed",
+      invocationAllowed: false,
+      dependencyInvoked: false,
+      invocationReturned: false,
+      invocationOk: false,
+      issues: [
+        issueFromFailureRecord({
+          record: input.record,
+          failure: input.record.failure,
+        }),
+      ],
+      persisted: true,
+    });
+  }
+
+  if (input.record.lifecycle === "invoking") {
+    return baseResult({
+      state: input.state,
+      attempt: input.attempt,
+      dependencyKind: input.dependencyKind,
+      expectedRevision: input.expectedRevision ?? null,
+      latestAttemptNumberForContext: input.latestAttemptNumberForContext ?? null,
+      invocationId: input.record.invocationId,
+      idempotencyKey: input.record.idempotencyKey,
+      idempotencyReference: input.record.idempotencyKey,
+      verifierRequired: input.verifierRequired,
+      completionGatedByVerifier: input.completionGatedByVerifier,
+      invocationStatus: "in_progress",
+      invocationAllowed: false,
+      dependencyInvoked: false,
+      invocationReturned: false,
+      invocationOk: false,
+      issues: [
+        issue({
+          code: "task_execution_invocation_already_in_progress",
+          message:
+            "A persisted invocation is already in progress for this authoritative attempt context.",
+          category: "conflict",
+          taskId: input.record.taskId,
+          attemptId: input.record.attemptId,
+          workItemId: input.record.workItemId,
+          batchId: input.record.batchId,
+        }),
+      ],
+      persisted: true,
+    });
+  }
+
+  if (input.record.lifecycle === "outcome_unknown") {
+    return baseResult({
+      state: input.state,
+      attempt: input.attempt,
+      dependencyKind: input.dependencyKind,
+      expectedRevision: input.expectedRevision ?? null,
+      latestAttemptNumberForContext: input.latestAttemptNumberForContext ?? null,
+      invocationId: input.record.invocationId,
+      idempotencyKey: input.record.idempotencyKey,
+      idempotencyReference: input.record.idempotencyKey,
+      verifierRequired: input.verifierRequired,
+      completionGatedByVerifier: input.completionGatedByVerifier,
+      invocationStatus: "reconciliation_required",
+      invocationAllowed: false,
+      dependencyInvoked: false,
+      invocationReturned: false,
+      invocationOk: false,
+      issues: [
+        issue({
+          code: "task_execution_invocation_outcome_unknown",
+          message:
+            "Persisted invocation outcome is unknown and requires future reconciliation before retry.",
+          category: "conflict",
+          taskId: input.record.taskId,
+          attemptId: input.record.attemptId,
+          workItemId: input.record.workItemId,
+          batchId: input.record.batchId,
+        }),
+      ],
+      persisted: true,
+    });
+  }
+
+  return baseResult({
+    state: input.state,
+    attempt: input.attempt,
+    dependencyKind: input.dependencyKind,
+    expectedRevision: input.expectedRevision ?? null,
+    latestAttemptNumberForContext: input.latestAttemptNumberForContext ?? null,
+    invocationId: input.record.invocationId,
+    idempotencyKey: input.record.idempotencyKey,
+    idempotencyReference: input.record.idempotencyKey,
+    verifierRequired: input.verifierRequired,
+    completionGatedByVerifier: input.completionGatedByVerifier,
+    invocationStatus: "blocked",
+    invocationAllowed: false,
+    dependencyInvoked: false,
+    invocationReturned: false,
+    invocationOk: false,
+    issues: [
+      issue({
+        code: "task_execution_invocation_already_reserved",
+        message:
+          "A persisted invocation reservation already exists and cannot be entered without matching system ownership.",
+        category: "conflict",
+        taskId: input.record.taskId,
+        attemptId: input.record.attemptId,
+        workItemId: input.record.workItemId,
+        batchId: input.record.batchId,
+      }),
+    ],
+    persisted: true,
+  });
 }
 
 export async function invokeStartedTaskExecutionAttempt(
@@ -538,6 +768,19 @@ export async function invokeStartedTaskExecutionAttempt(
         code: "task_execution_invocation_dependency_not_test_noop",
         message:
           "Task execution invocation MVP accepts only an explicitly injected test/no-op dependency.",
+        category: "validation",
+        taskId: state.taskId,
+        attemptId: attempt.attemptId,
+      }),
+    );
+  }
+
+  if (input.invocationId !== undefined) {
+    issues.push(
+      issue({
+        code: "task_execution_invocation_caller_identity_forbidden",
+        message:
+          "Invocation identity and idempotency key must be derived by AEOS from authoritative attempt context.",
         category: "validation",
         taskId: state.taskId,
         attemptId: attempt.attemptId,
@@ -659,10 +902,40 @@ export async function invokeStartedTaskExecutionAttempt(
   const completionGatedByVerifier =
     state.verifier.completionGatedByVerifier &&
     attempt.verifierRequirement.completionGatedByVerifier;
-  const idempotencyReference = idempotencyReferenceFor({
-    attempt,
-    invocationId: input.invocationId,
-  });
+  const allowedOperationReferences = validateAllowedOperationReferences(
+    input.allowedOperationReferences,
+  );
+  const identityResult = dependencyKind === "test_noop"
+    ? deriveTaskExecutionInvocationIdentityForAttempt({
+        attempt,
+        dependencyKind,
+        allowedOperationReferences,
+        verifierRequired,
+        completionGatedByVerifier,
+      })
+    : undefined;
+  const invocationId = identityResult?.ok ? identityResult.value.invocationId : null;
+  const idempotencyKey = identityResult?.ok ? identityResult.value.idempotencyKey : null;
+  const idempotencyReference = idempotencyKey;
+
+  if (identityResult !== undefined && !identityResult.ok) {
+    issues.push(issueFromError(identityResult.error));
+  }
+
+  if (input.projectRoot === undefined) {
+    issues.push(
+      issue({
+        code: "task_execution_invocation_persistence_required",
+        message:
+          "Task execution invocation requires persisted invocation authority before dependency invocation.",
+        category: "validation",
+        taskId: state.taskId,
+        attemptId: attempt.attemptId,
+        workItemId: attempt.workItemId,
+        batchId: attempt.batchId,
+      }),
+    );
+  }
 
   if (issues.length > 0 || dependency === undefined) {
     return baseResult({
@@ -671,6 +944,8 @@ export async function invokeStartedTaskExecutionAttempt(
       dependencyKind,
       expectedRevision: input.expectedRevision ?? null,
       latestAttemptNumberForContext: input.latestAttemptNumberForContext ?? null,
+      invocationId,
+      idempotencyKey,
       idempotencyReference,
       verifierRequired,
       completionGatedByVerifier,
@@ -680,6 +955,86 @@ export async function invokeStartedTaskExecutionAttempt(
       invocationReturned: false,
       invocationOk: false,
       issues,
+      persisted: false,
+    });
+  }
+
+  const reservationResult = await reserveTaskExecutionInvocation({
+    projectRoot: input.projectRoot!,
+    state,
+    attempt,
+    dependencyKind: dependency.kind,
+    expectedRevision: input.expectedRevision,
+    latestAttemptNumberForContext: input.latestAttemptNumberForContext,
+    allowedOperationReferences,
+  });
+
+  if (!reservationResult.ok) {
+    return baseResult({
+      state,
+      attempt,
+      dependencyKind,
+      expectedRevision: input.expectedRevision ?? null,
+      latestAttemptNumberForContext: input.latestAttemptNumberForContext ?? null,
+      invocationId,
+      idempotencyKey,
+      idempotencyReference,
+      verifierRequired,
+      completionGatedByVerifier,
+      invocationStatus: "blocked",
+      invocationAllowed: false,
+      dependencyInvoked: false,
+      invocationReturned: false,
+      invocationOk: false,
+      issues: [issueFromError(reservationResult.error)],
+      persisted: true,
+    });
+  }
+
+  if (reservationResult.value.status === "already_reserved") {
+    return resultFromExistingRecord({
+      state,
+      attempt,
+      record: reservationResult.value.record,
+      dependencyKind,
+      expectedRevision: input.expectedRevision ?? null,
+      latestAttemptNumberForContext: input.latestAttemptNumberForContext ?? null,
+      verifierRequired,
+      completionGatedByVerifier,
+    });
+  }
+
+  const reservedRecord = reservationResult.value.record;
+  const enteredRecordResult = await updateTaskExecutionInvocation({
+    projectRoot: input.projectRoot!,
+    taskId: reservedRecord.taskId,
+    invocationId: reservedRecord.invocationId,
+    ownershipToken: reservedRecord.ownership.ownershipToken,
+    expectedLifecycle: "reserved",
+    intent: {
+      kind: "enter_invocation",
+    },
+  });
+
+  if (!enteredRecordResult.ok) {
+    return baseResult({
+      state,
+      attempt,
+      dependencyKind,
+      expectedRevision: input.expectedRevision ?? null,
+      latestAttemptNumberForContext: input.latestAttemptNumberForContext ?? null,
+      invocationId: reservedRecord.invocationId,
+      idempotencyKey: reservedRecord.idempotencyKey,
+      idempotencyReference: reservedRecord.idempotencyKey,
+      verifierRequired,
+      completionGatedByVerifier,
+      invocationStatus: "blocked",
+      invocationAllowed: false,
+      dependencyInvoked: false,
+      invocationReturned: false,
+      invocationOk: false,
+      issues: [issueFromError(enteredRecordResult.error)],
+      persisted: true,
     });
   }
 
@@ -690,10 +1045,8 @@ export async function invokeStartedTaskExecutionAttempt(
     sourceTaskRevision: attempt.taskStateRevision,
     workItemId: attempt.workItemId,
     batchId: attempt.batchId,
-    idempotencyReference,
-    allowedOperationReferences: validateAllowedOperationReferences(
-      input.allowedOperationReferences,
-    ),
+    idempotencyReference: enteredRecordResult.value.record.idempotencyKey,
+    allowedOperationReferences,
     verifierRequired,
     completionGatedByVerifier,
   };
@@ -713,6 +1066,22 @@ export async function invokeStartedTaskExecutionAttempt(
       workItemId: attempt.workItemId,
       batchId: attempt.batchId,
     });
+    const failedUpdateResult = await updateTaskExecutionInvocation({
+      projectRoot: input.projectRoot!,
+      taskId: enteredRecordResult.value.record.taskId,
+      invocationId: enteredRecordResult.value.record.invocationId,
+      ownershipToken: enteredRecordResult.value.record.ownership.ownershipToken,
+      expectedLifecycle: "invoking",
+      intent: {
+        kind: "record_failed",
+        failure: {
+          code: dependencyIssue.code,
+          category: "execution_failure",
+          retryable: false,
+          diagnostic: dependencyIssue.message,
+        },
+      },
+    });
 
     return baseResult({
       state,
@@ -720,7 +1089,9 @@ export async function invokeStartedTaskExecutionAttempt(
       dependencyKind,
       expectedRevision: input.expectedRevision ?? null,
       latestAttemptNumberForContext: input.latestAttemptNumberForContext ?? null,
-      idempotencyReference,
+      invocationId: enteredRecordResult.value.record.invocationId,
+      idempotencyKey: enteredRecordResult.value.record.idempotencyKey,
+      idempotencyReference: enteredRecordResult.value.record.idempotencyKey,
       verifierRequired,
       completionGatedByVerifier,
       invocationStatus: "failed",
@@ -728,18 +1099,41 @@ export async function invokeStartedTaskExecutionAttempt(
       dependencyInvoked: true,
       invocationReturned: false,
       invocationOk: false,
-      issues: [dependencyIssue],
+      issues: failedUpdateResult.ok
+        ? [dependencyIssue]
+        : [issueFromError(failedUpdateResult.error)],
+      persisted: true,
     });
   }
 
   if (!isRecord(dependencyResult) || typeof dependencyResult.ok !== "boolean") {
+    const failedUpdateResult = await updateTaskExecutionInvocation({
+      projectRoot: input.projectRoot!,
+      taskId: enteredRecordResult.value.record.taskId,
+      invocationId: enteredRecordResult.value.record.invocationId,
+      ownershipToken: enteredRecordResult.value.record.ownership.ownershipToken,
+      expectedLifecycle: "invoking",
+      intent: {
+        kind: "record_failed",
+        failure: {
+          code: "task_execution_invocation_dependency_result_invalid",
+          category: "execution_failure",
+          retryable: false,
+          diagnostic:
+            "Injected test/no-op dependency returned an invalid diagnostic result shape.",
+        },
+      },
+    });
+
     return baseResult({
       state,
       attempt,
       dependencyKind,
       expectedRevision: input.expectedRevision ?? null,
       latestAttemptNumberForContext: input.latestAttemptNumberForContext ?? null,
-      idempotencyReference,
+      invocationId: enteredRecordResult.value.record.invocationId,
+      idempotencyKey: enteredRecordResult.value.record.idempotencyKey,
+      idempotencyReference: enteredRecordResult.value.record.idempotencyKey,
       verifierRequired,
       completionGatedByVerifier,
       invocationStatus: "failed",
@@ -749,9 +1143,13 @@ export async function invokeStartedTaskExecutionAttempt(
       invocationOk: false,
       issues: [
         issue({
-          code: "task_execution_invocation_dependency_result_invalid",
+          code: failedUpdateResult.ok
+            ? "task_execution_invocation_dependency_result_invalid"
+            : failedUpdateResult.error.code,
           message:
-            "Injected test/no-op dependency returned an invalid diagnostic result shape.",
+            failedUpdateResult.ok
+              ? "Injected test/no-op dependency returned an invalid diagnostic result shape."
+              : failedUpdateResult.error.message,
           category: "validation",
           taskId: state.taskId,
           attemptId: attempt.attemptId,
@@ -759,6 +1157,7 @@ export async function invokeStartedTaskExecutionAttempt(
           batchId: attempt.batchId,
         }),
       ],
+      persisted: true,
     });
   }
 
@@ -768,13 +1167,33 @@ export async function invokeStartedTaskExecutionAttempt(
     (dependencyResult.metadata !== undefined &&
       !isJsonObject(dependencyResult.metadata))
   ) {
+    const failedUpdateResult = await updateTaskExecutionInvocation({
+      projectRoot: input.projectRoot!,
+      taskId: enteredRecordResult.value.record.taskId,
+      invocationId: enteredRecordResult.value.record.invocationId,
+      ownershipToken: enteredRecordResult.value.record.ownership.ownershipToken,
+      expectedLifecycle: "invoking",
+      intent: {
+        kind: "record_failed",
+        failure: {
+          code: "task_execution_invocation_dependency_result_not_json",
+          category: "execution_failure",
+          retryable: false,
+          diagnostic:
+            "Injected test/no-op dependency returned non-JSON diagnostic data.",
+        },
+      },
+    });
+
     return baseResult({
       state,
       attempt,
       dependencyKind,
       expectedRevision: input.expectedRevision ?? null,
       latestAttemptNumberForContext: input.latestAttemptNumberForContext ?? null,
-      idempotencyReference,
+      invocationId: enteredRecordResult.value.record.invocationId,
+      idempotencyKey: enteredRecordResult.value.record.idempotencyKey,
+      idempotencyReference: enteredRecordResult.value.record.idempotencyKey,
       verifierRequired,
       completionGatedByVerifier,
       invocationStatus: "failed",
@@ -785,9 +1204,13 @@ export async function invokeStartedTaskExecutionAttempt(
       dependencyResult,
       issues: [
         issue({
-          code: "task_execution_invocation_dependency_result_not_json",
+          code: failedUpdateResult.ok
+            ? "task_execution_invocation_dependency_result_not_json"
+            : failedUpdateResult.error.code,
           message:
-            "Injected test/no-op dependency returned non-JSON diagnostic data.",
+            failedUpdateResult.ok
+              ? "Injected test/no-op dependency returned non-JSON diagnostic data."
+              : failedUpdateResult.error.message,
           category: "validation",
           taskId: state.taskId,
           attemptId: attempt.attemptId,
@@ -795,6 +1218,7 @@ export async function invokeStartedTaskExecutionAttempt(
           batchId: attempt.batchId,
         }),
       ],
+      persisted: true,
     });
   }
 
@@ -815,6 +1239,71 @@ export async function invokeStartedTaskExecutionAttempt(
           batchId: attempt.batchId,
         }),
       ];
+  const persistedOutput =
+    dependencyResult.output !== undefined && isJsonValue(dependencyResult.output)
+      ? dependencyResult.output
+      : undefined;
+  const persistedMetadata =
+    dependencyResult.metadata !== undefined &&
+    isJsonObject(dependencyResult.metadata)
+      ? dependencyResult.metadata
+      : undefined;
+
+  const terminalUpdateResult = await updateTaskExecutionInvocation({
+    projectRoot: input.projectRoot!,
+    taskId: enteredRecordResult.value.record.taskId,
+    invocationId: enteredRecordResult.value.record.invocationId,
+    ownershipToken: enteredRecordResult.value.record.ownership.ownershipToken,
+    expectedLifecycle: "invoking",
+    intent: dependencyResult.ok
+      ? {
+          kind: "record_returned",
+          result: {
+            invocationOk: true,
+            output: persistedOutput,
+            outputReference: safeDiagnosticText(dependencyResult.outputReference),
+            diagnosticCode: safeDiagnosticText(dependencyResult.diagnosticCode),
+            message: safeDiagnosticText(dependencyResult.message),
+            metadata: persistedMetadata,
+          },
+        }
+      : {
+          kind: "record_failed",
+          failure: {
+            code:
+              safeDiagnosticText(dependencyResult.diagnosticCode) ??
+              "task_execution_invocation_dependency_not_ok",
+            category: "execution_failure",
+            retryable: false,
+            diagnostic:
+              safeDiagnosticText(dependencyResult.message) ??
+              "Injected test/no-op dependency returned a non-ok invocation diagnostic.",
+          },
+        },
+  });
+
+  if (!terminalUpdateResult.ok) {
+    return baseResult({
+      state,
+      attempt,
+      dependencyKind,
+      expectedRevision: input.expectedRevision ?? null,
+      latestAttemptNumberForContext: input.latestAttemptNumberForContext ?? null,
+      invocationId: enteredRecordResult.value.record.invocationId,
+      idempotencyKey: enteredRecordResult.value.record.idempotencyKey,
+      idempotencyReference: enteredRecordResult.value.record.idempotencyKey,
+      verifierRequired,
+      completionGatedByVerifier,
+      invocationStatus: "failed",
+      invocationAllowed: true,
+      dependencyInvoked: true,
+      invocationReturned: true,
+      invocationOk: false,
+      dependencyResult,
+      issues: [issueFromError(terminalUpdateResult.error)],
+      persisted: true,
+    });
+  }
 
   return baseResult({
     state,
@@ -822,15 +1311,18 @@ export async function invokeStartedTaskExecutionAttempt(
     dependencyKind,
     expectedRevision: input.expectedRevision ?? null,
     latestAttemptNumberForContext: input.latestAttemptNumberForContext ?? null,
-    idempotencyReference,
+    invocationId: terminalUpdateResult.value.record.invocationId,
+    idempotencyKey: terminalUpdateResult.value.record.idempotencyKey,
+    idempotencyReference: terminalUpdateResult.value.record.idempotencyKey,
     verifierRequired,
     completionGatedByVerifier,
-    invocationStatus: dependencyResult.ok ? "succeeded" : "failed",
+    invocationStatus: dependencyResult.ok ? "returned" : "failed",
     invocationAllowed: true,
     dependencyInvoked: true,
     invocationReturned: true,
     invocationOk: dependencyResult.ok,
     dependencyResult,
     issues: resultIssue,
+    persisted: true,
   });
 }

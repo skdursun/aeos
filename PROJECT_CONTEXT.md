@@ -81,6 +81,8 @@ condition.
   transition apply without adapter execution.
 - TASK-0290: Design and implement controlled execution invocation boundary with
   dependency-injected test/no-op executor only.
+- TASK-0291: Design and implement persisted execution invocation/idempotency
+  record foundation.
 
 ## Do Not Load By Default
 
@@ -91,11 +93,11 @@ condition.
 
 ## Next Task
 
-TASK-0291 Design and implement persisted execution invocation/idempotency record
-foundation.
+TASK-0292 Invocation persistence targeted safety review and read-only invocation
+status CLI.
 
-Purpose: Establish authoritative invocation ownership and result recording
-before production adapters or external execution are allowed.
+Purpose: Expose persisted invocation status/read-only visibility and review
+crash/idempotency behavior.
 
 ## Current Plans
 

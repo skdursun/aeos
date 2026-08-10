@@ -497,12 +497,68 @@ execution, network services, dynamic adapter discovery, task-prose adapter
 configuration, or model-selected executors. No CLI command exposes invocation.
 Smoke tests supply the deterministic in-memory no-op dependency.
 
-The invocation request is built only from authoritative system data: task id,
-attempt id, attempt number, source task revision, work item id, batch id,
-verifier requirement, verifier completion gate, controlled operation
-references, and an idempotency reference. That idempotency reference is data
-only in this MVP; it is not persisted and does not provide exactly-once
-semantics.
+Invocation records are now separate system-owned evidence records. They are not
+task state, attempt lifecycle state, audit runtime, verifier runtime, approval
+grants, or completion proof. The current storage convention is:
+
+```text
+.aeos/state/invocations/<task-id>/<invocation-id>.json
+```
+
+The invocation record is the source of truth for invocation ownership,
+idempotency identity, lifecycle, and recorded invocation result/failure
+metadata. Task-state JSON is not overloaded with invocation ownership, avoiding
+competing mutation authorities.
+
+For the current MVP there is one invocation identity per exact started attempt
+context and dependency kind. AEOS derives `invocationId` and `idempotencyKey`
+from immutable authoritative data: task id, task-state revision, attempt id,
+attempt number, work item, batch, dependency kind, verifier requirement, and
+completion-gated verifier requirement. Operators, model output, task prose, and
+caller-supplied strings cannot choose the invocation id or idempotency key.
+Controlled operation references are recorded in the request fingerprint, but do
+not create a second invocation authority for the same attempt.
+
+The closed invocation lifecycle is:
+
+- `reserved`
+- `invoking`
+- `returned`
+- `failed`
+- `outcome_unknown`
+
+Unknown lifecycle values fail closed. Task-style lifecycle claims such as
+`completed`, `verified`, `approved`, `task_success`, `execution_success`, or
+`succeeded` are rejected. `returned` means the dependency returned; it does not
+mean work completed. `failed` means deterministic invocation-level failure; it
+does not authorize automatic retry. `outcome_unknown` means AEOS cannot prove
+whether the dependency crossed an external side-effect boundary before durable
+result evidence was recorded.
+
+Reservation uses exclusive file creation at the final invocation path so two
+cooperating AEOS processes cannot both successfully create ownership for the
+same invocation identity. A duplicate reservation loads the existing authority
+record when it is valid and returns `already_reserved`; it does not overwrite.
+Updates require the persisted system-generated ownership token and follow the
+closed transitions `reserved -> invoking`, `invoking -> returned`,
+`invoking -> failed`, or `invoking -> outcome_unknown`. Returned, failed, and
+outcome-unknown records cannot be re-entered or rewritten by ordinary
+invocation.
+
+Duplicate ordinary invocation behavior is fail-closed:
+
+- `returned`: return the persisted result/reference without calling the
+  dependency again.
+- `invoking`: report already in progress; do not call the dependency.
+- `failed`: report the persisted deterministic failure; do not retry.
+- `outcome_unknown`: report reconciliation required; do not retry.
+- corrupt or invalid JSON: fail closed; do not treat unreadable authority as
+  missing.
+
+The invocation request passed to the dependency is built only from
+authoritative system data: task id, attempt id, attempt number, source task
+revision, work item id, batch id, verifier requirement, verifier completion
+gate, controlled operation references, and the system-derived idempotency key.
 
 Invocation success is not work completion. A dependency return of `ok: true`,
 or output text/metadata claiming `completed`, `verified`, `approved`, `allDone`,
@@ -513,14 +569,30 @@ policy, change coverage, mutate task state, or change attempt lifecycle.
 Invocation returns explicit safety facts with production adapters, external
 execution, task-state mutation, attempt-state mutation, audit writes, verifier
 runtime, policy runtime, work completion, task completion, and verification all
-false. Dependency non-ok and thrown errors become deterministic invocation
-failures without retry and without exposing raw stack traces as authoritative
-failure data.
+false. Returned records may store bounded JSON diagnostic output, output
+references, diagnostic code, message, metadata, and `invocationOk`. Failed
+records store structured system-owned failure code, category, diagnostic,
+retryable boolean, and timestamp. Raw stack traces are not persisted as
+authority, and retryability is not inferred from exception prose.
 
-Because invocation ownership and results are not persisted yet, repeated calls
-can invoke the harmless test/no-op dependency again. Production adapters remain
-prohibited until a future persisted invocation ownership, idempotency, and
-result-recording authority exists.
+The local persistence layer confines paths to `.aeos/state/invocations`, rejects
+unsafe task ids and invocation ids, rejects invocation-root symlinks, rejects
+invocation-file symlinks and non-file targets, and validates record identity
+against its storage path. Corrupt JSON and invalid schema fail closed and never
+trigger a fresh duplicate invocation.
+
+The crash window remains explicit:
+
+```text
+reserved -> invoking -> dependency call -> returned/failed persistence
+```
+
+If a process crashes after a dependency call but before returned/failed
+persistence, AEOS cannot safely prove the external outcome from the local record
+alone. Future production adapters require provider-supported idempotency,
+reconciliation/query capability, or an explicit `outcome_unknown` recovery
+protocol before they can be enabled. TASK-0291 does not claim universal
+exactly-once execution.
 
 Policy and verifier remain downstream boundaries. If policy is required and no
 authoritative approval proof exists, invocation is blocked. Verifier-required
