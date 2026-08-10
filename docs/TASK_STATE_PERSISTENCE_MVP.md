@@ -475,6 +475,70 @@ cross-process transaction across task state, attempt numbering, and attempt
 record replacement; a non-cooperating writer or a process crash leaving a lock
 file may require manual recovery before retry.
 
+## Execution Invocation Boundary
+`invokeStartedTaskExecutionAttempt` is the first controlled core-only invocation
+boundary after an execution attempt has already been authoritatively persisted
+as `started`. It does not transition `prepared -> started`; TASK-0289 owns that
+start boundary.
+
+Invocation requires current authoritative task state and the authoritative
+started attempt as explicit inputs. Before calling anything, it revalidates the
+task state, attempt schema, task id, source task revision, expected revision
+when supplied, latest attempt-number authority when supplied, work item
+existence, batch existence, work/batch relationship, and remaining work
+eligibility. A stale, prepared, failed, interrupted, verification-required,
+unknown, terminal-forged, ineligible, mismatched, or superseded attempt is
+blocked before dependency invocation.
+
+The only allowed MVP dependency kind is an explicitly injected
+`kind: "test_noop"` executor. The core boundary does not import production
+model adapters, production tool adapters, shell/process execution, filesystem
+execution, network services, dynamic adapter discovery, task-prose adapter
+configuration, or model-selected executors. No CLI command exposes invocation.
+Smoke tests supply the deterministic in-memory no-op dependency.
+
+The invocation request is built only from authoritative system data: task id,
+attempt id, attempt number, source task revision, work item id, batch id,
+verifier requirement, verifier completion gate, controlled operation
+references, and an idempotency reference. That idempotency reference is data
+only in this MVP; it is not persisted and does not provide exactly-once
+semantics.
+
+Invocation success is not work completion. A dependency return of `ok: true`,
+or output text/metadata claiming `completed`, `verified`, `approved`, `allDone`,
+or "execution succeeded", is diagnostic evidence only. It cannot complete work,
+complete the task, satisfy the verifier, satisfy the completion gate, approve
+policy, change coverage, mutate task state, or change attempt lifecycle.
+
+Invocation returns explicit safety facts with production adapters, external
+execution, task-state mutation, attempt-state mutation, audit writes, verifier
+runtime, policy runtime, work completion, task completion, and verification all
+false. Dependency non-ok and thrown errors become deterministic invocation
+failures without retry and without exposing raw stack traces as authoritative
+failure data.
+
+Because invocation ownership and results are not persisted yet, repeated calls
+can invoke the harmless test/no-op dependency again. Production adapters remain
+prohibited until a future persisted invocation ownership, idempotency, and
+result-recording authority exists.
+
+Policy and verifier remain downstream boundaries. If policy is required and no
+authoritative approval proof exists, invocation is blocked. Verifier-required
+and completion-gated metadata is preserved, but the verifier is not run and no
+verification result is recorded.
+
+The canonical invariant still holds:
+
+```text
+400 expected work items
+20 accounted work items
+380 remaining work items
+executor says "all complete"
+```
+
+The invocation may call only the no-op dependency for a legitimate remaining
+work context, and the authoritative remaining count stays 380.
+
 ## Execution Preparation Preview
 `aeos task execution prepare --preview <task-id> --expected-revision <number>`
 loads authoritative persisted task state, validates it, checks the explicit

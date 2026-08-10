@@ -79,6 +79,8 @@ condition.
   execution-start authorization foundation.
 - TASK-0289: Design and implement explicit prepared-to-started execution-attempt
   transition apply without adapter execution.
+- TASK-0290: Design and implement controlled execution invocation boundary with
+  dependency-injected test/no-op executor only.
 
 ## Do Not Load By Default
 
@@ -89,12 +91,11 @@ condition.
 
 ## Next Task
 
-TASK-0290 Design and implement execution invocation boundary with
-dependency-injected no-op/test adapter only.
+TASK-0291 Design and implement persisted execution invocation/idempotency record
+foundation.
 
-Purpose: Begin actual execution orchestration carefully with a constrained
-dependency-injected no-op/test adapter boundary, without introducing
-unrestricted production adapter calls.
+Purpose: Establish authoritative invocation ownership and result recording
+before production adapters or external execution are allowed.
 
 ## Current Plans
 

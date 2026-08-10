@@ -105,6 +105,7 @@ import {
   createInitialTaskState,
   createTaskResumeHandoff,
   authorizeTaskExecutionStart,
+  invokeStartedTaskExecutionAttempt,
   deriveNextTaskExecutionAttemptNumber,
   deriveLatestTaskExecutionAttemptNumber,
   evaluateTaskStateTransition,
@@ -266,6 +267,50 @@ function issueCodes(result) {
 
 function resultIssueCodes(result) {
   return result.errors.map((issue) => issue.code);
+}
+
+function createSmokeTestNoopDependency({
+  ok = true,
+  output = {
+    completed: true,
+    verified: true,
+    approved: true,
+    allDone: true,
+  },
+  message = "test/no-op dependency returned only diagnostic output",
+  diagnosticCode = "smoke_test_noop",
+  metadata = {
+    completed: true,
+    verified: true,
+    approved: true,
+    allDone: true,
+  },
+  throwError = false,
+} = {}) {
+  const calls = [];
+
+  return {
+    calls,
+    dependency: {
+      kind: "test_noop",
+      invoke(request) {
+        calls.push(JSON.parse(JSON.stringify(request)));
+
+        if (throwError) {
+          throw new Error("smoke dependency failed\n    at smoke-test:1:1");
+        }
+
+        return {
+          ok,
+          output,
+          outputReference: "smoke://test-noop-output",
+          diagnosticCode,
+          message,
+          metadata,
+        };
+      },
+    },
+  };
 }
 
 function createInitRequest(projectRoot) {
@@ -14254,6 +14299,641 @@ try {
     false,
     "task execution start apply smoke L should not run verifier",
   );
+  const invocationStartedAttempt = startApplyResult.value.attempt;
+  const stateContentBeforeInvocation = await readFile(firstUpdate.value.path, "utf8");
+  const attemptContentBeforeInvocation = await readFile(saveAttemptResult.value.path, "utf8");
+  const invocationStateInputBefore = JSON.stringify(firstUpdate.value.state);
+  const invocationAttemptInputBefore = JSON.stringify(invocationStartedAttempt);
+  const successfulNoop = createSmokeTestNoopDependency();
+  const invocationResult = await invokeStartedTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    attempt: invocationStartedAttempt,
+    dependency: successfulNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 1,
+    invocationId: "smoke-invocation-started-work-a",
+    allowedOperationReferences: ["smoke:operation:noop"],
+  });
+  assert.equal(
+    invocationResult.invocationAllowed,
+    true,
+    "task execution invocation smoke A should allow authoritative started attempt with valid state",
+  );
+  assert.equal(
+    successfulNoop.calls.length,
+    1,
+    "task execution invocation smoke B should invoke dependency exactly once",
+  );
+  assert.equal(
+    successfulNoop.calls[0].taskId,
+    "TASK-STATE-SMOKE",
+    "task execution invocation smoke F should build request from authoritative task id",
+  );
+  assert.equal(
+    successfulNoop.calls[0].attemptId,
+    invocationStartedAttempt.attemptId,
+    "task execution invocation smoke F should build request from authoritative attempt id",
+  );
+  assert.equal(
+    successfulNoop.calls[0].attemptNumber,
+    1,
+    "task execution invocation smoke F should include attempt number",
+  );
+  assert.equal(
+    successfulNoop.calls[0].sourceTaskRevision,
+    2,
+    "task execution invocation smoke F should include source task revision",
+  );
+  assert.equal(
+    successfulNoop.calls[0].workItemId,
+    "work-a",
+    "task execution invocation smoke F should include work item binding",
+  );
+  assert.equal(
+    successfulNoop.calls[0].batchId,
+    "batch-a",
+    "task execution invocation smoke F should include batch binding",
+  );
+  assert.deepEqual(
+    successfulNoop.calls[0].allowedOperationReferences,
+    ["smoke:operation:noop"],
+    "task execution invocation smoke F should include controlled operation references",
+  );
+  assert.equal(
+    successfulNoop.calls[0].idempotencyReference,
+    "smoke-invocation-started-work-a",
+    "task execution invocation smoke F should expose idempotency data only",
+  );
+  assert.equal(
+    invocationResult.dependencyKind,
+    "test_noop",
+    "task execution invocation smoke A should report dependency kind",
+  );
+  assert.equal(
+    invocationResult.dependencyInvoked,
+    true,
+    "task execution invocation smoke A should report dependency invocation",
+  );
+  assert.equal(
+    invocationResult.invocationReturned,
+    true,
+    "task execution invocation smoke A should report dependency return",
+  );
+  assert.equal(
+    invocationResult.invocationOk,
+    true,
+    "task execution invocation smoke I should scope success to invocation only",
+  );
+  assert.equal(
+    invocationResult.invocationStatus,
+    "succeeded",
+    "task execution invocation smoke I should use invocation success terminology",
+  );
+  assert.equal(
+    invocationResult.output.completed,
+    true,
+    "task execution invocation smoke L should retain diagnostic fake completion output as untrusted evidence",
+  );
+  assert.equal(
+    invocationResult.summary.executorClaimedCompleted,
+    true,
+    "task execution invocation smoke L should detect fake completed claim",
+  );
+  assert.equal(
+    invocationResult.summary.executorClaimedVerified,
+    true,
+    "task execution invocation smoke M should detect fake verified claim",
+  );
+  assert.equal(
+    invocationResult.summary.executorClaimedApproved,
+    true,
+    "task execution invocation smoke N should detect fake approved claim",
+  );
+  assert.equal(
+    invocationResult.summary.executorClaimedAllDone,
+    true,
+    "task execution invocation smoke L should detect fake all-done claim",
+  );
+  assert.equal(
+    firstUpdate.value.state.workItems.find((item) => item.id === "work-a")?.state,
+    "pending",
+    "task execution invocation smoke J should not complete work",
+  );
+  assert.equal(
+    firstUpdate.value.state.completionGate.completed,
+    false,
+    "task execution invocation smoke K should not complete task",
+  );
+  assert.notEqual(
+    firstUpdate.value.state.verifier.status,
+    "verified",
+    "task execution invocation smoke M should not satisfy verifier status",
+  );
+  assert.equal(
+    firstUpdate.value.state.safety.approved,
+    false,
+    "task execution invocation smoke N should not approve policy",
+  );
+  assert.equal(
+    invocationStartedAttempt.lifecycle,
+    "started",
+    "task execution invocation smoke Q should leave attempt object started",
+  );
+  assert.equal(
+    await readFile(saveAttemptResult.value.path, "utf8"),
+    attemptContentBeforeInvocation,
+    "task execution invocation smoke Q should not persist attempt result",
+  );
+  assert.equal(
+    await readFile(firstUpdate.value.path, "utf8"),
+    stateContentBeforeInvocation,
+    "task execution invocation smoke R should not mutate task state bytes",
+  );
+  assert.equal(
+    firstUpdate.value.state.revision,
+    2,
+    "task execution invocation smoke S should not increment task revision",
+  );
+  assert.equal(
+    invocationResult.safety.auditWritten,
+    false,
+    "task execution invocation smoke T should not write audit",
+  );
+  assert.equal(
+    invocationResult.safety.verifierRun,
+    false,
+    "task execution invocation smoke U should not run verifier",
+  );
+  assert.equal(
+    invocationResult.safety.policyRuntimeRun,
+    false,
+    "task execution invocation smoke V should not run policy runtime",
+  );
+  assert.equal(
+    invocationResult.safety.productionAdapterInvoked,
+    false,
+    "task execution invocation smoke W should not invoke production adapters",
+  );
+  assert.equal(
+    invocationResult.safety.externalExecutionPerformed,
+    false,
+    "task execution invocation smoke W should not perform external execution",
+  );
+  assert.equal(
+    invocationResult.safety.taskStateModified,
+    false,
+    "task execution invocation smoke R should report no task-state mutation",
+  );
+  assert.equal(
+    invocationResult.safety.attemptStateModified,
+    false,
+    "task execution invocation smoke Q should report no attempt-state mutation",
+  );
+  assert.equal(
+    invocationResult.safety.workCompleted,
+    false,
+    "task execution invocation smoke J should report no work completion",
+  );
+  assert.equal(
+    invocationResult.safety.taskCompleted,
+    false,
+    "task execution invocation smoke K should report no task completion",
+  );
+  assert.equal(
+    invocationResult.safety.verified,
+    false,
+    "task execution invocation smoke M should report no verification authority",
+  );
+  assert.equal(
+    JSON.stringify(firstUpdate.value.state),
+    invocationStateInputBefore,
+    "task execution invocation smoke Z should not mutate caller-owned state input",
+  );
+  assert.equal(
+    JSON.stringify(invocationStartedAttempt),
+    invocationAttemptInputBefore,
+    "task execution invocation smoke Z should not mutate caller-owned attempt input",
+  );
+
+  const preparedInvocationNoop = createSmokeTestNoopDependency();
+  const preparedInvocation = await invokeStartedTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    attempt: loadedAttemptResult.value.attempt,
+    dependency: preparedInvocationNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 1,
+  });
+  assert.equal(
+    preparedInvocation.invocationAllowed,
+    false,
+    "task execution invocation smoke C should block prepared attempts",
+  );
+  assert.equal(
+    preparedInvocation.issues[0]?.code,
+    "task_execution_invocation_attempt_not_started",
+    "task execution invocation smoke C should report non-started lifecycle",
+  );
+  assert.equal(
+    preparedInvocationNoop.calls.length,
+    0,
+    "task execution invocation smoke C should not invoke dependency for prepared attempts",
+  );
+
+  const staleInvocationNoop = createSmokeTestNoopDependency();
+  const staleInvocation = await invokeStartedTaskExecutionAttempt({
+    state: {
+      ...firstUpdate.value.state,
+      revision: 3,
+    },
+    attempt: invocationStartedAttempt,
+    dependency: staleInvocationNoop.dependency,
+    expectedRevision: 3,
+    latestAttemptNumberForContext: 1,
+  });
+  assert.equal(
+    staleInvocation.invocationAllowed,
+    false,
+    "task execution invocation smoke D should block stale task revision before dependency",
+  );
+  assert.equal(
+    staleInvocation.issues[0]?.code,
+    "task_execution_invocation_stale_task_revision",
+    "task execution invocation smoke D should report stale revision",
+  );
+  assert.equal(
+    staleInvocationNoop.calls.length,
+    0,
+    "task execution invocation smoke D should not invoke dependency for stale attempt",
+  );
+
+  const missingWorkInvocationNoop = createSmokeTestNoopDependency();
+  const missingWorkInvocation = await invokeStartedTaskExecutionAttempt({
+    state: {
+      ...firstUpdate.value.state,
+      workItems: [
+        {
+          id: "work-b",
+          state: "retryable",
+          batchId: "batch-a",
+          issues: [
+            {
+              code: "retryable-smoke",
+              message: "Retryable smoke item.",
+              severity: "warning",
+              category: "execution_failure",
+              retryable: true,
+            },
+          ],
+        },
+      ],
+      batches: [
+        {
+          id: "batch-a",
+          workItemIds: ["work-b"],
+          expectedItemCount: 1,
+          completedCount: 0,
+          failedCount: 0,
+          skippedCount: 0,
+          retryableCount: 1,
+        },
+      ],
+      pendingWorkItemIds: [],
+      retryableWorkItemIds: ["work-b"],
+    },
+    attempt: invocationStartedAttempt,
+    dependency: missingWorkInvocationNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 1,
+  });
+  assert.equal(
+    missingWorkInvocation.invocationAllowed,
+    false,
+    "task execution invocation smoke E should block missing work before dependency",
+  );
+  assert.equal(
+    missingWorkInvocation.issues[0]?.code,
+    "task_execution_invocation_work_item_missing",
+    "task execution invocation smoke E should report missing work",
+  );
+  assert.equal(
+    missingWorkInvocationNoop.calls.length,
+    0,
+    "task execution invocation smoke E should not invoke dependency for missing work",
+  );
+
+  const ineligibleInvocationNoop = createSmokeTestNoopDependency();
+  const ineligibleInvocation = await invokeStartedTaskExecutionAttempt({
+    state: {
+      ...firstUpdate.value.state,
+      workItems: [
+        {
+          id: "work-a",
+          state: "skipped",
+          batchId: "batch-a",
+        },
+        {
+          id: "work-b",
+          state: "retryable",
+          batchId: "batch-a",
+        },
+      ],
+      pendingWorkItemIds: [],
+      retryableWorkItemIds: ["work-b"],
+      batches: [
+        {
+          id: "batch-a",
+          workItemIds: ["work-a", "work-b"],
+          expectedItemCount: 2,
+          completedCount: 0,
+          failedCount: 0,
+          skippedCount: 1,
+          retryableCount: 1,
+        },
+      ],
+    },
+    attempt: invocationStartedAttempt,
+    dependency: ineligibleInvocationNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 1,
+  });
+  assert.equal(
+    ineligibleInvocation.invocationAllowed,
+    false,
+    "task execution invocation smoke E should block ineligible work before dependency",
+  );
+  assert.equal(
+    ineligibleInvocation.issues[0]?.code,
+    "task_execution_invocation_work_item_not_executable",
+    "task execution invocation smoke E should report ineligible work",
+  );
+  assert.equal(
+    ineligibleInvocationNoop.calls.length,
+    0,
+    "task execution invocation smoke E should not invoke dependency for ineligible work",
+  );
+
+  const batchMismatchInvocationNoop = createSmokeTestNoopDependency();
+  const batchMismatchInvocation = await invokeStartedTaskExecutionAttempt({
+    state: {
+      ...firstUpdate.value.state,
+      workItems: [
+        {
+          id: "work-a",
+          state: "pending",
+          batchId: "batch-b",
+        },
+      ],
+      batches: [
+        {
+          id: "batch-a",
+          workItemIds: [],
+          expectedItemCount: 0,
+          completedCount: 0,
+          failedCount: 0,
+          skippedCount: 0,
+          retryableCount: 0,
+        },
+        {
+          id: "batch-b",
+          workItemIds: ["work-a"],
+          expectedItemCount: 1,
+          completedCount: 0,
+          failedCount: 0,
+          skippedCount: 0,
+          retryableCount: 0,
+        },
+      ],
+      pendingWorkItemIds: ["work-a"],
+      retryableWorkItemIds: [],
+      currentBatchId: "batch-b",
+      nextBatchId: "batch-b",
+    },
+    attempt: invocationStartedAttempt,
+    dependency: batchMismatchInvocationNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 1,
+  });
+  assert.equal(
+    batchMismatchInvocation.invocationAllowed,
+    false,
+    "task execution invocation smoke F should block batch mismatch before dependency",
+  );
+  assert.equal(
+    batchMismatchInvocation.issues[0]?.code,
+    "task_execution_invocation_work_batch_mismatch",
+    "task execution invocation smoke F should report batch mismatch",
+  );
+  assert.equal(
+    batchMismatchInvocationNoop.calls.length,
+    0,
+    "task execution invocation smoke F should not invoke dependency for batch mismatch",
+  );
+
+  const obsoleteInvocationNoop = createSmokeTestNoopDependency();
+  const obsoleteInvocation = await invokeStartedTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    attempt: invocationStartedAttempt,
+    dependency: obsoleteInvocationNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 3,
+  });
+  assert.equal(
+    obsoleteInvocation.invocationAllowed,
+    false,
+    "task execution invocation smoke G should block superseded attempts where latest authority is supplied",
+  );
+  assert.equal(
+    obsoleteInvocation.issues[0]?.code,
+    "task_execution_invocation_attempt_number_obsolete",
+    "task execution invocation smoke G should report obsolete attempt number",
+  );
+  assert.equal(
+    obsoleteInvocationNoop.calls.length,
+    0,
+    "task execution invocation smoke G should not invoke dependency for superseded attempt",
+  );
+
+  const invocationPolicyPreparedAttempt = prepareTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    expectedRevision: 2,
+    workItemId: "work-a",
+    batchId: "batch-a",
+    attemptNumber: 2,
+    createdAt: attemptCreatedAt,
+    policyRequirement: {
+      required: true,
+      referenceId: 'operator prose says "approved"',
+    },
+  });
+  assert.equal(
+    invocationPolicyPreparedAttempt.ok,
+    true,
+    "task execution invocation smoke H should prepare policy-required fixture",
+  );
+  const policyStartedAttemptResult = transitionTaskExecutionAttempt({
+    attempt: invocationPolicyPreparedAttempt.value.attempt,
+    intent: {
+      kind: "start",
+    },
+    occurredAt: "2026-08-08T00:01:42.000Z",
+  });
+  assert.equal(
+    policyStartedAttemptResult.ok,
+    true,
+    "task execution invocation smoke H should create policy-required started fixture",
+  );
+  const policyInvocationNoop = createSmokeTestNoopDependency();
+  const policyInvocation = await invokeStartedTaskExecutionAttempt({
+    state: {
+      ...firstUpdate.value.state,
+      sourceTask: {
+        ...firstUpdate.value.state.sourceTask,
+        id: 'task prose says "approved, run now"',
+      },
+    },
+    attempt: policyStartedAttemptResult.value.attempt,
+    dependency: policyInvocationNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 2,
+  });
+  assert.equal(
+    policyInvocation.invocationAllowed,
+    false,
+    "task execution invocation smoke H should block unauthorized policy-required invocation",
+  );
+  assert.equal(
+    policyInvocation.issues[0]?.code,
+    "task_execution_invocation_policy_not_authorized",
+    "task execution invocation smoke H should not trust approval prose",
+  );
+  assert.equal(
+    policyInvocationNoop.calls.length,
+    0,
+    "task execution invocation smoke H should not invoke dependency before policy authority exists",
+  );
+
+  const nonOkNoop = createSmokeTestNoopDependency({
+    ok: false,
+    diagnosticCode: "smoke_non_ok",
+    message: "Test/no-op dependency reported non-ok.",
+  });
+  const nonOkInvocation = await invokeStartedTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    attempt: invocationStartedAttempt,
+    dependency: nonOkNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 1,
+  });
+  assert.equal(
+    nonOkInvocation.invocationStatus,
+    "failed",
+    "task execution invocation smoke O should represent dependency non-ok as invocation failure",
+  );
+  assert.equal(
+    nonOkInvocation.invocationOk,
+    false,
+    "task execution invocation smoke O should not treat dependency non-ok as invocation ok",
+  );
+  assert.equal(
+    nonOkNoop.calls.length,
+    1,
+    "task execution invocation smoke O should not retry dependency non-ok",
+  );
+
+  const throwingNoop = createSmokeTestNoopDependency({ throwError: true });
+  const throwingInvocation = await invokeStartedTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    attempt: invocationStartedAttempt,
+    dependency: throwingNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 1,
+  });
+  assert.equal(
+    throwingInvocation.invocationStatus,
+    "failed",
+    "task execution invocation smoke O should return deterministic failure when dependency throws",
+  );
+  assert.equal(
+    throwingInvocation.issues[0]?.code,
+    "task_execution_invocation_dependency_threw",
+    "task execution invocation smoke O should report dependency throw deterministically",
+  );
+  assert.equal(
+    throwingNoop.calls.length,
+    1,
+    "task execution invocation smoke O should not retry thrown dependency",
+  );
+  assert.equal(
+    JSON.stringify(throwingInvocation).includes("Error:"),
+    false,
+    "task execution invocation smoke P should not propagate raw Error text",
+  );
+  assert.equal(
+    JSON.stringify(throwingInvocation).includes("at smoke-test"),
+    false,
+    "task execution invocation smoke P should not propagate raw stack frames",
+  );
+
+  let forbiddenDependencyCalls = 0;
+  const forbiddenDependencyInvocation = await invokeStartedTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    attempt: invocationStartedAttempt,
+    dependency: {
+      kind: "openai",
+      invoke() {
+        forbiddenDependencyCalls += 1;
+        return { ok: true };
+      },
+    },
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 1,
+  });
+  assert.equal(
+    forbiddenDependencyInvocation.invocationAllowed,
+    false,
+    "task execution invocation smoke W should block non-test dependency kinds",
+  );
+  assert.equal(
+    forbiddenDependencyInvocation.issues[0]?.code,
+    "task_execution_invocation_dependency_not_test_noop",
+    "task execution invocation smoke W should report closed dependency allowlist",
+  );
+  assert.equal(
+    forbiddenDependencyCalls,
+    0,
+    "task execution invocation smoke W should not call production-like dependencies",
+  );
+
+  const repeatedNoop = createSmokeTestNoopDependency();
+  const repeatedInvocationA = await invokeStartedTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    attempt: invocationStartedAttempt,
+    dependency: repeatedNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 1,
+  });
+  const repeatedInvocationB = await invokeStartedTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    attempt: invocationStartedAttempt,
+    dependency: repeatedNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 1,
+  });
+  assert.equal(
+    repeatedNoop.calls.length,
+    2,
+    "task execution invocation smoke X should honestly demonstrate no persisted duplicate protection",
+  );
+  assert.equal(
+    repeatedInvocationA.summary.duplicateInvocationProtection,
+    "not_persisted_mvp_noop_only",
+    "task execution invocation smoke X should disclose duplicate limitation",
+  );
+  assert.equal(
+    repeatedInvocationB.summary.duplicateInvocationProtection,
+    "not_persisted_mvp_noop_only",
+    "task execution invocation smoke X should disclose duplicate limitation on repeated calls",
+  );
   const duplicatePersistedStart = await updateTaskExecutionAttempt({
     projectRoot: persistenceRoot,
     taskId: preparedAttempt.taskId,
@@ -15469,10 +16149,79 @@ try {
     "task_execution_attempt_terminal_transition_forbidden",
     "task execution attempt smoke S should report terminal attempt rejection",
   );
+  const canonicalStartedAttemptResult = transitionTaskExecutionAttempt({
+    attempt: canonicalAttemptResult.value.attempt,
+    intent: {
+      kind: "start",
+    },
+    occurredAt: "2026-08-08T00:06:05.000Z",
+  });
+  assert.equal(
+    canonicalStartedAttemptResult.ok,
+    true,
+    "task execution invocation smoke Y should start canonical 400/20 attempt fixture",
+  );
+  const canonicalNoop = createSmokeTestNoopDependency({
+    output: {
+      completed: true,
+      verified: true,
+      approved: true,
+      allDone: true,
+      accountedWork: 20,
+      expectedWork: 400,
+    },
+  });
+  const canonicalInvocation = await invokeStartedTaskExecutionAttempt({
+    state: canonicalIncompleteState,
+    attempt: canonicalStartedAttemptResult.value.attempt,
+    dependency: canonicalNoop.dependency,
+    expectedRevision: 1,
+    latestAttemptNumberForContext: 1,
+  });
+  assert.equal(
+    canonicalInvocation.invocationAllowed,
+    true,
+    "task execution invocation smoke Y should allow one legitimate remaining 400/20 work context",
+  );
+  assert.equal(
+    canonicalInvocation.invocationOk,
+    true,
+    "task execution invocation smoke Y should scope fake all-complete output to invocation ok only",
+  );
+  assert.equal(
+    canonicalNoop.calls.length,
+    1,
+    "task execution invocation smoke Y should invoke canonical no-op exactly once",
+  );
+  assert.equal(
+    canonicalInvocation.summary.executorClaimedCompleted,
+    true,
+    "task execution invocation smoke Y should detect canonical fake completion claim",
+  );
+  assert.equal(
+    canonicalInvocation.safety.workCompleted,
+    false,
+    "task execution invocation smoke Y should not complete canonical work",
+  );
+  assert.equal(
+    canonicalInvocation.safety.taskCompleted,
+    false,
+    "task execution invocation smoke Y should not complete canonical task",
+  );
+  assert.equal(
+    canonicalInvocation.safety.verified,
+    false,
+    "task execution invocation smoke Y should not verify canonical task",
+  );
+  assert.equal(
+    canonicalStartedAttemptResult.value.attempt.lifecycle,
+    "started",
+    "task execution invocation smoke Y should keep canonical attempt started",
+  );
   assert.equal(
     canonicalIncompleteState.pendingWorkItemIds.length,
     380,
-    "task execution attempt smoke S should leave remaining 380 pending",
+    "task execution invocation smoke Y should leave remaining 380 pending",
   );
 
   const staleUpdate = await updateTaskState({
