@@ -83,6 +83,8 @@ condition.
   dependency-injected test/no-op executor only.
 - TASK-0291: Design and implement persisted execution invocation/idempotency
   record foundation.
+- TASK-0292: Invocation persistence targeted safety review and read-only
+  invocation status CLI.
 
 ## Do Not Load By Default
 
@@ -93,11 +95,12 @@ condition.
 
 ## Next Task
 
-TASK-0292 Invocation persistence targeted safety review and read-only invocation
-status CLI.
+TASK-0293 Design and implement invocation reconciliation/recovery foundation for
+invoking/outcome_unknown records.
 
-Purpose: Expose persisted invocation status/read-only visibility and review
-crash/idempotency behavior.
+Purpose: Design and implement reconciliation/recovery foundation for persisted
+invocation records whose durable outcome is invoking or outcome_unknown, without
+enabling production adapters or blind retries.
 
 ## Current Plans
 

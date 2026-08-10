@@ -611,6 +611,61 @@ executor says "all complete"
 The invocation may call only the no-op dependency for a legitimate remaining
 work context, and the authoritative remaining count stays 380.
 
+## Invocation Status
+Persisted invocation status is read-only inspection of an existing
+system-derived invocation record:
+
+```text
+aeos task execution invocation status <task-id> --invocation-id <invocation-id>
+aeos task execution invocation status <task-id> --invocation-id <invocation-id> --json
+```
+
+The task id and invocation id are selectors only. They cannot invent invocation
+authority, and no arbitrary invocation file path is accepted. Status loads the
+persisted invocation record through the same confined persistence path,
+validates it, optionally loads current task and attempt context for freshness,
+and renders a sanitized model.
+
+Status never reserves an invocation, enters invocation lifecycle, invokes the
+dependency, retries, reconciles, mutates task state, mutates attempt state,
+writes audit events, runs policy, runs verifiers, completes work, or completes
+the task. Missing records return deterministic not-found and do not create
+invocation directories. Corrupt or invalid invocation records fail closed and
+are not treated as absence.
+
+Lifecycle meanings remain distinct:
+
+- `reserved`: invocation authority exists; the dependency has not necessarily
+  been called.
+- `invoking`: invocation was entered; durable outcome is not yet known.
+- `returned`: dependency returned and diagnostic result was persisted; this is
+  not work completion or task completion.
+- `failed`: deterministic invocation-level failure was persisted; this is not
+  automatic retry authorization.
+- `outcome_unknown`: safe outcome cannot be proven; reconciliation is required
+  and blind retry is prohibited.
+
+The status model exposes non-secret authority such as task id, invocation id,
+idempotency reference, request fingerprint, lifecycle, dependency kind, attempt
+id/number, source task revision, current task revision when loaded, stale
+historical context, work/batch bindings, result or failure diagnostics, outcome
+certainty, reconciliation requirement, retryable system decision, record
+revision, and issues.
+
+Ownership tokens are not rendered in human output, JSON output, or the status
+view model. Status output is not usable as an ownership credential; guarded
+updates still require the original system ownership proof. Raw stack traces are
+not rendered as status authority.
+
+Historical invocation records remain inspectable even if the task has advanced.
+When `taskStateRevision` differs from the current task revision, status reports
+the record as stale rather than rewriting or rejecting the historical record.
+
+This MVP still does not claim universal exactly-once execution. A crash after a
+future external dependency call but before durable returned/failed evidence
+remains `outcome_unknown` or reconciliation territory. Production adapters
+remain blocked.
+
 ## Execution Preparation Preview
 `aeos task execution prepare --preview <task-id> --expected-revision <number>`
 loads authoritative persisted task state, validates it, checks the explicit

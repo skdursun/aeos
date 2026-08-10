@@ -38,6 +38,9 @@ Current foundation:
 - `aeos task execution start <task-id> --attempt-id <attempt-id>
   --expected-revision <number>` exists as an explicit persisted
   prepared-to-started attempt transition apply command.
+- `aeos task execution invocation status <task-id> --invocation-id
+  <invocation-id>` exists as a read-only persisted invocation inspection
+  command.
 - `aeos task status <task-id>` exists as a read-only persisted-state inspection
   command.
 - `aeos task resume --preview <task-id>` exists as a read-only resume handoff
@@ -435,6 +438,50 @@ success JSON reports `status: "execution_attempt_started"` plus safety flags
 showing `executionWorkPerformed`, adapter calls, audit writes, verifier run,
 task-state modification, work completion, and task completion are all false.
 Failures are JSON-only with deterministic issue codes and no raw stack traces.
+
+### `aeos task execution invocation status`
+Loads one existing persisted invocation by task id and system-derived invocation
+id:
+
+```text
+aeos task execution invocation status <task-id> --invocation-id <invocation-id>
+```
+
+The invocation id is a selector only. It cannot invent invocation authority and
+no raw invocation file path is accepted. The command validates the persisted
+invocation record, optionally loads current task and attempt context for
+freshness, and renders only a sanitized read-only status model.
+
+Status is strictly read-only. It does not reserve, enter, retry, reconcile, call
+the dependency, run production adapters, mutate task state, mutate attempt
+state, write audit, run policy, run verifiers, complete work, or complete the
+task. Missing invocation records fail deterministic not-found and do not create
+invocation directories. Corrupt or invalid invocation records fail closed and
+are not treated as absence.
+
+Lifecycle status is not collapsed into success or failure:
+
+- `reserved` means invocation authority exists, not that the dependency ran.
+- `invoking` means invocation was entered and durable outcome is not yet known.
+- `returned` means the dependency returned and diagnostic result was persisted;
+  it does not mean work completed, task completed, verifier passed, or policy
+  approved.
+- `failed` means deterministic invocation-level failure was persisted; retry is
+  not automatic and only the system-owned retryable field is reported.
+- `outcome_unknown` means safe outcome cannot be proven; reconciliation is
+  required and blind retry is prohibited.
+
+Human and JSON output never render the ownership token or any ownership
+capability. Status output cannot be used as update authority. Historical
+records remain inspectable after the task advances; status reports stale source
+revision context instead of rejecting or rewriting the historical record.
+
+### `aeos task execution invocation status --json`
+Same behavior as human mode, but stdout is exactly one JSON object. The JSON
+reports `readOnly: true`, `dependencyInvokedByStatus: false`, mutation flags
+false, completion/verifier/audit flags false, `safeToBlindRetry: false`, and
+deterministic issues. It does not include ownership secrets, raw stack traces,
+or raw filesystem/runtime errors.
 
 ### `aeos task status`
 Loads authoritative persisted task state by task id from the project-local state

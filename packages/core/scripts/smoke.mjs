@@ -117,6 +117,7 @@ import {
   getTaskStateStoragePath,
   loadTaskExecutionAttempt,
   loadTaskExecutionInvocation,
+  loadTaskExecutionInvocationStatus,
   loadTaskResumeHandoff,
   loadTaskState,
   prepareTaskExecutionAttempt,
@@ -14561,6 +14562,213 @@ try {
     false,
     "task execution invocation record smoke T should not persist work completion authority",
   );
+  const returnedInvocationPath = loadedInvocationRecord.value.path;
+  const returnedInvocationRoot = join(
+    persistenceRoot,
+    ".aeos",
+    "state",
+    "invocations",
+    invocationResult.taskId,
+  );
+  const returnedInvocationBytesBeforeStatus = await readFile(
+    returnedInvocationPath,
+    "utf8",
+  );
+  const returnedInvocationStatBeforeStatus = await stat(returnedInvocationPath);
+  const returnedInvocationFilesBeforeStatus = (
+    await readdir(returnedInvocationRoot)
+  ).sort();
+  const returnedStateBeforeStatus = await readFile(firstUpdate.value.path, "utf8");
+  const returnedAttemptBeforeStatus = await readFile(
+    saveAttemptResult.value.path,
+    "utf8",
+  );
+  const returnedStatus = await loadTaskExecutionInvocationStatus({
+    projectRoot: persistenceRoot,
+    taskId: invocationResult.taskId,
+    invocationId: invocationResult.invocationId,
+  });
+  assert.equal(
+    returnedStatus.ok,
+    true,
+    "task execution invocation status smoke C should load returned status",
+  );
+  assert.equal(
+    returnedStatus.value.invocation.lifecycle,
+    "returned",
+    "task execution invocation status smoke C should preserve returned lifecycle",
+  );
+  assert.equal(
+    returnedStatus.value.invocation.outcomeKnown,
+    true,
+    "task execution invocation status smoke C should report returned outcome known",
+  );
+  assert.equal(
+    returnedStatus.value.invocation.reconciliationRequired,
+    false,
+    "task execution invocation status smoke C should not require reconciliation for returned",
+  );
+  assert.equal(
+    returnedStatus.value.invocation.currentTaskRevision,
+    2,
+    "task execution invocation status smoke M should report matching current revision",
+  );
+  assert.equal(
+    returnedStatus.value.invocation.staleAgainstCurrentTask,
+    false,
+    "task execution invocation status smoke M should report non-stale current revision",
+  );
+  assert.equal(
+    returnedStatus.value.invocation.attemptLifecycle,
+    "started",
+    "task execution invocation status smoke M should report attempt lifecycle",
+  );
+  assert.equal(
+    returnedStatus.value.invocation.result.executorClaims.completed,
+    true,
+    "task execution invocation status smoke W should expose diagnostic completion claim only",
+  );
+  assert.equal(
+    returnedStatus.value.safety.workCompleted,
+    false,
+    "task execution invocation status smoke O should not imply work completion",
+  );
+  assert.equal(
+    returnedStatus.value.safety.taskCompleted,
+    false,
+    "task execution invocation status smoke O should not imply task completion",
+  );
+  assert.equal(
+    returnedStatus.value.safety.verifierRun,
+    false,
+    "task execution invocation status smoke O should not imply verifier pass",
+  );
+  assert.equal(
+    returnedStatus.value.safety.ownershipSecretRendered,
+    false,
+    "task execution invocation status smoke F should mark ownership secret redacted",
+  );
+  assert.equal(
+    JSON.stringify(returnedStatus.value).includes(
+      loadedInvocationRecord.value.record.ownership.ownershipToken,
+    ),
+    false,
+    "task execution invocation status smoke F should not render ownership token",
+  );
+  assert.equal(
+    JSON.stringify(returnedStatus.value).includes("ownershipToken"),
+    false,
+    "task execution invocation status smoke F should not render ownership token field",
+  );
+  assert.equal(
+    await readFile(returnedInvocationPath, "utf8"),
+    returnedInvocationBytesBeforeStatus,
+    "task execution invocation status smoke L should not change invocation bytes",
+  );
+  assert.equal(
+    (await stat(returnedInvocationPath)).mtimeMs,
+    returnedInvocationStatBeforeStatus.mtimeMs,
+    "task execution invocation status smoke L should not change invocation mtime",
+  );
+  assert.deepEqual(
+    (await readdir(returnedInvocationRoot)).sort(),
+    returnedInvocationFilesBeforeStatus,
+    "task execution invocation status smoke L should not change invocation directory contents",
+  );
+  assert.equal(
+    await readFile(firstUpdate.value.path, "utf8"),
+    returnedStateBeforeStatus,
+    "task execution invocation status smoke Y should not change task state",
+  );
+  assert.equal(
+    await readFile(saveAttemptResult.value.path, "utf8"),
+    returnedAttemptBeforeStatus,
+    "task execution invocation status smoke Y should not change attempt state",
+  );
+  const repeatedReturnedStatus = await loadTaskExecutionInvocationStatus({
+    projectRoot: persistenceRoot,
+    taskId: invocationResult.taskId,
+    invocationId: invocationResult.invocationId,
+  });
+  assert.deepEqual(
+    repeatedReturnedStatus,
+    returnedStatus,
+    "task execution invocation status smoke K should be equivalent on repeat",
+  );
+  const staleStatusProjectRoot = join(
+    persistenceTempRoot,
+    "stale-invocation-status-project",
+  );
+  await mkdir(staleStatusProjectRoot, { recursive: true });
+  const staleStatusInitialSave = await saveTaskState({
+    projectRoot: staleStatusProjectRoot,
+    state: initialState,
+  });
+  assert.equal(
+    staleStatusInitialSave.ok,
+    true,
+    "task execution invocation status smoke N should prepare initial stale task context",
+  );
+  const staleStatusRevisionTwo = await updateTaskState({
+    projectRoot: staleStatusProjectRoot,
+    taskId: initialState.taskId,
+    expectedRevision: 1,
+    updatedAt: "2026-08-08T00:01:46.800Z",
+    update() {
+      return firstUpdate.value.state;
+    },
+  });
+  assert.equal(
+    staleStatusRevisionTwo.ok,
+    true,
+    "task execution invocation status smoke N should prepare matching revision context",
+  );
+  const staleStatusRevisionThree = await updateTaskState({
+    projectRoot: staleStatusProjectRoot,
+    taskId: initialState.taskId,
+    expectedRevision: 2,
+    updatedAt: "2026-08-08T00:01:46.900Z",
+    update(state) {
+      return state;
+    },
+  });
+  assert.equal(
+    staleStatusRevisionThree.ok,
+    true,
+    "task execution invocation status smoke N should prepare stale task context",
+  );
+  const staleStatusInvocationRoot = join(
+    staleStatusProjectRoot,
+    ".aeos",
+    "state",
+    "invocations",
+    invocationResult.taskId,
+  );
+  await mkdir(staleStatusInvocationRoot, { recursive: true });
+  await writeNodeFile(
+    join(staleStatusInvocationRoot, `${invocationResult.invocationId}.json`),
+    returnedInvocationBytesBeforeStatus,
+  );
+  const staleStatus = await loadTaskExecutionInvocationStatus({
+    projectRoot: staleStatusProjectRoot,
+    taskId: invocationResult.taskId,
+    invocationId: invocationResult.invocationId,
+  });
+  assert.equal(
+    staleStatus.ok,
+    true,
+    "task execution invocation status smoke N should load historical status",
+  );
+  assert.equal(
+    staleStatus.value.invocation.currentTaskRevision,
+    3,
+    "task execution invocation status smoke N should report current task revision",
+  );
+  assert.equal(
+    staleStatus.value.invocation.staleAgainstCurrentTask,
+    true,
+    "task execution invocation status smoke N should report stale historical invocation",
+  );
   const duplicateReturnedNoop = createSmokeTestNoopDependency();
   const duplicateReturnedInvocation = await invokeStartedTaskExecutionAttempt({
     projectRoot: persistenceRoot,
@@ -14744,6 +14952,38 @@ try {
     directReservation.value.record,
     "task execution invocation record smoke F should roundtrip persisted reserved record",
   );
+  const reservedStatus = await loadTaskExecutionInvocationStatus({
+    projectRoot: persistenceRoot,
+    taskId: directReservation.value.record.taskId,
+    invocationId: directReservation.value.record.invocationId,
+  });
+  assert.equal(
+    reservedStatus.ok,
+    true,
+    "task execution invocation status smoke A should load reserved status",
+  );
+  assert.equal(
+    reservedStatus.value.invocation.lifecycle,
+    "reserved",
+    "task execution invocation status smoke A should report reserved lifecycle",
+  );
+  assert.equal(
+    reservedStatus.value.invocation.outcomeKnown,
+    false,
+    "task execution invocation status smoke A should not mark reserved outcome known",
+  );
+  assert.equal(
+    reservedStatus.value.safety.dependencyInvokedByStatus,
+    false,
+    "task execution invocation status smoke A should not invoke dependency for reserved status",
+  );
+  assert.equal(
+    JSON.stringify(reservedStatus.value).includes(
+      directReservation.value.record.ownership.ownershipToken,
+    ),
+    false,
+    "task execution invocation status smoke F should not render reserved ownership token",
+  );
   assert.equal(
     validateTaskExecutionInvocationRecord({
       ...directReservation.value.record,
@@ -14764,6 +15004,27 @@ try {
     }).ok,
     false,
     "task execution invocation record smoke G should reject immutable identity tampering",
+  );
+  const wrongOwnershipUpdate = await updateTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    taskId: directReservation.value.record.taskId,
+    invocationId: directReservation.value.record.invocationId,
+    ownershipToken: "wrong-smoke-token",
+    expectedLifecycle: "reserved",
+    intent: {
+      kind: "enter_invocation",
+      occurredAt: "2026-08-08T00:01:46.150Z",
+    },
+  });
+  assert.equal(
+    wrongOwnershipUpdate.ok,
+    false,
+    "task execution invocation record smoke T should reject wrong ownership token",
+  );
+  assert.equal(
+    wrongOwnershipUpdate.error.code,
+    "task_execution_invocation_ownership_mismatch",
+    "task execution invocation record smoke T should report ownership mismatch",
   );
   const directInvokingUpdate = await updateTaskExecutionInvocation({
     projectRoot: persistenceRoot,
@@ -14908,6 +15169,31 @@ try {
     "invoking",
     "task execution invocation record smoke O should persist invoking record fixture",
   );
+  const invokingStatus = await loadTaskExecutionInvocationStatus({
+    projectRoot: persistenceRoot,
+    taskId: invokingPersisted.value.record.taskId,
+    invocationId: invokingPersisted.value.record.invocationId,
+  });
+  assert.equal(
+    invokingStatus.ok,
+    true,
+    "task execution invocation status smoke B should load invoking status",
+  );
+  assert.equal(
+    invokingStatus.value.invocation.lifecycle,
+    "invoking",
+    "task execution invocation status smoke B should report invoking lifecycle",
+  );
+  assert.equal(
+    invokingStatus.value.invocation.outcomeKnown,
+    false,
+    "task execution invocation status smoke B should not mark invoking outcome known",
+  );
+  assert.equal(
+    invokingStatus.value.safety.dependencyInvokedByStatus,
+    false,
+    "task execution invocation status smoke R should not invoke dependency for invoking status",
+  );
   const invokingDuplicateNoop = createSmokeTestNoopDependency();
   const invokingDuplicate = await invokeStartedTaskExecutionAttempt({
     projectRoot: persistenceRoot,
@@ -14996,6 +15282,36 @@ try {
     "reconciliation_required",
     "task execution invocation smoke Q should require reconciliation for outcome_unknown",
   );
+  const unknownStatus = await loadTaskExecutionInvocationStatus({
+    projectRoot: persistenceRoot,
+    taskId: unknownPersisted.value.record.taskId,
+    invocationId: unknownPersisted.value.record.invocationId,
+  });
+  assert.equal(
+    unknownStatus.ok,
+    true,
+    "task execution invocation status smoke E should load outcome_unknown status",
+  );
+  assert.equal(
+    unknownStatus.value.invocation.lifecycle,
+    "outcome_unknown",
+    "task execution invocation status smoke E should preserve outcome_unknown lifecycle",
+  );
+  assert.equal(
+    unknownStatus.value.invocation.outcomeKnown,
+    false,
+    "task execution invocation status smoke Q should not treat outcome_unknown as known",
+  );
+  assert.equal(
+    unknownStatus.value.invocation.reconciliationRequired,
+    true,
+    "task execution invocation status smoke Q should require reconciliation for outcome_unknown",
+  );
+  assert.equal(
+    unknownStatus.value.invocation.safeToBlindRetry,
+    false,
+    "task execution invocation status smoke Q should prohibit blind retry for outcome_unknown",
+  );
   const corruptInvocationPreparedAttempt = prepareTaskExecutionAttempt({
     state: firstUpdate.value.state,
     expectedRevision: 2,
@@ -15055,6 +15371,66 @@ try {
     "task_execution_invocation_corrupt_json",
     "task execution invocation smoke R should fail closed on corrupt invocation JSON",
   );
+  const corruptInvocationStatus = await loadTaskExecutionInvocationStatus({
+    projectRoot: corruptInvocationRoot,
+    taskId: corruptInvocationStartedAttempt.value.attempt.taskId,
+    invocationId: corruptInvocationIdentity.value.invocationId,
+  });
+  assert.equal(
+    corruptInvocationStatus.ok,
+    false,
+    "task execution invocation status smoke H should fail closed on corrupt invocation JSON",
+  );
+  assert.equal(
+    corruptInvocationStatus.error.code,
+    "task_execution_invocation_corrupt_json",
+    "task execution invocation status smoke H should not treat corrupt record as absent",
+  );
+  const invalidSchemaInvocationId = "invocation-r2-n9-invalid-schema";
+  await writeNodeFile(
+    join(corruptInvocationStateRoot, `${invalidSchemaInvocationId}.json`),
+    `${JSON.stringify({ schemaVersion: 999, invocationId: invalidSchemaInvocationId })}\n`,
+  );
+  const invalidSchemaInvocationStatus = await loadTaskExecutionInvocationStatus({
+    projectRoot: corruptInvocationRoot,
+    taskId: corruptInvocationStartedAttempt.value.attempt.taskId,
+    invocationId: invalidSchemaInvocationId,
+  });
+  assert.equal(
+    invalidSchemaInvocationStatus.ok,
+    false,
+    "task execution invocation status smoke I should fail closed on invalid schema",
+  );
+  assert.equal(
+    invalidSchemaInvocationStatus.error.code,
+    "task_execution_invocation_record_schema_version_unsupported",
+    "task execution invocation status smoke I should report invalid schema",
+  );
+  const missingInvocationRoot = join(
+    persistenceTempRoot,
+    "missing-invocation-status-project",
+  );
+  await mkdir(missingInvocationRoot, { recursive: true });
+  const missingInvocationStatus = await loadTaskExecutionInvocationStatus({
+    projectRoot: missingInvocationRoot,
+    taskId: "missing-invocation-task",
+    invocationId: "missing-invocation-id",
+  });
+  assert.equal(
+    missingInvocationStatus.ok,
+    false,
+    "task execution invocation status smoke G should fail closed for missing invocation",
+  );
+  assert.equal(
+    missingInvocationStatus.error.code,
+    "task_execution_invocation_not_found",
+    "task execution invocation status smoke G should report deterministic not found",
+  );
+  assert.equal(
+    await pathExists(join(missingInvocationRoot, ".aeos")),
+    false,
+    "task execution invocation status smoke G should not create invocation directories for missing records",
+  );
   const invocationSymlinkProjectRoot = join(
     persistenceTempRoot,
     "invocation-symlink-project",
@@ -15092,6 +15468,21 @@ try {
     symlinkInvocationReserve.error.code,
     "task_execution_invocation_unsafe_state_root",
     "task execution invocation smoke S should report unsafe invocation root",
+  );
+  const symlinkInvocationStatus = await loadTaskExecutionInvocationStatus({
+    projectRoot: invocationSymlinkProjectRoot,
+    taskId: recordStartedAttempt.value.attempt.taskId,
+    invocationId: directReservation.value.record.invocationId,
+  });
+  assert.equal(
+    symlinkInvocationStatus.ok,
+    false,
+    "task execution invocation status smoke J should reject invocation-root symlink",
+  );
+  assert.equal(
+    symlinkInvocationStatus.error.code,
+    "task_execution_invocation_unsafe_state_root",
+    "task execution invocation status smoke J should report unsafe invocation root",
   );
   const invocationFileSymlinkProjectRoot = join(
     persistenceTempRoot,
@@ -15139,6 +15530,70 @@ try {
     fileSymlinkInvocationLoad.error.code,
     "task_execution_invocation_unsafe_target",
     "task execution invocation smoke S should report unsafe invocation target",
+  );
+  const fileSymlinkInvocationStatus = await loadTaskExecutionInvocationStatus({
+    projectRoot: invocationFileSymlinkProjectRoot,
+    taskId: recordStartedAttempt.value.attempt.taskId,
+    invocationId: directReservation.value.record.invocationId,
+  });
+  assert.equal(
+    fileSymlinkInvocationStatus.ok,
+    false,
+    "task execution invocation status smoke J should reject invocation-file symlink",
+  );
+  assert.equal(
+    fileSymlinkInvocationStatus.error.code,
+    "task_execution_invocation_unsafe_target",
+    "task execution invocation status smoke J should report unsafe target",
+  );
+  const unsafeTaskIdStatus = await loadTaskExecutionInvocationStatus({
+    projectRoot: persistenceRoot,
+    taskId: "../TASK-STATE-SMOKE",
+    invocationId: invocationResult.invocationId,
+  });
+  assert.equal(
+    unsafeTaskIdStatus.ok,
+    false,
+    "task execution invocation status smoke J should reject traversal task id",
+  );
+  const unsafeInvocationIdStatus = await loadTaskExecutionInvocationStatus({
+    projectRoot: persistenceRoot,
+    taskId: invocationResult.taskId,
+    invocationId: "../unsafe-invocation",
+  });
+  assert.equal(
+    unsafeInvocationIdStatus.ok,
+    false,
+    "task execution invocation status smoke J should reject unsafe invocation id",
+  );
+  const directoryInvocationProjectRoot = join(
+    persistenceTempRoot,
+    "invocation-directory-target-project",
+  );
+  const directoryInvocationRoot = join(
+    directoryInvocationProjectRoot,
+    ".aeos",
+    "state",
+    "invocations",
+    invocationResult.taskId,
+  );
+  await mkdir(join(directoryInvocationRoot, invocationResult.invocationId + ".json"), {
+    recursive: true,
+  });
+  const directoryInvocationStatus = await loadTaskExecutionInvocationStatus({
+    projectRoot: directoryInvocationProjectRoot,
+    taskId: invocationResult.taskId,
+    invocationId: invocationResult.invocationId,
+  });
+  assert.equal(
+    directoryInvocationStatus.ok,
+    false,
+    "task execution invocation status smoke J should reject directory invocation target",
+  );
+  assert.equal(
+    directoryInvocationStatus.error.code,
+    "task_execution_invocation_unsafe_target",
+    "task execution invocation status smoke J should report directory target as unsafe",
   );
   assert.equal(
     await readFile(firstUpdate.value.path, "utf8"),
@@ -15523,6 +15978,36 @@ try {
     duplicateFailedInvocation.issues[0]?.code,
     "smoke_non_ok",
     "task execution invocation smoke P should expose deterministic persisted failure code",
+  );
+  const failedStatus = await loadTaskExecutionInvocationStatus({
+    projectRoot: persistenceRoot,
+    taskId: duplicateFailedInvocation.taskId,
+    invocationId: duplicateFailedInvocation.invocationId,
+  });
+  assert.equal(
+    failedStatus.ok,
+    true,
+    "task execution invocation status smoke D should load failed status",
+  );
+  assert.equal(
+    failedStatus.value.invocation.lifecycle,
+    "failed",
+    "task execution invocation status smoke D should preserve failed lifecycle",
+  );
+  assert.equal(
+    failedStatus.value.invocation.failure.retryable,
+    false,
+    "task execution invocation status smoke P should expose system retryable decision",
+  );
+  assert.equal(
+    failedStatus.value.invocation.retryable,
+    false,
+    "task execution invocation status smoke P should not infer retryable failed status",
+  );
+  assert.equal(
+    failedStatus.value.invocation.safeToBlindRetry,
+    false,
+    "task execution invocation status smoke P should prohibit blind retry for failed status",
   );
 
   const throwingNoop = createSmokeTestNoopDependency({ throwError: true });

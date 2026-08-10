@@ -8,6 +8,7 @@ import {
   deriveLatestTaskExecutionAttemptNumber,
   evaluateTaskStateTransition,
   loadTaskExecutionAttempt,
+  loadTaskExecutionInvocationStatus,
   loadTaskResumeHandoff,
   loadTaskState,
   mapTaskContractToRunnerPlanningInput,
@@ -54,6 +55,7 @@ import type {
   TaskStateTransitionIntent,
   TaskStateTransitionPlan,
   TaskExecutionAttempt,
+  TaskExecutionInvocationReadOnlyStatus,
   TaskExecutionStartAuthorizationResult,
 } from "@aeos/core";
 import { handleContext } from "./context.js";
@@ -111,6 +113,8 @@ Commands:
   task execution start --preview <task-id> --attempt-id <attempt-id> --expected-revision <number> --json
   task execution start <task-id> --attempt-id <attempt-id> --expected-revision <number>
   task execution start <task-id> --attempt-id <attempt-id> --expected-revision <number> --json
+  task execution invocation status <task-id> --invocation-id <invocation-id>
+  task execution invocation status <task-id> --invocation-id <invocation-id> --json
   task status <task-id>
   task status <task-id> --json
   task resume --preview <task-id>
@@ -694,6 +698,29 @@ type TaskExecutionStartApplyJsonOutput =
         readonly message: string;
         readonly category: string;
       };
+      readonly issues: readonly TaskStateCliIssue[];
+    };
+
+type TaskExecutionInvocationStatusSafety =
+  TaskExecutionInvocationReadOnlyStatus["safety"];
+
+type TaskExecutionInvocationStatusJsonOutput =
+  | ({
+      readonly ok: true;
+    } & TaskExecutionInvocationReadOnlyStatus)
+  | {
+      readonly ok: false;
+      readonly status:
+        | "failed_to_load"
+        | "invalid_arguments";
+      readonly taskId: string;
+      readonly invocationId: string | null;
+      readonly error: {
+        readonly code: string;
+        readonly message: string;
+        readonly category: string;
+      };
+      readonly safety: TaskExecutionInvocationStatusSafety;
       readonly issues: readonly TaskStateCliIssue[];
     };
 
@@ -1325,6 +1352,12 @@ function writeTaskExecutionPreparationPreviewJson(
 
 function writeTaskExecutionStartPreviewJson(
   value: TaskExecutionStartPreviewJsonOutput | TaskExecutionStartApplyJsonOutput,
+): void {
+  writeJsonLine(value);
+}
+
+function writeTaskExecutionInvocationStatusJson(
+  value: TaskExecutionInvocationStatusJsonOutput,
 ): void {
   writeJsonLine(value);
 }
@@ -3869,6 +3902,119 @@ function printTaskExecutionStartApplyError(
   console.error("Task completed: false");
 }
 
+const taskExecutionInvocationStatusSafety: TaskExecutionInvocationStatusSafety = {
+  readOnly: true,
+  dependencyInvokedByStatus: false,
+  stateModified: false,
+  attemptModified: false,
+  taskModified: false,
+  workCompleted: false,
+  taskCompleted: false,
+  verifierRun: false,
+  auditWritten: false,
+  policyRun: false,
+  safeToBlindRetry: false,
+  ownershipSecretRendered: false,
+  statusUsableAsOwnershipCredential: false,
+};
+
+function createTaskExecutionInvocationStatusJsonOutput(
+  status: TaskExecutionInvocationReadOnlyStatus,
+): Extract<TaskExecutionInvocationStatusJsonOutput, { readonly ok: true }> {
+  return {
+    ok: true,
+    ...status,
+  };
+}
+
+function createTaskExecutionInvocationStatusErrorJsonOutput(input: {
+  readonly taskId: string;
+  readonly invocationId?: string | null;
+  readonly error: AeosError;
+  readonly status?: "failed_to_load" | "invalid_arguments";
+}): Extract<TaskExecutionInvocationStatusJsonOutput, { readonly ok: false }> {
+  return {
+    ok: false,
+    status: input.status ?? "failed_to_load",
+    taskId: input.taskId,
+    invocationId: input.invocationId ?? null,
+    error: {
+      code: input.error.code,
+      message: input.error.message,
+      category: input.error.category,
+    },
+    safety: taskExecutionInvocationStatusSafety,
+    issues: [createTaskStateCliIssueFromError(input.error)],
+  };
+}
+
+function printTaskExecutionInvocationStatusOutput(
+  output: Extract<TaskExecutionInvocationStatusJsonOutput, { readonly ok: true }>,
+): void {
+  const invocation = output.invocation;
+
+  console.log("Execution Invocation Status");
+  console.log("");
+  console.log(`Task id: ${output.taskId}`);
+  console.log(`Invocation id: ${output.invocationId}`);
+  console.log(`Lifecycle: ${invocation.lifecycle}`);
+  console.log(`Attempt: ${invocation.attemptId}`);
+  console.log(`Attempt lifecycle: ${invocation.attemptLifecycle ?? "unknown"}`);
+  console.log(`Attempt number: ${invocation.attemptNumber}`);
+  console.log(`Task revision: ${invocation.taskStateRevision}`);
+  console.log(
+    `Current task revision: ${invocation.currentTaskRevision ?? "unknown"}`,
+  );
+  console.log(`Stale: ${String(invocation.staleAgainstCurrentTask)}`);
+  console.log(`Work item: ${invocation.workItemId ?? "none"}`);
+  console.log(`Batch: ${invocation.batchId ?? "none"}`);
+  console.log(`Dependency: ${invocation.dependencyKind}`);
+  console.log(`Outcome known: ${String(invocation.outcomeKnown)}`);
+  console.log(
+    `Reconciliation required: ${String(invocation.reconciliationRequired)}`,
+  );
+  console.log(`Retryable: ${String(invocation.retryable)}`);
+  console.log(`Safe to blind retry: ${String(invocation.safeToBlindRetry)}`);
+  console.log(`Record revision: ${invocation.recordRevision}`);
+  console.log(`Issues: ${output.issues.length}`);
+  for (const item of output.issues) {
+    console.log(`- ${item.code}: ${item.message}`);
+  }
+
+  console.log("");
+  console.log(`Read only: ${String(output.safety.readOnly)}`);
+  console.log(
+    `Dependency invoked by status: ${String(
+      output.safety.dependencyInvokedByStatus,
+    )}`,
+  );
+  console.log(`State modified: ${String(output.safety.stateModified)}`);
+  console.log(`Attempt modified: ${String(output.safety.attemptModified)}`);
+  console.log(`Task modified: ${String(output.safety.taskModified)}`);
+  console.log(`Work completed: ${String(output.safety.workCompleted)}`);
+  console.log(`Task completed: ${String(output.safety.taskCompleted)}`);
+  console.log(`Verifier run: ${String(output.safety.verifierRun)}`);
+  console.log(`Audit written: ${String(output.safety.auditWritten)}`);
+}
+
+function printTaskExecutionInvocationStatusError(
+  output: Extract<TaskExecutionInvocationStatusJsonOutput, { readonly ok: false }>,
+): void {
+  console.error("Execution Invocation Status");
+  console.error(`Task id: ${output.taskId}`);
+  console.error(`Invocation id: ${output.invocationId ?? "none"}`);
+  console.error(`Status: ${output.status}`);
+  console.error(`Error: ${output.error.code}`);
+  console.error(`Message: ${output.error.message}`);
+  console.error("Read only: true");
+  console.error("Dependency invoked by status: false");
+  console.error("State modified: false");
+  console.error("Attempt modified: false");
+  console.error("Task modified: false");
+  console.error("Work completed: false");
+  console.error("Task completed: false");
+}
+
 function parseTaskStateTransitionArgs(args: readonly string[]): {
   readonly json: boolean;
   readonly preview: boolean;
@@ -6000,8 +6146,172 @@ async function handleTaskExecutionStart(args: readonly string[]): Promise<void> 
   }
 }
 
+async function handleTaskExecutionInvocation(args: readonly string[]): Promise<void> {
+  const subcommand = args[0];
+  const statusArgs = args.slice(1);
+  const json = args.includes("--json");
+
+  if (subcommand !== "status") {
+    const error = createTaskStateCliError({
+      code: "task_execution_invocation_unknown_command",
+      message: "Unknown task execution invocation command.",
+    });
+    const output = createTaskExecutionInvocationStatusErrorJsonOutput({
+      taskId: "",
+      error,
+      status: "invalid_arguments",
+    });
+
+    if (json) {
+      writeTaskExecutionInvocationStatusJson(output);
+    } else {
+      console.error("Error: unknown task execution invocation command.");
+      console.error(
+        "Usage: aeos task execution invocation status <task-id> --invocation-id <invocation-id> [--json]",
+      );
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  let taskId: string | undefined;
+  let invocationId: string | undefined;
+  const errors: AeosError[] = [];
+
+  for (let index = 0; index < statusArgs.length; index += 1) {
+    const arg = statusArgs[index];
+
+    if (arg === "--json") {
+      continue;
+    }
+
+    if (arg === "--invocation-id") {
+      const value = statusArgs[index + 1];
+
+      if (value === undefined || value.startsWith("--")) {
+        errors.push(
+          createTaskStateCliError({
+            code: "task_execution_invocation_status_invocation_id_required",
+            message:
+              "Task execution invocation status requires --invocation-id <invocation-id>.",
+          }),
+        );
+      } else if (invocationId !== undefined) {
+        errors.push(
+          createTaskStateCliError({
+            code: "task_execution_invocation_status_duplicate_invocation_id",
+            message:
+              "Task execution invocation status accepts one invocation id.",
+          }),
+        );
+        index += 1;
+      } else {
+        invocationId = value;
+        index += 1;
+      }
+      continue;
+    }
+
+    if (arg.startsWith("--")) {
+      errors.push(
+        createTaskStateCliError({
+          code: "task_execution_invocation_status_unknown_option",
+          message: "Unknown task execution invocation status option.",
+        }),
+      );
+      continue;
+    }
+
+    if (taskId !== undefined) {
+      errors.push(
+        createTaskStateCliError({
+          code: "task_execution_invocation_status_duplicate_task_id",
+          message: "Task execution invocation status accepts one task id.",
+        }),
+      );
+      continue;
+    }
+
+    taskId = arg;
+  }
+
+  if (taskId === undefined || taskId.trim().length === 0) {
+    errors.push(
+      createTaskStateCliError({
+        code: "task_execution_invocation_status_task_id_required",
+        message: "Task execution invocation status requires a task id.",
+      }),
+    );
+  }
+
+  if (invocationId === undefined || invocationId.trim().length === 0) {
+    errors.push(
+      createTaskStateCliError({
+        code: "task_execution_invocation_status_invocation_id_required",
+        message:
+          "Task execution invocation status requires --invocation-id <invocation-id>.",
+      }),
+    );
+  }
+
+  if (errors.length > 0) {
+    const output = createTaskExecutionInvocationStatusErrorJsonOutput({
+      taskId: taskId ?? "",
+      invocationId: invocationId ?? null,
+      error: errors[0]!,
+      status: "invalid_arguments",
+    });
+
+    if (json) {
+      writeTaskExecutionInvocationStatusJson(output);
+    } else {
+      printTaskExecutionInvocationStatusError(output);
+      console.error(
+        "Usage: aeos task execution invocation status <task-id> --invocation-id <invocation-id> [--json]",
+      );
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  const statusResult = await loadTaskExecutionInvocationStatus({
+    projectRoot: getCwd(),
+    taskId: taskId!,
+    invocationId: invocationId!,
+  });
+
+  if (!statusResult.ok) {
+    const output = createTaskExecutionInvocationStatusErrorJsonOutput({
+      taskId: taskId!,
+      invocationId: invocationId!,
+      error: statusResult.error,
+    });
+
+    if (json) {
+      writeTaskExecutionInvocationStatusJson(output);
+    } else {
+      printTaskExecutionInvocationStatusError(output);
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  const output = createTaskExecutionInvocationStatusJsonOutput(
+    statusResult.value,
+  );
+
+  if (json) {
+    writeTaskExecutionInvocationStatusJson(output);
+  } else {
+    printTaskExecutionInvocationStatusOutput(output);
+  }
+}
+
 async function handleTaskExecution(args: readonly string[]): Promise<void> {
-  if (args[0] !== "prepare" && args[0] !== "start") {
+  if (args[0] !== "prepare" && args[0] !== "start" && args[0] !== "invocation") {
     const json = args.includes("--json");
     const error = createTaskStateCliError({
       code: "task_execution_unknown_command",
@@ -6028,6 +6338,9 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
       console.error(
         "Usage: aeos task execution start <task-id> --attempt-id <attempt-id> --expected-revision <number> [--json]",
       );
+      console.error(
+        "Usage: aeos task execution invocation status <task-id> --invocation-id <invocation-id> [--json]",
+      );
     }
 
     setExitCode(1);
@@ -6036,6 +6349,11 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
 
   if (args[0] === "prepare") {
     await handleTaskExecutionPrepare(args.slice(1));
+    return;
+  }
+
+  if (args[0] === "invocation") {
+    await handleTaskExecutionInvocation(args.slice(1));
     return;
   }
 
@@ -8127,6 +8445,12 @@ async function handleTask(args: readonly string[]): Promise<void> {
     );
     console.error(
       "Usage: aeos task execution start --preview <task-id> --attempt-id <attempt-id> --expected-revision <number> [--json]",
+    );
+    console.error(
+      "Usage: aeos task execution start <task-id> --attempt-id <attempt-id> --expected-revision <number> [--json]",
+    );
+    console.error(
+      "Usage: aeos task execution invocation status <task-id> --invocation-id <invocation-id> [--json]",
     );
     console.error("Usage: aeos task status <task-id> [--json]");
     console.error("Usage: aeos task resume --preview <task-id> [--json]");

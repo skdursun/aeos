@@ -18,6 +18,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createInitialTaskState,
+  invokeStartedTaskExecutionAttempt,
   prepareTaskExecutionAttempt,
   saveTaskState,
   saveTaskExecutionAttempt,
@@ -1537,6 +1538,70 @@ function expectTaskExecutionStartApplyErrorJsonShape(message, value, expectedCod
     value.safety?.auditWrites !== false ||
     value.safety?.verifierRun !== false ||
     value.safety?.taskStateModified !== false ||
+    value.safety?.workCompleted !== false ||
+    value.safety?.taskCompleted !== false ||
+    !Array.isArray(value.issues) ||
+    !value.issues.some((issue) => issue.code === expectedCode)
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectTaskExecutionInvocationStatusJsonShape(message, value, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== true ||
+    value.status !== "invocation_status_loaded" ||
+    typeof value.taskId !== "string" ||
+    typeof value.invocationId !== "string" ||
+    typeof value.invocation !== "object" ||
+    value.invocation === null ||
+    typeof value.invocation.lifecycle !== "string" ||
+    typeof value.invocation.attemptId !== "string" ||
+    typeof value.invocation.attemptNumber !== "number" ||
+    typeof value.invocation.taskStateRevision !== "number" ||
+    typeof value.invocation.outcomeKnown !== "boolean" ||
+    typeof value.invocation.reconciliationRequired !== "boolean" ||
+    value.invocation.safeToBlindRetry !== false ||
+    typeof value.safety !== "object" ||
+    value.safety === null ||
+    value.safety.readOnly !== true ||
+    value.safety.dependencyInvokedByStatus !== false ||
+    value.safety.stateModified !== false ||
+    value.safety.attemptModified !== false ||
+    value.safety.taskModified !== false ||
+    value.safety.workCompleted !== false ||
+    value.safety.taskCompleted !== false ||
+    value.safety.verifierRun !== false ||
+    value.safety.auditWritten !== false ||
+    value.safety.ownershipSecretRendered !== false ||
+    !Array.isArray(value.issues)
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectTaskExecutionInvocationStatusErrorJsonShape(
+  message,
+  value,
+  expectedCode,
+  result,
+) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== false ||
+    typeof value.error !== "object" ||
+    value.error === null ||
+    value.error.code !== expectedCode ||
+    typeof value.error.message !== "string" ||
+    value.error.message.length === 0 ||
+    value.safety?.readOnly !== true ||
+    value.safety?.dependencyInvokedByStatus !== false ||
+    value.safety?.stateModified !== false ||
+    value.safety?.attemptModified !== false ||
+    value.safety?.taskModified !== false ||
     value.safety?.workCompleted !== false ||
     value.safety?.taskCompleted !== false ||
     !Array.isArray(value.issues) ||
@@ -6172,6 +6237,259 @@ try {
   ) {
     fail("task execution start apply changed task or work completion state", startApplyJson);
   }
+
+  const cliInvocationNoop = {
+    calls: 0,
+    dependency: {
+      kind: "test_noop",
+      invoke() {
+        cliInvocationNoop.calls += 1;
+        return {
+          ok: true,
+          output: {
+            completed: true,
+            verified: true,
+            allDone: true,
+            executionSucceeded: true,
+          },
+          diagnosticCode: "cli_status_noop",
+          message: "CLI status noop returned.",
+        };
+      },
+    },
+  };
+  const cliInvocationResult = await invokeStartedTaskExecutionAttempt({
+    projectRoot: taskStateCliRoot,
+    state: statusStateAfterStartApply,
+    attempt: persistedStartedAttempt,
+    dependency: cliInvocationNoop.dependency,
+    expectedRevision: 1,
+    latestAttemptNumberForContext: 1,
+  });
+  if (
+    cliInvocationResult.invocationStatus !== "returned" ||
+    cliInvocationResult.dependencyInvoked !== true ||
+    cliInvocationNoop.calls !== 1
+  ) {
+    fail("task execution invocation status fixture did not persist returned invocation");
+  }
+  const invocationStatusPath = join(
+    taskStateCliRoot,
+    ".aeos",
+    "state",
+    "invocations",
+    statusTaskId,
+    `${cliInvocationResult.invocationId}.json`,
+  );
+  const persistedInvocationForStatus = JSON.parse(
+    readFileSync(invocationStatusPath, "utf8"),
+  );
+  const invocationStatusBytesBefore = readFileSync(invocationStatusPath, "utf8");
+  const invocationStatusMtimeBefore = statSync(invocationStatusPath).mtimeMs;
+  const invocationFilesBeforeStatus = listRelativeFiles(
+    join(taskStateCliRoot, ".aeos", "state", "invocations"),
+  );
+  const stateSnapshotBeforeInvocationStatus = stateFileSnapshot(statusStatePath);
+  const attemptBytesBeforeInvocationStatus = readFileSync(persistedAttemptPath, "utf8");
+  const invocationStatusHuman = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "invocation",
+    "status",
+    statusTaskId,
+    "--invocation-id",
+    cliInvocationResult.invocationId,
+  ]);
+  expectExitCode("task execution invocation status human exited nonzero", invocationStatusHuman, 0);
+  for (const expectedText of [
+    "Execution Invocation Status",
+    `Task id: ${statusTaskId}`,
+    `Invocation id: ${cliInvocationResult.invocationId}`,
+    "Lifecycle: returned",
+    "Outcome known: true",
+    "Reconciliation required: false",
+    "Retryable: false",
+    "Safe to blind retry: false",
+    "Read only: true",
+    "Dependency invoked by status: false",
+    "Work completed: false",
+    "Task completed: false",
+  ]) {
+    expectOutputIncludes(
+      `task execution invocation status human missing ${expectedText}`,
+      invocationStatusHuman,
+      expectedText,
+    );
+  }
+  expectOutputExcludes(
+    "task execution invocation status human leaked ownership token",
+    invocationStatusHuman,
+    persistedInvocationForStatus.ownership.ownershipToken,
+  );
+  const invocationStatusJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "invocation",
+    "status",
+    statusTaskId,
+    "--invocation-id",
+    cliInvocationResult.invocationId,
+    "--json",
+  ]);
+  expectExitCode("task execution invocation status --json exited nonzero", invocationStatusJson, 0);
+  const parsedInvocationStatusJson = parseJsonOnlyStdout(
+    "task execution invocation status --json output was not valid JSON only",
+    invocationStatusJson,
+  );
+  expectTaskExecutionInvocationStatusJsonShape(
+    "task execution invocation status --json shape was invalid",
+    parsedInvocationStatusJson,
+    invocationStatusJson,
+  );
+  if (
+    parsedInvocationStatusJson.taskId !== statusTaskId ||
+    parsedInvocationStatusJson.invocationId !== cliInvocationResult.invocationId ||
+    parsedInvocationStatusJson.invocation.lifecycle !== "returned" ||
+    parsedInvocationStatusJson.invocation.currentTaskRevision !== 1 ||
+    parsedInvocationStatusJson.invocation.staleAgainstCurrentTask !== false ||
+    parsedInvocationStatusJson.invocation.result.executorClaims.completed !== true ||
+    parsedInvocationStatusJson.safety.workCompleted !== false ||
+    parsedInvocationStatusJson.safety.taskCompleted !== false ||
+    parsedInvocationStatusJson.safety.verifierRun !== false
+  ) {
+    fail("task execution invocation status --json lost safety semantics", invocationStatusJson);
+  }
+  if (
+    invocationStatusJson.stdout.includes(
+      persistedInvocationForStatus.ownership.ownershipToken,
+    ) ||
+    invocationStatusJson.stdout.includes("ownershipToken")
+  ) {
+    fail("task execution invocation status --json leaked ownership authority", invocationStatusJson);
+  }
+  expectStateFileSnapshotSame(
+    "task execution invocation status modified task state",
+    statusStatePath,
+    stateSnapshotBeforeInvocationStatus,
+    invocationStatusJson,
+  );
+  if (
+    readFileSync(invocationStatusPath, "utf8") !== invocationStatusBytesBefore ||
+    statSync(invocationStatusPath).mtimeMs !== invocationStatusMtimeBefore ||
+    readFileSync(persistedAttemptPath, "utf8") !== attemptBytesBeforeInvocationStatus
+  ) {
+    fail("task execution invocation status modified persisted authority", invocationStatusJson);
+  }
+  expectSameFiles(
+    "task execution invocation status changed invocation directory contents",
+    invocationFilesBeforeStatus,
+    listRelativeFiles(join(taskStateCliRoot, ".aeos", "state", "invocations")),
+  );
+  const repeatedInvocationStatusJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "invocation",
+    "status",
+    statusTaskId,
+    "--invocation-id",
+    cliInvocationResult.invocationId,
+    "--json",
+  ]);
+  expectExitCode(
+    "repeated task execution invocation status --json exited nonzero",
+    repeatedInvocationStatusJson,
+    0,
+  );
+  if (repeatedInvocationStatusJson.stdout !== invocationStatusJson.stdout) {
+    fail(
+      "repeated task execution invocation status --json was not deterministic",
+      repeatedInvocationStatusJson,
+    );
+  }
+  const missingInvocationStatusRoot = mkdtempSync(
+    join(tmpdir(), "aeos-cli-missing-invocation-status-"),
+  );
+  const missingInvocationStatusJson = runCliFrom(missingInvocationStatusRoot, [
+    "task",
+    "execution",
+    "invocation",
+    "status",
+    "missing-task",
+    "--invocation-id",
+    "missing-invocation",
+    "--json",
+  ]);
+  expectNonzero("task execution invocation status missing exited zero", missingInvocationStatusJson);
+  const parsedMissingInvocationStatusJson = parseJsonOnlyStdout(
+    "task execution invocation status missing output was not valid JSON only",
+    missingInvocationStatusJson,
+  );
+  expectTaskExecutionInvocationStatusErrorJsonShape(
+    "task execution invocation status missing did not fail closed",
+    parsedMissingInvocationStatusJson,
+    "task_execution_invocation_not_found",
+    missingInvocationStatusJson,
+  );
+  if (existsSync(join(missingInvocationStatusRoot, ".aeos"))) {
+    fail("task execution invocation status missing created state directories", missingInvocationStatusJson);
+  }
+  const corruptInvocationStatusRoot = mkdtempSync(
+    join(tmpdir(), "aeos-cli-corrupt-invocation-status-"),
+  );
+  const corruptInvocationStatusDir = join(
+    corruptInvocationStatusRoot,
+    ".aeos",
+    "state",
+    "invocations",
+    statusTaskId,
+  );
+  mkdirSync(corruptInvocationStatusDir, { recursive: true });
+  writeFileSync(
+    join(corruptInvocationStatusDir, `${cliInvocationResult.invocationId}.json`),
+    "{ corrupt invocation",
+  );
+  const corruptInvocationStatusJson = runCliFrom(corruptInvocationStatusRoot, [
+    "task",
+    "execution",
+    "invocation",
+    "status",
+    statusTaskId,
+    "--invocation-id",
+    cliInvocationResult.invocationId,
+    "--json",
+  ]);
+  expectNonzero("task execution invocation status corrupt exited zero", corruptInvocationStatusJson);
+  const parsedCorruptInvocationStatusJson = parseJsonOnlyStdout(
+    "task execution invocation status corrupt output was not valid JSON only",
+    corruptInvocationStatusJson,
+  );
+  expectTaskExecutionInvocationStatusErrorJsonShape(
+    "task execution invocation status corrupt did not fail closed",
+    parsedCorruptInvocationStatusJson,
+    "task_execution_invocation_corrupt_json",
+    corruptInvocationStatusJson,
+  );
+  const unsafeInvocationStatusJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "invocation",
+    "status",
+    "../TASK-STATUS-SMOKE",
+    "--invocation-id",
+    cliInvocationResult.invocationId,
+    "--json",
+  ]);
+  expectNonzero("task execution invocation status traversal id exited zero", unsafeInvocationStatusJson);
+  const parsedUnsafeInvocationStatusJson = parseJsonOnlyStdout(
+    "task execution invocation status traversal output was not valid JSON only",
+    unsafeInvocationStatusJson,
+  );
+  expectTaskExecutionInvocationStatusErrorJsonShape(
+    "task execution invocation status traversal did not fail closed",
+    parsedUnsafeInvocationStatusJson,
+    "task_execution_invocation_unsafe_taskId",
+    unsafeInvocationStatusJson,
+  );
 
   const previewAfterStartApplyJson = runCliFrom(taskStateCliRoot, [
     "task",

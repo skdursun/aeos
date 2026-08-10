@@ -21,16 +21,22 @@ import type {
   AgenticWorkItemId,
 } from "./agentic-lifecycle.js";
 import type { PersistedTaskState } from "./task-state-persistence.js";
-import { validatePersistedTaskState } from "./task-state-persistence.js";
+import {
+  loadTaskState,
+  validatePersistedTaskState,
+} from "./task-state-persistence.js";
 import type {
   TaskExecutionAttempt,
   TaskExecutionAttemptError,
+  TaskExecutionFailureCategory,
 } from "./task-execution-attempt.js";
 import { validateTaskExecutionAttempt } from "./task-execution-attempt.js";
+import { loadTaskExecutionAttempt } from "./task-execution-attempt-persistence.js";
 import type {
   CreateReservedTaskExecutionInvocationRecordInput,
   TaskExecutionInvocationIdentity,
   TaskExecutionInvocationLifecycle,
+  TaskExecutionInvocationOutcomeCertainty,
   TaskExecutionInvocationRecord,
   TaskExecutionInvocationRecordError,
   TaskExecutionInvocationRecordTransitionIntent,
@@ -97,6 +103,96 @@ export interface TaskExecutionInvocationPersistenceResult {
   readonly path: string;
 }
 
+export interface LoadTaskExecutionInvocationStatusInput
+  extends TaskExecutionInvocationStorageInput {}
+
+export interface TaskExecutionInvocationStatusIssue {
+  readonly code: string;
+  readonly message: string;
+  readonly severity: "error";
+  readonly category: AeosError["category"];
+}
+
+export interface TaskExecutionInvocationStatusResultDiagnostic {
+  readonly invocationOk: boolean;
+  readonly outputReference: string | null;
+  readonly diagnosticCode: string | null;
+  readonly message: string | null;
+  readonly returnedAt: string;
+  readonly executorClaims: {
+    readonly completed: boolean;
+    readonly verified: boolean;
+    readonly approved: boolean;
+    readonly allDone: boolean;
+    readonly executionSucceeded: boolean;
+  };
+}
+
+export interface TaskExecutionInvocationStatusFailureDiagnostic {
+  readonly code: string;
+  readonly category: TaskExecutionFailureCategory;
+  readonly diagnostic: string | null;
+  readonly retryable: boolean;
+  readonly failedAt: string;
+}
+
+export interface TaskExecutionInvocationReadOnlyStatus {
+  readonly status: "invocation_status_loaded";
+  readonly taskId: AgenticTaskId;
+  readonly invocationId: string;
+  readonly invocation: {
+    readonly lifecycle: TaskExecutionInvocationLifecycle;
+    readonly dependencyKind: TaskExecutionInvocationDependencyKind;
+    readonly attemptId: AgenticExecutionAttemptId;
+    readonly attemptNumber: number;
+    readonly attemptLifecycle: TaskExecutionAttempt["lifecycle"] | null;
+    readonly attemptLoaded: boolean;
+    readonly attemptContextValid: boolean;
+    readonly taskStateRevision: number;
+    readonly currentTaskRevision: number | null;
+    readonly taskContextLoaded: boolean;
+    readonly taskContextValid: boolean;
+    readonly staleAgainstCurrentTask: boolean | null;
+    readonly currentlyExecutionAuthoritative: boolean;
+    readonly workItemId: AgenticWorkItemId | null;
+    readonly batchId: AgenticWorkBatchId | null;
+    readonly idempotencyReference: string;
+    readonly requestFingerprint: string;
+    readonly allowedOperationReferences: readonly string[];
+    readonly verifierRequired: boolean;
+    readonly completionGatedByVerifier: boolean;
+    readonly outcomeCertainty: TaskExecutionInvocationOutcomeCertainty;
+    readonly outcomeKnown: boolean;
+    readonly reconciliationRequired: boolean;
+    readonly safeToBlindRetry: false;
+    readonly retryable: boolean;
+    readonly result: TaskExecutionInvocationStatusResultDiagnostic | null;
+    readonly failure: TaskExecutionInvocationStatusFailureDiagnostic | null;
+    readonly recordRevision: number;
+    readonly recordSchemaVersion: number;
+    readonly createdAt: string;
+    readonly updatedAt: string;
+    readonly enteredAt: string | null;
+    readonly outcomeUnknownAt: string | null;
+  };
+  readonly safety: {
+    readonly readOnly: true;
+    readonly dependencyInvokedByStatus: false;
+    readonly stateModified: false;
+    readonly attemptModified: false;
+    readonly taskModified: false;
+    readonly workCompleted: false;
+    readonly taskCompleted: false;
+    readonly verifierRun: false;
+    readonly auditWritten: false;
+    readonly policyRun: false;
+    readonly safeToBlindRetry: false;
+    readonly ownershipSecretRendered: false;
+    readonly statusUsableAsOwnershipCredential: false;
+  };
+  readonly issues: readonly TaskExecutionInvocationStatusIssue[];
+}
+
 export type TaskExecutionInvocationPersistenceError =
   | TaskExecutionInvocationRecordError
   | TaskExecutionAttemptError
@@ -144,6 +240,66 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+function statusIssueFromError(
+  error: AeosError,
+): TaskExecutionInvocationStatusIssue {
+  return {
+    code: error.code,
+    message: error.message,
+    severity: "error",
+    category: error.category,
+  };
+}
+
+function statusIssue(input: {
+  readonly code: string;
+  readonly message: string;
+  readonly category: AeosError["category"];
+}): TaskExecutionInvocationStatusIssue {
+  return {
+    code: input.code,
+    message: input.message,
+    severity: "error",
+    category: input.category,
+  };
+}
+
+function statusCategoryFromLifecycleIssueCategory(
+  category: string,
+): AeosError["category"] {
+  if (category === "policy_failure") {
+    return "policy";
+  }
+
+  if (category === "resume_failure") {
+    return "conflict";
+  }
+
+  return "unknown";
+}
+
+function hasTrueKey(value: unknown, keys: ReadonlySet<string>): boolean {
+  if (Array.isArray(value)) {
+    return value.some((item) => hasTrueKey(item, keys));
+  }
+
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  for (const [key, item] of Object.entries(value)) {
+    if (keys.has(key) && item === true) {
+      return true;
+    }
+
+    if (hasTrueKey(item, keys)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function isInsideOrEqual(parentPath: string, childPath: string): boolean {
@@ -1336,5 +1492,201 @@ export function deriveTaskExecutionInvocationIdentityForAttempt(input: {
     allowedOperationReferences: input.allowedOperationReferences,
     verifierRequired: input.verifierRequired,
     completionGatedByVerifier: input.completionGatedByVerifier,
+  });
+}
+
+function resultDiagnosticForStatus(
+  record: TaskExecutionInvocationRecord,
+): TaskExecutionInvocationStatusResultDiagnostic | null {
+  if (record.result === undefined) {
+    return null;
+  }
+
+  return {
+    invocationOk: record.result.invocationOk,
+    outputReference: record.result.outputReference ?? null,
+    diagnosticCode: record.result.diagnosticCode ?? null,
+    message: record.result.message ?? null,
+    returnedAt: record.result.returnedAt,
+    executorClaims: {
+      completed: hasTrueKey(record.result, new Set(["completed"])),
+      verified: hasTrueKey(record.result, new Set(["verified"])),
+      approved: hasTrueKey(record.result, new Set(["approved"])),
+      allDone: hasTrueKey(record.result, new Set(["allDone"])),
+      executionSucceeded: hasTrueKey(
+        record.result,
+        new Set(["executionSucceeded"]),
+      ),
+    },
+  };
+}
+
+function failureDiagnosticForStatus(
+  record: TaskExecutionInvocationRecord,
+): TaskExecutionInvocationStatusFailureDiagnostic | null {
+  if (record.failure === undefined) {
+    return null;
+  }
+
+  return {
+    code: record.failure.code,
+    category: record.failure.category,
+    diagnostic: record.failure.diagnostic ?? null,
+    retryable: record.failure.retryable,
+    failedAt: record.failure.failedAt,
+  };
+}
+
+function attemptMatchesInvocationContext(input: {
+  readonly attempt: TaskExecutionAttempt;
+  readonly record: TaskExecutionInvocationRecord;
+}): boolean {
+  return (
+    input.attempt.taskId === input.record.taskId &&
+    input.attempt.attemptId === input.record.attemptId &&
+    input.attempt.attemptNumber === input.record.attemptNumber &&
+    input.attempt.taskStateRevision === input.record.taskStateRevision &&
+    input.attempt.workItemId === input.record.workItemId &&
+    input.attempt.batchId === input.record.batchId
+  );
+}
+
+export async function loadTaskExecutionInvocationStatus(
+  input: LoadTaskExecutionInvocationStatusInput,
+): Promise<
+  Result<
+    TaskExecutionInvocationReadOnlyStatus,
+    TaskExecutionInvocationPersistenceError
+  >
+> {
+  const invocationResult = await loadTaskExecutionInvocation(input);
+
+  if (!invocationResult.ok) {
+    return invocationResult;
+  }
+
+  const record = invocationResult.value.record;
+  const issues: TaskExecutionInvocationStatusIssue[] = record.issues.map(
+    (issue) =>
+      statusIssue({
+        code: issue.code,
+        message: issue.message,
+        category: statusCategoryFromLifecycleIssueCategory(issue.category),
+      }),
+  );
+
+  let currentTaskRevision: number | null = null;
+  let taskContextLoaded = false;
+  let taskContextValid = false;
+  const taskResult = await loadTaskState({
+    projectRoot: input.projectRoot,
+    taskId: record.taskId,
+  });
+
+  if (taskResult.ok) {
+    taskContextLoaded = true;
+    taskContextValid = true;
+    currentTaskRevision = taskResult.value.state.revision;
+  } else {
+    issues.push(statusIssueFromError(taskResult.error));
+  }
+
+  let attemptLifecycle: TaskExecutionAttempt["lifecycle"] | null = null;
+  let attemptLoaded = false;
+  let attemptContextValid = false;
+  const attemptResult = await loadTaskExecutionAttempt({
+    projectRoot: input.projectRoot,
+    taskId: record.taskId,
+    attemptId: record.attemptId,
+  });
+
+  if (attemptResult.ok) {
+    attemptLoaded = true;
+    attemptLifecycle = attemptResult.value.attempt.lifecycle;
+    attemptContextValid = attemptMatchesInvocationContext({
+      attempt: attemptResult.value.attempt,
+      record,
+    });
+
+    if (!attemptContextValid) {
+      issues.push(
+        statusIssue({
+          code: "task_execution_invocation_attempt_context_mismatch",
+          message:
+            "Persisted execution attempt context does not match invocation authority.",
+          category: "validation",
+        }),
+      );
+    }
+  } else {
+    issues.push(statusIssueFromError(attemptResult.error));
+  }
+
+  const staleAgainstCurrentTask =
+    currentTaskRevision === null
+      ? null
+      : currentTaskRevision !== record.taskStateRevision;
+  const currentlyExecutionAuthoritative =
+    taskContextValid &&
+    attemptContextValid &&
+    staleAgainstCurrentTask === false &&
+    attemptLifecycle === "started" &&
+    (record.lifecycle === "reserved" || record.lifecycle === "invoking");
+
+  return ok({
+    status: "invocation_status_loaded",
+    taskId: record.taskId,
+    invocationId: record.invocationId,
+    invocation: {
+      lifecycle: record.lifecycle,
+      dependencyKind: record.dependencyKind,
+      attemptId: record.attemptId,
+      attemptNumber: record.attemptNumber,
+      attemptLifecycle,
+      attemptLoaded,
+      attemptContextValid,
+      taskStateRevision: record.taskStateRevision,
+      currentTaskRevision,
+      taskContextLoaded,
+      taskContextValid,
+      staleAgainstCurrentTask,
+      currentlyExecutionAuthoritative,
+      workItemId: record.workItemId ?? null,
+      batchId: record.batchId ?? null,
+      idempotencyReference: record.idempotencyKey,
+      requestFingerprint: record.request.fingerprint,
+      allowedOperationReferences: record.request.allowedOperationReferences,
+      verifierRequired: record.request.verifierRequired,
+      completionGatedByVerifier: record.request.completionGatedByVerifier,
+      outcomeCertainty: record.outcomeCertainty,
+      outcomeKnown: record.outcomeCertainty === "known",
+      reconciliationRequired: record.lifecycle === "outcome_unknown",
+      safeToBlindRetry: false,
+      retryable: record.failure?.retryable ?? false,
+      result: resultDiagnosticForStatus(record),
+      failure: failureDiagnosticForStatus(record),
+      recordRevision: record.revision,
+      recordSchemaVersion: record.schemaVersion,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      enteredAt: record.enteredAt ?? null,
+      outcomeUnknownAt: record.outcomeUnknownAt ?? null,
+    },
+    safety: {
+      readOnly: true,
+      dependencyInvokedByStatus: false,
+      stateModified: false,
+      attemptModified: false,
+      taskModified: false,
+      workCompleted: false,
+      taskCompleted: false,
+      verifierRun: false,
+      auditWritten: false,
+      policyRun: false,
+      safeToBlindRetry: false,
+      ownershipSecretRendered: false,
+      statusUsableAsOwnershipCredential: false,
+    },
+    issues,
   });
 }
