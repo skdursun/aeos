@@ -1150,11 +1150,96 @@ Execution adapter normalization and conformance do not create completion
 authority, verifier authority, approval authority, retry authority, or task
 state mutation.
 
-Production execution remains disabled because the hard blockers from TASK-0297
-still stand: policy runtime/proof, credential runtime, adapter permission and
-policy gate enforcement, durable audit runtime, crash/recovery provider
-integration, retry protocol, and execution-result to work-accounting,
-coverage, verifier, completion-gate, and task-completion pipeline.
+Production execution remains disabled because the remaining hard blockers from
+TASK-0297 still stand: production policy runtime/proof, credential runtime,
+durable audit runtime, crash/recovery provider integration, retry protocol, and
+execution-result to work-accounting, coverage, verifier, completion-gate, and
+task-completion pipeline.
+
+## Execution Permission And Policy Gate - TASK-0299
+TASK-0299 adds the core execution permission/policy gate foundation without
+enabling production execution. The public boundary is
+`evaluateTaskExecutionPermissionGate(...)` plus typed gate input, result,
+permission requirement, policy requirement, policy proof, decision, issue, and
+safety contracts.
+
+The gate is pure and read-only. It does not invoke adapters, call providers,
+resolve credentials, write audit events, run policy runtime, run verifiers,
+mutate task state, mutate attempt state, mutate invocation records, complete
+work, or complete tasks. Its result explicitly keeps adapter invocation,
+production execution, task/attempt/invocation mutation, audit write, verifier
+run, work completion, and task completion false.
+
+Capability remains distinct from permission. Capabilities come only from the
+system-owned adapter definition. Task prose, model output, operator text, and
+adapter output cannot grant network, filesystem, process, shell, model
+invocation, tool-call, or external-side-effect capability. If a required
+capability is absent, the gate blocks before any adapter invocation.
+
+Permission remains distinct from capability. The gate evaluates the closed
+execution permission set for model invocation, tool call, network, filesystem,
+process, shell, and external side effects. A capable adapter is still denied
+when the corresponding system-owned permission is not granted. For the current
+TEST adapter all real side-effect permissions remain false; a safe in-memory
+test operation may be authorized only when it does not require those
+permissions.
+
+Policy required is not policy authorized. The policy requirement is built from
+authoritative system/invocation/adapter metadata, not from task prose. If
+authoritative policy says `policyRequired: false`, lack of approval proof alone
+does not block the TEST gate. This does not enable production provider calls:
+credential, audit, production adapter activation, verifier, retry, and
+completion boundaries remain separate.
+
+When policy is required, missing proof fails closed. The only accepted
+TASK-0299 proof source is the TEST-only system source:
+
+```ts
+source.kind === "test_policy_authority"
+source.authority === "system"
+```
+
+Operator prose, task prose, model output, adapter output, arbitrary CLI flags,
+free-form text, and production approval services are not accepted as policy
+authorization proof. The TEST policy authority exists only in smoke coverage
+and is not exported as public API.
+
+Policy authorization proof is bound to the exact invocation context: task id,
+task revision, attempt id, invocation id, adapter id, operation kind, required
+permission set, and policy gate id. A proof for another invocation, adapter,
+task revision, operation, or permission set is rejected. Unknown proof
+decisions, missing proof decisions, denied proof, approval-required proof,
+expired proof, and invalid proof sources all fail closed.
+
+Adapter self-authorization remains forbidden. Adapter metadata or output
+claiming `permissionGranted`, `policyAuthorized`, `approved`, network/shell
+allowance, completion, verification, or similar authority cannot authorize the
+gate. Task or model prose such as "approved", "admin approved", "network
+permitted", "safe to run", or "policy passed" is ignored.
+
+The credential boundary remains a reference boundary only. The gate may
+represent whether a credential reference is required and present, but it does
+not resolve secrets, inspect API keys, render raw credentials, or pass raw
+credential material. TASK-0300 is the next hard-blocker task for TEST-only
+credential reference resolution.
+
+Audit and verifier remain downstream. Passing the permission gate does not mean
+an audit event was written, a verifier was run, work was completed, or the task
+completion gate was satisfied. Authorization is not completion.
+
+Conformance and authorization are separate. A production-contract-conformant
+adapter may still be denied by the permission/policy gate. A capability may be
+supported while permission is absent, and the gate denies that case. Production
+execution remains globally disabled by
+`TASK_EXECUTION_ADAPTER_PRODUCTION_EXECUTION_ENABLED === false`.
+
+Smoke coverage exercises valid no-policy TEST authorization, valid TEST policy
+proof, missing/denied/mismatched/stale/unknown/missing-decision proof failures,
+missing capability, capability-true/permission-false denial, adapter
+self-authorization rejection, task/model prose rejection, no credential
+rendering, no audit write, no verifier run, no state mutation, deterministic
+re-evaluation, blocked-gate no-invocation, allowed-gate TEST-only invocation,
+and the existing 400/20 incomplete-work invariant.
 
 ## Execution Preparation Preview
 `aeos task execution prepare --preview <task-id> --expected-revision <number>`

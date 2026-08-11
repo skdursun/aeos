@@ -97,6 +97,8 @@ condition.
   production adapter readiness gate.
 - TASK-0298: Design and implement vendor-neutral production execution adapter
   contract and conformance harness with TEST implementation only.
+- TASK-0299: Design and implement adapter permission/policy execution gate
+  foundation with TEST-only enforcement.
 
 ## Do Not Load By Default
 
@@ -107,11 +109,11 @@ condition.
 
 ## Next Task
 
-TASK-0299 Design and implement adapter permission/policy execution gate
-foundation.
+TASK-0300 Design and implement credential reference resolution boundary with
+TEST secret provider only.
 
-Purpose: Add the next test-only foundation for adapter permission enforcement
-and policy proof without enabling real provider calls.
+Purpose: Resolve TEST credential references only, never persist or render raw
+secrets, and keep production provider calls disabled.
 
 ## Current Plans
 

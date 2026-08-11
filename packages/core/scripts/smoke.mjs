@@ -109,6 +109,7 @@ import {
   collectTaskExecutionProviderReconciliationEvidence,
   createReservedTaskExecutionInvocationRecord,
   evaluateTaskExecutionAdapterConformance,
+  evaluateTaskExecutionPermissionGate,
   deriveTaskExecutionInvocationIdentity,
   deriveTaskExecutionInvocationIdentityForAttempt,
   getTaskExecutionInvocationStoragePath,
@@ -404,6 +405,11 @@ function createSmokeTestExecutionAdapterCapabilities(overrides = {}) {
     supportsCancellation: false,
     supportsStreaming: false,
     supportsToolCalls: false,
+    supportsNetworkAccess: false,
+    supportsFilesystemAccess: false,
+    supportsProcessExecution: false,
+    supportsShellExecution: false,
+    supportsModelInvocation: false,
     supportsExternalSideEffects: false,
     ...overrides,
   };
@@ -480,6 +486,61 @@ function createSmokeTestExecutionAdapter({
         return typeof rawResponse === "function" ? rawResponse(request) : rawResponse;
       },
     },
+  };
+}
+
+function createSmokeTestPolicyAuthorizationProof({
+  request,
+  adapterId,
+  policyGateId = "smoke-policy-gate",
+  decision = "allowed",
+  requiredPermissions = [],
+  overrides = {},
+} = {}) {
+  return {
+    proofId: `test-proof-${request.invocationId}`,
+    source: {
+      kind: "test_policy_authority",
+      authority: "system",
+      sourceId: "core-smoke-test-policy-authority",
+    },
+    decision,
+    binding: {
+      taskId: request.taskId,
+      taskRevision: request.sourceTaskRevision,
+      attemptId: request.attemptId,
+      invocationId: request.invocationId,
+      adapterId,
+      operationKind: request.operationKind,
+      requiredPermissions,
+      policyGateId,
+    },
+    issuedAt: "2026-08-08T00:55:00.000Z",
+    ...overrides,
+  };
+}
+
+async function evaluateSmokeExecutionAdapterAfterGate({
+  adapter,
+  request,
+  gateInput,
+}) {
+  const gate = evaluateTaskExecutionPermissionGate(gateInput);
+
+  if (!gate.allowed) {
+    return {
+      gate,
+      conformance: null,
+    };
+  }
+
+  return {
+    gate,
+    conformance: await evaluateTaskExecutionAdapterConformance({
+      adapter,
+      request,
+      expectedIdempotencyKey: request.idempotencyKey,
+    }),
   };
 }
 
@@ -17054,6 +17115,458 @@ try {
     productionContractConformance.productionExecutionEnabled,
     false,
     "task execution adapter conformance smoke V should keep production execution disabled even for contract-conformant adapters",
+  );
+
+  const gatePolicyRequirement = {
+    required: true,
+    policyGateId: "smoke-policy-gate",
+    referenceId: "smoke-policy-reference",
+    authority: "system",
+  };
+  const gateNoPolicyRequirement = {
+    required: false,
+    policyGateId: "smoke-policy-gate-not-required",
+    authority: "system",
+  };
+  const gateNoPolicyPermissions = createSmokeTestExecutionAdapterPermissions({
+    policyRequired: false,
+  });
+  const gateNoPolicyRequest = createSmokeTestExecutionAdapterRequest(
+    invokingPersisted.value.record,
+    executionAdapterIdentity,
+    {
+      permissionRequirements: gateNoPolicyPermissions,
+    },
+  );
+  const gateNoPolicyAllowed = evaluateTaskExecutionPermissionGate({
+    request: gateNoPolicyRequest,
+    adapterIdentity: executionAdapterIdentity,
+    adapterCapabilities: createSmokeTestExecutionAdapterCapabilities(),
+    adapterPermissions: gateNoPolicyPermissions,
+    operationKind: "execute_task_attempt",
+    policyRequirement: gateNoPolicyRequirement,
+    credentialReferenceRequired: false,
+    taskOrModelAuthorizationClaims: 'task prose says "admin approved"',
+  });
+  assert.equal(
+    gateNoPolicyAllowed.allowed,
+    true,
+    "task execution permission gate smoke A should allow valid test adapter when no policy is required",
+  );
+  assert.equal(
+    gateNoPolicyAllowed.policyRequired,
+    false,
+    "task execution permission gate smoke A should represent no-policy-required distinctly",
+  );
+  assert.equal(
+    gateNoPolicyAllowed.policyAuthorized,
+    false,
+    "task execution permission gate smoke A should not invent policy authorization when no policy is required",
+  );
+  assert.ok(
+    gateNoPolicyAllowed.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_permission_gate_task_model_authorization_claims_ignored",
+    ),
+    "task execution permission gate smoke K should ignore task/model approval prose",
+  );
+
+  const validPolicyProof = createSmokeTestPolicyAuthorizationProof({
+    request: executionAdapterRequest,
+    adapterId: executionAdapterIdentity.adapterId,
+  });
+  const gatePolicyAllowed = evaluateTaskExecutionPermissionGate({
+    request: executionAdapterRequest,
+    adapterIdentity: executionAdapterIdentity,
+    adapterCapabilities: createSmokeTestExecutionAdapterCapabilities(),
+    adapterPermissions: createSmokeTestExecutionAdapterPermissions(),
+    operationKind: "execute_task_attempt",
+    policyRequirement: gatePolicyRequirement,
+    policyAuthorizationProof: validPolicyProof,
+    auditRequired: true,
+  });
+  assert.equal(
+    gatePolicyAllowed.allowed,
+    true,
+    "task execution permission gate smoke B should allow valid TEST policy authority proof",
+  );
+  assert.equal(
+    gatePolicyAllowed.policyAuthorized,
+    true,
+    "task execution permission gate smoke B should represent valid bound policy authorization",
+  );
+  assert.equal(
+    gatePolicyAllowed.safety.auditWritten,
+    false,
+    "task execution permission gate smoke R should not write audit after authorization",
+  );
+  assert.equal(
+    gatePolicyAllowed.safety.verifierRun,
+    false,
+    "task execution permission gate smoke S should not run verifier after authorization",
+  );
+  assert.equal(
+    gatePolicyAllowed.safety.productionExecutionEnabled,
+    false,
+    "task execution permission gate smoke P should keep production execution disabled",
+  );
+  assert.equal(
+    JSON.stringify(gatePolicyAllowed).includes("smoke-credential-reference"),
+    false,
+    "task execution permission gate smoke Q should not render or resolve credential references",
+  );
+
+  const missingProofGate = evaluateTaskExecutionPermissionGate({
+    request: executionAdapterRequest,
+    adapterIdentity: executionAdapterIdentity,
+    adapterCapabilities: createSmokeTestExecutionAdapterCapabilities(),
+    adapterPermissions: createSmokeTestExecutionAdapterPermissions(),
+    operationKind: "execute_task_attempt",
+    policyRequirement: gatePolicyRequirement,
+  });
+  assert.equal(
+    missingProofGate.allowed,
+    false,
+    "task execution permission gate smoke C should block missing policy proof",
+  );
+  assert.equal(
+    missingProofGate.decision,
+    "proof_missing",
+    "task execution permission gate smoke C should return closed proof_missing decision",
+  );
+
+  const deniedProofGate = evaluateTaskExecutionPermissionGate({
+    request: executionAdapterRequest,
+    adapterIdentity: executionAdapterIdentity,
+    adapterCapabilities: createSmokeTestExecutionAdapterCapabilities(),
+    adapterPermissions: createSmokeTestExecutionAdapterPermissions(),
+    operationKind: "execute_task_attempt",
+    policyRequirement: gatePolicyRequirement,
+    policyAuthorizationProof: createSmokeTestPolicyAuthorizationProof({
+      request: executionAdapterRequest,
+      adapterId: executionAdapterIdentity.adapterId,
+      decision: "denied",
+    }),
+  });
+  assert.equal(
+    deniedProofGate.decision,
+    "denied",
+    "task execution permission gate smoke D should block denied proof",
+  );
+
+  for (const [message, proof] of [
+    [
+      "task execution permission gate smoke E should block mismatched invocation proof",
+      createSmokeTestPolicyAuthorizationProof({
+        request: executionAdapterRequest,
+        adapterId: executionAdapterIdentity.adapterId,
+        overrides: {
+          binding: {
+            ...validPolicyProof.binding,
+            invocationId: "wrong-invocation",
+          },
+        },
+      }),
+    ],
+    [
+      "task execution permission gate smoke F should block mismatched adapter proof",
+      createSmokeTestPolicyAuthorizationProof({
+        request: executionAdapterRequest,
+        adapterId: executionAdapterIdentity.adapterId,
+        overrides: {
+          binding: {
+            ...validPolicyProof.binding,
+            adapterId: "wrong-adapter",
+          },
+        },
+      }),
+    ],
+    [
+      "task execution permission gate smoke G should block stale task revision proof",
+      createSmokeTestPolicyAuthorizationProof({
+        request: executionAdapterRequest,
+        adapterId: executionAdapterIdentity.adapterId,
+        overrides: {
+          binding: {
+            ...validPolicyProof.binding,
+            taskRevision: executionAdapterRequest.sourceTaskRevision - 1,
+          },
+        },
+      }),
+    ],
+  ]) {
+    const mismatchedGate = evaluateTaskExecutionPermissionGate({
+      request: executionAdapterRequest,
+      adapterIdentity: executionAdapterIdentity,
+      adapterCapabilities: createSmokeTestExecutionAdapterCapabilities(),
+      adapterPermissions: createSmokeTestExecutionAdapterPermissions(),
+      operationKind: "execute_task_attempt",
+      policyRequirement: gatePolicyRequirement,
+      policyAuthorizationProof: proof,
+    });
+    assert.equal(mismatchedGate.allowed, false, message);
+    assert.ok(
+      mismatchedGate.issues.some(
+        (item) =>
+          item.code ===
+          "task_execution_permission_gate_policy_proof_binding_mismatch",
+      ),
+      `${message} with deterministic binding issue`,
+    );
+  }
+
+  const capabilityMissingGate = evaluateTaskExecutionPermissionGate({
+    request: executionAdapterRequest,
+    adapterIdentity: executionAdapterIdentity,
+    adapterCapabilities: createSmokeTestExecutionAdapterCapabilities({
+      supportsBoundedErrors: false,
+    }),
+    adapterPermissions: createSmokeTestExecutionAdapterPermissions(),
+    operationKind: "execute_task_attempt",
+    policyRequirement: gatePolicyRequirement,
+    policyAuthorizationProof: validPolicyProof,
+  });
+  assert.equal(
+    capabilityMissingGate.decision,
+    "capability_missing",
+    "task execution permission gate smoke H should block missing capability",
+  );
+
+  const toolRequiredPermissions = [
+    {
+      permission: "tool_call",
+      required: true,
+      granted: false,
+      authority: "system",
+    },
+  ];
+  const toolPermissionProof = createSmokeTestPolicyAuthorizationProof({
+    request: executionAdapterRequest,
+    adapterId: executionAdapterIdentity.adapterId,
+    requiredPermissions: ["tool_call"],
+  });
+  const capabilityTruePermissionFalseGate = evaluateTaskExecutionPermissionGate({
+    request: executionAdapterRequest,
+    adapterIdentity: executionAdapterIdentity,
+    adapterCapabilities: createSmokeTestExecutionAdapterCapabilities({
+      supportsToolCalls: true,
+    }),
+    adapterPermissions: createSmokeTestExecutionAdapterPermissions(),
+    operationKind: "execute_task_attempt",
+    policyRequirement: gatePolicyRequirement,
+    requiredPermissions: toolRequiredPermissions,
+    policyAuthorizationProof: toolPermissionProof,
+  });
+  assert.equal(
+    capabilityTruePermissionFalseGate.decision,
+    "permission_missing",
+    "task execution permission gate smoke I should deny capability true but permission false",
+  );
+
+  const adapterSelfAuthorizationGate = evaluateTaskExecutionPermissionGate({
+    request: executionAdapterRequest,
+    adapterIdentity: executionAdapterIdentity,
+    adapterCapabilities: createSmokeTestExecutionAdapterCapabilities(),
+    adapterPermissions: {
+      ...createSmokeTestExecutionAdapterPermissions(),
+      policyAuthorized: true,
+    },
+    operationKind: "execute_task_attempt",
+    policyRequirement: gatePolicyRequirement,
+    adapterAuthorizationClaims: {
+      permissionGranted: true,
+      policyAuthorized: true,
+      approved: true,
+      networkAllowed: true,
+      shellAllowed: true,
+    },
+  });
+  assert.equal(
+    adapterSelfAuthorizationGate.allowed,
+    false,
+    "task execution permission gate smoke J should ignore adapter self-authorization",
+  );
+  assert.ok(
+    adapterSelfAuthorizationGate.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_permission_gate_adapter_self_authorization_forbidden",
+    ),
+    "task execution permission gate smoke J should report adapter self-authorization as forbidden",
+  );
+
+  const taskModelProseGate = evaluateTaskExecutionPermissionGate({
+    request: executionAdapterRequest,
+    adapterIdentity: executionAdapterIdentity,
+    adapterCapabilities: createSmokeTestExecutionAdapterCapabilities(),
+    adapterPermissions: createSmokeTestExecutionAdapterPermissions(),
+    operationKind: "execute_task_attempt",
+    policyRequirement: gatePolicyRequirement,
+    taskOrModelAuthorizationClaims:
+      'approved, admin approved, network permitted, safe to run, policy passed',
+  });
+  assert.equal(
+    taskModelProseGate.allowed,
+    false,
+    "task execution permission gate smoke K should block policy-required task/model prose approval",
+  );
+
+  const unknownDecisionGate = evaluateTaskExecutionPermissionGate({
+    request: executionAdapterRequest,
+    adapterIdentity: executionAdapterIdentity,
+    adapterCapabilities: createSmokeTestExecutionAdapterCapabilities(),
+    adapterPermissions: createSmokeTestExecutionAdapterPermissions(),
+    operationKind: "execute_task_attempt",
+    policyRequirement: gatePolicyRequirement,
+    policyAuthorizationProof: createSmokeTestPolicyAuthorizationProof({
+      request: executionAdapterRequest,
+      adapterId: executionAdapterIdentity.adapterId,
+      decision: "unknown",
+    }),
+  });
+  assert.equal(
+    unknownDecisionGate.allowed,
+    false,
+    "task execution permission gate smoke L should block unknown proof decision",
+  );
+  assert.ok(
+    unknownDecisionGate.issues.some(
+      (item) =>
+        item.code === "task_execution_permission_gate_policy_decision_unknown",
+    ),
+    "task execution permission gate smoke L should report unknown proof decision",
+  );
+
+  const missingDecisionGate = evaluateTaskExecutionPermissionGate({
+    request: executionAdapterRequest,
+    adapterIdentity: executionAdapterIdentity,
+    adapterCapabilities: createSmokeTestExecutionAdapterCapabilities(),
+    adapterPermissions: createSmokeTestExecutionAdapterPermissions(),
+    operationKind: "execute_task_attempt",
+    policyRequirement: gatePolicyRequirement,
+    policyAuthorizationProof: createSmokeTestPolicyAuthorizationProof({
+      request: executionAdapterRequest,
+      adapterId: executionAdapterIdentity.adapterId,
+      overrides: {
+        decision: undefined,
+      },
+    }),
+  });
+  assert.equal(
+    missingDecisionGate.allowed,
+    false,
+    "task execution permission gate smoke M should block missing proof decision",
+  );
+
+  const allowedGateExecutionAdapter = createSmokeTestExecutionAdapter({
+    identity: executionAdapterIdentity,
+    rawResponse: (request) => ({
+      status: "returned",
+      invocationId: request.invocationId,
+      idempotencyKey: request.idempotencyKey,
+      invocationOk: true,
+      output: {
+        completed: true,
+        verified: true,
+      },
+    }),
+  });
+  const allowedGateExecution = await evaluateSmokeExecutionAdapterAfterGate({
+    adapter: allowedGateExecutionAdapter.adapter,
+    request: gateNoPolicyRequest,
+    gateInput: {
+      request: gateNoPolicyRequest,
+      adapterIdentity: executionAdapterIdentity,
+      adapterCapabilities: allowedGateExecutionAdapter.adapter.capabilities,
+      adapterPermissions: gateNoPolicyPermissions,
+      operationKind: "execute_task_attempt",
+      policyRequirement: gateNoPolicyRequirement,
+      adapterAuthorizationClaims: {
+        completed: true,
+        verified: true,
+      },
+    },
+  });
+  assert.equal(
+    allowedGateExecution.gate.allowed,
+    true,
+    "task execution permission gate smoke N should allow the gate before test adapter invocation",
+  );
+  assert.equal(
+    allowedGateExecutionAdapter.calls.length,
+    1,
+    "task execution permission gate smoke N should invoke test adapter only after allowed gate",
+  );
+  assert.equal(
+    allowedGateExecution.conformance.normalizedResult.safety.taskCompleted,
+    false,
+    "task execution permission gate smoke W should not let hostile adapter completion claims complete work",
+  );
+
+  const blockedGateExecutionAdapter = createSmokeTestExecutionAdapter({
+    identity: executionAdapterIdentity,
+    rawResponse: {
+      status: "returned",
+      invocationOk: true,
+    },
+  });
+  const blockedGateExecution = await evaluateSmokeExecutionAdapterAfterGate({
+    adapter: blockedGateExecutionAdapter.adapter,
+    request: executionAdapterRequest,
+    gateInput: {
+      request: executionAdapterRequest,
+      adapterIdentity: executionAdapterIdentity,
+      adapterCapabilities: blockedGateExecutionAdapter.adapter.capabilities,
+      adapterPermissions: blockedGateExecutionAdapter.adapter.permissions,
+      operationKind: "execute_task_attempt",
+      policyRequirement: gatePolicyRequirement,
+    },
+  });
+  assert.equal(
+    blockedGateExecution.gate.allowed,
+    false,
+    "task execution permission gate smoke O should block gate without policy proof",
+  );
+  assert.equal(
+    blockedGateExecutionAdapter.calls.length,
+    0,
+    "task execution permission gate smoke O should not invoke test adapter after blocked gate",
+  );
+
+  assert.equal(
+    gatePolicyAllowed.taskId,
+    executionAdapterRequest.taskId,
+    "task execution permission gate smoke V should preserve invocation task authority",
+  );
+  assert.equal(
+    gatePolicyAllowed.invocationId,
+    executionAdapterRequest.invocationId,
+    "task execution permission gate smoke V should preserve invocation identity authority",
+  );
+  assert.equal(
+    JSON.stringify(firstUpdate.value.state),
+    executionAdapterStateSnapshot,
+    "task execution permission gate smoke T should not mutate task state",
+  );
+  assert.equal(
+    JSON.stringify(invocationStartedAttempt),
+    executionAdapterAttemptSnapshot,
+    "task execution permission gate smoke U should not mutate attempt state",
+  );
+  assert.deepEqual(
+    evaluateTaskExecutionPermissionGate({
+      request: executionAdapterRequest,
+      adapterIdentity: executionAdapterIdentity,
+      adapterCapabilities: createSmokeTestExecutionAdapterCapabilities(),
+      adapterPermissions: createSmokeTestExecutionAdapterPermissions(),
+      operationKind: "execute_task_attempt",
+      policyRequirement: gatePolicyRequirement,
+      policyAuthorizationProof: validPolicyProof,
+      auditRequired: true,
+    }),
+    gatePolicyAllowed,
+    "task execution permission gate smoke Y should be deterministic for equivalent input",
   );
 
   const applyReturnedFixture = await createReconciliationApplyFixture({

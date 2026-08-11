@@ -34,6 +34,11 @@ export interface TaskExecutionAdapterCapabilities
   readonly supportsCancellation: boolean;
   readonly supportsStreaming: boolean;
   readonly supportsToolCalls: boolean;
+  readonly supportsNetworkAccess: boolean;
+  readonly supportsFilesystemAccess: boolean;
+  readonly supportsProcessExecution: boolean;
+  readonly supportsShellExecution: boolean;
+  readonly supportsModelInvocation: boolean;
   readonly supportsExternalSideEffects: boolean;
 }
 
@@ -537,6 +542,11 @@ function capabilitiesFromUnknown(
     "supportsCancellation",
     "supportsStreaming",
     "supportsToolCalls",
+    "supportsNetworkAccess",
+    "supportsFilesystemAccess",
+    "supportsProcessExecution",
+    "supportsShellExecution",
+    "supportsModelInvocation",
     "supportsExternalSideEffects",
   ] as const) {
     if (typeof value[field] !== "boolean") {
@@ -1004,15 +1014,42 @@ function capabilityIssues(
     );
   }
 
-  if (capabilities.supportsExternalSideEffects) {
-    issues.push(
-      issue({
-        code: "task_execution_adapter_test_external_side_effects_unsupported",
-        message:
-          "TASK-0298 test execution adapters cannot claim external side-effect capability.",
-        category: "permission",
-      }),
-    );
+  for (const [field, code] of [
+    [
+      "supportsNetworkAccess",
+      "task_execution_adapter_test_network_capability_unsupported",
+    ],
+    [
+      "supportsFilesystemAccess",
+      "task_execution_adapter_test_filesystem_capability_unsupported",
+    ],
+    [
+      "supportsProcessExecution",
+      "task_execution_adapter_test_process_capability_unsupported",
+    ],
+    [
+      "supportsShellExecution",
+      "task_execution_adapter_test_shell_capability_unsupported",
+    ],
+    [
+      "supportsModelInvocation",
+      "task_execution_adapter_test_model_capability_unsupported",
+    ],
+    [
+      "supportsExternalSideEffects",
+      "task_execution_adapter_test_external_side_effects_unsupported",
+    ],
+  ] as const) {
+    if (capabilities[field]) {
+      issues.push(
+        issue({
+          code,
+          message:
+            "TASK-0298 test execution adapters cannot claim real execution side-effect capabilities.",
+          category: "permission",
+        }),
+      );
+    }
   }
 
   return issues;
