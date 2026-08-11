@@ -116,6 +116,10 @@ condition.
   execution still disabled.
 - TASK-0308: First controlled production provider integration and one-shot
   operator dispatch CLI boundary with no automated real calls.
+- TASK-0309: Provider-specific recovery conformance review for OpenAI Responses
+  API; first controlled real-call readiness remains blocked because official
+  documentation did not prove idempotent create or lookup by AEOS idempotency key
+  after a crash before local provider-reference persistence.
 
 ## Do Not Load By Default
 
@@ -126,14 +130,12 @@ condition.
 
 ## Next Task
 
-TASK-0309 Provider-specific recovery conformance evidence and first controlled
-real-call readiness review.
+TASK-0310 Provider recovery strategy decision.
 
-Purpose: Select one trusted provider profile candidate and prove, from provider
-runtime evidence rather than configuration prose, that it satisfies TASK-0306
-idempotency, stable provider reference, lookup/status/replay, durable outcome
-retrieval, and crash-reconciliation semantics before any real provider call is
-marked ready.
+Purpose: Choose the smallest safe path to first controlled real-call readiness:
+either select a provider/API with official idempotent create plus lookup/status
+and result-replay semantics, or design an AEOS-owned dispatch/recovery mechanism
+that preserves TASK-0306 without blind retry or completion authority.
 
 ## Current Plans
 
