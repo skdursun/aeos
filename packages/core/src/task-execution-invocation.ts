@@ -19,6 +19,12 @@ import {
   reserveTaskExecutionInvocation,
   updateTaskExecutionInvocation,
 } from "./task-execution-invocation-persistence.js";
+import {
+  createTaskExecutionInvocationDispatchIntentAuditEvent,
+  createTaskExecutionInvocationFailedAuditEvent,
+  createTaskExecutionInvocationReturnedAuditEvent,
+} from "./task-execution-audit.js";
+import { appendTaskExecutionAuditEvent } from "./task-execution-audit-persistence.js";
 import type { AeosError, JsonObject, JsonValue } from "./types.js";
 
 export type TaskExecutionInvocationDependencyKind = "test_noop";
@@ -63,6 +69,17 @@ export interface TaskExecutionInvocationInput {
   readonly latestAttemptNumberForContext?: number;
   readonly invocationId?: string;
   readonly allowedOperationReferences?: readonly string[];
+  readonly audit?: {
+    readonly required: boolean;
+    readonly adapterId?: string;
+    readonly policyGateId?: string;
+    readonly policyDecisionReference?: string;
+    readonly policyAuthorized?: boolean;
+    readonly credentialRef?: string;
+    readonly secretProviderRef?: string;
+    readonly credentialResolutionReference?: string;
+    readonly forbiddenValues?: readonly string[];
+  };
 }
 
 export interface TaskExecutionInvocationIssue {
@@ -81,7 +98,7 @@ export interface TaskExecutionInvocationSafety {
   readonly externalExecutionPerformed: false;
   readonly taskStateModified: false;
   readonly attemptStateModified: false;
-  readonly auditWritten: false;
+  readonly auditWritten: boolean;
   readonly verifierRun: false;
   readonly policyRuntimeRun: false;
   readonly workCompleted: false;
@@ -141,6 +158,13 @@ export interface TaskExecutionInvocationResult {
   readonly issues: readonly TaskExecutionInvocationIssue[];
   readonly safety: TaskExecutionInvocationSafety;
   readonly summary: TaskExecutionInvocationSummary;
+  readonly audit: {
+    readonly required: boolean;
+    readonly preDispatchWritten: boolean;
+    readonly postInvocationWritten: boolean;
+    readonly incomplete: boolean;
+    readonly eventIds: readonly string[];
+  };
 }
 
 const invocationSafety: TaskExecutionInvocationSafety = {
@@ -469,6 +493,10 @@ function baseResult(input: {
   readonly dependencyResult?: TaskExecutionInvocationDependencyResult;
   readonly issues: readonly TaskExecutionInvocationIssue[];
   readonly persisted?: boolean;
+  readonly auditRequired?: boolean;
+  readonly preDispatchAuditEventId?: string;
+  readonly postInvocationAuditEventId?: string;
+  readonly postInvocationAuditIncomplete?: boolean;
 }): TaskExecutionInvocationResult {
   const output =
     input.dependencyResult?.output !== undefined &&
@@ -509,7 +537,12 @@ function baseResult(input: {
     message: safeText(input.dependencyResult?.message),
     metadata,
     issues: input.issues,
-    safety: invocationSafety,
+    safety: {
+      ...invocationSafety,
+      auditWritten:
+        input.preDispatchAuditEventId !== undefined ||
+        input.postInvocationAuditEventId !== undefined,
+    },
     summary: summarize({
       invocationAllowed: input.invocationAllowed,
       dependencyKind: input.dependencyKind ?? null,
@@ -520,6 +553,115 @@ function baseResult(input: {
       issueCount: input.issues.length,
       persisted: input.persisted ?? false,
     }),
+    audit: {
+      required: input.auditRequired ?? false,
+      preDispatchWritten: input.preDispatchAuditEventId !== undefined,
+      postInvocationWritten: input.postInvocationAuditEventId !== undefined,
+      incomplete: input.postInvocationAuditIncomplete ?? false,
+      eventIds: [
+        input.preDispatchAuditEventId,
+        input.postInvocationAuditEventId,
+      ].filter((item): item is string => item !== undefined),
+    },
+  };
+}
+
+async function appendPreDispatchAudit(input: {
+  readonly projectRoot: string;
+  readonly record: TaskExecutionInvocationRecord;
+  readonly audit: NonNullable<TaskExecutionInvocationInput["audit"]>;
+}): Promise<
+  | {
+      readonly ok: true;
+      readonly eventId: string;
+    }
+  | {
+      readonly ok: false;
+      readonly issue: TaskExecutionInvocationIssue;
+    }
+> {
+  const eventResult = createTaskExecutionInvocationDispatchIntentAuditEvent({
+    record: input.record,
+    adapterId: input.audit.adapterId,
+    policyGateId: input.audit.policyGateId,
+    policyDecisionReference: input.audit.policyDecisionReference,
+    policyAuthorized: input.audit.policyAuthorized,
+    auditRequired: input.audit.required,
+    credentialRef: input.audit.credentialRef,
+    secretProviderRef: input.audit.secretProviderRef,
+    credentialResolutionReference: input.audit.credentialResolutionReference,
+  });
+
+  if (!eventResult.ok) {
+    return {
+      ok: false,
+      issue: issueFromError(eventResult.error),
+    };
+  }
+
+  const appendResult = await appendTaskExecutionAuditEvent({
+    projectRoot: input.projectRoot,
+    taskId: input.record.taskId,
+    event: eventResult.value,
+    forbiddenValues: input.audit.forbiddenValues,
+  });
+
+  if (!appendResult.ok) {
+    return {
+      ok: false,
+      issue: issueFromError(appendResult.error),
+    };
+  }
+
+  return {
+    ok: true,
+    eventId: appendResult.value.event.auditEventId,
+  };
+}
+
+async function appendPostInvocationAudit(input: {
+  readonly projectRoot: string;
+  readonly record: TaskExecutionInvocationRecord;
+  readonly audit: NonNullable<TaskExecutionInvocationInput["audit"]>;
+}): Promise<
+  | {
+      readonly ok: true;
+      readonly eventId: string;
+    }
+  | {
+      readonly ok: false;
+      readonly issue: TaskExecutionInvocationIssue;
+    }
+> {
+  const eventResult =
+    input.record.lifecycle === "returned"
+      ? createTaskExecutionInvocationReturnedAuditEvent({ record: input.record })
+      : createTaskExecutionInvocationFailedAuditEvent({ record: input.record });
+
+  if (!eventResult.ok) {
+    return {
+      ok: false,
+      issue: issueFromError(eventResult.error),
+    };
+  }
+
+  const appendResult = await appendTaskExecutionAuditEvent({
+    projectRoot: input.projectRoot,
+    taskId: input.record.taskId,
+    event: eventResult.value,
+    forbiddenValues: input.audit.forbiddenValues,
+  });
+
+  if (!appendResult.ok) {
+    return {
+      ok: false,
+      issue: issueFromError(appendResult.error),
+    };
+  }
+
+  return {
+    ok: true,
+    eventId: appendResult.value.event.auditEventId,
   };
 }
 
@@ -1005,6 +1147,42 @@ export async function invokeStartedTaskExecutionAttempt(
   }
 
   const reservedRecord = reservationResult.value.record;
+  const auditRequired = input.audit?.required === true;
+  let preDispatchAuditEventId: string | undefined;
+
+  if (auditRequired) {
+    const preDispatchAuditResult = await appendPreDispatchAudit({
+      projectRoot: input.projectRoot!,
+      record: reservedRecord,
+      audit: input.audit!,
+    });
+
+    if (!preDispatchAuditResult.ok) {
+      return baseResult({
+        state,
+        attempt,
+        dependencyKind,
+        expectedRevision: input.expectedRevision ?? null,
+        latestAttemptNumberForContext: input.latestAttemptNumberForContext ?? null,
+        invocationId: reservedRecord.invocationId,
+        idempotencyKey: reservedRecord.idempotencyKey,
+        idempotencyReference: reservedRecord.idempotencyKey,
+        verifierRequired,
+        completionGatedByVerifier,
+        invocationStatus: "blocked",
+        invocationAllowed: false,
+        dependencyInvoked: false,
+        invocationReturned: false,
+        invocationOk: false,
+        issues: [preDispatchAuditResult.issue],
+        persisted: true,
+        auditRequired,
+      });
+    }
+
+    preDispatchAuditEventId = preDispatchAuditResult.eventId;
+  }
+
   const enteredRecordResult = await updateTaskExecutionInvocation({
     projectRoot: input.projectRoot!,
     taskId: reservedRecord.taskId,
@@ -1035,6 +1213,8 @@ export async function invokeStartedTaskExecutionAttempt(
       invocationOk: false,
       issues: [issueFromError(enteredRecordResult.error)],
       persisted: true,
+      auditRequired,
+      preDispatchAuditEventId,
     });
   }
 
@@ -1082,6 +1262,16 @@ export async function invokeStartedTaskExecutionAttempt(
         },
       },
     });
+    const postAuditResult =
+      auditRequired && failedUpdateResult.ok
+        ? await appendPostInvocationAudit({
+            projectRoot: input.projectRoot!,
+            record: failedUpdateResult.value.record,
+            audit: input.audit!,
+          })
+        : undefined;
+    const postAuditIssue =
+      postAuditResult?.ok === false ? postAuditResult.issue : undefined;
 
     return baseResult({
       state,
@@ -1100,9 +1290,14 @@ export async function invokeStartedTaskExecutionAttempt(
       invocationReturned: false,
       invocationOk: false,
       issues: failedUpdateResult.ok
-        ? [dependencyIssue]
+        ? [dependencyIssue, ...(postAuditIssue === undefined ? [] : [postAuditIssue])]
         : [issueFromError(failedUpdateResult.error)],
       persisted: true,
+      auditRequired,
+      preDispatchAuditEventId,
+      postInvocationAuditEventId:
+        postAuditResult?.ok === true ? postAuditResult.eventId : undefined,
+      postInvocationAuditIncomplete: postAuditResult?.ok === false,
     });
   }
 
@@ -1124,6 +1319,16 @@ export async function invokeStartedTaskExecutionAttempt(
         },
       },
     });
+    const postAuditResult =
+      auditRequired && failedUpdateResult.ok
+        ? await appendPostInvocationAudit({
+            projectRoot: input.projectRoot!,
+            record: failedUpdateResult.value.record,
+            audit: input.audit!,
+          })
+        : undefined;
+    const postAuditIssue =
+      postAuditResult?.ok === false ? postAuditResult.issue : undefined;
 
     return baseResult({
       state,
@@ -1156,8 +1361,14 @@ export async function invokeStartedTaskExecutionAttempt(
           workItemId: attempt.workItemId,
           batchId: attempt.batchId,
         }),
+        ...(postAuditIssue === undefined ? [] : [postAuditIssue]),
       ],
       persisted: true,
+      auditRequired,
+      preDispatchAuditEventId,
+      postInvocationAuditEventId:
+        postAuditResult?.ok === true ? postAuditResult.eventId : undefined,
+      postInvocationAuditIncomplete: postAuditResult?.ok === false,
     });
   }
 
@@ -1184,6 +1395,16 @@ export async function invokeStartedTaskExecutionAttempt(
         },
       },
     });
+    const postAuditResult =
+      auditRequired && failedUpdateResult.ok
+        ? await appendPostInvocationAudit({
+            projectRoot: input.projectRoot!,
+            record: failedUpdateResult.value.record,
+            audit: input.audit!,
+          })
+        : undefined;
+    const postAuditIssue =
+      postAuditResult?.ok === false ? postAuditResult.issue : undefined;
 
     return baseResult({
       state,
@@ -1217,8 +1438,14 @@ export async function invokeStartedTaskExecutionAttempt(
           workItemId: attempt.workItemId,
           batchId: attempt.batchId,
         }),
+        ...(postAuditIssue === undefined ? [] : [postAuditIssue]),
       ],
       persisted: true,
+      auditRequired,
+      preDispatchAuditEventId,
+      postInvocationAuditEventId:
+        postAuditResult?.ok === true ? postAuditResult.eventId : undefined,
+      postInvocationAuditIncomplete: postAuditResult?.ok === false,
     });
   }
 
@@ -1302,8 +1529,20 @@ export async function invokeStartedTaskExecutionAttempt(
       dependencyResult,
       issues: [issueFromError(terminalUpdateResult.error)],
       persisted: true,
+      auditRequired,
+      preDispatchAuditEventId,
     });
   }
+
+  const postAuditResult = auditRequired
+    ? await appendPostInvocationAudit({
+        projectRoot: input.projectRoot!,
+        record: terminalUpdateResult.value.record,
+        audit: input.audit!,
+      })
+    : undefined;
+  const postAuditIssue =
+    postAuditResult?.ok === false ? postAuditResult.issue : undefined;
 
   return baseResult({
     state,
@@ -1322,7 +1561,12 @@ export async function invokeStartedTaskExecutionAttempt(
     invocationReturned: true,
     invocationOk: dependencyResult.ok,
     dependencyResult,
-    issues: resultIssue,
+    issues: [...resultIssue, ...(postAuditIssue === undefined ? [] : [postAuditIssue])],
     persisted: true,
+    auditRequired,
+    preDispatchAuditEventId,
+    postInvocationAuditEventId:
+      postAuditResult?.ok === true ? postAuditResult.eventId : undefined,
+    postInvocationAuditIncomplete: postAuditResult?.ok === false,
   });
 }

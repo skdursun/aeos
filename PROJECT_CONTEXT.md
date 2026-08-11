@@ -101,6 +101,7 @@ condition.
   foundation with TEST-only enforcement.
 - TASK-0300: Design and implement credential reference resolution boundary with
   TEST secret provider only.
+- TASK-0301: Design and implement durable execution audit runtime foundation.
 
 ## Do Not Load By Default
 
@@ -111,10 +112,11 @@ condition.
 
 ## Next Task
 
-TASK-0301 Design and implement durable execution audit runtime foundation.
+TASK-0302 Design and implement durable production policy approval proof runtime
+foundation.
 
-Purpose: Establish append-only durable audit events for execution authority
-transitions without enabling real provider calls.
+Purpose: Establish TEST/operator-authority controlled production policy
+approval proof runtime without enabling real provider calls by itself.
 
 ## Current Plans
 

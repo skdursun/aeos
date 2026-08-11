@@ -142,6 +142,58 @@ type AuditEventType =
 - Audit sinks may be files, databases, or external systems if they preserve the
   same event shape and redaction guarantees.
 
+The TASK-0301 execution audit runtime uses the same audit principles with a
+bounded execution-specific event envelope stored as immutable per-event JSON
+records under:
+
+```text
+.aeos/state/audit/<task-id>/
+```
+
+Each execution audit record includes system actor/target/result fields, safe
+task/attempt/invocation binding, a monotonic per-task `sequence`,
+`previousEventDigest`, and `eventDigest`. The digest is computed from canonical
+event content excluding only `eventDigest`.
+
+Execution audit storage is append-only through the runtime API. Existing event
+files are not overwritten or rewritten. Duplicate deterministic event identity
+is a conflict. Read and verify APIs load events in sequence order and fail
+closed on corrupt JSON, invalid schema, duplicate sequence, sequence gaps,
+digest mismatch, unsafe symlinks, or path escape.
+
+The local concurrency guarantee is cooperative only: appends use a per-task
+exclusive lock file under `.aeos/state/audit/.locks/<task-id>/`. Cooperating
+AEOS writers do not silently allocate the same sequence. A stale lock or a
+non-cooperating writer still requires operator recovery; this is not a
+distributed lock manager.
+
+TASK-0301 execution event kinds are a closed set for the current execution
+authority boundary:
+
+```ts
+type TaskExecutionAuditEventKind =
+  | "execution_permission_evaluated"
+  | "execution_credential_resolution_evaluated"
+  | "execution_invocation_dispatch_intent"
+  | "execution_invocation_returned"
+  | "execution_invocation_failed"
+  | "execution_invocation_outcome_unknown"
+  | "execution_reconciliation_applied";
+```
+
+`execution_invocation_dispatch_intent` records only that AEOS is about to cross
+the TEST execution side-effect boundary. It is not proof that the provider was
+called, not permission authorization, and not completion proof. Returned,
+failed, and outcome-unknown audit events record bounded references to the
+invocation authority; the invocation record remains the source of truth for the
+invocation result.
+
+For `auditRequired: true`, a durable pre-dispatch audit write must succeed
+before the TEST dependency may be invoked. A pre-dispatch audit failure blocks
+the invocation. If the dependency has already returned and the post-invocation
+audit append fails, AEOS reports explicit audit incompleteness and does not
+erase the invocation result or call the dependency again.
+
 ## TypeScript-like Pseudo-interfaces
 ```ts
 interface AuditEvent {
@@ -233,8 +285,9 @@ policies, signed event chains, sampling, cross-repository correlation, and
 dry-run audit streams.
 
 ## Non-goals
-- Implement an audit runtime, storage backend, or package source code.
 - Replace the policy and permission model.
 - Store full conversations, prompts, model outputs, tool logs, file contents,
   secrets, or sensitive environment values.
 - Define organization-specific retention, legal hold, or compliance policy.
+- Enable production execution, production adapters, production credentials,
+  verifier completion, automatic retry, or task completion.

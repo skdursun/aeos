@@ -367,11 +367,10 @@ completion gate, or create completed task state.
 
 Current limitations:
 
-- no real execution runtime;
+- no production execution runtime;
 - no retry execution;
-- no audit runtime integration;
 - no verifier runtime integration;
-- no policy runtime integration;
+- no production policy approval runtime;
 - no automatic resume or retry;
 - no terminal success/completion attempt state.
 
@@ -613,6 +612,84 @@ executor says "all complete"
 
 The invocation may call only the no-op dependency for a legitimate remaining
 work context, and the authoritative remaining count stays 380.
+
+## Durable Execution Audit Runtime
+TASK-0301 adds the core durable execution audit runtime needed before AEOS can
+ever enable real external provider side effects. The runtime observes execution
+facts; it does not authorize execution, prove completion, approve policy,
+satisfy the verifier, mutate task state, mutate attempt state, or replace the
+invocation record.
+
+Execution audit storage is local and project-scoped:
+
+```text
+.aeos/state/audit/<task-id>/
+```
+
+Each event is an immutable JSON record with a deterministic audit event id,
+system actor, bounded target/result fields, task/revision/attempt/invocation
+binding, safe adapter and idempotency references where applicable, monotonic
+per-task sequence, `previousEventDigest`, and `eventDigest`. The digest chain is
+computed from canonical event content excluding only the event's own digest.
+
+The closed TASK-0301 execution audit event set is:
+
+- `execution_permission_evaluated`
+- `execution_credential_resolution_evaluated`
+- `execution_invocation_dispatch_intent`
+- `execution_invocation_returned`
+- `execution_invocation_failed`
+- `execution_invocation_outcome_unknown`
+- `execution_reconciliation_applied`
+
+No completion, verification, approval, retry, or task-success event is created
+by this runtime. Diagnostic output claiming `completed`, `verified`,
+`approved`, or `allDone` remains non-authoritative.
+
+Append behavior is append-only. The normal API does not update, overwrite,
+delete, or correct prior audit files. Duplicate deterministic event identity is
+a conflict. Future corrections, if needed, must be modeled as compensating
+events; TASK-0301 does not add a correction API.
+
+Read and verify APIs load events in authoritative sequence order and fail
+closed on corrupt JSON, invalid schema, duplicate event id, duplicate sequence,
+sequence gaps, digest mismatch, previous-digest mismatch, unsafe task ids,
+state-root symlinks, event-file symlinks, non-file targets, or path escape.
+Corruption is not interpreted as an empty audit.
+
+The append concurrency guarantee is cooperative local locking. Appends create
+an exclusive per-task lock under `.aeos/state/audit/.locks/<task-id>/` before
+loading the current chain, assigning the next sequence, writing a temporary
+record, fsyncing it, and renaming it into place. Cooperating AEOS writers do not
+silently allocate the same sequence. A stale lock or non-cooperating writer is a
+manual recovery limitation, not a distributed coordination guarantee.
+
+For the TEST invocation path, `audit.required: true` means the durable
+`execution_invocation_dispatch_intent` event must be appended before the
+injected no-op dependency is invoked. If that append fails, the dependency call
+count remains zero and the invocation does not cross the TEST side-effect
+boundary. When the dependency result/failure is durably recorded, a bounded
+post-invocation audit event is attempted. If that post-call audit append fails,
+the invocation result is not erased or retried; the returned result reports
+audit persistence incomplete.
+
+Secrets and capability material are excluded from audit events. Raw credential
+values, API keys, bearer tokens, passwords, authorization headers, private keys,
+secret-provider raw values, invocation ownership tokens, lock tokens, and
+capability tokens are rejected or absent. Safe references such as
+`credentialRef`, `secretProviderRef`, `invocationId`, and idempotency references
+may be recorded.
+
+Existing read-only commands remain no-write: task plan, task dry-run, task
+status, resume preview, transition preview, execution prepare preview,
+execution start preview, invocation status, and reconciliation preview do not
+append audit events.
+
+Production execution remains disabled after TASK-0301. Remaining blockers
+include real production policy approval authority, production secret provider
+runtime, production adapter implementations and conformance, provider
+crash/recovery integration, retry protocol, work accounting, and the
+verifier/completion pipeline.
 
 ## Invocation Status
 Persisted invocation status is read-only inspection of an existing

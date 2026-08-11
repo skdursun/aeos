@@ -108,6 +108,10 @@ import {
   buildTaskExecutionProviderReconciliationRequest,
   collectTaskExecutionProviderReconciliationEvidence,
   createReservedTaskExecutionInvocationRecord,
+  createTaskExecutionCredentialResolutionEvaluatedAuditEvent,
+  createTaskExecutionInvocationDispatchIntentAuditEvent,
+  createTaskExecutionInvocationReturnedAuditEvent,
+  createTaskExecutionPermissionEvaluatedAuditEvent,
   evaluateTaskExecutionAdapterConformance,
   evaluateTaskExecutionPermissionGate,
   resolveTaskExecutionCredential,
@@ -116,6 +120,7 @@ import {
   deriveTaskExecutionInvocationIdentity,
   deriveTaskExecutionInvocationIdentityForAttempt,
   getTaskExecutionInvocationStoragePath,
+  appendTaskExecutionAuditEvent,
   invokeStartedTaskExecutionAttempt,
   TASK_EXECUTION_ADAPTER_PRODUCTION_EXECUTION_ENABLED,
   deriveNextTaskExecutionAttemptNumber,
@@ -126,6 +131,7 @@ import {
   getTaskExecutionAttemptStoragePath,
   getTaskStateStoragePath,
   loadTaskExecutionAttempt,
+  loadTaskExecutionAuditEvents,
   loadTaskExecutionInvocation,
   loadTaskExecutionInvocationStatus,
   loadTaskResumeHandoff,
@@ -147,6 +153,7 @@ import {
   validateTaskExecutionInvocationRecord,
   updateTaskState,
   validatePersistedTaskState,
+  verifyTaskExecutionAuditChain,
   verifyAgenticCoverage,
 } from "../dist/index.js";
 import {
@@ -280,6 +287,25 @@ async function pathExists(path) {
 
     throw error;
   }
+}
+
+function auditEventFileName(event) {
+  return `${String(event.sequence).padStart(12, "0")}-${event.auditEventId}.json`;
+}
+
+function assertAuditVerificationPassed(result, message) {
+  assert.equal(result.ok, true, `${message} should be ok`);
+  assert.equal(result.verified, true, `${message} should verify`);
+  assert.deepEqual(result.issues, [], `${message} should expose no issues`);
+}
+
+function assertAuditVerificationFailed(result, expectedCode, message) {
+  assert.equal(result.ok, false, `${message} should fail closed`);
+  assert.equal(result.verified, false, `${message} should not verify`);
+  assert.ok(
+    result.issues.some((issue) => issue.code === expectedCode),
+    `${message} should expose ${expectedCode}`,
+  );
 }
 
 function issueCodes(result) {
@@ -18196,6 +18222,664 @@ try {
     TASK_EXECUTION_ADAPTER_PRODUCTION_EXECUTION_ENABLED,
     false,
     "task execution credential boundary smoke Z should leave production execution disabled",
+  );
+
+  const auditRuntimeRoot = await mkdtemp(join(tmpdir(), "aeos-audit-runtime-"));
+  const permissionAuditEvent =
+    createTaskExecutionPermissionEvaluatedAuditEvent({
+      gate: gatePolicyAllowed,
+      policyDecisionReference: validPolicyProof.proofId,
+      occurredAt: "2026-08-08T01:01:00.000Z",
+    });
+  assert.equal(
+    permissionAuditEvent.ok,
+    true,
+    "task execution audit smoke A should build a permission-evaluated audit event from gate authority",
+  );
+  const permissionAuditAppend = await appendTaskExecutionAuditEvent({
+    projectRoot: auditRuntimeRoot,
+    taskId: permissionAuditEvent.value.taskId,
+    event: permissionAuditEvent.value,
+    forbiddenValues: [fakeCredentialValue],
+  });
+  assert.equal(
+    permissionAuditAppend.ok,
+    true,
+    "task execution audit smoke A should persist a valid authoritative audit event",
+  );
+  const duplicatePermissionAuditAppend = await appendTaskExecutionAuditEvent({
+    projectRoot: auditRuntimeRoot,
+    taskId: permissionAuditEvent.value.taskId,
+    event: permissionAuditEvent.value,
+    forbiddenValues: [fakeCredentialValue],
+  });
+  assert.equal(
+    duplicatePermissionAuditAppend.ok,
+    false,
+    "task execution audit smoke B should reject duplicate event identity without overwrite",
+  );
+  assert.equal(
+    duplicatePermissionAuditAppend.error.code,
+    "task_execution_audit_duplicate_event",
+    "task execution audit smoke V should use deterministic duplicate conflict semantics",
+  );
+
+  const credentialAuditEvent =
+    createTaskExecutionCredentialResolutionEvaluatedAuditEvent({
+      credential: sanitizeTaskExecutionCredentialResult(
+        credentialBoundaryAllowed.credential,
+      ),
+      occurredAt: "2026-08-08T01:01:01.000Z",
+    });
+  assert.equal(
+    credentialAuditEvent.ok,
+    true,
+    "task execution audit smoke I should build credential audit event from sanitized public credential authority",
+  );
+  const credentialAuditAppend = await appendTaskExecutionAuditEvent({
+    projectRoot: auditRuntimeRoot,
+    taskId: credentialAuditEvent.value.taskId,
+    event: credentialAuditEvent.value,
+    forbiddenValues: [fakeCredentialValue],
+  });
+  assert.equal(
+    credentialAuditAppend.ok,
+    true,
+    "task execution audit smoke C should append ordered credential event",
+  );
+
+  const auditedPreparedAttempt = prepareTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    expectedRevision: 2,
+    workItemId: "work-a",
+    batchId: "batch-a",
+    attemptNumber: 40,
+    createdAt: "2026-08-08T01:01:02.000Z",
+  });
+  assert.equal(
+    auditedPreparedAttempt.ok,
+    true,
+    "task execution audit smoke L should prepare audit-gated invocation fixture",
+  );
+  const auditedStartedAttempt = transitionTaskExecutionAttempt({
+    attempt: auditedPreparedAttempt.value.attempt,
+    intent: {
+      kind: "start",
+    },
+    occurredAt: "2026-08-08T01:01:03.000Z",
+  });
+  assert.equal(
+    auditedStartedAttempt.ok,
+    true,
+    "task execution audit smoke L should start audit-gated invocation fixture",
+  );
+  const auditedNoop = createSmokeTestNoopDependency();
+  const auditedInvocation = await invokeStartedTaskExecutionAttempt({
+    projectRoot: auditRuntimeRoot,
+    state: firstUpdate.value.state,
+    attempt: auditedStartedAttempt.value.attempt,
+    dependency: auditedNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 40,
+    allowedOperationReferences: ["smoke:audit:dispatch"],
+    audit: {
+      required: true,
+      adapterId: "test-noop",
+      policyGateId: gatePolicyAllowed.policyGateId,
+      policyDecisionReference: validPolicyProof.proofId,
+      policyAuthorized: true,
+      credentialRef: executionAdapterRequest.credentialReference.credentialRef,
+      secretProviderRef:
+        executionAdapterRequest.credentialReference.secretProviderRef,
+      credentialResolutionReference:
+        credentialBoundaryAllowed.credential.resolutionReference,
+      forbiddenValues: [fakeCredentialValue],
+    },
+  });
+  assert.equal(
+    auditedInvocation.invocationAllowed,
+    true,
+    "task execution audit smoke L should allow TEST invocation after required pre-dispatch audit append",
+  );
+  assert.equal(
+    auditedNoop.calls.length,
+    1,
+    "task execution audit smoke L should invoke TEST dependency only after durable pre-dispatch audit",
+  );
+  assert.equal(
+    auditedInvocation.audit.preDispatchWritten,
+    true,
+    "task execution audit smoke L should report pre-dispatch audit persistence",
+  );
+  assert.equal(
+    auditedInvocation.audit.postInvocationWritten,
+    true,
+    "task execution audit smoke P should report bounded post-invocation audit persistence",
+  );
+  assert.equal(
+    auditedInvocation.audit.incomplete,
+    false,
+    "task execution audit smoke P should not report incomplete audit on successful post-event append",
+  );
+  assert.equal(
+    auditedInvocation.safety.auditWritten,
+    true,
+    "task execution audit smoke A should report audit writes only on the audit-integrated path",
+  );
+  assert.equal(
+    firstUpdate.value.state.workItems.find((item) => item.id === "work-a")?.state,
+    "pending",
+    "task execution audit smoke S should not mutate task work state",
+  );
+  assert.equal(
+    auditedStartedAttempt.value.attempt.lifecycle,
+    "started",
+    "task execution audit smoke T should not mutate attempt state",
+  );
+  const auditedInvocationRecord = await loadTaskExecutionInvocation({
+    projectRoot: auditRuntimeRoot,
+    taskId: auditedInvocation.taskId,
+    invocationId: auditedInvocation.invocationId,
+  });
+  assert.equal(
+    auditedInvocationRecord.ok,
+    true,
+    "task execution audit smoke P should leave invocation record as result authority",
+  );
+  assert.equal(
+    auditedInvocationRecord.value.record.lifecycle,
+    "returned",
+    "task execution audit smoke P should persist returned invocation record separately",
+  );
+  const auditedEvents = await loadTaskExecutionAuditEvents({
+    projectRoot: auditRuntimeRoot,
+    taskId: auditedInvocation.taskId,
+  });
+  assert.equal(
+    auditedEvents.ok,
+    true,
+    "task execution audit smoke C should load ordered audit events",
+  );
+  assert.deepEqual(
+    auditedEvents.value.events.map((event) => event.sequence),
+    [1, 2, 3, 4],
+    "task execution audit smoke C should load events in deterministic sequence order",
+  );
+  assert.deepEqual(
+    auditedEvents.value.events.map((event) => event.eventKind),
+    [
+      "execution_permission_evaluated",
+      "execution_credential_resolution_evaluated",
+      "execution_invocation_dispatch_intent",
+      "execution_invocation_returned",
+    ],
+    "task execution audit smoke A should persist the bounded execution event kinds",
+  );
+  assert.equal(
+    auditedEvents.value.events.some(
+      (event) => event.eventKind === "task_completed",
+    ),
+    false,
+    "task execution audit smoke U should not create completion audit events",
+  );
+  const auditedVerification = await verifyTaskExecutionAuditChain({
+    projectRoot: auditRuntimeRoot,
+    taskId: auditedInvocation.taskId,
+  });
+  assertAuditVerificationPassed(
+    auditedVerification,
+    "task execution audit smoke D",
+  );
+  const auditedEventPaths = auditedEvents.value.events.map((event) =>
+    join(auditedEvents.value.path, auditEventFileName(event)),
+  );
+  const auditedBytes = (
+    await Promise.all(auditedEventPaths.map((path) => readFile(path, "utf8")))
+  ).join("\n");
+  const auditedOwnershipToken =
+    auditedInvocationRecord.value.record.ownership.ownershipToken;
+  assert.equal(
+    auditedBytes.includes(fakeCredentialValue),
+    false,
+    "task execution audit smoke X should keep fake credential value out of audit files",
+  );
+  assert.equal(
+    JSON.stringify(auditedEvents.value).includes(fakeCredentialValue),
+    false,
+    "task execution audit smoke X should keep fake credential value out of read models",
+  );
+  assert.equal(
+    JSON.stringify(auditedVerification.issues).includes(fakeCredentialValue),
+    false,
+    "task execution audit smoke I should keep fake credential value out of audit issues",
+  );
+  assert.equal(
+    auditedBytes.includes(auditedOwnershipToken),
+    false,
+    "task execution audit smoke J should keep ownership token out of audit files",
+  );
+  assert.equal(
+    JSON.stringify(auditedEvents.value).includes("ownershipToken"),
+    false,
+    "task execution audit smoke J should not expose ownership token fields in read models",
+  );
+  const auditReadStatsBefore = await Promise.all(
+    auditedEventPaths.map((path) => stat(path)),
+  );
+  const auditReadBytesBefore = await Promise.all(
+    auditedEventPaths.map((path) => readFile(path, "utf8")),
+  );
+  const repeatedAuditLoad = await loadTaskExecutionAuditEvents({
+    projectRoot: auditRuntimeRoot,
+    taskId: auditedInvocation.taskId,
+  });
+  const repeatedAuditVerification = await verifyTaskExecutionAuditChain({
+    projectRoot: auditRuntimeRoot,
+    taskId: auditedInvocation.taskId,
+  });
+  assert.equal(
+    repeatedAuditLoad.ok,
+    true,
+    "task execution audit smoke W should allow repeated read",
+  );
+  assertAuditVerificationPassed(
+    repeatedAuditVerification,
+    "task execution audit smoke W",
+  );
+  assert.deepEqual(
+    await Promise.all(auditedEventPaths.map((path) => readFile(path, "utf8"))),
+    auditReadBytesBefore,
+    "task execution audit smoke W should not mutate audit bytes during read/verify",
+  );
+  assert.deepEqual(
+    (await Promise.all(auditedEventPaths.map((path) => stat(path)))).map(
+      (item) => item.mtimeMs,
+    ),
+    auditReadStatsBefore.map((item) => item.mtimeMs),
+    "task execution audit smoke W should not mutate audit mtimes during read/verify",
+  );
+
+  const secretAuditEvent =
+    createTaskExecutionInvocationDispatchIntentAuditEvent({
+      record: auditedInvocationRecord.value.record,
+      credentialRef: fakeCredentialValue,
+      occurredAt: "2026-08-08T01:01:04.000Z",
+    });
+  assert.equal(
+    secretAuditEvent.ok,
+    true,
+    "task execution audit smoke I should build bounded event before forbidden-value screening",
+  );
+  const secretAuditAppend = await appendTaskExecutionAuditEvent({
+    projectRoot: await mkdtemp(join(tmpdir(), "aeos-audit-secret-reject-")),
+    taskId: secretAuditEvent.value.taskId,
+    event: secretAuditEvent.value,
+    forbiddenValues: [fakeCredentialValue],
+  });
+  assert.equal(
+    secretAuditAppend.ok,
+    false,
+    "task execution audit smoke I should reject exact forbidden secret values before persistence",
+  );
+  assert.equal(
+    secretAuditAppend.error.code,
+    "task_execution_audit_secret_or_capability_rejected",
+    "task execution audit smoke I should report deterministic secret rejection",
+  );
+
+  const corruptAuditRoot = await mkdtemp(join(tmpdir(), "aeos-audit-corrupt-"));
+  const corruptAuditAppendA = await appendTaskExecutionAuditEvent({
+    projectRoot: corruptAuditRoot,
+    taskId: permissionAuditEvent.value.taskId,
+    event: permissionAuditEvent.value,
+  });
+  const corruptAuditAppendB = await appendTaskExecutionAuditEvent({
+    projectRoot: corruptAuditRoot,
+    taskId: credentialAuditEvent.value.taskId,
+    event: credentialAuditEvent.value,
+  });
+  assert.equal(corruptAuditAppendA.ok && corruptAuditAppendB.ok, true);
+  await writeNodeFile(corruptAuditAppendA.value.path, "{not-json}\n");
+  const corruptAuditVerification = await verifyTaskExecutionAuditChain({
+    projectRoot: corruptAuditRoot,
+    taskId: permissionAuditEvent.value.taskId,
+  });
+  assertAuditVerificationFailed(
+    corruptAuditVerification,
+    "task_execution_audit_corrupt_json",
+    "task execution audit smoke E",
+  );
+
+  const tamperAuditRoot = await mkdtemp(join(tmpdir(), "aeos-audit-tamper-"));
+  const tamperAuditAppendA = await appendTaskExecutionAuditEvent({
+    projectRoot: tamperAuditRoot,
+    taskId: permissionAuditEvent.value.taskId,
+    event: permissionAuditEvent.value,
+  });
+  const tamperAuditAppendB = await appendTaskExecutionAuditEvent({
+    projectRoot: tamperAuditRoot,
+    taskId: credentialAuditEvent.value.taskId,
+    event: credentialAuditEvent.value,
+  });
+  assert.equal(tamperAuditAppendA.ok && tamperAuditAppendB.ok, true);
+  const tamperedEvent = JSON.parse(await readFile(tamperAuditAppendA.value.path, "utf8"));
+  tamperedEvent.action = "tampered_action";
+  await writeNodeFile(
+    tamperAuditAppendA.value.path,
+    `${JSON.stringify(tamperedEvent, null, 2)}\n`,
+  );
+  assertAuditVerificationFailed(
+    await verifyTaskExecutionAuditChain({
+      projectRoot: tamperAuditRoot,
+      taskId: permissionAuditEvent.value.taskId,
+    }),
+    "task_execution_audit_event_digest_mismatch",
+    "task execution audit smoke F body tamper",
+  );
+
+  const sequenceAuditRoot = await mkdtemp(join(tmpdir(), "aeos-audit-sequence-"));
+  const sequenceAuditAppendA = await appendTaskExecutionAuditEvent({
+    projectRoot: sequenceAuditRoot,
+    taskId: permissionAuditEvent.value.taskId,
+    event: permissionAuditEvent.value,
+  });
+  const sequenceAuditAppendB = await appendTaskExecutionAuditEvent({
+    projectRoot: sequenceAuditRoot,
+    taskId: credentialAuditEvent.value.taskId,
+    event: credentialAuditEvent.value,
+  });
+  assert.equal(sequenceAuditAppendA.ok && sequenceAuditAppendB.ok, true);
+  const sequenceTamperedEvent = JSON.parse(
+    await readFile(sequenceAuditAppendB.value.path, "utf8"),
+  );
+  sequenceTamperedEvent.sequence = 9;
+  await writeNodeFile(
+    sequenceAuditAppendB.value.path,
+    `${JSON.stringify(sequenceTamperedEvent, null, 2)}\n`,
+  );
+  assertAuditVerificationFailed(
+    await verifyTaskExecutionAuditChain({
+      projectRoot: sequenceAuditRoot,
+      taskId: permissionAuditEvent.value.taskId,
+    }),
+    "task_execution_audit_filename_sequence_mismatch",
+    "task execution audit smoke F sequence tamper",
+  );
+
+  const previousDigestAuditRoot = await mkdtemp(
+    join(tmpdir(), "aeos-audit-previous-digest-"),
+  );
+  const previousDigestAppendA = await appendTaskExecutionAuditEvent({
+    projectRoot: previousDigestAuditRoot,
+    taskId: permissionAuditEvent.value.taskId,
+    event: permissionAuditEvent.value,
+  });
+  const previousDigestAppendB = await appendTaskExecutionAuditEvent({
+    projectRoot: previousDigestAuditRoot,
+    taskId: credentialAuditEvent.value.taskId,
+    event: credentialAuditEvent.value,
+  });
+  assert.equal(previousDigestAppendA.ok && previousDigestAppendB.ok, true);
+  const previousDigestTamperedEvent = JSON.parse(
+    await readFile(previousDigestAppendB.value.path, "utf8"),
+  );
+  previousDigestTamperedEvent.previousEventDigest = "0".repeat(64);
+  await writeNodeFile(
+    previousDigestAppendB.value.path,
+    `${JSON.stringify(previousDigestTamperedEvent, null, 2)}\n`,
+  );
+  assertAuditVerificationFailed(
+    await verifyTaskExecutionAuditChain({
+      projectRoot: previousDigestAuditRoot,
+      taskId: permissionAuditEvent.value.taskId,
+    }),
+    "task_execution_audit_previous_digest_mismatch",
+    "task execution audit smoke F previous digest tamper",
+  );
+
+  const deletionAuditRoot = await mkdtemp(join(tmpdir(), "aeos-audit-gap-"));
+  const deletionAppendA = await appendTaskExecutionAuditEvent({
+    projectRoot: deletionAuditRoot,
+    taskId: permissionAuditEvent.value.taskId,
+    event: permissionAuditEvent.value,
+  });
+  const deletionAppendB = await appendTaskExecutionAuditEvent({
+    projectRoot: deletionAuditRoot,
+    taskId: credentialAuditEvent.value.taskId,
+    event: credentialAuditEvent.value,
+  });
+  const deletionAppendC = await appendTaskExecutionAuditEvent({
+    projectRoot: deletionAuditRoot,
+    taskId: auditedEvents.value.events[2].taskId,
+    event: createTaskExecutionInvocationDispatchIntentAuditEvent({
+      record: auditedInvocationRecord.value.record,
+      occurredAt: "2026-08-08T01:01:05.000Z",
+    }).value,
+  });
+  assert.equal(
+    deletionAppendA.ok && deletionAppendB.ok && deletionAppendC.ok,
+    true,
+  );
+  await rm(deletionAppendB.value.path);
+  assertAuditVerificationFailed(
+    await verifyTaskExecutionAuditChain({
+      projectRoot: deletionAuditRoot,
+      taskId: permissionAuditEvent.value.taskId,
+    }),
+    "task_execution_audit_sequence_gap_or_reorder",
+    "task execution audit smoke F deleted middle event",
+  );
+
+  const duplicateSequenceAuditRoot = await mkdtemp(
+    join(tmpdir(), "aeos-audit-duplicate-sequence-"),
+  );
+  const duplicateSequenceAppendA = await appendTaskExecutionAuditEvent({
+    projectRoot: duplicateSequenceAuditRoot,
+    taskId: permissionAuditEvent.value.taskId,
+    event: permissionAuditEvent.value,
+  });
+  const duplicateSequenceAppendB = await appendTaskExecutionAuditEvent({
+    projectRoot: duplicateSequenceAuditRoot,
+    taskId: credentialAuditEvent.value.taskId,
+    event: credentialAuditEvent.value,
+  });
+  assert.equal(duplicateSequenceAppendA.ok && duplicateSequenceAppendB.ok, true);
+  const duplicateSequenceEvent = JSON.parse(
+    await readFile(duplicateSequenceAppendB.value.path, "utf8"),
+  );
+  duplicateSequenceEvent.sequence = 1;
+  await writeNodeFile(
+    join(
+      duplicateSequenceAuditRoot,
+      ".aeos",
+      "state",
+      "audit",
+      permissionAuditEvent.value.taskId,
+      `000000000001-${duplicateSequenceEvent.auditEventId}.json`,
+    ),
+    `${JSON.stringify(duplicateSequenceEvent, null, 2)}\n`,
+  );
+  assertAuditVerificationFailed(
+    await verifyTaskExecutionAuditChain({
+      projectRoot: duplicateSequenceAuditRoot,
+      taskId: permissionAuditEvent.value.taskId,
+    }),
+    "task_execution_audit_duplicate_sequence",
+    "task execution audit smoke F duplicate sequence",
+  );
+
+  const auditEventSymlinkRoot = await mkdtemp(
+    join(tmpdir(), "aeos-audit-event-symlink-"),
+  );
+  const auditEventSymlinkAppend = await appendTaskExecutionAuditEvent({
+    projectRoot: auditEventSymlinkRoot,
+    taskId: permissionAuditEvent.value.taskId,
+    event: permissionAuditEvent.value,
+  });
+  assert.equal(auditEventSymlinkAppend.ok, true);
+  await symlink(
+    auditEventSymlinkAppend.value.path,
+    join(
+      auditEventSymlinkRoot,
+      ".aeos",
+      "state",
+      "audit",
+      permissionAuditEvent.value.taskId,
+      `000000000002-${credentialAuditEvent.value.auditEventId}.json`,
+    ),
+  );
+  assertAuditVerificationFailed(
+    await verifyTaskExecutionAuditChain({
+      projectRoot: auditEventSymlinkRoot,
+      taskId: permissionAuditEvent.value.taskId,
+    }),
+    "task_execution_audit_unsafe_event_target",
+    "task execution audit smoke H",
+  );
+
+  const auditRootSymlinkProject = await mkdtemp(
+    join(tmpdir(), "aeos-audit-root-symlink-"),
+  );
+  await mkdir(join(auditRootSymlinkProject, ".aeos", "state"), {
+    recursive: true,
+  });
+  await symlink(
+    tmpdir(),
+    join(auditRootSymlinkProject, ".aeos", "state", "audit"),
+  );
+  const auditFailurePreparedAttempt = prepareTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    expectedRevision: 2,
+    workItemId: "work-a",
+    batchId: "batch-a",
+    attemptNumber: 41,
+    createdAt: "2026-08-08T01:01:06.000Z",
+  });
+  const auditFailureStartedAttempt = transitionTaskExecutionAttempt({
+    attempt: auditFailurePreparedAttempt.value.attempt,
+    intent: {
+      kind: "start",
+    },
+    occurredAt: "2026-08-08T01:01:07.000Z",
+  });
+  const auditFailureNoop = createSmokeTestNoopDependency();
+  const auditFailureInvocation = await invokeStartedTaskExecutionAttempt({
+    projectRoot: auditRootSymlinkProject,
+    state: firstUpdate.value.state,
+    attempt: auditFailureStartedAttempt.value.attempt,
+    dependency: auditFailureNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 41,
+    audit: {
+      required: true,
+      forbiddenValues: [fakeCredentialValue],
+    },
+  });
+  assert.equal(
+    auditFailureInvocation.invocationAllowed,
+    false,
+    "task execution audit smoke M should block invocation when required pre-dispatch audit append fails",
+  );
+  assert.equal(
+    auditFailureNoop.calls.length,
+    0,
+    "task execution audit smoke M should not cross TEST dependency boundary on required audit failure",
+  );
+  assert.equal(
+    auditFailureInvocation.issues[0]?.code,
+    "task_execution_audit_unsafe_state_root",
+    "task execution audit smoke G should fail closed on audit root symlink",
+  );
+
+  const postFailureAuditRoot = await mkdtemp(
+    join(tmpdir(), "aeos-audit-post-failure-"),
+  );
+  const postFailurePreparedAttempt = prepareTaskExecutionAttempt({
+    state: firstUpdate.value.state,
+    expectedRevision: 2,
+    workItemId: "work-a",
+    batchId: "batch-a",
+    attemptNumber: 42,
+    createdAt: "2026-08-08T01:01:08.000Z",
+  });
+  const postFailureStartedAttempt = transitionTaskExecutionAttempt({
+    attempt: postFailurePreparedAttempt.value.attempt,
+    intent: {
+      kind: "start",
+    },
+    occurredAt: "2026-08-08T01:01:09.000Z",
+  });
+  const postFailureNoop = {
+    calls: [],
+    dependency: {
+      kind: "test_noop",
+      async invoke(request) {
+        postFailureNoop.calls.push(JSON.parse(JSON.stringify(request)));
+        const lockRoot = join(
+          postFailureAuditRoot,
+          ".aeos",
+          "state",
+          "audit",
+          ".locks",
+          request.taskId,
+        );
+
+        await mkdir(lockRoot, { recursive: true });
+        await writeNodeFile(join(lockRoot, "append.lock"), "locked by smoke\n");
+
+        return {
+          ok: true,
+          outputReference: "smoke://post-audit-failure",
+          diagnosticCode: "smoke_post_audit_failure",
+          message: "post audit append should fail after this TEST return",
+        };
+      },
+    },
+  };
+  const postFailureInvocation = await invokeStartedTaskExecutionAttempt({
+    projectRoot: postFailureAuditRoot,
+    state: firstUpdate.value.state,
+    attempt: postFailureStartedAttempt.value.attempt,
+    dependency: postFailureNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 42,
+    allowedOperationReferences: ["smoke:audit:post-failure"],
+    audit: {
+      required: true,
+      forbiddenValues: [fakeCredentialValue],
+    },
+  });
+  assert.equal(
+    postFailureNoop.calls.length,
+    1,
+    "task execution audit smoke R should not automatically re-call dependency after post-call audit failure",
+  );
+  assert.equal(
+    postFailureInvocation.invocationStatus,
+    "returned",
+    "task execution audit smoke R should preserve invocation result when post audit fails",
+  );
+  assert.equal(
+    postFailureInvocation.audit.incomplete,
+    true,
+    "task execution audit smoke R should report post-call audit persistence incomplete",
+  );
+  assert.equal(
+    issueCodes(postFailureInvocation).includes(
+      "task_execution_audit_append_locked",
+    ),
+    true,
+    "task execution audit smoke R should expose post-call audit failure condition",
+  );
+  const postFailureRecord = await loadTaskExecutionInvocation({
+    projectRoot: postFailureAuditRoot,
+    taskId: postFailureInvocation.taskId,
+    invocationId: postFailureInvocation.invocationId,
+  });
+  assert.equal(
+    postFailureRecord.value.record.lifecycle,
+    "returned",
+    "task execution audit smoke R should not erase durable invocation result",
   );
 
   const applyReturnedFixture = await createReconciliationApplyFixture({
