@@ -1446,12 +1446,12 @@ The only runtime-resolvable provider kind is:
 kind: "test_secret_provider"
 ```
 
-The TEST provider is dependency-injected in smoke coverage only and is not
-exported. No environment variables, Keychain, Vault, cloud secret manager,
-filesystem secret file, network provider, production SDK, or generic external
-provider is read or called. Provider identity is system-owned; task prose,
-model output, operator text, CLI flags, or adapter output cannot choose runtime
-provider code or supply raw credential authority.
+At TASK-0300 creation time, the TEST provider was dependency-injected in smoke
+coverage only and was not exported. No environment variables, Keychain, Vault,
+cloud secret manager, filesystem secret file, network provider, production SDK,
+or generic external provider was read or called. Provider identity is
+system-owned; task prose, model output, operator text, CLI flags, or adapter
+output cannot choose runtime provider code or supply raw credential authority.
 
 `resolveTaskExecutionCredential(...)` builds the resolution request from the
 current authoritative invocation context: task id, task revision, attempt id,
@@ -1602,6 +1602,72 @@ work-accounting and verifier runtimes only if the returned provider result is
 stored as invocation evidence/diagnostics. It must not update work counts,
 coverage, verifier status, completion gate, attempt success, or task
 completion. The existing 400/20 invariant confirms this separation.
+
+## TASK-0304 Production Credential Provider Boundary
+TASK-0304 adds the first production-capable credential provider boundary while
+keeping production execution globally disabled. The closed runtime provider
+kinds are now:
+
+```ts
+kind: "test_secret_provider" | "environment_reference"
+```
+
+`environment_reference` is the only production-capable resolver implemented in
+this task. It resolves a logical, system-owned `credentialRef` through trusted
+AEOS/runtime configuration:
+
+```text
+logical credentialRef -> system-owned environment variable mapping -> ephemeral value
+```
+
+Task prose, model output, adapter output, operator text, arbitrary CLI JSON,
+and CLI flags cannot choose an environment variable name. There is no
+`--api-key`, `--token`, `--secret`, `--env`, `--env-var`, or raw credential CLI.
+Unknown logical references fail closed, and there is no fallback from
+`credentialRef` to a same-named environment variable.
+
+Resolution still occurs only after adapter conformance and the
+permission/policy gate allow the exact invocation context. When policy is
+required, the exact durable approval proof must match before resolution can
+read the configured environment variable. The production credential resolution
+request is bound to task id, task revision, attempt id, invocation id, adapter
+id/kind, operation, credential ref, credential scope, policy gate id, and
+policy authorization state.
+
+Environment mappings are strict: the mapped logical credential must match the
+current adapter id, adapter kind, operation, and scope. Scope mismatches,
+adapter mismatches, and operation mismatches block before any environment
+read. The resolver reads only the exact configured variable name; it does not
+enumerate, search, or infer environment names. Missing and empty values are
+deterministic credential-missing failures.
+
+The raw environment value is delivered only as short-lived in-memory runtime
+input to the future adapter invocation boundary. Public credential results,
+invocation records, task state, attempt records, approval records, audit
+events, normalized adapter results, status output, issues, and JSON
+serialization contain only safe metadata such as logical credential ref,
+provider id/kind, scope, expiry, and resolution reference. Environment variable
+names are minimized and are not rendered in public credential or audit models.
+
+Exact resolved-secret echo protection remains active. If an adapter response
+attempts to echo the ephemeral credential in output, diagnostics, message,
+failure data, or metadata, normalization rejects the response and persists only
+sanitized failure metadata.
+
+No real provider API call, vendor SDK, network dispatch, filesystem secret
+read, keychain, Vault, or cloud secret manager integration exists in TASK-0304.
+Future secure secret managers can implement the same provider-neutral contract
+after the dispatch and adapter boundaries are ready.
+
+Production execution remains disabled:
+
+```ts
+TASK_EXECUTION_ADAPTER_PRODUCTION_EXECUTION_ENABLED === false
+```
+
+Credential resolution does not reduce pending work, complete work, satisfy the
+verifier, satisfy the completion gate, or complete the task. The canonical
+400 expected / 20 accounted / 380 remaining invariant remains incomplete.
 
 Cross-process timing: cooperative local locking is enough for a single
 operator-controlled local first call. General production-ready execution and

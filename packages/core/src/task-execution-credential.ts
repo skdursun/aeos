@@ -21,14 +21,7 @@ export type TaskExecutionCredentialReference =
 
 export type TaskExecutionCredentialProviderKind =
   | "test_secret_provider"
-  | "environment"
-  | "keychain"
-  | "vault"
-  | "aws_secrets_manager"
-  | "gcp_secret_manager"
-  | "azure_key_vault"
-  | "filesystem"
-  | "generic_external";
+  | "environment_reference";
 
 export type TaskExecutionResolvedCredentialKind =
   | "opaque_secret"
@@ -39,6 +32,8 @@ export interface TaskExecutionCredentialProviderIdentity {
   readonly providerId: string;
   readonly kind: TaskExecutionCredentialProviderKind;
   readonly authority: "system";
+  readonly implementationVersion: string;
+  readonly configurationVersion: string;
 }
 
 export interface TaskExecutionCredentialResolutionRequest {
@@ -52,6 +47,7 @@ export interface TaskExecutionCredentialResolutionRequest {
   readonly credentialRef: string;
   readonly credentialScope: readonly string[];
   readonly permissionGateId: string;
+  readonly policyRequired: boolean;
   readonly policyAuthorized: boolean;
 }
 
@@ -63,12 +59,19 @@ export type TaskExecutionCredentialProviderResolution =
       readonly expiresAt?: string;
       readonly scope?: readonly string[];
       readonly resolutionReference?: string;
+      readonly safety?: TaskExecutionCredentialProviderResolutionSafety;
     }
   | {
       readonly status: "missing" | "denied" | "error";
       readonly code?: string;
       readonly message?: string;
+      readonly safety?: TaskExecutionCredentialProviderResolutionSafety;
     };
+
+export interface TaskExecutionCredentialProviderResolutionSafety {
+  readonly productionProviderResolved?: boolean;
+  readonly environmentRead?: boolean;
+}
 
 export interface TaskExecutionCredentialProvider {
   readonly identity: TaskExecutionCredentialProviderIdentity;
@@ -98,10 +101,10 @@ export interface TaskExecutionCredentialIssue {
 
 export interface TaskExecutionCredentialSafety {
   readonly productionExecutionEnabled: false;
-  readonly productionProviderResolved: false;
+  readonly productionProviderResolved: boolean;
   readonly productionAdapterInvoked: false;
   readonly externalSecretManagerCalled: false;
-  readonly environmentRead: false;
+  readonly environmentRead: boolean;
   readonly filesystemRead: false;
   readonly networkCalled: false;
   readonly rawSecretPersisted: false;
@@ -135,6 +138,7 @@ export interface TaskExecutionCredentialPublicResolutionResult {
   readonly operationKind: TaskExecutionAdapterOperationKind | null;
   readonly credentialRef: string | null;
   readonly providerId: string | null;
+  readonly providerKind: TaskExecutionCredentialProviderKind | null;
   readonly credentialScope: readonly string[];
   readonly expiresAt: string | null;
   readonly resolutionReference: string | null;
@@ -175,23 +179,27 @@ const forbiddenCredentialKeys = new Set<string>([
   "privatekey",
 ]);
 
-const credentialSafety: TaskExecutionCredentialSafety = {
-  productionExecutionEnabled: TASK_EXECUTION_ADAPTER_PRODUCTION_EXECUTION_ENABLED,
-  productionProviderResolved: false,
-  productionAdapterInvoked: false,
-  externalSecretManagerCalled: false,
-  environmentRead: false,
-  filesystemRead: false,
-  networkCalled: false,
-  rawSecretPersisted: false,
-  rawSecretRendered: false,
-  taskModified: false,
-  attemptModified: false,
-  invocationModified: false,
-  auditWritten: false,
-  verifierRun: false,
-  policyRuntimeRun: false,
-};
+function credentialSafety(
+  input?: TaskExecutionCredentialProviderResolutionSafety,
+): TaskExecutionCredentialSafety {
+  return {
+    productionExecutionEnabled: TASK_EXECUTION_ADAPTER_PRODUCTION_EXECUTION_ENABLED,
+    productionProviderResolved: input?.productionProviderResolved ?? false,
+    productionAdapterInvoked: false,
+    externalSecretManagerCalled: false,
+    environmentRead: input?.environmentRead ?? false,
+    filesystemRead: false,
+    networkCalled: false,
+    rawSecretPersisted: false,
+    rawSecretRendered: false,
+    taskModified: false,
+    attemptModified: false,
+    invocationModified: false,
+    auditWritten: false,
+    verifierRun: false,
+    policyRuntimeRun: false,
+  };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -348,7 +356,9 @@ function providerIdentityIssues(
   if (
     !isRecord(provider.identity) ||
     !isSafeId(provider.identity.providerId) ||
-    provider.identity.authority !== "system"
+    provider.identity.authority !== "system" ||
+    !isSafeId(provider.identity.implementationVersion) ||
+    !isSafeId(provider.identity.configurationVersion)
   ) {
     return [
       issue({
@@ -360,12 +370,15 @@ function providerIdentityIssues(
     ];
   }
 
-  if (provider.identity.kind !== "test_secret_provider") {
+  if (
+    provider.identity.kind !== "test_secret_provider" &&
+    provider.identity.kind !== "environment_reference"
+  ) {
     return [
       issue({
         code: "task_execution_credential_provider_kind_rejected",
         message:
-          "TASK-0300 permits only the injected TEST secret provider kind.",
+          "Credential resolution permits only supported system-owned provider kinds.",
         category: "permission",
       }),
     ];
@@ -379,7 +392,7 @@ function providerIdentityIssues(
       issue({
         code: "task_execution_credential_provider_reference_mismatch",
         message:
-          "Credential reference provider id must match the injected system-owned TEST provider.",
+          "Credential reference provider id must match the injected system-owned provider.",
         category: "permission",
       }),
     ];
@@ -470,7 +483,7 @@ function providerResolutionIssues(
       issue({
         code: "task_execution_credential_missing",
         message:
-          "Required credential was not found by the TEST secret provider.",
+          "Required credential was not found by the system-owned credential provider.",
         category: "not_found",
       }),
     ];
@@ -481,7 +494,7 @@ function providerResolutionIssues(
       issue({
         code: "task_execution_credential_denied",
         message:
-          "Required credential resolution was denied by the TEST secret provider.",
+          "Required credential resolution was denied by the system-owned credential provider.",
         category: "permission",
       }),
     ];
@@ -490,10 +503,11 @@ function providerResolutionIssues(
   if (value.status === "error") {
     return [
       issue({
-        code: safeText(value.code) ?? "task_execution_credential_provider_error",
+        code: isSafeId(value.code)
+          ? value.code
+          : "task_execution_credential_provider_error",
         message:
-          safeText(value.message) ??
-          "TEST secret provider reported a sanitized credential resolution error.",
+          "System-owned credential provider reported a sanitized credential resolution error.",
         category: "unknown",
       }),
     ];
@@ -513,7 +527,7 @@ function providerResolutionIssues(
       issue({
         code: "task_execution_credential_provider_result_invalid",
         message:
-          "Credential provider resolved result must be bounded TEST credential metadata plus an ephemeral value.",
+          "Credential provider resolved result must be bounded credential metadata plus an ephemeral value.",
         category: "validation",
       }),
     ];
@@ -568,6 +582,7 @@ function baseResult(input: {
   readonly credentialRequired: boolean;
   readonly reference?: TaskExecutionCredentialReference;
   readonly providerId?: string | null;
+  readonly providerKind?: TaskExecutionCredentialProviderKind | null;
   readonly expiresAt?: string | null;
   readonly resolutionReference?: string | null;
   readonly permissionGateId?: string | null;
@@ -578,6 +593,7 @@ function baseResult(input: {
   readonly credentialResolved: boolean;
   readonly scopeSatisfied: boolean;
   readonly issues: readonly TaskExecutionCredentialIssue[];
+  readonly providerSafety?: TaskExecutionCredentialProviderResolutionSafety;
   readonly resolvedCredential?: TaskExecutionResolvedCredential;
 }): TaskExecutionCredentialResolutionResult {
   const result = {
@@ -603,13 +619,14 @@ function baseResult(input: {
     operationKind: input.request?.operationKind ?? null,
     credentialRef: input.reference?.credentialRef ?? null,
     providerId: input.providerId ?? input.reference?.secretProviderRef ?? null,
+    providerKind: input.providerKind ?? null,
     credentialScope: input.reference?.credentialScope ?? [],
     expiresAt: input.expiresAt ?? null,
     resolutionReference: input.resolutionReference ?? null,
     permissionGateId: input.permissionGateId ?? null,
     policyAuthorized: input.policyAuthorized ?? false,
     issues: input.issues,
-    safety: credentialSafety,
+    safety: credentialSafety(input.providerSafety),
   } satisfies TaskExecutionCredentialResolutionResult;
 
   if (input.resolvedCredential !== undefined) {
@@ -646,6 +663,7 @@ export function sanitizeTaskExecutionCredentialResult(
     operationKind: result.operationKind,
     credentialRef: result.credentialRef,
     providerId: result.providerId,
+    providerKind: result.providerKind,
     credentialScope: result.credentialScope,
     expiresAt: result.expiresAt,
     resolutionReference: result.resolutionReference,
@@ -789,6 +807,7 @@ export async function resolveTaskExecutionCredential(
       credentialRequired: input.credentialRequired,
       reference: credentialReference,
       providerId: input.provider?.identity.providerId,
+      providerKind: input.provider?.identity.kind,
       referenceValid,
       permissionGateSatisfied: gateSatisfied,
       providerAccepted: false,
@@ -813,6 +832,7 @@ export async function resolveTaskExecutionCredential(
     credentialRef: credentialReference.credentialRef,
     credentialScope: credentialReference.credentialScope,
     permissionGateId: input.permissionGateResult.policyGateId,
+    policyRequired: input.permissionGateResult.policyRequired,
     policyAuthorized: input.permissionGateResult.policyAuthorized,
   };
 
@@ -823,7 +843,7 @@ export async function resolveTaskExecutionCredential(
       status: "error",
       code: "task_execution_credential_provider_threw",
       message:
-        "TEST secret provider threw; raw provider error text is not authoritative.",
+        "Credential provider threw; raw provider error text is not authoritative.",
     };
   }
 
@@ -836,6 +856,7 @@ export async function resolveTaskExecutionCredential(
       credentialRequired: input.credentialRequired,
       reference: credentialReference,
       providerId: provider.identity.providerId,
+      providerKind: provider.identity.kind,
       referenceValid,
       permissionGateSatisfied: gateSatisfied,
       providerAccepted: true,
@@ -844,6 +865,7 @@ export async function resolveTaskExecutionCredential(
       permissionGateId: input.permissionGateResult.policyGateId,
       policyAuthorized: input.permissionGateResult.policyAuthorized,
       issues,
+      providerSafety: providerResult.safety,
     });
   }
 
@@ -855,7 +877,7 @@ export async function resolveTaskExecutionCredential(
       issue({
         code: "task_execution_credential_provider_scope_expansion_rejected",
         message:
-          "TEST provider resolved scope must not expand or override the system credential reference scope.",
+          "Credential provider resolved scope must not expand or override the system credential reference scope.",
         category: "permission",
       }),
     );
@@ -871,7 +893,7 @@ export async function resolveTaskExecutionCredential(
       issue({
         code: "task_execution_credential_expired",
         message:
-          "Resolved TEST credential expired before adapter invocation.",
+          "Resolved credential expired before adapter invocation.",
         category: "permission",
       }),
     );
@@ -883,6 +905,7 @@ export async function resolveTaskExecutionCredential(
       credentialRequired: input.credentialRequired,
       reference: credentialReference,
       providerId: provider.identity.providerId,
+      providerKind: provider.identity.kind,
       expiresAt: providerResult.expiresAt ?? null,
       resolutionReference: providerResult.resolutionReference ?? null,
       referenceValid,
@@ -893,6 +916,7 @@ export async function resolveTaskExecutionCredential(
       permissionGateId: input.permissionGateResult.policyGateId,
       policyAuthorized: input.permissionGateResult.policyAuthorized,
       issues,
+      providerSafety: providerResult.safety,
     });
   }
 
@@ -907,6 +931,7 @@ export async function resolveTaskExecutionCredential(
     credentialRequired: input.credentialRequired,
     reference: credentialReference,
     providerId: provider.identity.providerId,
+    providerKind: provider.identity.kind,
     expiresAt: providerResult.expiresAt ?? null,
     resolutionReference: providerResult.resolutionReference ?? null,
     referenceValid,
@@ -917,6 +942,7 @@ export async function resolveTaskExecutionCredential(
     permissionGateId: input.permissionGateResult.policyGateId,
     policyAuthorized: input.permissionGateResult.policyAuthorized,
     issues,
+    providerSafety: providerResult.safety,
     resolvedCredential,
   });
 }

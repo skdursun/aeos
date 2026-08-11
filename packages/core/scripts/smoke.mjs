@@ -114,7 +114,9 @@ import {
   createTaskExecutionPermissionEvaluatedAuditEvent,
   createTaskExecutionPolicyApprovalRecord,
   createTaskExecutionPolicyAuthorizationProofFromApproval,
+  createEnvironmentReferenceCredentialProvider,
   evaluateTaskExecutionAdapterConformance,
+  evaluateTaskExecutionProductionCredentialProviderConfiguration,
   evaluateTaskExecutionPermissionGate,
   resolveTaskExecutionCredential,
   sanitizeTaskExecutionCredentialResult,
@@ -548,6 +550,8 @@ function createSmokeTestSecretProvider({
         providerId,
         kind,
         authority: "system",
+        implementationVersion: "smoke-test-secret-provider-v1",
+        configurationVersion: "smoke-test-secret-provider-config-v1",
       },
       resolve(request) {
         calls.push(JSON.parse(JSON.stringify(request)));
@@ -591,6 +595,36 @@ function createSmokeTestSecretProvider({
       },
     },
   };
+}
+
+async function withTemporaryEnvironmentValue(name, value, callback) {
+  const previous = process.env[name];
+
+  process.env[name] = value;
+
+  try {
+    return await callback();
+  } finally {
+    if (previous === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = previous;
+    }
+  }
+}
+
+async function withTemporarilyUnsetEnvironmentValue(name, callback) {
+  const previous = process.env[name];
+
+  delete process.env[name];
+
+  try {
+    return await callback();
+  } finally {
+    if (previous !== undefined) {
+      process.env[name] = previous;
+    }
+  }
 }
 
 function createSmokeTestPolicyAuthorizationProof({
@@ -18295,6 +18329,487 @@ try {
     "task execution credential boundary smoke E should not call rejected production provider",
   );
 
+  const environmentProviderId = "smoke-environment-reference-provider";
+  const environmentCredentialRef = "provider.primary";
+  const environmentVariableName = "AEOS_TEST_PROVIDER_PRIMARY_SECRET";
+  const environmentFakeSecret = "fake-task-0304-environment-secret-value";
+  const environmentProviderIdentity = {
+    providerId: environmentProviderId,
+    kind: "environment_reference",
+    authority: "system",
+    implementationVersion: "environment-reference-v1",
+    configurationVersion: "environment-reference-config-v1",
+  };
+  const environmentProviderConfiguration = {
+    providerId: environmentProviderId,
+    providerKind: "environment_reference",
+    configurationVersion: "environment-reference-config-v1",
+    configurationAuthority: "system",
+    credentials: [
+      {
+        credentialRef: environmentCredentialRef,
+        environmentVariableName,
+        credentialKind: "bearer_token",
+        credentialScope: ["test_execution"],
+        adapterId: executionAdapterIdentity.adapterId,
+        adapterKind: executionAdapterIdentity.adapterKind,
+        operationKind: "execute_task_attempt",
+        configurationAuthority: "system",
+        resolutionReference: "smoke-environment-resolution-reference",
+      },
+    ],
+  };
+  const environmentRequest = createSmokeTestExecutionAdapterRequest(
+    invokingPersisted.value.record,
+    executionAdapterIdentity,
+    {
+      credentialReference: {
+        credentialRef: environmentCredentialRef,
+        secretProviderRef: environmentProviderId,
+        credentialScope: ["test_execution"],
+        credentialAuthority: "system",
+        rawCredentialMaterialPresent: false,
+      },
+    },
+  );
+  const environmentConfigurationResult =
+    evaluateTaskExecutionProductionCredentialProviderConfiguration({
+      identity: environmentProviderIdentity,
+      configuration: environmentProviderConfiguration,
+    });
+  assert.equal(
+    environmentConfigurationResult.ok,
+    true,
+    "task execution production credential smoke B should accept environment_reference provider configuration",
+  );
+  assert.deepEqual(
+    environmentConfigurationResult.credentialRefs,
+    [environmentCredentialRef],
+    "task execution production credential smoke D should expose only logical credential refs",
+  );
+  assert.equal(
+    JSON.stringify(environmentConfigurationResult).includes(environmentVariableName),
+    false,
+    "task execution production credential smoke R should not expose environment variable names in public configuration result",
+  );
+  const unsupportedConfigurationResult =
+    evaluateTaskExecutionProductionCredentialProviderConfiguration({
+      identity: {
+        ...environmentProviderIdentity,
+        kind: "vault",
+      },
+      configuration: environmentProviderConfiguration,
+    });
+  assert.equal(
+    unsupportedConfigurationResult.ok,
+    false,
+    "task execution production credential smoke C should reject unsupported provider kind",
+  );
+  const invalidRawConfigResult =
+    evaluateTaskExecutionProductionCredentialProviderConfiguration({
+      identity: environmentProviderIdentity,
+      configuration: {
+        ...environmentProviderConfiguration,
+        credentials: [
+          {
+            ...environmentProviderConfiguration.credentials[0],
+            credentialValue: "raw-secret-in-config",
+          },
+        ],
+      },
+    });
+  assert.equal(
+    invalidRawConfigResult.ok,
+    false,
+    "task execution production credential smoke M should reject raw secret-like provider configuration fields",
+  );
+
+  let environmentReadNames = [];
+  const createCountingEnvironmentProvider = (configuration = environmentProviderConfiguration) =>
+    createEnvironmentReferenceCredentialProvider({
+      identity: environmentProviderIdentity,
+      configuration,
+      readEnvironmentVariable(name) {
+        environmentReadNames.push(name);
+        return process.env[name];
+      },
+    });
+  const resetEnvironmentReads = () => {
+    environmentReadNames = [];
+  };
+
+  await withTemporaryEnvironmentValue(
+    environmentVariableName,
+    environmentFakeSecret,
+    async () => {
+      resetEnvironmentReads();
+      const environmentRuntimeAdapter = createSmokeTestExecutionAdapter({
+        identity: executionAdapterIdentity,
+        rawResponse: (request, runtime) => ({
+          status: "returned",
+          invocationId: request.invocationId,
+          idempotencyKey: request.idempotencyKey,
+          taskId: request.taskId,
+          sourceTaskRevision: request.sourceTaskRevision,
+          attemptId: request.attemptId,
+          attemptNumber: request.attemptNumber,
+          invocationOk:
+            runtime?.resolvedCredential?.value === environmentFakeSecret,
+          output: {
+            retainedDiagnostic: "environment credential used in memory only",
+          },
+        }),
+      });
+      const environmentCredentialBoundary =
+        await evaluateSmokeCredentialBoundaryAfterGate({
+          adapter: environmentRuntimeAdapter.adapter,
+          request: environmentRequest,
+          gateInput: {
+            request: environmentRequest,
+            adapterIdentity: executionAdapterIdentity,
+            adapterCapabilities: environmentRuntimeAdapter.adapter.capabilities,
+            adapterPermissions: environmentRuntimeAdapter.adapter.permissions,
+            operationKind: "execute_task_attempt",
+            policyRequirement: gatePolicyRequirement,
+            policyAuthorizationProof: validPolicyProof,
+            credentialReferenceRequired: true,
+          },
+          provider: createCountingEnvironmentProvider(),
+          requiredCredentialScope: ["test_execution"],
+        });
+      assert.equal(
+        environmentCredentialBoundary.credential.ok,
+        true,
+        "task execution production credential smoke I should resolve after exact approval and permitted context",
+      );
+      assert.equal(
+        environmentCredentialBoundary.credential.providerKind,
+        "environment_reference",
+        "task execution production credential smoke B should expose accepted provider kind",
+      );
+      assert.equal(
+        environmentCredentialBoundary.credential.resolvedCredential.value,
+        environmentFakeSecret,
+        "task execution production credential smoke J should resolve system-mapped environment value internally",
+      );
+      assert.deepEqual(
+        environmentReadNames,
+        [environmentVariableName],
+        "task execution production credential smoke D should read only the exact system-mapped environment variable",
+      );
+      assert.equal(
+        environmentCredentialBoundary.credential.safety.environmentRead,
+        true,
+        "task execution production credential smoke J should report bounded environment read",
+      );
+      assert.equal(
+        environmentCredentialBoundary.credential.safety.productionProviderResolved,
+        true,
+        "task execution production credential smoke J should report production credential provider resolution",
+      );
+      assert.equal(
+        environmentCredentialBoundary.conformance.normalizedResult.invocationOk,
+        true,
+        "task execution production credential smoke J should deliver secret only to runtime boundary",
+      );
+      assert.equal(
+        JSON.stringify(environmentCredentialBoundary.credential).includes(
+          environmentFakeSecret,
+        ),
+        false,
+        "task execution production credential smoke M should keep raw environment secret out of credential JSON",
+      );
+      assert.equal(
+        JSON.stringify(
+          sanitizeTaskExecutionCredentialResult(
+            environmentCredentialBoundary.credential,
+          ),
+        ).includes(environmentFakeSecret),
+        false,
+        "task execution production credential smoke M should keep raw environment secret out of sanitized credential result",
+      );
+      assert.equal(
+        JSON.stringify(environmentCredentialBoundary.credential).includes(
+          environmentVariableName,
+        ),
+        false,
+        "task execution production credential smoke R should keep environment variable name out of credential result",
+      );
+      assert.equal(
+        JSON.stringify(environmentCredentialBoundary.credential.issues).includes(
+          environmentFakeSecret,
+        ),
+        false,
+        "task execution production credential smoke Q should keep environment secret out of issues",
+      );
+      assert.equal(
+        JSON.stringify(invokingPersisted.value.record).includes(
+          environmentFakeSecret,
+        ),
+        false,
+        "task execution production credential smoke N should keep environment secret out of invocation persistence",
+      );
+      assert.equal(
+        approvalBytes.includes(environmentFakeSecret),
+        false,
+        "task execution production credential smoke P should keep environment secret out of approval persistence",
+      );
+      const environmentCredentialAuditEvent =
+        createTaskExecutionCredentialResolutionEvaluatedAuditEvent({
+          credential: sanitizeTaskExecutionCredentialResult(
+            environmentCredentialBoundary.credential,
+          ),
+          occurredAt: "2026-08-08T01:01:10.000Z",
+        });
+      assert.equal(
+        environmentCredentialAuditEvent.ok,
+        true,
+        "task execution production credential smoke O should build audit event from sanitized environment credential metadata",
+      );
+      assert.equal(
+        JSON.stringify(environmentCredentialAuditEvent.value).includes(
+          environmentFakeSecret,
+        ),
+        false,
+        "task execution production credential smoke O should keep environment secret out of audit event",
+      );
+      assert.equal(
+        JSON.stringify(environmentCredentialAuditEvent.value).includes(
+          environmentVariableName,
+        ),
+        false,
+        "task execution production credential smoke R should keep environment variable name out of audit event",
+      );
+
+      resetEnvironmentReads();
+      const unknownLogicalReference = await resolveTaskExecutionCredential({
+        request: {
+          ...environmentRequest,
+          credentialReference: {
+            ...environmentRequest.credentialReference,
+            credentialRef: "provider.unknown",
+          },
+        },
+        permissionGateResult: gatePolicyAllowed,
+        credentialRequired: true,
+        provider: createCountingEnvironmentProvider(),
+        now: "2026-08-08T01:00:00.000Z",
+      });
+      assert.equal(
+        unknownLogicalReference.ok,
+        false,
+        "task execution production credential smoke E should block unknown logical credential ref",
+      );
+      assert.equal(
+        environmentReadNames.length,
+        0,
+        "task execution production credential smoke E should not read environment for unknown logical credential ref",
+      );
+
+      resetEnvironmentReads();
+      const directEnvNameReference = await resolveTaskExecutionCredential({
+        request: {
+          ...environmentRequest,
+          credentialReference: {
+            ...environmentRequest.credentialReference,
+            credentialRef: environmentVariableName,
+          },
+        },
+        permissionGateResult: gatePolicyAllowed,
+        credentialRequired: true,
+        provider: createCountingEnvironmentProvider(),
+        now: "2026-08-08T01:00:00.000Z",
+      });
+      assert.equal(
+        directEnvNameReference.ok,
+        false,
+        "task execution production credential smoke F should not treat env var name as credentialRef mapping",
+      );
+      assert.equal(
+        environmentReadNames.length,
+        0,
+        "task execution production credential smoke F should not read direct env-var-name-as-reference",
+      );
+
+      resetEnvironmentReads();
+      const missingProofEnvironmentBoundary =
+        await evaluateSmokeCredentialBoundaryAfterGate({
+          adapter: environmentRuntimeAdapter.adapter,
+          request: environmentRequest,
+          gateInput: {
+            request: environmentRequest,
+            adapterIdentity: executionAdapterIdentity,
+            adapterCapabilities: environmentRuntimeAdapter.adapter.capabilities,
+            adapterPermissions: environmentRuntimeAdapter.adapter.permissions,
+            operationKind: "execute_task_attempt",
+            policyRequirement: gatePolicyRequirement,
+            credentialReferenceRequired: true,
+          },
+          provider: createCountingEnvironmentProvider(),
+        });
+      assert.equal(
+        missingProofEnvironmentBoundary.gate.allowed,
+        false,
+        "task execution production credential smoke H should block missing policy proof before environment resolution",
+      );
+      assert.equal(
+        environmentReadNames.length,
+        0,
+        "task execution production credential smoke H should not read environment without durable approval",
+      );
+
+      resetEnvironmentReads();
+      const permissionDeniedEnvironmentBoundary =
+        await evaluateSmokeCredentialBoundaryAfterGate({
+          adapter: environmentRuntimeAdapter.adapter,
+          request: environmentRequest,
+          gateInput: {
+            request: environmentRequest,
+            adapterIdentity: executionAdapterIdentity,
+            adapterCapabilities: createSmokeTestExecutionAdapterCapabilities({
+              supportsToolCalls: true,
+            }),
+            adapterPermissions: createSmokeTestExecutionAdapterPermissions(),
+            operationKind: "execute_task_attempt",
+            policyRequirement: gateNoPolicyRequirement,
+            requiredPermissions: toolRequiredPermissions,
+            credentialReferenceRequired: true,
+          },
+          provider: createCountingEnvironmentProvider(),
+        });
+      assert.equal(
+        permissionDeniedEnvironmentBoundary.gate.allowed,
+        false,
+        "task execution production credential smoke G should block permission-denied context before environment resolution",
+      );
+      assert.equal(
+        environmentReadNames.length,
+        0,
+        "task execution production credential smoke G should not read environment after permission denial",
+      );
+
+      for (const [message, configuration] of [
+        [
+          "task execution production credential smoke S should block scope mismatch before environment read",
+          {
+            ...environmentProviderConfiguration,
+            credentials: [
+              {
+                ...environmentProviderConfiguration.credentials[0],
+                credentialScope: ["other_operation"],
+              },
+            ],
+          },
+        ],
+        [
+          "task execution production credential smoke T should block adapter mismatch before environment read",
+          {
+            ...environmentProviderConfiguration,
+            credentials: [
+              {
+                ...environmentProviderConfiguration.credentials[0],
+                adapterId: "other-adapter",
+              },
+            ],
+          },
+        ],
+        [
+          "task execution production credential smoke U should block operation mismatch before environment read",
+          {
+            ...environmentProviderConfiguration,
+            credentials: [
+              {
+                ...environmentProviderConfiguration.credentials[0],
+                operationKind: "cancel_invocation",
+              },
+            ],
+          },
+        ],
+      ]) {
+        resetEnvironmentReads();
+        const mismatchedEnvironmentCredential =
+          await resolveTaskExecutionCredential({
+            request: environmentRequest,
+            permissionGateResult: gatePolicyAllowed,
+            credentialRequired: true,
+            provider: createCountingEnvironmentProvider(configuration),
+            now: "2026-08-08T01:00:00.000Z",
+          });
+        assert.equal(mismatchedEnvironmentCredential.ok, false, message);
+        assert.equal(environmentReadNames.length, 0, message);
+      }
+
+      assert.equal(
+        TASK_EXECUTION_ADAPTER_PRODUCTION_EXECUTION_ENABLED,
+        false,
+        "task execution production credential smoke X should leave production execution disabled",
+      );
+    },
+  );
+
+  await withTemporarilyUnsetEnvironmentValue(
+    environmentVariableName,
+    async () => {
+      const missingEnvironmentReadNames = [];
+      const missingEnvironmentCredential = await resolveTaskExecutionCredential({
+        request: environmentRequest,
+        permissionGateResult: gatePolicyAllowed,
+        credentialRequired: true,
+        provider: createEnvironmentReferenceCredentialProvider({
+          identity: environmentProviderIdentity,
+          configuration: environmentProviderConfiguration,
+          readEnvironmentVariable(name) {
+            missingEnvironmentReadNames.push(name);
+            return process.env[name];
+          },
+        }),
+        now: "2026-08-08T01:00:00.000Z",
+      });
+      assert.equal(
+        missingEnvironmentCredential.ok,
+        false,
+        "task execution production credential smoke K should block missing environment value",
+      );
+      assert.deepEqual(
+        missingEnvironmentReadNames,
+        [environmentVariableName],
+        "task execution production credential smoke K should read only mapped variable for missing value",
+      );
+    },
+  );
+
+  await withTemporaryEnvironmentValue(
+    environmentVariableName,
+    "",
+    async () => {
+      const emptyEnvironmentReadNames = [];
+      const emptyEnvironmentCredential = await resolveTaskExecutionCredential({
+        request: environmentRequest,
+        permissionGateResult: gatePolicyAllowed,
+        credentialRequired: true,
+        provider: createEnvironmentReferenceCredentialProvider({
+          identity: environmentProviderIdentity,
+          configuration: environmentProviderConfiguration,
+          readEnvironmentVariable(name) {
+            emptyEnvironmentReadNames.push(name);
+            return process.env[name];
+          },
+        }),
+        now: "2026-08-08T01:00:00.000Z",
+      });
+      assert.equal(
+        emptyEnvironmentCredential.ok,
+        false,
+        "task execution production credential smoke L should block empty environment value",
+      );
+      assert.deepEqual(
+        emptyEnvironmentReadNames,
+        [environmentVariableName],
+        "task execution production credential smoke L should read only mapped variable for empty value",
+      );
+    },
+  );
+
   const blockedCredentialProvider = createSmokeTestSecretProvider();
   const blockedCredentialAdapter = createSmokeTestExecutionAdapter({
     identity: executionAdapterIdentity,
@@ -18420,12 +18935,11 @@ try {
     rawResponse: {
       status: "returned",
       invocationOk: true,
-      output: {
-        retainedDiagnostic: fakeCredentialValue,
-      },
+      output: fakeCredentialValue,
+      diagnostic: fakeCredentialValue,
       message: `adapter echoed ${fakeCredentialValue}`,
       metadata: {
-        nested: fakeCredentialValue,
+        echoed: fakeCredentialValue,
       },
     },
   });
@@ -18530,6 +19044,26 @@ try {
     noCredentialAdapter.calls.length,
     1,
     "task execution credential boundary smoke S should invoke adapter without credential when not required",
+  );
+
+  resetEnvironmentReads();
+  const modelEnvNameProse = await resolveTaskExecutionCredential({
+    request: noCredentialRequest,
+    permissionGateResult: noCredentialBoundary.gate,
+    credentialRequired: true,
+    provider: createCountingEnvironmentProvider(),
+    taskOrModelCredentialClaims: `use env ${environmentVariableName}`,
+    now: "2026-08-08T01:00:00.000Z",
+  });
+  assert.equal(
+    modelEnvNameProse.ok,
+    false,
+    "task execution production credential smoke W should ignore task/model env-name prose",
+  );
+  assert.equal(
+    environmentReadNames.length,
+    0,
+    "task execution production credential smoke W should not read env from task/model prose",
   );
 
   const expandedScopeProvider = createSmokeTestSecretProvider({

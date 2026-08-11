@@ -106,6 +106,8 @@ condition.
   runtime foundation.
 - TASK-0303: Production-call blocker readiness review after policy, credential,
   and audit foundations.
+- TASK-0304: Production credential provider boundary with production execution
+  still disabled.
 
 ## Do Not Load By Default
 
@@ -116,14 +118,12 @@ condition.
 
 ## Next Task
 
-TASK-0304 Production credential provider boundary with production execution
-still disabled.
+TASK-0305 Design and implement first production execution adapter vertical
+slice with all real calls disabled.
 
-Purpose: Add a provider-neutral production credential resolver contract/runtime
-boundary plus one tightly scoped local environment-reference resolver. Preserve
-no raw secret persistence/rendering, resolve only after permission/policy
-authorization, keep provider calls disabled, and do not implement production
-adapters, retry, verifier, or completion.
+Purpose: Add one provider-neutral/production adapter implementation boundary
+and prove production capability, idempotency, and reconciliation conformance
+while keeping provider dispatch disabled.
 
 ## Current Plans
 
