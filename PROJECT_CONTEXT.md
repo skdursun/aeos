@@ -112,6 +112,8 @@ condition.
   calls disabled.
 - TASK-0306: Production provider idempotency/status/result-replay crash
   conformance harness with TEST transport only.
+- TASK-0307: Controlled production dispatch authority/gate with real provider
+  execution still disabled.
 
 ## Do Not Load By Default
 
@@ -122,12 +124,14 @@ condition.
 
 ## Next Task
 
-TASK-0307 Design and implement controlled production dispatch authority/gate
-with real provider execution still disabled by default.
+TASK-0308 First controlled production provider integration and one-shot dispatch
+enable boundary.
 
-Purpose: Stitch together the authoritative pre-dispatch chain and define the
-explicit global production-call enable boundary without enabling real provider
-execution.
+Purpose: Attach one explicitly selected provider/adapter implementation to the
+single dispatch authority boundary. The first real call must be one controlled
+operator-initiated invocation with exact invocation-bound authority, retry
+disabled, completion authority disabled, durable audit enabled, and
+reconciliation available.
 
 ## Current Plans
 

@@ -1876,6 +1876,99 @@ ProductionExecutionEnabled: false
 Recommended next boundary: TASK-0307 controlled production dispatch
 authority/gate with real provider execution still disabled by default.
 
+## TASK-0307 Production Dispatch Authority
+TASK-0307 adds one authoritative production dispatch boundary:
+`evaluateTaskExecutionProductionDispatchGate` and
+`authorizeTaskExecutionProductionDispatch`.
+
+The required order is closed and fail-closed:
+
+```text
+authoritative task/revision
+-> started attempt
+-> current reserved invocation/idempotency
+-> prepared production dispatch contract
+-> adapter readiness
+-> provider recovery conformance
+-> permission/policy gate
+-> durable exact-context approval when policy is required
+-> credential metadata after permission/policy
+-> mandatory durable production pre-dispatch audit
+-> guarded invocation transition to invoking
+-> EXTERNAL_PROVIDER_CALL
+```
+
+TASK-0307 stops at `EXTERNAL_PROVIDER_CALL`. There is no production transport,
+generic callback, provider SDK, HTTP/fetch, shell/subprocess, retry runtime, or
+provider implementation. Production execution remains globally disabled:
+
+```text
+ProductionExecutionEnabled: false
+externalCallAllowed: false
+```
+
+Prepared dispatch is not authorization. Policy approval, credential resolution,
+adapter/provider conformance, and pre-dispatch audit are each necessary inputs
+but none of them independently opens the dispatch gate. Task, model, adapter,
+or provider prose cannot enable production execution, authorize policy, grant
+retry, satisfy verification, or complete work.
+
+Provider readiness requires behavioral conformance from TASK-0306: exact
+idempotency propagation, duplicate suppression, provider-reference behavior,
+lookup, status query, result replay, crash recovery, and blind-retry
+prevention. Capability claims alone fail closed.
+
+When policy is not required, no approval proof is required. When policy is
+required, the gate requires a durable exact-context approval status bound to the
+task id, revision, attempt, invocation, adapter, operation, policy gate, and
+approval id. Stale, denied, expired, missing, or mismatched proof blocks
+dispatch.
+
+Credential resolution remains ordered after permission and policy. Required
+credential operations must present matching sanitized credential metadata:
+logical credential ref, provider ref, scope, and resolution reference. Raw
+secrets are ephemeral and do not enter dispatch authority, invocation records,
+audit, readiness output, issues, or JSON serialization.
+
+For production dispatch, a durable matching
+`execution_invocation_dispatch_intent` event is always mandatory before the
+invocation can enter `invoking`, regardless of upstream optional-audit metadata,
+adapter claims, task/model/operator prose, or provider capability claims. Missing
+or mismatched audit fails closed. Audit records observation; it does not
+authorize policy, complete work, or open the external call boundary by itself.
+
+The guarded invoking transition is the durable point where AEOS records that the
+invocation is about to cross the external boundary. If that transition fails,
+no provider-call eligibility exists. The public dispatch result never exposes
+the invocation ownership token.
+
+Crash windows are conservative:
+
+- pre-dispatch audit persisted, crash before invoking: no provider call is
+  authorized;
+- invoking persisted, crash before provider acceptance: invocation is ambiguous
+  and requires reconciliation, never blind redispatch;
+- provider accepted/executed, crash before result persistence: lookup, status,
+  and replay reconciliation are required;
+- result persisted, post-dispatch audit fails: keep the durable result, report
+  audit incomplete, and do not call the provider again.
+
+Future provider outcomes can only become durable invocation `returned`,
+`failed`, or `outcome_unknown` evidence. `outcome_unknown` remains available
+when the external boundary was crossed but the outcome cannot be classified.
+Provider result remains diagnostic invocation evidence only; it does not
+complete work, complete tasks, satisfy verifier gates, mutate coverage, or grant
+retry authority.
+
+The 400 expected / 20 accounted / 380 remaining invariant remains incomplete
+even if dispatch prerequisites pass, the invocation enters `invoking` in the
+TEST harness, and simulated provider output says all work is complete.
+
+Recommended next boundary: TASK-0308 first controlled production provider
+integration and one-shot dispatch enable boundary. The first provider/adapter
+must be an explicit system/operator decision, not inferred from task/model
+prose.
+
 ## Execution Preparation Preview
 `aeos task execution prepare --preview <task-id> --expected-revision <number>`
 loads authoritative persisted task state, validates it, checks the explicit

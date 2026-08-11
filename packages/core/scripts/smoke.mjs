@@ -115,7 +115,9 @@ import {
   createTaskExecutionPolicyApprovalRecord,
   createTaskExecutionPolicyAuthorizationProofFromApproval,
   createEnvironmentReferenceCredentialProvider,
+  authorizeTaskExecutionProductionDispatch,
   evaluateTaskExecutionAdapterConformance,
+  evaluateTaskExecutionProductionDispatchGate,
   evaluateTaskExecutionProductionCredentialProviderConfiguration,
   evaluateTaskExecutionPermissionGate,
   evaluateTaskExecutionProductionAdapterReadiness,
@@ -123,7 +125,9 @@ import {
   resolveTaskExecutionCredential,
   prepareTaskExecutionProductionDispatch,
   sanitizeTaskExecutionCredentialResult,
+  sanitizeTaskExecutionPolicyApprovalRecord,
   normalizeTaskExecutionAdapterResult,
+  TASK_EXECUTION_PRODUCTION_DISPATCH_BOUNDARY,
   deriveTaskExecutionInvocationIdentity,
   deriveTaskExecutionInvocationIdentityForAttempt,
   getTaskExecutionInvocationStoragePath,
@@ -150,7 +154,6 @@ import {
   saveTaskState,
   saveTaskExecutionPolicyApproval,
   saveTaskExecutionAttempt,
-  sanitizeTaskExecutionPolicyApprovalRecord,
   summarizeCliTaskPlanPlannerIntegrationResult,
   transitionTaskExecutionAttempt,
   transitionTaskExecutionInvocationRecord,
@@ -19616,6 +19619,1082 @@ try {
         auditEventsAfterConformance.value.events.length,
         1,
         "task execution production provider conformance smoke audit should not create duplicate audit events for replay",
+      );
+
+      async function createProductionDispatchGateFixture({
+        attemptNumber,
+        rootPrefix,
+        state = firstUpdate.value.state,
+        expectedRevision = 2,
+        workItemId = "work-a",
+        batchId = "batch-a",
+        auditRequired = true,
+        appendAudit = true,
+      }) {
+        const dispatchRoot = await mkdtemp(join(tmpdir(), rootPrefix));
+        const dispatchConfiguration = {
+          ...productionAdapterConfiguration,
+          auditRequired,
+        };
+        const dispatchPreparedAttempt = prepareTaskExecutionAttempt({
+          state,
+          expectedRevision,
+          workItemId,
+          batchId,
+          attemptNumber,
+          createdAt: `2026-08-08T01:02:${String(attemptNumber).padStart(2, "0")}.000Z`,
+        });
+        assert.equal(dispatchPreparedAttempt.ok, true);
+        const dispatchStartedAttempt = transitionTaskExecutionAttempt({
+          attempt: dispatchPreparedAttempt.value.attempt,
+          intent: {
+            kind: "start",
+          },
+          occurredAt: `2026-08-08T01:03:${String(attemptNumber).padStart(2, "0")}.000Z`,
+        });
+        assert.equal(dispatchStartedAttempt.ok, true);
+        const dispatchReservation = await reserveTaskExecutionInvocation({
+          projectRoot: dispatchRoot,
+          state,
+          attempt: dispatchStartedAttempt.value.attempt,
+          dependencyKind: "test_noop",
+          expectedRevision,
+          latestAttemptNumberForContext: attemptNumber,
+        });
+        assert.equal(dispatchReservation.ok, true);
+        const dispatchRequest = createSmokeTestExecutionAdapterRequest(
+          dispatchReservation.value.record,
+          productionAdapterIdentity,
+          {
+            input: {
+              instructionReference: "smoke://production-dispatch-authority",
+              completed: true,
+              verified: true,
+              approved: true,
+              allDone: true,
+              safeToRetry: true,
+              productionExecutionEnabled: true,
+            },
+            credentialReference:
+              dispatchConfiguration.credentialReference,
+            permissionRequirements: dispatchConfiguration.permissions,
+          },
+        );
+        const dispatchPolicyRequirement = {
+          required: true,
+          policyGateId: `smoke-production-dispatch-policy-gate-${attemptNumber}`,
+          referenceId: `smoke-production-dispatch-policy-${attemptNumber}`,
+          authority: "system",
+        };
+        const dispatchApprovalBinding = {
+          policyGateId: dispatchPolicyRequirement.policyGateId,
+          taskId: dispatchRequest.taskId,
+          taskStateRevision: dispatchRequest.sourceTaskRevision,
+          attemptId: dispatchRequest.attemptId,
+          invocationId: dispatchRequest.invocationId,
+          adapterId: productionAdapterIdentity.adapterId,
+          operation: dispatchRequest.operationKind,
+          requiredPermissions: ["external_side_effect"],
+        };
+        const dispatchApproval = createTaskExecutionPolicyApprovalRecord({
+          ...dispatchApprovalBinding,
+          decision: "approved",
+          createdAt: "2026-08-08T01:02:00.000Z",
+          expiresAt: "2026-08-08T02:02:00.000Z",
+        });
+        assert.equal(dispatchApproval.ok, true);
+        const dispatchApprovalRoot = await mkdtemp(
+          join(tmpdir(), `${rootPrefix}approval-`),
+        );
+        const dispatchApprovalSave = await saveTaskExecutionPolicyApproval({
+          projectRoot: dispatchApprovalRoot,
+          approval: dispatchApproval.value,
+        });
+        assert.equal(dispatchApprovalSave.ok, true);
+        const dispatchApprovalLoad =
+          await loadTaskExecutionPolicyApprovalForContext({
+            projectRoot: dispatchApprovalRoot,
+            binding: dispatchApprovalBinding,
+            now: "2026-08-08T01:03:00.000Z",
+          });
+        assert.equal(dispatchApprovalLoad.ok, true);
+        const dispatchGate = evaluateTaskExecutionPermissionGate({
+          request: dispatchRequest,
+          adapterIdentity: productionAdapterIdentity,
+          adapterCapabilities: dispatchConfiguration.capabilities,
+          adapterPermissions: dispatchConfiguration.permissions,
+          operationKind: "execute_task_attempt",
+          policyRequirement: dispatchPolicyRequirement,
+          policyAuthorizationProof: dispatchApprovalLoad.value.proof,
+          auditRequired,
+        });
+        assert.equal(dispatchGate.allowed, true);
+        const dispatchCredential = await resolveTaskExecutionCredential({
+          request: dispatchRequest,
+          permissionGateResult: dispatchGate,
+          credentialRequired: true,
+          provider: createProductionEnvironmentProvider(),
+          requiredCredentialScope: productionCredentialScope,
+          now: "2026-08-08T01:03:00.000Z",
+        });
+        assert.equal(dispatchCredential.ok, true);
+        let dispatchAuditAppend = null;
+        if (appendAudit) {
+          const dispatchAuditDraft =
+            createTaskExecutionInvocationDispatchIntentAuditEvent({
+              record: dispatchReservation.value.record,
+              adapterId: productionAdapterIdentity.adapterId,
+              operation: "execute_task_attempt",
+              policyGateId: dispatchGate.policyGateId,
+              policyDecisionReference:
+                dispatchApprovalLoad.value.status.approvalId,
+              policyAuthorized: true,
+              auditRequired,
+              credentialRef: productionCredentialRef,
+              secretProviderRef: productionCredentialProviderId,
+              credentialResolutionReference:
+                dispatchCredential.resolutionReference,
+              occurredAt: "2026-08-08T01:03:01.000Z",
+            });
+          assert.equal(dispatchAuditDraft.ok, true);
+          dispatchAuditAppend = await appendTaskExecutionAuditEvent({
+            projectRoot: dispatchRoot,
+            taskId: dispatchAuditDraft.value.taskId,
+            event: dispatchAuditDraft.value,
+            forbiddenValues: [environmentFakeSecret],
+          });
+          assert.equal(dispatchAuditAppend.ok, true);
+        }
+        const dispatchPrepared = prepareTaskExecutionProductionDispatch({
+          configuration: dispatchConfiguration,
+          request: dispatchRequest,
+          invocationRecord: dispatchReservation.value.record,
+          permissionGateResult: dispatchGate,
+          credentialResolutionResult: dispatchCredential,
+          ...(dispatchAuditAppend === null
+            ? {}
+            : { preDispatchAuditEvent: dispatchAuditAppend.value.event }),
+          forbiddenCredentialValues: [environmentFakeSecret],
+          taskOrModelDispatchClaims: {
+            productionExecutionEnabled: true,
+            approved: true,
+            policyAuthorized: true,
+            safeToRetry: true,
+            allDone: true,
+            verified: true,
+            completed: true,
+          },
+        });
+        assert.equal(dispatchPrepared.ProductionDispatchPrepared, true);
+
+        return {
+          dispatchRoot,
+          dispatchPreparedAttempt: dispatchPreparedAttempt.value.attempt,
+          dispatchStartedAttempt: dispatchStartedAttempt.value.attempt,
+          dispatchRecord: dispatchReservation.value.record,
+          dispatchRequest,
+          dispatchPolicyRequirement,
+          dispatchApprovalStatus: dispatchApprovalLoad.value.status,
+          dispatchGate,
+          dispatchCredential,
+          dispatchAudit:
+            dispatchAuditAppend === null ? null : dispatchAuditAppend.value.event,
+          dispatchPrepared,
+        };
+      }
+
+      const dispatchFixture = await createProductionDispatchGateFixture({
+        attemptNumber: 51,
+        rootPrefix: "aeos-production-dispatch-authority-",
+      });
+      const productionDispatchGate =
+        evaluateTaskExecutionProductionDispatchGate({
+          state: firstUpdate.value.state,
+          attempt: dispatchFixture.dispatchStartedAttempt,
+          invocationRecord: dispatchFixture.dispatchRecord,
+          preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+          adapterReadiness: dispatchFixture.dispatchPrepared,
+          providerConformance,
+          permissionGateResult: dispatchFixture.dispatchGate,
+          policyApprovalStatus: dispatchFixture.dispatchApprovalStatus,
+          credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+            dispatchFixture.dispatchCredential,
+          ),
+          preDispatchAuditEvent: dispatchFixture.dispatchAudit,
+          latestAttemptNumberForContext: 51,
+          expectedInvocationRevision: dispatchFixture.dispatchRecord.revision,
+          taskOrModelAuthorityClaims: {
+            productionExecutionEnabled: true,
+            approved: true,
+            policyAuthorized: true,
+            safeToRetry: true,
+            allDone: true,
+            verified: true,
+            completed: true,
+          },
+          adapterAuthorityClaims: {
+            productionExecutionEnabled: true,
+          },
+          providerAuthorityClaims: {
+            safeToRetry: true,
+            taskCompleted: true,
+          },
+        });
+      assert.equal(
+        productionDispatchGate.decision,
+        "execution_disabled",
+        "task execution production dispatch smoke B/W should be contract-ready while global execution remains disabled",
+      );
+      assert.equal(
+        productionDispatchGate.dispatchContractReady,
+        true,
+        "task execution production dispatch smoke B should make the started attempt eligible for the dispatch contract",
+      );
+      assert.equal(
+        productionDispatchGate.taskAuthorityReady,
+        true,
+        "task execution production dispatch smoke C should bind current task revision",
+      );
+      assert.equal(
+        productionDispatchGate.attemptReady,
+        true,
+        "task execution production dispatch smoke B should require started attempt authority",
+      );
+      assert.equal(
+        productionDispatchGate.invocationReady,
+        true,
+        "task execution production dispatch smoke E should require current reserved invocation authority",
+      );
+      assert.equal(
+        productionDispatchGate.providerRecoveryReady,
+        true,
+        "task execution production dispatch smoke G/Y should require provider recovery conformance",
+      );
+      assert.equal(
+        productionDispatchGate.policyReady,
+        true,
+        "task execution production dispatch smoke K should accept valid durable approval proof",
+      );
+      assert.equal(
+        productionDispatchGate.credentialReady,
+        true,
+        "task execution production dispatch smoke L/M should require exact credential metadata",
+      );
+      assert.equal(
+        productionDispatchGate.auditReady,
+        true,
+        "task execution production dispatch smoke P should require durable pre-dispatch audit",
+      );
+      assert.equal(
+        productionDispatchGate.invokingTransitionReady,
+        true,
+        "task execution production dispatch smoke P should be ready for guarded invoking transition",
+      );
+      assert.equal(
+        productionDispatchGate.globalExecutionGateOpen,
+        false,
+        "task execution production dispatch smoke W should keep the global execution gate closed",
+      );
+      assert.equal(
+        productionDispatchGate.productionExecutionEnabled,
+        false,
+        "task execution production dispatch smoke W should keep production execution false",
+      );
+      assert.equal(
+        productionDispatchGate.externalCallAllowed,
+        false,
+        "task execution production dispatch smoke X should never allow an external provider call in TASK-0307",
+      );
+      assert.equal(
+        productionDispatchGate.authority.idempotencyKey,
+        dispatchFixture.dispatchRecord.idempotencyKey,
+        "task execution production dispatch smoke F should keep invocation idempotency authority exact",
+      );
+      assert.equal(
+        productionDispatchGate.authority.idempotencyKey,
+        dispatchFixture.dispatchPrepared.preparedDispatch.idempotencyKey,
+        "task execution production dispatch smoke F should bind prepared dispatch idempotency exactly",
+      );
+      assert.equal(
+        productionDispatchGate.authority.externalBoundary,
+        TASK_EXECUTION_PRODUCTION_DISPATCH_BOUNDARY,
+        "task execution production dispatch smoke boundary should name the external provider call gap",
+      );
+      assert.equal(
+        productionDispatchGate.outcomeRecording.blindRedispatchAllowed,
+        false,
+        "task execution production dispatch smoke crash windows should forbid blind redispatch",
+      );
+      assert.deepEqual(
+        productionDispatchGate.outcomeRecording.supportedInvocationOutcomes,
+        ["returned", "failed", "outcome_unknown"],
+        "task execution production dispatch smoke outcome model should keep outcome_unknown available",
+      );
+      assert.ok(
+        productionDispatchGate.issues.some(
+          (item) =>
+            item.code ===
+            "task_execution_production_dispatch_hostile_authority_claims_ignored",
+        ),
+        "task execution production dispatch smoke R/S should ignore hostile authority claims",
+      );
+      assert.equal(
+        JSON.stringify(productionDispatchGate).includes(environmentFakeSecret),
+        false,
+        "task execution production dispatch smoke T should keep fake secret out of readiness output",
+      );
+      assert.equal(
+        JSON.stringify(productionDispatchGate).includes("ownershipToken"),
+        false,
+        "task execution production dispatch smoke U should keep ownership token fields out of readiness output",
+      );
+
+      const providerDispatchCallsBeforeAuthorization =
+        conformanceTransport.calls.dispatch.length;
+      const dispatchAuthorization =
+        await authorizeTaskExecutionProductionDispatch({
+          state: firstUpdate.value.state,
+          attempt: dispatchFixture.dispatchStartedAttempt,
+          invocationRecord: dispatchFixture.dispatchRecord,
+          preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+          adapterReadiness: dispatchFixture.dispatchPrepared,
+          providerConformance,
+          permissionGateResult: dispatchFixture.dispatchGate,
+          policyApprovalStatus: dispatchFixture.dispatchApprovalStatus,
+          credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+            dispatchFixture.dispatchCredential,
+          ),
+          preDispatchAuditEvent: dispatchFixture.dispatchAudit,
+          latestAttemptNumberForContext: 51,
+          expectedInvocationRevision: dispatchFixture.dispatchRecord.revision,
+          projectRoot: dispatchFixture.dispatchRoot,
+          occurredAt: "2026-08-08T01:03:02.000Z",
+        });
+      assert.equal(
+        dispatchAuthorization.invocationTransitioned,
+        true,
+        "task execution production dispatch smoke P should persist invoking transition before the external gap",
+      );
+      assert.equal(
+        dispatchAuthorization.invocation.lifecycle,
+        "invoking",
+        "task execution production dispatch smoke P should enter invoking durably",
+      );
+      assert.equal(
+        dispatchAuthorization.externalBoundary,
+        TASK_EXECUTION_PRODUCTION_DISPATCH_BOUNDARY,
+        "task execution production dispatch smoke gap should stop at EXTERNAL_PROVIDER_CALL",
+      );
+      assert.equal(
+        dispatchAuthorization.externalCallAllowed,
+        false,
+        "task execution production dispatch smoke X should keep external call disallowed after invoking transition",
+      );
+      assert.equal(
+        conformanceTransport.calls.dispatch.length,
+        providerDispatchCallsBeforeAuthorization,
+        "task execution production dispatch smoke V should not invoke a generic or production transport",
+      );
+      assert.equal(
+        JSON.stringify(dispatchAuthorization).includes(environmentFakeSecret),
+        false,
+        "task execution production dispatch smoke T should keep fake secret out of authorization output",
+      );
+      assert.equal(
+        JSON.stringify(dispatchAuthorization).includes("ownershipToken"),
+        false,
+        "task execution production dispatch smoke U should keep ownership token fields out of authorization output",
+      );
+      assert.equal(
+        JSON.stringify(dispatchAuthorization).includes(
+          dispatchFixture.dispatchRecord.ownership.ownershipToken,
+        ),
+        false,
+        "task execution production dispatch smoke U should keep ownership token value out of authorization output",
+      );
+      const dispatchInvokingRecord = await loadTaskExecutionInvocation({
+        projectRoot: dispatchFixture.dispatchRoot,
+        taskId: dispatchFixture.dispatchRecord.taskId,
+        invocationId: dispatchFixture.dispatchRecord.invocationId,
+      });
+      assert.equal(
+        dispatchInvokingRecord.value.record.lifecycle,
+        "invoking",
+        "task execution production dispatch smoke P should persist invoking in the invocation store only",
+      );
+
+      const optionalAuditFixture = await createProductionDispatchGateFixture({
+        attemptNumber: 53,
+        rootPrefix: "aeos-production-dispatch-optional-audit-",
+        auditRequired: false,
+        appendAudit: false,
+      });
+      assert.equal(
+        optionalAuditFixture.dispatchPrepared.ProductionDispatchPrepared,
+        true,
+        "task execution production dispatch smoke AA should build an upstream optional-audit candidate",
+      );
+      const optionalAuditPreparedDispatch = {
+        ...optionalAuditFixture.dispatchPrepared.preparedDispatch,
+        policyDecisionReference:
+          optionalAuditFixture.dispatchApprovalStatus.approvalId,
+      };
+      assert.equal(
+        optionalAuditPreparedDispatch.auditEventId,
+        null,
+        "task execution production dispatch smoke AB should expose missing auditEventId as a production gate precondition",
+      );
+      const optionalAuditBlocked =
+        evaluateTaskExecutionProductionDispatchGate({
+          state: firstUpdate.value.state,
+          attempt: optionalAuditFixture.dispatchStartedAttempt,
+          invocationRecord: optionalAuditFixture.dispatchRecord,
+          preparedDispatch: optionalAuditPreparedDispatch,
+          adapterReadiness: optionalAuditFixture.dispatchPrepared,
+          providerConformance,
+          permissionGateResult: optionalAuditFixture.dispatchGate,
+          policyApprovalStatus: optionalAuditFixture.dispatchApprovalStatus,
+          credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+            optionalAuditFixture.dispatchCredential,
+          ),
+          latestAttemptNumberForContext: 53,
+          expectedInvocationRevision:
+            optionalAuditFixture.dispatchRecord.revision,
+        });
+      assert.equal(
+        optionalAuditBlocked.decision,
+        "audit_precondition_missing",
+        "task execution production dispatch smoke AA should block auditRequired=false without a durable audit",
+      );
+      assert.equal(
+        optionalAuditBlocked.auditReady,
+        false,
+        "task execution production dispatch smoke AB should block missing auditEventId",
+      );
+      assert.equal(
+        optionalAuditBlocked.dispatchContractReady,
+        false,
+        "task execution production dispatch smoke AA should not reach dispatch readiness without audit",
+      );
+      assert.equal(
+        optionalAuditBlocked.externalCallAllowed,
+        false,
+        "task execution production dispatch smoke AH should keep external call closed without audit",
+      );
+      const optionalAuditAuthorization =
+        await authorizeTaskExecutionProductionDispatch({
+          state: firstUpdate.value.state,
+          attempt: optionalAuditFixture.dispatchStartedAttempt,
+          invocationRecord: optionalAuditFixture.dispatchRecord,
+          preparedDispatch: optionalAuditPreparedDispatch,
+          adapterReadiness: optionalAuditFixture.dispatchPrepared,
+          providerConformance,
+          permissionGateResult: optionalAuditFixture.dispatchGate,
+          policyApprovalStatus: optionalAuditFixture.dispatchApprovalStatus,
+          credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+            optionalAuditFixture.dispatchCredential,
+          ),
+          latestAttemptNumberForContext: 53,
+          expectedInvocationRevision:
+            optionalAuditFixture.dispatchRecord.revision,
+          projectRoot: optionalAuditFixture.dispatchRoot,
+          occurredAt: "2026-08-08T01:03:03.000Z",
+        });
+      assert.equal(
+        optionalAuditAuthorization.invocationTransitioned,
+        false,
+        "task execution production dispatch smoke AA should not transition invoking without mandatory audit",
+      );
+      assert.equal(
+        optionalAuditAuthorization.externalCallAllowed,
+        false,
+        "task execution production dispatch smoke AH should keep external call disallowed when mandatory audit blocks",
+      );
+      const optionalAuditRecord = await loadTaskExecutionInvocation({
+        projectRoot: optionalAuditFixture.dispatchRoot,
+        taskId: optionalAuditFixture.dispatchRecord.taskId,
+        invocationId: optionalAuditFixture.dispatchRecord.invocationId,
+      });
+      assert.equal(
+        optionalAuditRecord.value.record.lifecycle,
+        "reserved",
+        "task execution production dispatch smoke AA should leave invocation reserved when audit is absent",
+      );
+
+      const auditMismatchFixture = await createProductionDispatchGateFixture({
+        attemptNumber: 54,
+        rootPrefix: "aeos-production-dispatch-audit-mismatch-",
+      });
+      const unrelatedAuditFixture = await createProductionDispatchGateFixture({
+        attemptNumber: 55,
+        rootPrefix: "aeos-production-dispatch-unrelated-audit-",
+      });
+      const wrongInvocationAuditBlocked =
+        evaluateTaskExecutionProductionDispatchGate({
+          state: firstUpdate.value.state,
+          attempt: auditMismatchFixture.dispatchStartedAttempt,
+          invocationRecord: auditMismatchFixture.dispatchRecord,
+          preparedDispatch:
+            auditMismatchFixture.dispatchPrepared.preparedDispatch,
+          adapterReadiness: auditMismatchFixture.dispatchPrepared,
+          providerConformance,
+          permissionGateResult: auditMismatchFixture.dispatchGate,
+          policyApprovalStatus: auditMismatchFixture.dispatchApprovalStatus,
+          credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+            auditMismatchFixture.dispatchCredential,
+          ),
+          preDispatchAuditEvent: unrelatedAuditFixture.dispatchAudit,
+          latestAttemptNumberForContext: 54,
+        });
+      assert.equal(
+        wrongInvocationAuditBlocked.decision,
+        "audit_precondition_missing",
+        "task execution production dispatch smoke AC should block an audit event for another invocation",
+      );
+      assert.equal(
+        wrongInvocationAuditBlocked.invokingTransitionReady,
+        false,
+        "task execution production dispatch smoke AC should not reach invoking readiness with a wrong-invocation audit",
+      );
+      assert.equal(
+        firstUpdate.value.state.workItems.find((item) => item.id === "work-a")
+          ?.state,
+        "pending",
+        "task execution production dispatch smoke Z should not complete work after simulated provider claims",
+      );
+      assert.equal(
+        firstUpdate.value.state.completionGate.completed,
+        false,
+        "task execution production dispatch smoke Z should not complete task after simulated provider claims",
+      );
+      assert.notEqual(
+        firstUpdate.value.state.verifier.status,
+        "verified",
+        "task execution production dispatch smoke Z should not satisfy verifier after simulated provider claims",
+      );
+
+      const preparedAttemptBlocked =
+        evaluateTaskExecutionProductionDispatchGate({
+          state: firstUpdate.value.state,
+          attempt: dispatchFixture.dispatchPreparedAttempt,
+          invocationRecord: dispatchFixture.dispatchRecord,
+          preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+          adapterReadiness: dispatchFixture.dispatchPrepared,
+          providerConformance,
+          permissionGateResult: dispatchFixture.dispatchGate,
+          policyApprovalStatus: dispatchFixture.dispatchApprovalStatus,
+          credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+            dispatchFixture.dispatchCredential,
+          ),
+          preDispatchAuditEvent: dispatchFixture.dispatchAudit,
+          latestAttemptNumberForContext: 51,
+        });
+      assert.equal(
+        preparedAttemptBlocked.attemptReady,
+        false,
+        "task execution production dispatch smoke A should block prepared-only attempt",
+      );
+      assert.ok(
+        preparedAttemptBlocked.issues.some(
+          (item) =>
+            item.code ===
+            "task_execution_production_dispatch_attempt_not_started",
+        ),
+        "task execution production dispatch smoke A should report attempt_not_started",
+      );
+      const staleTaskBlocked = evaluateTaskExecutionProductionDispatchGate({
+        state: {
+          ...firstUpdate.value.state,
+          revision: 3,
+        },
+        attempt: dispatchFixture.dispatchStartedAttempt,
+        invocationRecord: dispatchFixture.dispatchRecord,
+        preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+        adapterReadiness: dispatchFixture.dispatchPrepared,
+        providerConformance,
+        permissionGateResult: dispatchFixture.dispatchGate,
+        policyApprovalStatus: dispatchFixture.dispatchApprovalStatus,
+        credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+          dispatchFixture.dispatchCredential,
+        ),
+        preDispatchAuditEvent: dispatchFixture.dispatchAudit,
+        latestAttemptNumberForContext: 51,
+      });
+      assert.equal(
+        staleTaskBlocked.decision,
+        "stale_authority",
+        "task execution production dispatch smoke C should block stale task revision",
+      );
+      const wrongAttemptBlocked = evaluateTaskExecutionProductionDispatchGate({
+        state: firstUpdate.value.state,
+        attempt: startedAttempt,
+        invocationRecord: dispatchFixture.dispatchRecord,
+        preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+        adapterReadiness: dispatchFixture.dispatchPrepared,
+        providerConformance,
+        permissionGateResult: dispatchFixture.dispatchGate,
+        policyApprovalStatus: dispatchFixture.dispatchApprovalStatus,
+        credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+          dispatchFixture.dispatchCredential,
+        ),
+        preDispatchAuditEvent: dispatchFixture.dispatchAudit,
+      });
+      assert.equal(
+        wrongAttemptBlocked.attemptReady,
+        false,
+        "task execution production dispatch smoke D should block wrong attempt authority",
+      );
+      const wrongInvocationBlocked =
+        evaluateTaskExecutionProductionDispatchGate({
+          state: firstUpdate.value.state,
+          attempt: dispatchFixture.dispatchStartedAttempt,
+          invocationRecord: invokingPersisted.value.record,
+          preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+          adapterReadiness: dispatchFixture.dispatchPrepared,
+          providerConformance,
+          permissionGateResult: dispatchFixture.dispatchGate,
+          policyApprovalStatus: dispatchFixture.dispatchApprovalStatus,
+          credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+            dispatchFixture.dispatchCredential,
+          ),
+          preDispatchAuditEvent: dispatchFixture.dispatchAudit,
+        });
+      assert.equal(
+        wrongInvocationBlocked.decision,
+        "invocation_not_current",
+        "task execution production dispatch smoke E should block wrong or already-invoking invocation",
+      );
+      const idempotencyMismatchBlocked =
+        evaluateTaskExecutionProductionDispatchGate({
+          state: firstUpdate.value.state,
+          attempt: dispatchFixture.dispatchStartedAttempt,
+          invocationRecord: dispatchFixture.dispatchRecord,
+          preparedDispatch: {
+            ...dispatchFixture.dispatchPrepared.preparedDispatch,
+            idempotencyKey: "hostile-idempotency",
+          },
+          adapterReadiness: dispatchFixture.dispatchPrepared,
+          providerConformance,
+          permissionGateResult: dispatchFixture.dispatchGate,
+          policyApprovalStatus: dispatchFixture.dispatchApprovalStatus,
+          credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+            dispatchFixture.dispatchCredential,
+          ),
+          preDispatchAuditEvent: dispatchFixture.dispatchAudit,
+        });
+      assert.equal(
+        idempotencyMismatchBlocked.decision,
+        "stale_authority",
+        "task execution production dispatch smoke F should block idempotency mismatch",
+      );
+      const providerMissingBlocked =
+        evaluateTaskExecutionProductionDispatchGate({
+          state: firstUpdate.value.state,
+          attempt: dispatchFixture.dispatchStartedAttempt,
+          invocationRecord: dispatchFixture.dispatchRecord,
+          preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+          adapterReadiness: dispatchFixture.dispatchPrepared,
+          providerConformance: null,
+          permissionGateResult: dispatchFixture.dispatchGate,
+          policyApprovalStatus: dispatchFixture.dispatchApprovalStatus,
+          credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+            dispatchFixture.dispatchCredential,
+          ),
+          preDispatchAuditEvent: dispatchFixture.dispatchAudit,
+        });
+      assert.equal(
+        providerMissingBlocked.decision,
+        "provider_recovery_not_ready",
+        "task execution production dispatch smoke G should block missing provider recovery conformance",
+      );
+      const providerClaimBlocked =
+        evaluateTaskExecutionProductionDispatchGate({
+          state: firstUpdate.value.state,
+          attempt: dispatchFixture.dispatchStartedAttempt,
+          invocationRecord: dispatchFixture.dispatchRecord,
+          preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+          adapterReadiness: dispatchFixture.dispatchPrepared,
+          providerConformance: {
+            supportsIdempotencyKey: true,
+            supportsLookupByIdempotencyKey: true,
+            supportsInvocationStatusQuery: true,
+            supportsResultReplay: true,
+          },
+          permissionGateResult: dispatchFixture.dispatchGate,
+          policyApprovalStatus: dispatchFixture.dispatchApprovalStatus,
+          credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+            dispatchFixture.dispatchCredential,
+          ),
+          preDispatchAuditEvent: dispatchFixture.dispatchAudit,
+        });
+      assert.equal(
+        providerClaimBlocked.decision,
+        "provider_recovery_not_ready",
+        "task execution production dispatch smoke H should reject capability claims without behavioral proof",
+      );
+      const deniedDispatchGate = evaluateTaskExecutionPermissionGate({
+        request: dispatchFixture.dispatchRequest,
+        adapterIdentity: productionAdapterIdentity,
+        adapterCapabilities: productionAdapterConfiguration.capabilities,
+        adapterPermissions: {
+          ...productionAdapterConfiguration.permissions,
+          externalSideEffectPermission: false,
+        },
+        operationKind: "execute_task_attempt",
+        policyRequirement: dispatchFixture.dispatchPolicyRequirement,
+        requiredPermissions: [
+          {
+            permission: "external_side_effect",
+            required: true,
+            granted: false,
+            authority: "system",
+          },
+        ],
+      });
+      productionEnvironmentReads = [];
+      const permissionDeniedBlocked =
+        evaluateTaskExecutionProductionDispatchGate({
+          state: firstUpdate.value.state,
+          attempt: dispatchFixture.dispatchStartedAttempt,
+          invocationRecord: dispatchFixture.dispatchRecord,
+          preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+          adapterReadiness: dispatchFixture.dispatchPrepared,
+          providerConformance,
+          permissionGateResult: deniedDispatchGate,
+          policyApprovalStatus: dispatchFixture.dispatchApprovalStatus,
+          credentialResolutionResult: undefined,
+          preDispatchAuditEvent: dispatchFixture.dispatchAudit,
+        });
+      assert.equal(
+        permissionDeniedBlocked.decision,
+        "permission_denied",
+        "task execution production dispatch smoke I should block permission denied",
+      );
+      assert.equal(
+        productionEnvironmentReads.length,
+        0,
+        "task execution production dispatch smoke I should not resolve credentials inside the dispatch gate",
+      );
+      const missingApprovalBlocked =
+        evaluateTaskExecutionProductionDispatchGate({
+          state: firstUpdate.value.state,
+          attempt: dispatchFixture.dispatchStartedAttempt,
+          invocationRecord: dispatchFixture.dispatchRecord,
+          preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+          adapterReadiness: dispatchFixture.dispatchPrepared,
+          providerConformance,
+          permissionGateResult: dispatchFixture.dispatchGate,
+          credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+            dispatchFixture.dispatchCredential,
+          ),
+          preDispatchAuditEvent: dispatchFixture.dispatchAudit,
+        });
+      assert.equal(
+        missingApprovalBlocked.decision,
+        "policy_proof_missing",
+        "task execution production dispatch smoke J should block missing durable approval status",
+      );
+      const credentialMissingBlocked =
+        evaluateTaskExecutionProductionDispatchGate({
+          state: firstUpdate.value.state,
+          attempt: dispatchFixture.dispatchStartedAttempt,
+          invocationRecord: dispatchFixture.dispatchRecord,
+          preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+          adapterReadiness: dispatchFixture.dispatchPrepared,
+          providerConformance,
+          permissionGateResult: dispatchFixture.dispatchGate,
+          policyApprovalStatus: dispatchFixture.dispatchApprovalStatus,
+          preDispatchAuditEvent: dispatchFixture.dispatchAudit,
+        });
+      assert.equal(
+        credentialMissingBlocked.decision,
+        "credential_not_ready",
+        "task execution production dispatch smoke L should block missing credential metadata",
+      );
+      const credentialScopeBlocked =
+        evaluateTaskExecutionProductionDispatchGate({
+          state: firstUpdate.value.state,
+          attempt: dispatchFixture.dispatchStartedAttempt,
+          invocationRecord: dispatchFixture.dispatchRecord,
+          preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+          adapterReadiness: dispatchFixture.dispatchPrepared,
+          providerConformance,
+          permissionGateResult: dispatchFixture.dispatchGate,
+          policyApprovalStatus: dispatchFixture.dispatchApprovalStatus,
+          credentialResolutionResult: {
+            ...sanitizeTaskExecutionCredentialResult(
+              dispatchFixture.dispatchCredential,
+            ),
+            credentialScope: ["other-scope"],
+          },
+          preDispatchAuditEvent: dispatchFixture.dispatchAudit,
+        });
+      assert.equal(
+        credentialScopeBlocked.decision,
+        "credential_not_ready",
+        "task execution production dispatch smoke M should block credential scope mismatch",
+      );
+      const auditMissingBlocked = evaluateTaskExecutionProductionDispatchGate({
+        state: firstUpdate.value.state,
+        attempt: dispatchFixture.dispatchStartedAttempt,
+        invocationRecord: dispatchFixture.dispatchRecord,
+        preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+        adapterReadiness: dispatchFixture.dispatchPrepared,
+        providerConformance,
+        permissionGateResult: dispatchFixture.dispatchGate,
+        policyApprovalStatus: dispatchFixture.dispatchApprovalStatus,
+        credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+          dispatchFixture.dispatchCredential,
+        ),
+      });
+      assert.equal(
+        auditMissingBlocked.decision,
+        "audit_precondition_missing",
+        "task execution production dispatch smoke N should block missing required audit",
+      );
+      const corruptAuditBlocked =
+        evaluateTaskExecutionProductionDispatchGate({
+          state: firstUpdate.value.state,
+          attempt: dispatchFixture.dispatchStartedAttempt,
+          invocationRecord: dispatchFixture.dispatchRecord,
+          preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+          adapterReadiness: dispatchFixture.dispatchPrepared,
+          providerConformance,
+          permissionGateResult: dispatchFixture.dispatchGate,
+          policyApprovalStatus: dispatchFixture.dispatchApprovalStatus,
+          credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+            dispatchFixture.dispatchCredential,
+          ),
+          preDispatchAuditEvent: {
+            ...dispatchFixture.dispatchAudit,
+            adapter: {
+              ...dispatchFixture.dispatchAudit.adapter,
+              idempotencyReference: "corrupt-idempotency",
+            },
+          },
+        });
+      assert.equal(
+        corruptAuditBlocked.decision,
+        "audit_precondition_missing",
+        "task execution production dispatch smoke O should block corrupt/mismatched audit",
+      );
+      const policyAuditBlocked =
+        evaluateTaskExecutionProductionDispatchGate({
+          state: firstUpdate.value.state,
+          attempt: dispatchFixture.dispatchStartedAttempt,
+          invocationRecord: dispatchFixture.dispatchRecord,
+          preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+          adapterReadiness: dispatchFixture.dispatchPrepared,
+          providerConformance,
+          permissionGateResult: dispatchFixture.dispatchGate,
+          policyApprovalStatus: dispatchFixture.dispatchApprovalStatus,
+          credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+            dispatchFixture.dispatchCredential,
+          ),
+          preDispatchAuditEvent: {
+            ...dispatchFixture.dispatchAudit,
+            policy: {
+              ...dispatchFixture.dispatchAudit.policy,
+              policyDecisionReference: "wrong-approval-reference",
+            },
+          },
+        });
+      assert.equal(
+        policyAuditBlocked.decision,
+        "audit_precondition_missing",
+        "task execution production dispatch smoke AE should block corrupt policy audit binding",
+      );
+
+      const raceFixture = await createProductionDispatchGateFixture({
+        attemptNumber: 52,
+        rootPrefix: "aeos-production-dispatch-race-",
+      });
+      const invokingPersistenceFailure =
+        await authorizeTaskExecutionProductionDispatch({
+          state: firstUpdate.value.state,
+          attempt: raceFixture.dispatchStartedAttempt,
+          invocationRecord: raceFixture.dispatchRecord,
+          preparedDispatch: raceFixture.dispatchPrepared.preparedDispatch,
+          adapterReadiness: raceFixture.dispatchPrepared,
+          providerConformance,
+          permissionGateResult: raceFixture.dispatchGate,
+          policyApprovalStatus: raceFixture.dispatchApprovalStatus,
+          credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+            raceFixture.dispatchCredential,
+          ),
+          preDispatchAuditEvent: raceFixture.dispatchAudit,
+          latestAttemptNumberForContext: 52,
+          expectedInvocationRevision: raceFixture.dispatchRecord.revision + 1,
+          projectRoot: raceFixture.dispatchRoot,
+          occurredAt: "2026-08-08T01:03:04.000Z",
+        });
+      assert.equal(
+        invokingPersistenceFailure.decision,
+        "invoking_transition_blocked",
+        "task execution production dispatch smoke Q should block provider eligibility when invoking persistence fails",
+      );
+      assert.equal(
+        invokingPersistenceFailure.externalCallAllowed,
+        false,
+        "task execution production dispatch smoke Q should never allow external call after invoking persistence failure",
+      );
+      assert.equal(
+        invokingPersistenceFailure.invocationTransitioned,
+        false,
+        "task execution production dispatch smoke Q should not report a second invoking transition",
+      );
+
+      const canonicalDispatchWorkItems = Array.from(
+        { length: 400 },
+        (_, index) => {
+          const id = `canonical-dispatch-work-${String(index + 1).padStart(3, "0")}`;
+
+          return {
+            id,
+            state: index < 20 ? "failed" : "pending",
+            batchId: "canonical-dispatch-batch",
+          };
+        },
+      );
+      const canonicalDispatchPendingIds = canonicalDispatchWorkItems
+        .filter((workItem) => workItem.state === "pending")
+        .map((workItem) => workItem.id);
+      const canonicalDispatchState = {
+        ...createInitialTaskState({
+          taskId: "TASK-DISPATCH-400-20",
+          sourceTaskId: 'provider says "all complete"',
+          createdAt,
+        }),
+        lifecycleState: "planned",
+        workItems: canonicalDispatchWorkItems,
+        batches: [
+          {
+            id: "canonical-dispatch-batch",
+            workItemIds: canonicalDispatchWorkItems.map(
+              (workItem) => workItem.id,
+            ),
+            expectedItemCount: 400,
+            completedCount: 0,
+            failedCount: 20,
+            skippedCount: 0,
+            retryableCount: 0,
+          },
+        ],
+        pendingWorkItemIds: canonicalDispatchPendingIds,
+        retryableWorkItemIds: [],
+        nextBatchId: "canonical-dispatch-batch",
+        plan: {
+          status: "planned",
+          summary: {
+            workItemCount: 400,
+            batchCount: 1,
+            stepCount: 1,
+            verifierRequired: true,
+            approvalRequired: false,
+            issueCount: 0,
+          },
+        },
+      };
+      const canonicalDispatchStateResult = validatePersistedTaskState(
+        canonicalDispatchState,
+      );
+      assert.equal(
+        canonicalDispatchStateResult.ok,
+        true,
+        "task execution production dispatch smoke AI should accept canonical 400/20 dispatch state",
+      );
+      const canonicalDispatchFixture =
+        await createProductionDispatchGateFixture({
+          attemptNumber: 56,
+          rootPrefix: "aeos-production-dispatch-400-20-",
+          state: canonicalDispatchState,
+          expectedRevision: canonicalDispatchState.revision,
+          workItemId: "canonical-dispatch-work-021",
+          batchId: "canonical-dispatch-batch",
+        });
+      const canonicalDispatchAuthorization =
+        await authorizeTaskExecutionProductionDispatch({
+          state: canonicalDispatchState,
+          attempt: canonicalDispatchFixture.dispatchStartedAttempt,
+          invocationRecord: canonicalDispatchFixture.dispatchRecord,
+          preparedDispatch:
+            canonicalDispatchFixture.dispatchPrepared.preparedDispatch,
+          adapterReadiness: canonicalDispatchFixture.dispatchPrepared,
+          providerConformance,
+          permissionGateResult: canonicalDispatchFixture.dispatchGate,
+          policyApprovalStatus:
+            canonicalDispatchFixture.dispatchApprovalStatus,
+          credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+            canonicalDispatchFixture.dispatchCredential,
+          ),
+          preDispatchAuditEvent: canonicalDispatchFixture.dispatchAudit,
+          latestAttemptNumberForContext: 56,
+          expectedInvocationRevision:
+            canonicalDispatchFixture.dispatchRecord.revision,
+          projectRoot: canonicalDispatchFixture.dispatchRoot,
+          occurredAt: "2026-08-08T01:03:06.000Z",
+          taskOrModelAuthorityClaims: {
+            completed: true,
+            verified: true,
+            approved: true,
+            allDone: true,
+            taskCompleted: true,
+            safeToRetry: true,
+          },
+          providerAuthorityClaims: {
+            completed: true,
+            verified: true,
+            approved: true,
+            allDone: true,
+            taskCompleted: true,
+            safeToRetry: true,
+          },
+        });
+      assert.equal(
+        canonicalDispatchAuthorization.invocationTransitioned,
+        true,
+        "task execution production dispatch smoke AI should exercise canonical 400/20 through the invoking boundary",
+      );
+      assert.equal(
+        canonicalDispatchAuthorization.externalCallAllowed,
+        false,
+        "task execution production dispatch smoke AI should keep canonical 400/20 external calls disabled",
+      );
+      const canonicalDispatchBatch = canonicalDispatchState.batches[0];
+      const canonicalDispatchAccounted =
+        canonicalDispatchBatch.completedCount +
+        canonicalDispatchBatch.failedCount +
+        canonicalDispatchBatch.skippedCount +
+        canonicalDispatchBatch.retryableCount;
+      assert.equal(
+        canonicalDispatchBatch.expectedItemCount,
+        400,
+        "task execution production dispatch smoke AI should preserve 400 expected work items",
+      );
+      assert.equal(
+        canonicalDispatchAccounted,
+        20,
+        "task execution production dispatch smoke AI should preserve 20 accounted work items",
+      );
+      assert.equal(
+        canonicalDispatchState.pendingWorkItemIds.length,
+        380,
+        "task execution production dispatch smoke AI should preserve 380 remaining work items",
+      );
+      assert.equal(
+        canonicalDispatchState.completionGate.completed,
+        false,
+        "task execution production dispatch smoke AI should not complete canonical task",
+      );
+      assert.equal(
+        canonicalDispatchState.verifier.status === "verified",
+        false,
+        "task execution production dispatch smoke AI should not satisfy canonical verifier",
+      );
+      assert.equal(
+        canonicalDispatchState.completionGate.satisfied,
+        false,
+        "task execution production dispatch smoke AI should not satisfy canonical completion gate",
       );
 
       for (const [message, subjectOptions, expectedCode] of [
