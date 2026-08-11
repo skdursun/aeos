@@ -95,6 +95,7 @@ export interface UpdateTaskExecutionInvocationInput
   extends TaskExecutionInvocationStorageInput {
   readonly ownershipToken: string;
   readonly expectedLifecycle: TaskExecutionInvocationLifecycle;
+  readonly expectedRevision?: number;
   readonly intent: TaskExecutionInvocationRecordTransitionIntent;
 }
 
@@ -1384,6 +1385,23 @@ export async function updateTaskExecutionInvocation(
           {
             expectedLifecycle: input.expectedLifecycle,
             actualLifecycle: currentRecord.lifecycle,
+          },
+        ),
+      );
+    }
+
+    if (
+      input.expectedRevision !== undefined &&
+      currentRecord.revision !== input.expectedRevision
+    ) {
+      return err(
+        createError(
+          "task_execution_invocation_revision_conflict",
+          "Persisted task execution invocation revision did not match the expected reconciliation/update revision.",
+          "conflict",
+          {
+            expectedRevision: input.expectedRevision,
+            actualRevision: currentRecord.revision,
           },
         ),
       );

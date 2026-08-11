@@ -958,7 +958,11 @@ export function transitionTaskExecutionInvocationRecord(
     });
   }
 
-  if (record.lifecycle === "invoking" && intent.kind === "record_returned") {
+  if (
+    (record.lifecycle === "invoking" ||
+      record.lifecycle === "outcome_unknown") &&
+    intent.kind === "record_returned"
+  ) {
     const returnedAt =
       intent.result.returnedAt ?? new Date().toISOString();
 
@@ -970,12 +974,17 @@ export function transitionTaskExecutionInvocationRecord(
         returnedAt,
       },
       outcomeCertainty: "known",
+      outcomeUnknownAt: undefined,
       revision: record.revision + 1,
       updatedAt: returnedAt,
     });
   }
 
-  if (record.lifecycle === "invoking" && intent.kind === "record_failed") {
+  if (
+    (record.lifecycle === "invoking" ||
+      record.lifecycle === "outcome_unknown") &&
+    intent.kind === "record_failed"
+  ) {
     const failedAt = intent.failure.failedAt ?? new Date().toISOString();
 
     return validateTaskExecutionInvocationRecord({
@@ -986,6 +995,7 @@ export function transitionTaskExecutionInvocationRecord(
         failedAt,
       },
       outcomeCertainty: "known",
+      outcomeUnknownAt: undefined,
       revision: record.revision + 1,
       updatedAt: failedAt,
     });

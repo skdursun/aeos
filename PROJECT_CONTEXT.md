@@ -89,6 +89,8 @@ condition.
   for invoking/outcome_unknown records.
 - TASK-0294: Implement read-only invocation reconciliation preview CLI and
   provider capability inspection model.
+- TASK-0295: Design and implement explicit typed invocation reconciliation
+  apply foundation without provider calls or retry.
 
 ## Do Not Load By Default
 
@@ -99,12 +101,12 @@ condition.
 
 ## Next Task
 
-TASK-0295 Design and implement explicit typed invocation reconciliation apply
-foundation without provider calls or retry.
+TASK-0296 Design provider reconciliation adapter contract and test-only provider
+evidence bridge.
 
-Purpose: Persist a reconciliation resolution only from typed authoritative
-reconciliation evidence while still avoiding provider calls, retry execution,
-and adapter execution.
+Purpose: Define the next provider reconciliation adapter contract and a
+test-only/in-memory provider evidence bridge while still making no real network
+calls and keeping production adapters disabled.
 
 ## Current Plans
 

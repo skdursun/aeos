@@ -540,8 +540,11 @@ cooperating AEOS processes cannot both successfully create ownership for the
 same invocation identity. A duplicate reservation loads the existing authority
 record when it is valid and returns `already_reserved`; it does not overwrite.
 Updates require the persisted system-generated ownership token and follow the
-closed transitions `reserved -> invoking`, `invoking -> returned`,
-`invoking -> failed`, or `invoking -> outcome_unknown`. Returned, failed, and
+closed ordinary invocation transitions `reserved -> invoking`,
+`invoking -> returned`, `invoking -> failed`, or
+`invoking -> outcome_unknown`. Authoritative reconciliation apply may also
+close `outcome_unknown -> returned` or `outcome_unknown -> failed` when trusted
+typed evidence proves the provider-side outcome. Returned, failed, and
 outcome-unknown records cannot be re-entered or rewritten by ordinary
 invocation.
 
@@ -683,9 +686,9 @@ aeos task execution invocation reconcile --preview <task-id> --invocation-id <in
 `--invocation-id` is a selector only. The CLI does not accept invocation JSON,
 arbitrary lifecycle flags, retry flags, outcome overrides, ownership tokens,
 operator idempotency keys, provider implementation/config flags, or free-form
-evidence JSON. Without `--preview`, the command fails closed with
-`task_execution_invocation_reconcile_apply_not_implemented`; no reconciliation
-apply exists in this MVP.
+evidence JSON. Without `--preview`, the command still fails closed with
+`task_execution_invocation_reconcile_apply_not_implemented`; TASK-0295 does not
+expose reconciliation apply through the CLI.
 
 `evaluateTaskExecutionInvocationReconciliation` is a pure recovery decision
 model for persisted invocation authority. It does not load files, call
@@ -768,9 +771,80 @@ Future reconciliation evidence is typed data only:
 - `provider_status_unavailable`
 
 Typed evidence can be evaluated in memory when compatible typed provider
-capability metadata is supplied. It still does not persist resolution. TASK-0293
+capability metadata is supplied. Preview still does not persist resolution and
 does not automatically change `invoking` or `outcome_unknown` to `returned` or
 `failed`.
+
+## Invocation Reconciliation Apply Foundation
+TASK-0295 adds a core-only reconciliation apply foundation:
+
+```ts
+applyTaskExecutionInvocationReconciliation(...)
+```
+
+This API is not a provider integration and not a CLI command. It performs no
+network calls, provider calls, adapter execution, dependency invocation, retry,
+attempt creation, invocation creation, audit runtime, verifier runtime, policy
+runtime, task-state write, attempt-state write, work completion, or task
+completion.
+
+Apply may resolve an `invoking` or `outcome_unknown` invocation only from closed
+typed authoritative evidence returned by an explicitly injected evidence source.
+For TASK-0295 the only accepted source authority is:
+
+```ts
+source.kind === "test_authoritative"
+```
+
+Operator prose, model prose, task prose, provider prose, arbitrary evidence
+JSON, CLI flags, production provider sources, and free-form source kinds are not
+authoritative. Production adapters remain disabled.
+
+Allowed TASK-0295 evidence outcomes are conservative:
+
+- `provider_returned`: may persist invocation-level returned diagnostics and
+  transition `invoking/outcome_unknown -> returned`.
+- `provider_failed`: may persist structured invocation failure and transition
+  `invoking/outcome_unknown -> failed`.
+- `provider_in_progress`: leaves the record unresolved and reconciliation
+  required.
+- `provider_status_unavailable`: leaves the record unresolved and
+  reconciliation required.
+- `provider_not_found`: does not mean failed and does not authorize blind retry;
+  the record remains unresolved and reconciliation required.
+
+Returned reconciliation evidence may include diagnostic payloads claiming
+`completed`, `verified`, `approved`, `allDone`, or similar. Those claims remain
+invocation diagnostics only. They cannot satisfy the completion gate, mark work
+complete, mark the task complete, pass the verifier, or approve policy.
+
+Failed reconciliation evidence may include typed retryability. That retryable
+fact is recorded only as future retry planning context requiring new explicit
+authority. Apply never creates a retry attempt, creates a retry invocation, or
+calls the dependency again.
+
+Apply uses the persisted invocation authority and guarded invocation update path
+with exact lifecycle and record-revision checks. It re-loads task and attempt
+context for validation, re-checks the invocation record before persistence, and
+fails on stale revision/update conflict rather than overwriting newer authority.
+Immutable invocation identity is not changed: invocation id, idempotency key,
+task id, source task revision, attempt id/number, work item, batch, dependency
+kind, request fingerprint, creation identity, ownership, request metadata, and
+safety metadata remain fixed.
+
+The recovery authority is system-owned and internal to the core apply path. The
+sanitized apply result does not expose ownership tokens, lock tokens, or
+recovery secrets and cannot be used as an ownership credential.
+
+Historical invocation records may be reconciled for record correctness even
+when their source task revision is stale against the current task revision.
+After resolution they remain historical and non-current; apply does not
+reactivate them, mutate current task state, or create retry authority.
+
+Corrupt invocation authority, corrupt required task context, corrupt required
+attempt context, path traversal, symlink targets, missing records, and invalid
+schemas fail closed. Corruption is not absence and never causes replacement
+invocation authority or blind retry.
 
 TASK-0294 CLI preview does not accept simulated evidence. Future apply work must
 use typed authoritative reconciliation evidence; task/model/operator/provider

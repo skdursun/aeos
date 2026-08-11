@@ -113,6 +113,7 @@ import {
   deriveNextTaskExecutionAttemptNumber,
   deriveLatestTaskExecutionAttemptNumber,
   evaluateTaskStateTransition,
+  applyTaskExecutionInvocationReconciliation,
   evaluateTaskExecutionInvocationReconciliation,
   getTaskExecutionAttemptStoragePath,
   getTaskStateStoragePath,
@@ -321,6 +322,26 @@ function createSmokeTestNoopDependency({
           metadata,
         };
       },
+    },
+  };
+}
+
+function createTestAuthoritativeEvidenceSource(evidenceFactory) {
+  const calls = [];
+  const source = {
+    kind: "test_authoritative",
+    sourceId: "core-smoke-test-authority",
+  };
+
+  return {
+    calls,
+    source,
+    getEvidence(request) {
+      calls.push(JSON.parse(JSON.stringify(request)));
+
+      return typeof evidenceFactory === "function"
+        ? evidenceFactory(request, source)
+        : evidenceFactory;
     },
   };
 }
@@ -15716,6 +15737,805 @@ try {
     summarizeTaskExecutionInvocationReconciliation(typedEvidenceReconciliation),
     "task execution invocation reconciliation smoke Z should be deterministic on repeated evaluation",
   );
+
+  const reconciliationApplyRoot = await mkdtemp(
+    join(tmpdir(), "aeos-reconciliation-apply-"),
+  );
+  const reconciliationApplyInitialSave = await saveTaskState({
+    projectRoot: reconciliationApplyRoot,
+    state: initialState,
+  });
+  assert.equal(
+    reconciliationApplyInitialSave.ok,
+    true,
+    "task execution invocation reconciliation apply smoke setup should save initial task state",
+  );
+  const reconciliationApplyStateUpdate = await updateTaskState({
+    projectRoot: reconciliationApplyRoot,
+    taskId: firstUpdate.value.state.taskId,
+    expectedRevision: 1,
+    updatedAt: "2026-08-08T00:29:59.000Z",
+    update() {
+      return firstUpdate.value.state;
+    },
+  });
+  assert.equal(
+    reconciliationApplyStateUpdate.ok,
+    true,
+    "task execution invocation reconciliation apply smoke setup should save revision-two task state",
+  );
+  const reconciliationApplyState = reconciliationApplyStateUpdate.value.state;
+  const reconciliationApplyStatePath = reconciliationApplyStateUpdate.value.path;
+
+  async function createReconciliationApplyFixture({
+    projectRoot = reconciliationApplyRoot,
+    state = reconciliationApplyState,
+    attemptNumber,
+    lifecycle = "invoking",
+    workItemId = undefined,
+    batchId = "batch-a",
+  }) {
+    const minute = String(attemptNumber).padStart(2, "0").slice(-2);
+    const prepared = prepareTaskExecutionAttempt({
+      state,
+      expectedRevision: state.revision,
+      workItemId,
+      batchId,
+      attemptNumber,
+      createdAt: `2026-08-08T00:${minute}:00.000Z`,
+    });
+    assert.equal(
+      prepared.ok,
+      true,
+      `task execution invocation reconciliation apply fixture ${attemptNumber} should prepare`,
+    );
+    const started = transitionTaskExecutionAttempt({
+      attempt: prepared.value.attempt,
+      intent: {
+        kind: "start",
+      },
+      occurredAt: `2026-08-08T00:${minute}:01.000Z`,
+    });
+    assert.equal(
+      started.ok,
+      true,
+      `task execution invocation reconciliation apply fixture ${attemptNumber} should start`,
+    );
+    const saved = await saveTaskExecutionAttempt({
+      projectRoot,
+      attempt: started.value.attempt,
+    });
+    assert.equal(
+      saved.ok,
+      true,
+      `task execution invocation reconciliation apply fixture ${attemptNumber} should save attempt`,
+    );
+    const reserved = await reserveTaskExecutionInvocation({
+      projectRoot,
+      state,
+      attempt: started.value.attempt,
+      dependencyKind: "test_noop",
+      expectedRevision: state.revision,
+      latestAttemptNumberForContext: attemptNumber,
+      claimedAt: `2026-08-08T00:${minute}:02.000Z`,
+    });
+    assert.equal(
+      reserved.ok,
+      true,
+      `task execution invocation reconciliation apply fixture ${attemptNumber} should reserve`,
+    );
+    const entered = await updateTaskExecutionInvocation({
+      projectRoot,
+      taskId: reserved.value.record.taskId,
+      invocationId: reserved.value.record.invocationId,
+      ownershipToken: reserved.value.record.ownership.ownershipToken,
+      expectedLifecycle: "reserved",
+      expectedRevision: reserved.value.record.revision,
+      intent: {
+        kind: "enter_invocation",
+        occurredAt: `2026-08-08T00:${minute}:03.000Z`,
+      },
+    });
+    assert.equal(
+      entered.ok,
+      true,
+      `task execution invocation reconciliation apply fixture ${attemptNumber} should enter invoking`,
+    );
+
+    if (lifecycle === "outcome_unknown") {
+      const unknown = await updateTaskExecutionInvocation({
+        projectRoot,
+        taskId: entered.value.record.taskId,
+        invocationId: entered.value.record.invocationId,
+        ownershipToken: entered.value.record.ownership.ownershipToken,
+        expectedLifecycle: "invoking",
+        expectedRevision: entered.value.record.revision,
+        intent: {
+          kind: "mark_outcome_unknown",
+          occurredAt: `2026-08-08T00:${minute}:04.000Z`,
+        },
+      });
+      assert.equal(
+        unknown.ok,
+        true,
+        `task execution invocation reconciliation apply fixture ${attemptNumber} should mark outcome_unknown`,
+      );
+
+      return {
+        attempt: started.value.attempt,
+        attemptPath: saved.value.path,
+        record: unknown.value.record,
+        path: unknown.value.path,
+      };
+    }
+
+    return {
+      attempt: started.value.attempt,
+      attemptPath: saved.value.path,
+      record: entered.value.record,
+      path: entered.value.path,
+    };
+  }
+
+  const applyReturnedFixture = await createReconciliationApplyFixture({
+    attemptNumber: 30,
+  });
+  const applyReturnedStateBefore = await readFile(
+    reconciliationApplyStatePath,
+    "utf8",
+  );
+  const applyReturnedAttemptBefore = await readFile(
+    applyReturnedFixture.attemptPath,
+    "utf8",
+  );
+  const applyReturnedIdentityBefore = {
+    invocationId: applyReturnedFixture.record.invocationId,
+    idempotencyKey: applyReturnedFixture.record.idempotencyKey,
+    taskId: applyReturnedFixture.record.taskId,
+    taskStateRevision: applyReturnedFixture.record.taskStateRevision,
+    attemptId: applyReturnedFixture.record.attemptId,
+    attemptNumber: applyReturnedFixture.record.attemptNumber,
+    workItemId: applyReturnedFixture.record.workItemId,
+    batchId: applyReturnedFixture.record.batchId,
+    dependencyKind: applyReturnedFixture.record.dependencyKind,
+    requestFingerprint: applyReturnedFixture.record.request.fingerprint,
+    createdAt: applyReturnedFixture.record.createdAt,
+  };
+  const applyReturnedEvidenceSource = createTestAuthoritativeEvidenceSource(
+    (request, source) => ({
+      source,
+      kind: "provider_returned",
+      idempotencyKey: request.idempotencyKey,
+      invocationOk: true,
+      output: {
+        allComplete: true,
+        completed: true,
+        verified: true,
+      },
+      resultReference: "provider://smoke-apply-returned",
+      diagnosticCode: "smoke_apply_returned",
+      message: "Returned evidence is invocation diagnostic only.",
+      metadata: {
+        allDone: true,
+        approved: true,
+      },
+      observedAt: "2026-08-08T00:30:05.000Z",
+    }),
+  );
+  const applyReturned = await applyTaskExecutionInvocationReconciliation({
+    projectRoot: reconciliationApplyRoot,
+    taskId: applyReturnedFixture.record.taskId,
+    invocationId: applyReturnedFixture.record.invocationId,
+    expectedInvocationRevision: applyReturnedFixture.record.revision,
+    evidenceSource: applyReturnedEvidenceSource,
+  });
+  assert.equal(
+    applyReturned.reconciliationApplied,
+    true,
+    "task execution invocation reconciliation apply smoke A should apply invoking + trusted returned evidence",
+  );
+  assert.equal(
+    applyReturned.previousLifecycle,
+    "invoking",
+    "task execution invocation reconciliation apply smoke A should report previous invoking lifecycle",
+  );
+  assert.equal(
+    applyReturned.lifecycle,
+    "returned",
+    "task execution invocation reconciliation apply smoke A should resolve invoking to returned",
+  );
+  assert.equal(
+    applyReturned.evidenceKind,
+    "provider_returned",
+    "task execution invocation reconciliation apply smoke A should report typed returned evidence",
+  );
+  assert.equal(
+    applyReturned.outcomeKnown,
+    true,
+    "task execution invocation reconciliation apply smoke A should mark returned outcome known",
+  );
+  assert.equal(
+    applyReturned.safeToBlindRetry,
+    false,
+    "task execution invocation reconciliation apply smoke G should not allow blind retry after returned evidence",
+  );
+  assert.equal(
+    applyReturned.safety.providerCalledByAEOS,
+    false,
+    "task execution invocation reconciliation apply smoke T should not call providers",
+  );
+  assert.equal(
+    applyReturned.safety.dependencyInvoked,
+    false,
+    "task execution invocation reconciliation apply smoke U should not invoke dependency",
+  );
+  assert.equal(
+    applyReturned.safety.retryPerformed,
+    false,
+    "task execution invocation reconciliation apply smoke K should not retry",
+  );
+  assert.equal(
+    applyReturned.safety.taskModified,
+    false,
+    "task execution invocation reconciliation apply smoke R should report no task-state mutation",
+  );
+  assert.equal(
+    applyReturned.safety.attemptModified,
+    false,
+    "task execution invocation reconciliation apply smoke S should report no attempt-state mutation",
+  );
+  assert.equal(
+    applyReturned.safety.workCompleted,
+    false,
+    "task execution invocation reconciliation apply smoke J should ignore returned completion claims",
+  );
+  assert.equal(
+    applyReturned.safety.taskCompleted,
+    false,
+    "task execution invocation reconciliation apply smoke J should not complete task",
+  );
+  assert.equal(
+    applyReturned.safety.verifierRun,
+    false,
+    "task execution invocation reconciliation apply smoke V should not run verifier",
+  );
+  assert.equal(
+    applyReturned.safety.auditWritten,
+    false,
+    "task execution invocation reconciliation apply smoke V should not write audit",
+  );
+  assert.equal(
+    applyReturned.safety.policyRuntimeRun,
+    false,
+    "task execution invocation reconciliation apply smoke V should not run policy runtime",
+  );
+  assert.equal(
+    applyReturned.safety.ownershipSecretRendered,
+    false,
+    "task execution invocation reconciliation apply smoke N should not expose ownership secrets",
+  );
+  assert.equal(
+    JSON.stringify(applyReturned).includes(
+      applyReturnedFixture.record.ownership.ownershipToken,
+    ),
+    false,
+    "task execution invocation reconciliation apply smoke N should redact ownership token value",
+  );
+  assert.equal(
+    JSON.stringify(applyReturned).includes("ownershipToken"),
+    false,
+    "task execution invocation reconciliation apply smoke N should not render ownership token field",
+  );
+  const applyReturnedLoaded = await loadTaskExecutionInvocation({
+    projectRoot: reconciliationApplyRoot,
+    taskId: applyReturnedFixture.record.taskId,
+    invocationId: applyReturnedFixture.record.invocationId,
+  });
+  assert.equal(
+    applyReturnedLoaded.ok,
+    true,
+    "task execution invocation reconciliation apply smoke A should load returned applied record",
+  );
+  assert.deepEqual(
+    {
+      invocationId: applyReturnedLoaded.value.record.invocationId,
+      idempotencyKey: applyReturnedLoaded.value.record.idempotencyKey,
+      taskId: applyReturnedLoaded.value.record.taskId,
+      taskStateRevision: applyReturnedLoaded.value.record.taskStateRevision,
+      attemptId: applyReturnedLoaded.value.record.attemptId,
+      attemptNumber: applyReturnedLoaded.value.record.attemptNumber,
+      workItemId: applyReturnedLoaded.value.record.workItemId,
+      batchId: applyReturnedLoaded.value.record.batchId,
+      dependencyKind: applyReturnedLoaded.value.record.dependencyKind,
+      requestFingerprint: applyReturnedLoaded.value.record.request.fingerprint,
+      createdAt: applyReturnedLoaded.value.record.createdAt,
+    },
+    applyReturnedIdentityBefore,
+    "task execution invocation reconciliation apply smoke L should keep invocation identity immutable",
+  );
+  assert.equal(
+    applyReturnedLoaded.value.record.result.output.completed,
+    true,
+    "task execution invocation reconciliation apply smoke J should persist returned diagnostic completion claim only",
+  );
+  assert.equal(
+    await readFile(reconciliationApplyStatePath, "utf8"),
+    applyReturnedStateBefore,
+    "task execution invocation reconciliation apply smoke R should not write task state",
+  );
+  assert.equal(
+    await readFile(applyReturnedFixture.attemptPath, "utf8"),
+    applyReturnedAttemptBefore,
+    "task execution invocation reconciliation apply smoke S should not write attempt state",
+  );
+
+  const staleReturnedEvidenceSource = createTestAuthoritativeEvidenceSource(
+    (request, source) => ({
+      source,
+      kind: "provider_returned",
+      idempotencyKey: request.idempotencyKey,
+      invocationOk: true,
+      observedAt: "2026-08-08T00:30:06.000Z",
+    }),
+  );
+  const staleReturnedApply = await applyTaskExecutionInvocationReconciliation({
+    projectRoot: reconciliationApplyRoot,
+    taskId: applyReturnedFixture.record.taskId,
+    invocationId: applyReturnedFixture.record.invocationId,
+    expectedInvocationRevision: applyReturnedFixture.record.revision,
+    evidenceSource: staleReturnedEvidenceSource,
+  });
+  assert.equal(
+    staleReturnedApply.ok,
+    false,
+    "task execution invocation reconciliation apply smoke M should block stale revision apply",
+  );
+  assert.ok(
+    staleReturnedApply.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_invocation_reconciliation_revision_conflict",
+    ),
+    "task execution invocation reconciliation apply smoke M should report stale revision conflict",
+  );
+  assert.equal(
+    staleReturnedEvidenceSource.calls.length,
+    0,
+    "task execution invocation reconciliation apply smoke M should not fetch evidence after stale revision conflict",
+  );
+  const duplicateAfterApplyNoop = createSmokeTestNoopDependency();
+  const duplicateAfterApply = await invokeStartedTaskExecutionAttempt({
+    projectRoot: reconciliationApplyRoot,
+    state: reconciliationApplyState,
+    attempt: applyReturnedFixture.attempt,
+    dependency: duplicateAfterApplyNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 30,
+  });
+  assert.equal(
+    duplicateAfterApplyNoop.calls.length,
+    0,
+    "task execution invocation reconciliation apply smoke W should prevent duplicate test_noop call after returned apply",
+  );
+  assert.equal(
+    duplicateAfterApply.invocationStatus,
+    "returned",
+    "task execution invocation reconciliation apply smoke W should replay returned authority after apply",
+  );
+
+  const applyUnknownReturnedFixture = await createReconciliationApplyFixture({
+    attemptNumber: 31,
+    lifecycle: "outcome_unknown",
+  });
+  const applyUnknownReturnedEvidenceSource = createTestAuthoritativeEvidenceSource(
+    (request, source) => ({
+      source,
+      kind: "provider_returned",
+      idempotencyKey: request.idempotencyKey,
+      invocationOk: true,
+      resultReference: "provider://smoke-unknown-returned",
+      observedAt: "2026-08-08T00:31:05.000Z",
+    }),
+  );
+  const applyUnknownReturned =
+    await applyTaskExecutionInvocationReconciliation({
+      projectRoot: reconciliationApplyRoot,
+      taskId: applyUnknownReturnedFixture.record.taskId,
+      invocationId: applyUnknownReturnedFixture.record.invocationId,
+      expectedInvocationRevision: applyUnknownReturnedFixture.record.revision,
+      evidenceSource: applyUnknownReturnedEvidenceSource,
+    });
+  assert.equal(
+    applyUnknownReturned.lifecycle,
+    "returned",
+    "task execution invocation reconciliation apply smoke B should resolve outcome_unknown to returned with trusted evidence",
+  );
+
+  const applyInvokingFailedFixture = await createReconciliationApplyFixture({
+    attemptNumber: 32,
+  });
+  const applyInvokingFailedEvidenceSource = createTestAuthoritativeEvidenceSource(
+    (request, source) => ({
+      source,
+      kind: "provider_failed",
+      idempotencyKey: request.idempotencyKey,
+      failureCode: "smoke_apply_failed",
+      failureCategory: "adapter_failure",
+      retryable: true,
+      diagnostic: "Provider-side failure remained invocation-level only.",
+      observedAt: "2026-08-08T00:32:05.000Z",
+    }),
+  );
+  const applyInvokingFailed = await applyTaskExecutionInvocationReconciliation({
+    projectRoot: reconciliationApplyRoot,
+    taskId: applyInvokingFailedFixture.record.taskId,
+    invocationId: applyInvokingFailedFixture.record.invocationId,
+    expectedInvocationRevision: applyInvokingFailedFixture.record.revision,
+    evidenceSource: applyInvokingFailedEvidenceSource,
+  });
+  assert.equal(
+    applyInvokingFailed.lifecycle,
+    "failed",
+    "task execution invocation reconciliation apply smoke C should resolve invoking to failed",
+  );
+  assert.equal(
+    applyInvokingFailed.retryRequiresNewAuthority,
+    true,
+    "task execution invocation reconciliation apply smoke K should preserve typed retryability as new-authority-only",
+  );
+  assert.equal(
+    applyInvokingFailed.safety.retryPerformed,
+    false,
+    "task execution invocation reconciliation apply smoke K should not auto-create retry for failed resolution",
+  );
+  const duplicateFailedApplyNoop = createSmokeTestNoopDependency();
+  const duplicateFailedApply = await invokeStartedTaskExecutionAttempt({
+    projectRoot: reconciliationApplyRoot,
+    state: reconciliationApplyState,
+    attempt: applyInvokingFailedFixture.attempt,
+    dependency: duplicateFailedApplyNoop.dependency,
+    expectedRevision: 2,
+    latestAttemptNumberForContext: 32,
+  });
+  assert.equal(
+    duplicateFailedApplyNoop.calls.length,
+    0,
+    "task execution invocation reconciliation apply smoke X should not auto-call after failed apply",
+  );
+  assert.equal(
+    duplicateFailedApply.invocationStatus,
+    "failed",
+    "task execution invocation reconciliation apply smoke X should preserve failed duplicate suppression",
+  );
+
+  const applyUnknownFailedFixture = await createReconciliationApplyFixture({
+    attemptNumber: 33,
+    lifecycle: "outcome_unknown",
+  });
+  const applyUnknownFailedEvidenceSource = createTestAuthoritativeEvidenceSource(
+    (request, source) => ({
+      source,
+      kind: "provider_failed",
+      idempotencyKey: request.idempotencyKey,
+      failureCode: "smoke_apply_unknown_failed",
+      failureCategory: "adapter_failure",
+      retryable: false,
+      observedAt: "2026-08-08T00:33:05.000Z",
+    }),
+  );
+  const applyUnknownFailed = await applyTaskExecutionInvocationReconciliation({
+    projectRoot: reconciliationApplyRoot,
+    taskId: applyUnknownFailedFixture.record.taskId,
+    invocationId: applyUnknownFailedFixture.record.invocationId,
+    expectedInvocationRevision: applyUnknownFailedFixture.record.revision,
+    evidenceSource: applyUnknownFailedEvidenceSource,
+  });
+  assert.equal(
+    applyUnknownFailed.lifecycle,
+    "failed",
+    "task execution invocation reconciliation apply smoke D should resolve outcome_unknown to failed",
+  );
+  assert.equal(
+    applyUnknownFailed.retryRequiresNewAuthority,
+    false,
+    "task execution invocation reconciliation apply smoke D should not invent retryability",
+  );
+
+  for (const unresolvedCase of [
+    {
+      attemptNumber: 34,
+      evidenceKind: "provider_status_unavailable",
+      expectedConclusion: "status_unavailable",
+      message: "task execution invocation reconciliation apply smoke E should not write unavailable evidence",
+      makeEvidence: (request, source) => ({
+        source,
+        kind: "provider_status_unavailable",
+        observedAt: "2026-08-08T00:34:05.000Z",
+      }),
+    },
+    {
+      attemptNumber: 35,
+      evidenceKind: "provider_in_progress",
+      expectedConclusion: "in_progress",
+      message: "task execution invocation reconciliation apply smoke F should not write in-progress evidence",
+      makeEvidence: (request, source) => ({
+        source,
+        kind: "provider_in_progress",
+        idempotencyKey: request.idempotencyKey,
+        observedAt: "2026-08-08T00:35:05.000Z",
+      }),
+    },
+    {
+      attemptNumber: 36,
+      evidenceKind: "provider_not_found",
+      expectedConclusion: "not_found",
+      message: "task execution invocation reconciliation apply smoke G should not treat not-found as blind retry",
+      makeEvidence: (request, source) => ({
+        source,
+        kind: "provider_not_found",
+        idempotencyKey: request.idempotencyKey,
+        observedAt: "2026-08-08T00:36:05.000Z",
+      }),
+    },
+  ]) {
+    const fixture = await createReconciliationApplyFixture({
+      attemptNumber: unresolvedCase.attemptNumber,
+    });
+    const before = await readFile(fixture.path, "utf8");
+    const evidenceSource = createTestAuthoritativeEvidenceSource(
+      unresolvedCase.makeEvidence,
+    );
+    const result = await applyTaskExecutionInvocationReconciliation({
+      projectRoot: reconciliationApplyRoot,
+      taskId: fixture.record.taskId,
+      invocationId: fixture.record.invocationId,
+      expectedInvocationRevision: fixture.record.revision,
+      evidenceSource,
+    });
+    assert.equal(result.reconciliationApplied, false, unresolvedCase.message);
+    assert.equal(
+      result.evidenceConclusion,
+      unresolvedCase.expectedConclusion,
+      `${unresolvedCase.message} with deterministic evidence conclusion`,
+    );
+    assert.equal(
+      result.reconciliationRequired,
+      true,
+      `${unresolvedCase.message} and keep reconciliation required`,
+    );
+    assert.equal(
+      result.safeToBlindRetry,
+      false,
+      `${unresolvedCase.message} without blind retry`,
+    );
+    assert.equal(
+      await readFile(fixture.path, "utf8"),
+      before,
+      `${unresolvedCase.message} without invocation mutation`,
+    );
+  }
+
+  const proseEvidenceFixture = await createReconciliationApplyFixture({
+    attemptNumber: 37,
+  });
+  const proseEvidenceSource = createTestAuthoritativeEvidenceSource(
+    "operator says provider returned and all work is complete",
+  );
+  const proseEvidenceResult = await applyTaskExecutionInvocationReconciliation({
+    projectRoot: reconciliationApplyRoot,
+    taskId: proseEvidenceFixture.record.taskId,
+    invocationId: proseEvidenceFixture.record.invocationId,
+    expectedInvocationRevision: proseEvidenceFixture.record.revision,
+    evidenceSource: proseEvidenceSource,
+  });
+  assert.equal(
+    proseEvidenceResult.ok,
+    false,
+    "task execution invocation reconciliation apply smoke H should reject arbitrary prose evidence",
+  );
+  assert.ok(
+    proseEvidenceResult.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_invocation_reconciliation_authoritative_evidence_invalid",
+    ),
+    "task execution invocation reconciliation apply smoke H should report invalid authoritative evidence",
+  );
+
+  const productionEvidenceFixture = await createReconciliationApplyFixture({
+    attemptNumber: 38,
+  });
+  let productionEvidenceCalls = 0;
+  const productionEvidenceResult =
+    await applyTaskExecutionInvocationReconciliation({
+      projectRoot: reconciliationApplyRoot,
+      taskId: productionEvidenceFixture.record.taskId,
+      invocationId: productionEvidenceFixture.record.invocationId,
+      expectedInvocationRevision: productionEvidenceFixture.record.revision,
+      evidenceSource: {
+        source: {
+          kind: "production_provider",
+        },
+        getEvidence() {
+          productionEvidenceCalls += 1;
+
+          return {};
+        },
+      },
+    });
+  assert.equal(
+    productionEvidenceResult.ok,
+    false,
+    "task execution invocation reconciliation apply smoke I should reject non-test evidence source",
+  );
+  assert.equal(
+    productionEvidenceCalls,
+    0,
+    "task execution invocation reconciliation apply smoke I should not call unsupported production evidence source",
+  );
+  assert.ok(
+    productionEvidenceResult.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_invocation_reconciliation_evidence_source_unsupported",
+    ),
+    "task execution invocation reconciliation apply smoke I should report unsupported evidence source",
+  );
+
+  const corruptApplyFixture = await createReconciliationApplyFixture({
+    attemptNumber: 39,
+  });
+  await writeNodeFile(corruptApplyFixture.path, "{ corrupt invocation json");
+  const corruptApplyBefore = await readFile(corruptApplyFixture.path, "utf8");
+  const corruptApplyEvidenceSource = createTestAuthoritativeEvidenceSource(
+    (request, source) => ({
+      source,
+      kind: "provider_returned",
+      idempotencyKey: request.idempotencyKey,
+      invocationOk: true,
+    }),
+  );
+  const corruptApply = await applyTaskExecutionInvocationReconciliation({
+    projectRoot: reconciliationApplyRoot,
+    taskId: corruptApplyFixture.record.taskId,
+    invocationId: corruptApplyFixture.record.invocationId,
+    evidenceSource: corruptApplyEvidenceSource,
+  });
+  assert.equal(
+    corruptApply.ok,
+    false,
+    "task execution invocation reconciliation apply smoke O should fail closed on corrupt invocation",
+  );
+  assert.ok(
+    corruptApply.issues.some(
+      (item) => item.code === "task_execution_invocation_corrupt_json",
+    ),
+    "task execution invocation reconciliation apply smoke O should report corrupt invocation JSON",
+  );
+  assert.equal(
+    corruptApplyEvidenceSource.calls.length,
+    0,
+    "task execution invocation reconciliation apply smoke O should not fetch evidence for corrupt records",
+  );
+  assert.equal(
+    await readFile(corruptApplyFixture.path, "utf8"),
+    corruptApplyBefore,
+    "task execution invocation reconciliation apply smoke O should not rewrite corrupt invocation",
+  );
+
+  const unsafeApply = await applyTaskExecutionInvocationReconciliation({
+    projectRoot: reconciliationApplyRoot,
+    taskId: invocationResult.taskId,
+    invocationId: "../unsafe-invocation",
+    evidenceSource: applyReturnedEvidenceSource,
+  });
+  assert.equal(
+    unsafeApply.ok,
+    false,
+    "task execution invocation reconciliation apply smoke P should reject unsafe invocation id",
+  );
+  assert.ok(
+    unsafeApply.issues.some(
+      (item) => item.code === "task_execution_invocation_unsafe_invocationId",
+    ),
+    "task execution invocation reconciliation apply smoke P should preserve path safety",
+  );
+
+  const historicalApplyRoot = await mkdtemp(
+    join(tmpdir(), "aeos-historical-apply-"),
+  );
+  const historicalInitialSave = await saveTaskState({
+    projectRoot: historicalApplyRoot,
+    state: initialState,
+  });
+  assert.equal(
+    historicalInitialSave.ok,
+    true,
+    "task execution invocation reconciliation apply smoke Q should save initial historical task context",
+  );
+  const historicalRevisionTwo = await updateTaskState({
+    projectRoot: historicalApplyRoot,
+    taskId: firstUpdate.value.state.taskId,
+    expectedRevision: 1,
+    updatedAt: "2026-08-08T00:40:00.000Z",
+    update() {
+      return firstUpdate.value.state;
+    },
+  });
+  assert.equal(
+    historicalRevisionTwo.ok,
+    true,
+    "task execution invocation reconciliation apply smoke Q should prepare matching historical task context",
+  );
+  assert.equal(
+    historicalRevisionTwo.value.state.revision,
+    2,
+    "task execution invocation reconciliation apply smoke Q should prepare historical source revision",
+  );
+  assert.equal(
+    historicalRevisionTwo.value.state.taskId,
+    firstUpdate.value.state.taskId,
+    "task execution invocation reconciliation apply smoke Q should persist matching task id",
+  );
+  const historicalFixture = await createReconciliationApplyFixture({
+    projectRoot: historicalApplyRoot,
+    state: firstUpdate.value.state,
+    attemptNumber: 40,
+  });
+  const historicalTaskUpdate = await updateTaskState({
+    projectRoot: historicalApplyRoot,
+    taskId: firstUpdate.value.state.taskId,
+    expectedRevision: 2,
+    updatedAt: "2026-08-08T00:40:04.000Z",
+    update(state) {
+      return state;
+    },
+  });
+  assert.equal(
+    historicalTaskUpdate.ok,
+    true,
+    "task execution invocation reconciliation apply smoke Q should prepare stale task context",
+  );
+  const historicalStateBeforeApply = await readFile(
+    historicalTaskUpdate.value.path,
+    "utf8",
+  );
+  const historicalEvidenceSource = createTestAuthoritativeEvidenceSource(
+    (request, source) => ({
+      source,
+      kind: "provider_returned",
+      idempotencyKey: request.idempotencyKey,
+      invocationOk: true,
+      observedAt: "2026-08-08T00:40:05.000Z",
+    }),
+  );
+  const historicalApply = await applyTaskExecutionInvocationReconciliation({
+    projectRoot: historicalApplyRoot,
+    taskId: historicalFixture.record.taskId,
+    invocationId: historicalFixture.record.invocationId,
+    expectedInvocationRevision: historicalFixture.record.revision,
+    evidenceSource: historicalEvidenceSource,
+  });
+  assert.equal(
+    historicalApply.reconciliationApplied,
+    true,
+    "task execution invocation reconciliation apply smoke Q should reconcile stale historical invocation",
+  );
+  assert.equal(
+    historicalApply.record.staleAgainstCurrentTask,
+    true,
+    "task execution invocation reconciliation apply smoke Q should preserve stale historical context",
+  );
+  assert.equal(
+    historicalApply.currentAuthorityEligible,
+    false,
+    "task execution invocation reconciliation apply smoke Q should not make stale history current authority",
+  );
+  assert.equal(
+    await readFile(historicalTaskUpdate.value.path, "utf8"),
+    historicalStateBeforeApply,
+    "task execution invocation reconciliation apply smoke Q should not mutate current task state",
+  );
   const corruptInvocationPreparedAttempt = prepareTaskExecutionAttempt({
     state: firstUpdate.value.state,
     expectedRevision: 2,
@@ -17883,6 +18703,134 @@ try {
     canonicalIncompleteState.pendingWorkItemIds.length,
     380,
     "task execution invocation reconciliation smoke Y should leave 380 canonical items remaining",
+  );
+  const canonicalApplyRoot = await mkdtemp(
+    join(tmpdir(), "aeos-canonical-apply-400-20-"),
+  );
+  const canonicalApplyStateSave = await saveTaskState({
+    projectRoot: canonicalApplyRoot,
+    state: canonicalIncompleteState,
+  });
+  assert.equal(
+    canonicalApplyStateSave.ok,
+    true,
+    "task execution invocation reconciliation apply smoke Y should persist canonical 400/20 state",
+  );
+  const canonicalApplyFixture = await createReconciliationApplyFixture({
+    projectRoot: canonicalApplyRoot,
+    state: canonicalIncompleteState,
+    attemptNumber: 1,
+    batchId: "canonical-batch",
+  });
+  const canonicalApplyStateBefore = await readFile(
+    canonicalApplyStateSave.value.path,
+    "utf8",
+  );
+  const canonicalApplyAttemptBefore = await readFile(
+    canonicalApplyFixture.attemptPath,
+    "utf8",
+  );
+  const canonicalApplyEvidenceSource = createTestAuthoritativeEvidenceSource(
+    (request, source) => ({
+      source,
+      kind: "provider_returned",
+      idempotencyKey: request.idempotencyKey,
+      invocationOk: true,
+      output: {
+        allComplete: true,
+        completed: true,
+        verified: true,
+      },
+      metadata: {
+        allComplete: true,
+        completed: true,
+        verified: true,
+      },
+      diagnosticCode: "smoke_apply_400_20_returned",
+      message: "Provider returned diagnostic completion claims.",
+      observedAt: "2026-08-08T00:06:20.000Z",
+    }),
+  );
+  const canonicalApply = await applyTaskExecutionInvocationReconciliation({
+    projectRoot: canonicalApplyRoot,
+    taskId: canonicalApplyFixture.record.taskId,
+    invocationId: canonicalApplyFixture.record.invocationId,
+    expectedInvocationRevision: canonicalApplyFixture.record.revision,
+    evidenceSource: canonicalApplyEvidenceSource,
+  });
+  assert.equal(
+    canonicalApply.reconciliationApplied,
+    true,
+    "task execution invocation reconciliation apply smoke Y should resolve one canonical 400/20 invocation to returned",
+  );
+  assert.equal(
+    canonicalApply.lifecycle,
+    "returned",
+    "task execution invocation reconciliation apply smoke Y should persist canonical returned lifecycle",
+  );
+  assert.equal(
+    canonicalApply.safety.workCompleted,
+    false,
+    "task execution invocation reconciliation apply smoke Y should not complete canonical work",
+  );
+  assert.equal(
+    canonicalApply.safety.taskCompleted,
+    false,
+    "task execution invocation reconciliation apply smoke Y should not complete canonical task",
+  );
+  assert.equal(
+    canonicalApply.safety.verifierRun,
+    false,
+    "task execution invocation reconciliation apply smoke Y should not pass canonical verifier",
+  );
+  assert.equal(
+    canonicalIncompleteState.pendingWorkItemIds.length,
+    380,
+    "task execution invocation reconciliation apply smoke Y should leave 380 canonical items pending",
+  );
+  assert.equal(
+    canonicalIncompleteState.completionGate.satisfied,
+    false,
+    "task execution invocation reconciliation apply smoke Y should not satisfy canonical completion gate",
+  );
+  assert.equal(
+    canonicalIncompleteState.completionGate.completed,
+    false,
+    "task execution invocation reconciliation apply smoke Y should not mark canonical completion gate completed",
+  );
+  assert.notEqual(
+    canonicalIncompleteState.verifier.status,
+    "verified",
+    "task execution invocation reconciliation apply smoke Y should not mark canonical verifier passed",
+  );
+  assert.equal(
+    await readFile(canonicalApplyStateSave.value.path, "utf8"),
+    canonicalApplyStateBefore,
+    "task execution invocation reconciliation apply smoke Y should not write canonical task state",
+  );
+  assert.equal(
+    await readFile(canonicalApplyFixture.attemptPath, "utf8"),
+    canonicalApplyAttemptBefore,
+    "task execution invocation reconciliation apply smoke Y should not write canonical attempt state",
+  );
+  const canonicalDuplicateAfterApplyNoop = createSmokeTestNoopDependency();
+  const canonicalDuplicateAfterApply = await invokeStartedTaskExecutionAttempt({
+    projectRoot: canonicalApplyRoot,
+    state: canonicalIncompleteState,
+    attempt: canonicalApplyFixture.attempt,
+    dependency: canonicalDuplicateAfterApplyNoop.dependency,
+    expectedRevision: 1,
+    latestAttemptNumberForContext: 1,
+  });
+  assert.equal(
+    canonicalDuplicateAfterApplyNoop.calls.length,
+    0,
+    "task execution invocation reconciliation apply smoke Y should not duplicate-call canonical test_noop after returned apply",
+  );
+  assert.equal(
+    canonicalDuplicateAfterApply.invocationStatus,
+    "returned",
+    "task execution invocation reconciliation apply smoke Y should replay canonical returned authority after apply",
   );
 
   const staleUpdate = await updateTaskState({
