@@ -119,6 +119,7 @@ import {
   evaluateTaskExecutionProductionCredentialProviderConfiguration,
   evaluateTaskExecutionPermissionGate,
   evaluateTaskExecutionProductionAdapterReadiness,
+  evaluateTaskExecutionProductionProviderConformance,
   resolveTaskExecutionCredential,
   prepareTaskExecutionProductionDispatch,
   sanitizeTaskExecutionCredentialResult,
@@ -560,6 +561,250 @@ function createSmokeProductionAdapterConfiguration({
         "provider_error",
         "unknown",
       ],
+    },
+  };
+}
+
+function createSmokeProductionConformanceSubject({
+  subjectId = "smoke-production-provider-conformance",
+  duplicateCreatesSideEffect = false,
+  lookupUnavailable = false,
+  replayCausesSideEffect = false,
+  replayUnavailable = false,
+  replaceReceivedIdempotencyKey = false,
+} = {}) {
+  const records = new Map();
+  const calls = {
+    dispatch: [],
+    lookup: [],
+    status: [],
+    replay: [],
+  };
+
+  function recordKey(scenario, idempotencyKey) {
+    return `${scenario}:${idempotencyKey}`;
+  }
+
+  function deterministicProviderRef(scenario, idempotencyKey) {
+    return `test-provider-ref:${scenario}:${idempotencyKey.slice(-32)}`;
+  }
+
+  function hostileOutput(idempotencyKey) {
+    return {
+      durableResult: `result:${idempotencyKey.slice(-16)}`,
+      completed: true,
+      verified: true,
+      approved: true,
+      allDone: true,
+      safeToRetry: true,
+      taskCompleted: true,
+      policyAuthorized: true,
+    };
+  }
+
+  function statusForScenario(scenario) {
+    if (scenario === "failure") {
+      return "failed";
+    }
+
+    if (scenario === "in_progress") {
+      return "in_progress";
+    }
+
+    if (
+      scenario === "never_accepted" ||
+      scenario === "status_unavailable" ||
+      scenario === "replay_unavailable"
+    ) {
+      return "not_found";
+    }
+
+    return "returned";
+  }
+
+  function observationForRecord(record, status = record.status) {
+    const base = {
+      status,
+      receivedIdempotencyKey: record.receivedIdempotencyKey,
+      lookupIdempotencyKey: record.idempotencyKey,
+      providerInvocationRef: record.providerInvocationRef,
+      sideEffectCount: record.sideEffectCount,
+    };
+
+    if (status === "returned") {
+      return {
+        ...base,
+        invocationOk: true,
+        output: record.output,
+        resultReference: record.resultReference,
+        diagnosticCode: "test_provider_returned",
+        message: "TEST provider returned durable diagnostic evidence.",
+        metadata: record.output,
+      };
+    }
+
+    if (status === "failed") {
+      return {
+        ...base,
+        failureCode: "test_provider_failed",
+        failureCategory: "execution_failure",
+        retryable: true,
+        diagnostic: "TEST provider durable failure evidence.",
+      };
+    }
+
+    return base;
+  }
+
+  function unavailableObservation(idempotencyKey, sideEffectCount = 0) {
+    return {
+      status: "unavailable",
+      lookupIdempotencyKey: idempotencyKey,
+      sideEffectCount,
+    };
+  }
+
+  function notFoundObservation(idempotencyKey) {
+    return {
+      status: "not_found",
+      lookupIdempotencyKey: idempotencyKey,
+      sideEffectCount: 0,
+    };
+  }
+
+  return {
+    calls,
+    records,
+    subject: {
+      subjectId,
+      capabilityProfile: {
+        capabilityAuthority: "system",
+        supportsIdempotencyKey: true,
+        supportsLookupByIdempotencyKey: true,
+        supportsInvocationStatusQuery: true,
+        supportsResultReplay: true,
+        providesDeterministicProviderInvocationReference: true,
+      },
+      dispatch(request) {
+        calls.dispatch.push(JSON.parse(JSON.stringify(request)));
+
+        if (request.scenario === "never_accepted") {
+          return notFoundObservation(request.idempotencyKey);
+        }
+
+        const key = recordKey(request.scenario, request.idempotencyKey);
+        const existing = records.get(key);
+
+        if (existing !== undefined) {
+          if (duplicateCreatesSideEffect) {
+            existing.sideEffectCount += 1;
+            existing.providerInvocationRef =
+              `${existing.providerInvocationRef}:duplicate-${existing.sideEffectCount}`;
+            return observationForRecord(existing, "accepted");
+          }
+
+          return observationForRecord(existing, "duplicate_replayed");
+        }
+
+        const idempotencyKey = request.idempotencyKey;
+        const record = {
+          scenario: request.scenario,
+          idempotencyKey,
+          receivedIdempotencyKey: replaceReceivedIdempotencyKey
+            ? `${idempotencyKey}:provider-replaced`
+            : idempotencyKey,
+          providerInvocationRef: deterministicProviderRef(
+            request.scenario,
+            idempotencyKey,
+          ),
+          status: statusForScenario(request.scenario),
+          output: hostileOutput(idempotencyKey),
+          resultReference: `test-provider-result:${idempotencyKey.slice(-24)}`,
+          sideEffectCount: 1,
+        };
+        records.set(key, record);
+
+        return {
+          ...observationForRecord(record, "accepted"),
+          providerInvocationRefBeforeAcceptance: undefined,
+        };
+      },
+      lookupByIdempotencyKey(request) {
+        calls.lookup.push(JSON.parse(JSON.stringify(request)));
+
+        if (lookupUnavailable) {
+          return unavailableObservation(request.idempotencyKey);
+        }
+
+        const record = records.get(recordKey(request.scenario, request.idempotencyKey));
+
+        if (record === undefined) {
+          return notFoundObservation(request.idempotencyKey);
+        }
+
+        if (
+          request.providerInvocationRef !== undefined &&
+          request.providerInvocationRef !== record.providerInvocationRef
+        ) {
+          return unavailableObservation(
+            request.idempotencyKey,
+            record.sideEffectCount,
+          );
+        }
+
+        return observationForRecord(record);
+      },
+      getInvocationStatus(request) {
+        calls.status.push(JSON.parse(JSON.stringify(request)));
+
+        if (request.scenario === "status_unavailable") {
+          return unavailableObservation(request.idempotencyKey);
+        }
+
+        const record = records.get(recordKey(request.scenario, request.idempotencyKey));
+
+        if (record === undefined) {
+          return notFoundObservation(request.idempotencyKey);
+        }
+
+        if (
+          request.providerInvocationRef !== undefined &&
+          request.providerInvocationRef !== record.providerInvocationRef
+        ) {
+          return unavailableObservation(
+            request.idempotencyKey,
+            record.sideEffectCount,
+          );
+        }
+
+        return observationForRecord(record);
+      },
+      replayResult(request) {
+        calls.replay.push(JSON.parse(JSON.stringify(request)));
+
+        const record = records.get(recordKey("success", request.idempotencyKey));
+
+        if (record === undefined) {
+          return notFoundObservation(request.idempotencyKey);
+        }
+
+        if (
+          request.scenario === "replay_unavailable" ||
+          replayUnavailable ||
+          request.providerInvocationRef !== record.providerInvocationRef
+        ) {
+          return unavailableObservation(
+            request.idempotencyKey,
+            record.sideEffectCount,
+          );
+        }
+
+        if (replayCausesSideEffect) {
+          record.sideEffectCount += 1;
+        }
+
+        return observationForRecord(record, "returned");
+      },
     },
   };
 }
@@ -19177,6 +19422,247 @@ try {
         ),
         "task execution production adapter smoke M should report rejected hostile secret claims",
       );
+
+      const conformanceAlternateIdentity =
+        deriveTaskExecutionInvocationIdentity({
+          taskId: invokingPersisted.value.record.taskId,
+          taskStateRevision: invokingPersisted.value.record.taskStateRevision,
+          attemptId: "attempt-provider-conformance-alt",
+          attemptNumber: 30,
+          workItemId: invokingPersisted.value.record.workItemId,
+          batchId: invokingPersisted.value.record.batchId,
+          dependencyKind: "test_noop",
+          allowedOperationReferences:
+            invokingPersisted.value.record.request.allowedOperationReferences,
+          verifierRequired: true,
+          completionGatedByVerifier: true,
+        });
+      assert.equal(
+        conformanceAlternateIdentity.ok,
+        true,
+        "task execution production provider conformance smoke setup should derive alternate AEOS idempotency key",
+      );
+      const conformanceAlternatePreparedDispatch = {
+        ...productionPrepared.preparedDispatch,
+        invocationId: conformanceAlternateIdentity.value.invocationId,
+        idempotencyKey: conformanceAlternateIdentity.value.idempotencyKey,
+        attemptId: "attempt-provider-conformance-alt",
+        attemptNumber: 30,
+      };
+      const conformanceTransport = createSmokeProductionConformanceSubject();
+      const providerConformance =
+        await evaluateTaskExecutionProductionProviderConformance({
+          subject: conformanceTransport.subject,
+          preparedDispatch: productionPrepared.preparedDispatch,
+          alternatePreparedDispatch: conformanceAlternatePreparedDispatch,
+          forbiddenValues: [environmentFakeSecret],
+          forbiddenOwnershipToken:
+            invokingPersisted.value.record.ownership.ownershipToken,
+          taskOrModelCapabilityClaims: {
+            supportsResultReplay: true,
+          },
+          providerOutputCapabilityClaims: {
+            supportsIdempotencyKey: true,
+            supportsLookupByIdempotencyKey: true,
+            supportsInvocationStatusQuery: true,
+            supportsResultReplay: true,
+            safeToRetry: true,
+            taskCompleted: true,
+          },
+        });
+      assert.equal(
+        providerConformance.contractConformant,
+        true,
+        "task execution production provider conformance smoke A should pass conformant TEST provider",
+      );
+      assert.equal(
+        providerConformance.idempotencyProven,
+        true,
+        "task execution production provider conformance smoke B should prove exact idempotency propagation",
+      );
+      assert.equal(
+        conformanceTransport.calls.dispatch[0].idempotencyKey,
+        invokingPersisted.value.record.idempotencyKey,
+        "task execution production provider conformance smoke B should send AEOS persisted idempotency key to provider",
+      );
+      assert.equal(
+        conformanceTransport.calls.dispatch[0].idempotencyKey,
+        productionPrepared.preparedDispatch.idempotencyKey,
+        "task execution production provider conformance smoke B should send prepared dispatch idempotency key unchanged",
+      );
+      assert.equal(
+        conformanceTransport.calls.lookup[0].idempotencyKey,
+        productionPrepared.preparedDispatch.idempotencyKey,
+        "task execution production provider conformance smoke B should use exact idempotency key for lookup",
+      );
+      assert.equal(
+        providerConformance.duplicateSuppressionProven,
+        true,
+        "task execution production provider conformance smoke D should prove duplicate same-key suppression",
+      );
+      assert.equal(
+        providerConformance.duplicateSideEffectCount,
+        1,
+        "task execution production provider conformance smoke D should keep duplicate side effect count at one",
+      );
+      assert.equal(
+        providerConformance.differentKeySideEffectCount,
+        1,
+        "task execution production provider conformance smoke E should treat different key as a different accepted invocation",
+      );
+      assert.equal(
+        providerConformance.providerReferenceProven,
+        true,
+        "task execution production provider conformance smoke F/G should prove stable provider ref only after acceptance",
+      );
+      assert.equal(
+        providerConformance.lookupProven,
+        true,
+        "task execution production provider conformance smoke H/I should prove lookup known and unknown key semantics",
+      );
+      assert.equal(
+        providerConformance.statusQueryProven,
+        true,
+        "task execution production provider conformance smoke J/K/L/M should prove normalized status query semantics",
+      );
+      assert.equal(
+        providerConformance.resultReplayProven,
+        true,
+        "task execution production provider conformance smoke N/O should prove replay without side effect",
+      );
+      assert.equal(
+        providerConformance.crashRecoveryProven,
+        true,
+        "task execution production provider conformance smoke P/Q/R should prove crash recovery evidence without redispatch",
+      );
+      assert.equal(
+        providerConformance.blindRetryPrevented,
+        true,
+        "task execution production provider conformance smoke S should prevent blind retry after not_found",
+      );
+      assert.equal(
+        providerConformance.secretSafe,
+        true,
+        "task execution production provider conformance smoke W should keep fake secret out of conformance output",
+      );
+      assert.equal(
+        providerConformance.ownershipSecretSafe,
+        true,
+        "task execution production provider conformance smoke X should keep ownership token out of conformance output",
+      );
+      assert.equal(
+        providerConformance.safety.providerSuccessCompletesWork,
+        false,
+        "task execution production provider conformance smoke Y should not convert provider success to work completion",
+      );
+      assert.equal(
+        providerConformance.safety.providerOutputGrantsRetryAuthority,
+        false,
+        "task execution production provider conformance smoke Y should not convert provider output to retry authority",
+      );
+      assert.equal(
+        providerConformance.FirstCallProviderRecoveryReady,
+        true,
+        "task execution production provider conformance smoke readiness should mark first-call provider recovery ready",
+      );
+      assert.equal(
+        providerConformance.ProductionExecutionEnabled,
+        false,
+        "task execution production provider conformance smoke should keep production execution disabled",
+      );
+      assert.equal(
+        JSON.stringify(conformanceTransport.calls).includes("ownershipToken"),
+        false,
+        "task execution production provider conformance smoke X should not pass ownership token field to provider",
+      );
+      assert.equal(
+        JSON.stringify(conformanceTransport.calls).includes(
+          invokingPersisted.value.record.ownership.ownershipToken,
+        ),
+        false,
+        "task execution production provider conformance smoke X should not pass ownership token value to provider",
+      );
+      assert.equal(
+        JSON.stringify(providerConformance).includes(environmentFakeSecret),
+        false,
+        "task execution production provider conformance smoke W should not serialize fake secret",
+      );
+      assert.ok(
+        providerConformance.issues.some(
+          (item) =>
+            item.code ===
+            "task_execution_production_provider_conformance_provider_claims_ignored",
+        ),
+        "task execution production provider conformance smoke Y should ignore hostile provider capability claims",
+      );
+      assert.ok(
+        providerConformance.issues.some(
+          (item) =>
+            item.code ===
+            "task_execution_production_provider_conformance_hostile_output_diagnostic_only",
+        ),
+        "task execution production provider conformance smoke Y should keep hostile output diagnostic only",
+      );
+      const auditEventsAfterConformance = await loadTaskExecutionAuditEvents({
+        projectRoot: productionAuditRoot,
+        taskId: productionDispatchAuditAppend.value.event.taskId,
+      });
+      assert.equal(
+        auditEventsAfterConformance.ok,
+        true,
+        "task execution production provider conformance smoke audit should load pre-dispatch audit chain",
+      );
+      assert.equal(
+        auditEventsAfterConformance.value.events.length,
+        1,
+        "task execution production provider conformance smoke audit should not create duplicate audit events for replay",
+      );
+
+      for (const [message, subjectOptions, expectedCode] of [
+        [
+          "task execution production provider conformance smoke C should fail if provider replaces idempotency key",
+          { replaceReceivedIdempotencyKey: true },
+          "task_execution_production_provider_conformance_idempotency_mismatch",
+        ],
+        [
+          "task execution production provider conformance smoke T should fail duplicate same-key side effect",
+          { duplicateCreatesSideEffect: true },
+          "task_execution_production_provider_conformance_duplicate_side_effect",
+        ],
+        [
+          "task execution production provider conformance smoke U should fail declared lookup with unavailable method",
+          { lookupUnavailable: true },
+          "task_execution_production_provider_conformance_lookup_unproven",
+        ],
+        [
+          "task execution production provider conformance smoke V should fail replay that causes a new side effect",
+          { replayCausesSideEffect: true },
+          "task_execution_production_provider_conformance_replay_unproven",
+        ],
+      ]) {
+        const adversarialTransport =
+          createSmokeProductionConformanceSubject(subjectOptions);
+        const adversarialConformance =
+          await evaluateTaskExecutionProductionProviderConformance({
+            subject: adversarialTransport.subject,
+            preparedDispatch: productionPrepared.preparedDispatch,
+            alternatePreparedDispatch: conformanceAlternatePreparedDispatch,
+            forbiddenValues: [environmentFakeSecret],
+            forbiddenOwnershipToken:
+              invokingPersisted.value.record.ownership.ownershipToken,
+          });
+        assert.equal(
+          adversarialConformance.contractConformant,
+          false,
+          message,
+        );
+        assert.ok(
+          adversarialConformance.issues.some(
+            (item) => item.code === expectedCode,
+          ),
+          `${message} with deterministic issue code`,
+        );
+      }
 
       const deniedProductionGate = evaluateTaskExecutionPermissionGate({
         request: productionAdapterRequest,

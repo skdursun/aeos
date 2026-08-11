@@ -1813,6 +1813,69 @@ idempotency/status/result-replay crash conformance harness with TEST transport
 only. TASK-0306 must still perform no real provider, network, SDK, HTTP, shell,
 or subprocess calls.
 
+## TASK-0306 Production Provider Recovery Conformance
+TASK-0306 adds a provider-neutral recovery conformance model and evaluator for
+the first-call production provider boundary. It proves behavior through an
+injected TEST subject only; provider prose, task/model output, and raw adapter
+claims cannot grant idempotency, lookup, status, replay, retry, policy,
+verification, completion, or production-execution authority.
+
+The smoke harness uses a deterministic in-memory TEST transport. It performs no
+real provider call, network call, HTTP call, vendor SDK call, shell, subprocess,
+or production dispatch execution. The TEST transport is not exported.
+
+Conformance proves:
+
+- the persisted AEOS invocation idempotency key is the same key in prepared
+  production dispatch, TEST dispatch receipt, duplicate dispatch receipt, and
+  lookup-by-idempotency-key reconciliation;
+- provider invocation references are provider-generated, absent before
+  acceptance, stable for an accepted idempotency key, and different for a
+  different key;
+- duplicate same-key dispatch produces exactly one provider side effect, either
+  by replaying the same invocation reference or rejecting the duplicate without
+  a new effect;
+- lookup by idempotency key handles known, unknown, wrong-key, and mismatched
+  provider-reference cases without inventing a new external call;
+- status query normalizes only closed evidence for returned, failed,
+  in-progress, not-found, and unavailable outcomes;
+- result replay returns durable returned evidence without incrementing the
+  side-effect counter, and replay unavailability preserves ambiguity;
+- crash-after-call recovery uses lookup/status/replay evidence and does not
+  redispatch blindly;
+- crash-before-acceptance `not_found` remains conservative evidence and does
+  not become failure proof or retry authority;
+- in-progress and unavailable evidence remain unresolved and reconciliation
+  required.
+
+The conformance readiness result exposes `contractConformant`,
+`idempotencyProven`, `duplicateSuppressionProven`,
+`providerReferenceProven`, `lookupProven`, `statusQueryProven`,
+`resultReplayProven`, `crashRecoveryProven`, `blindRetryPrevented`,
+`secretSafe`, `ownershipSecretSafe`, `FirstCallProviderRecoveryReady`, and
+`ProductionExecutionEnabled: false`.
+
+Adversarial smoke cases fail closed when a declared-capable provider replaces
+the AEOS idempotency key, produces a second side effect for the same key,
+declares lookup but cannot perform lookup, or makes result replay execute a new
+side effect. Hostile provider output containing `completed`, `verified`,
+`approved`, `allDone`, `safeToRetry`, `taskCompleted`, and
+`policyAuthorized` remains diagnostic only.
+
+Provider success still does not complete work or tasks, satisfy verifier gates,
+authorize policy, or grant retry authority. The 400 expected / 20 accounted /
+380 remaining invariant remains incomplete after provider success and after
+reconciliation. AEOS still makes no universal exactly-once execution claim.
+
+Production execution remains globally disabled:
+
+```text
+ProductionExecutionEnabled: false
+```
+
+Recommended next boundary: TASK-0307 controlled production dispatch
+authority/gate with real provider execution still disabled by default.
+
 ## Execution Preparation Preview
 `aeos task execution prepare --preview <task-id> --expected-revision <number>`
 loads authoritative persisted task state, validates it, checks the explicit

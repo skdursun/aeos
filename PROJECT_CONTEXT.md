@@ -110,6 +110,8 @@ condition.
   still disabled.
 - TASK-0305: First production execution adapter vertical slice with all real
   calls disabled.
+- TASK-0306: Production provider idempotency/status/result-replay crash
+  conformance harness with TEST transport only.
 
 ## Do Not Load By Default
 
@@ -120,13 +122,12 @@ condition.
 
 ## Next Task
 
-TASK-0306 Design and implement production provider
-idempotency/status/result-replay crash conformance harness with TEST transport
-only.
+TASK-0307 Design and implement controlled production dispatch authority/gate
+with real provider execution still disabled by default.
 
-Purpose: Prove provider idempotency, lookup/status, result replay, and crash
-reconciliation semantics without real provider, network, SDK, HTTP, shell, or
-subprocess calls.
+Purpose: Stitch together the authoritative pre-dispatch chain and define the
+explicit global production-call enable boundary without enabling real provider
+execution.
 
 ## Current Plans
 
