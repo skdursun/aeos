@@ -1,0 +1,15 @@
+[mcp_servers.codebase_memory]
+command = "/Users/magnero/.local/bin/codebase-memory-mcp"
+enabled = true
+
+[mcp_servers.codebase_memory.tools.index_status]
+approval_mode = "approve"
+
+[mcp_servers.codebase_memory.tools.get_graph_schema]
+approval_mode = "approve"
+
+[mcp_servers.codebase_memory.tools.get_architecture]
+approval_mode = "approve"
+
+[mcp_servers.codebase_memory.tools.search_graph]
+approval_mode = "approve"
