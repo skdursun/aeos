@@ -120,6 +120,16 @@ condition.
   API; first controlled real-call readiness remains blocked because official
   documentation did not prove idempotent create or lookup by AEOS idempotency key
   after a crash before local provider-reference persistence.
+- TASK-0310: Provider recovery strategy decision. TASK-0306 requirements remain
+  appropriate and unchanged. The shortest safe path is to switch the first
+  controlled real provider target from OpenAI Responses API to Amazon Bedrock
+  Batch Inference `CreateModelInvocationJob`, because official Amazon Bedrock
+  documentation provides an idempotent `clientRequestToken`, stable `jobArn`,
+  `ListModelInvocationJobs` summaries containing `clientRequestToken`, status
+  lookup through `GetModelInvocationJob`, and S3-backed result retrieval. Local
+  outbox/lock/one-shot-token-only recovery and OpenAI-only continuation remain
+  rejected because they do not close the provider-accepted/local-crash-before-
+  provider-reference-persistence window without blind redispatch.
 
 ## Do Not Load By Default
 
@@ -130,12 +140,16 @@ condition.
 
 ## Next Task
 
-TASK-0310 Provider recovery strategy decision.
+TASK-0311 Amazon Bedrock Batch Inference recovery profile boundary.
 
-Purpose: Choose the smallest safe path to first controlled real-call readiness:
-either select a provider/API with official idempotent create plus lookup/status
-and result-replay semantics, or design an AEOS-owned dispatch/recovery mechanism
-that preserves TASK-0306 without blind retry or completion authority.
+Purpose: Add a TEST-only Amazon Bedrock Batch Inference provider profile and
+recovery adapter boundary for `CreateModelInvocationJob`/`ListModelInvocationJobs`/
+`GetModelInvocationJob`/S3 result replay semantics, with real calls still
+disabled. Prove the TASK-0306 crash window by mapping the AEOS invocation
+idempotency key to Bedrock `clientRequestToken`, recovering a missing local
+`jobArn` by exact token/profile lookup before any same-token create replay, and
+failing closed on no match, ambiguous match, unavailable status, or unavailable
+S3 result evidence.
 
 ## Current Plans
 
