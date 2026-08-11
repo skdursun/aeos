@@ -7,7 +7,9 @@ import {
   deriveNextTaskExecutionAttemptNumber,
   deriveLatestTaskExecutionAttemptNumber,
   evaluateTaskStateTransition,
+  evaluateTaskExecutionInvocationReconciliation,
   loadTaskExecutionAttempt,
+  loadTaskExecutionInvocation,
   loadTaskExecutionInvocationStatus,
   loadTaskResumeHandoff,
   loadTaskState,
@@ -56,6 +58,7 @@ import type {
   TaskStateTransitionPlan,
   TaskExecutionAttempt,
   TaskExecutionInvocationReadOnlyStatus,
+  TaskExecutionInvocationReconciliationResult,
   TaskExecutionStartAuthorizationResult,
 } from "@aeos/core";
 import { handleContext } from "./context.js";
@@ -115,6 +118,8 @@ Commands:
   task execution start <task-id> --attempt-id <attempt-id> --expected-revision <number> --json
   task execution invocation status <task-id> --invocation-id <invocation-id>
   task execution invocation status <task-id> --invocation-id <invocation-id> --json
+  task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id>
+  task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id> --json
   task status <task-id>
   task status <task-id> --json
   task resume --preview <task-id>
@@ -721,6 +726,88 @@ type TaskExecutionInvocationStatusJsonOutput =
         readonly category: string;
       };
       readonly safety: TaskExecutionInvocationStatusSafety;
+      readonly issues: readonly TaskStateCliIssue[];
+    };
+
+type TaskExecutionInvocationPreviewProviderRequirements = {
+  readonly idempotencyLookupUseful: boolean;
+  readonly statusQueryUseful: boolean;
+  readonly resultReplayUseful: boolean;
+};
+
+type TaskExecutionInvocationPreviewSafety = {
+  readonly readOnly: true;
+  readonly providerCalled: false;
+  readonly retryPerformed: false;
+  readonly invocationModified: false;
+  readonly taskModified: false;
+  readonly attemptModified: false;
+  readonly workCompleted: false;
+  readonly taskCompleted: false;
+  readonly verifierPassed: false;
+  readonly policyApproved: false;
+  readonly auditRuntimeRun: false;
+  readonly verifierRuntimeRun: false;
+  readonly policyRuntimeRun: false;
+  readonly ownershipSecretRendered: false;
+  readonly previewUsableAsOwnershipCredential: false;
+};
+
+type TaskExecutionInvocationReconcilePreviewJsonOutput =
+  | {
+      readonly ok: true;
+      readonly status: "invocation_reconciliation_preview_ready";
+      readonly taskId: string;
+      readonly invocationId: string;
+      readonly reconciliation: {
+        readonly lifecycle: TaskExecutionInvocationReconciliationResult["lifecycle"];
+        readonly status: TaskExecutionInvocationReconciliationResult["status"];
+        readonly action: TaskExecutionInvocationReconciliationResult["action"];
+        readonly reconciliationRequired: boolean;
+        readonly safeToBlindRetry: false;
+        readonly retryRequiresNewAuthority: boolean;
+        readonly staleAgainstCurrentTask: boolean | null;
+        readonly currentAuthorityEligible: boolean;
+        readonly outcomeKnown: boolean;
+        readonly persistedResultAvailable: boolean;
+        readonly evidenceConclusion: TaskExecutionInvocationReconciliationResult["evidenceConclusion"];
+      };
+      readonly invocation: {
+        readonly attemptId: string;
+        readonly attemptNumber: number;
+        readonly attemptLifecycle: string | null;
+        readonly attemptLoaded: boolean;
+        readonly attemptContextValid: boolean;
+        readonly sourceTaskRevision: number;
+        readonly currentTaskRevision: number | null;
+        readonly taskContextLoaded: boolean;
+        readonly taskContextValid: boolean;
+        readonly recordRevision: number;
+        readonly outcomeCertainty: string;
+        readonly retryable: boolean;
+        readonly result: TaskExecutionInvocationReadOnlyStatus["invocation"]["result"];
+        readonly failure: TaskExecutionInvocationReadOnlyStatus["invocation"]["failure"];
+      };
+      readonly providerRequirements: TaskExecutionInvocationPreviewProviderRequirements;
+      readonly safety: TaskExecutionInvocationPreviewSafety;
+      readonly issues: readonly TaskStateCliIssue[];
+    }
+  | {
+      readonly ok: false;
+      readonly status:
+        | "failed_to_load"
+        | "invalid_arguments"
+        | "task_execution_invocation_reconcile_apply_not_implemented";
+      readonly taskId: string;
+      readonly invocationId: string | null;
+      readonly reconciliation: null;
+      readonly providerRequirements: TaskExecutionInvocationPreviewProviderRequirements;
+      readonly error: {
+        readonly code: string;
+        readonly message: string;
+        readonly category: string;
+      };
+      readonly safety: TaskExecutionInvocationPreviewSafety;
       readonly issues: readonly TaskStateCliIssue[];
     };
 
@@ -1358,6 +1445,12 @@ function writeTaskExecutionStartPreviewJson(
 
 function writeTaskExecutionInvocationStatusJson(
   value: TaskExecutionInvocationStatusJsonOutput,
+): void {
+  writeJsonLine(value);
+}
+
+function writeTaskExecutionInvocationReconcilePreviewJson(
+  value: TaskExecutionInvocationReconcilePreviewJsonOutput,
 ): void {
   writeJsonLine(value);
 }
@@ -4015,6 +4108,230 @@ function printTaskExecutionInvocationStatusError(
   console.error("Task completed: false");
 }
 
+const taskExecutionInvocationPreviewSafety: TaskExecutionInvocationPreviewSafety = {
+  readOnly: true,
+  providerCalled: false,
+  retryPerformed: false,
+  invocationModified: false,
+  taskModified: false,
+  attemptModified: false,
+  workCompleted: false,
+  taskCompleted: false,
+  verifierPassed: false,
+  policyApproved: false,
+  auditRuntimeRun: false,
+  verifierRuntimeRun: false,
+  policyRuntimeRun: false,
+  ownershipSecretRendered: false,
+  previewUsableAsOwnershipCredential: false,
+};
+
+const emptyTaskExecutionInvocationPreviewProviderRequirements: TaskExecutionInvocationPreviewProviderRequirements = {
+  idempotencyLookupUseful: false,
+  statusQueryUseful: false,
+  resultReplayUseful: false,
+};
+
+function providerRequirementsForReconciliation(
+  result: TaskExecutionInvocationReconciliationResult,
+): TaskExecutionInvocationPreviewProviderRequirements {
+  const outcomeUncertain =
+    result.status === "invoking" || result.status === "outcome_unknown";
+
+  return {
+    idempotencyLookupUseful: outcomeUncertain,
+    statusQueryUseful: outcomeUncertain,
+    resultReplayUseful: outcomeUncertain,
+  };
+}
+
+function createTaskExecutionInvocationReconcilePreviewJsonOutput(input: {
+  readonly status: TaskExecutionInvocationReadOnlyStatus;
+  readonly reconciliation: TaskExecutionInvocationReconciliationResult;
+}): Extract<TaskExecutionInvocationReconcilePreviewJsonOutput, { readonly ok: true }> {
+  const invocation = input.status.invocation;
+  const reconciliation = input.reconciliation;
+
+  return {
+    ok: true,
+    status: "invocation_reconciliation_preview_ready",
+    taskId: input.status.taskId,
+    invocationId: input.status.invocationId,
+    reconciliation: {
+      lifecycle: reconciliation.lifecycle,
+      status: reconciliation.status,
+      action: reconciliation.action,
+      reconciliationRequired: reconciliation.reconciliationRequired,
+      safeToBlindRetry: reconciliation.safeToBlindRetry,
+      retryRequiresNewAuthority: reconciliation.retryRequiresNewAuthority,
+      staleAgainstCurrentTask: reconciliation.record.staleAgainstCurrentTask,
+      currentAuthorityEligible: reconciliation.currentAuthorityEligible,
+      outcomeKnown: invocation.outcomeKnown,
+      persistedResultAvailable: reconciliation.persistedResult !== null,
+      evidenceConclusion: reconciliation.evidenceConclusion,
+    },
+    invocation: {
+      attemptId: invocation.attemptId,
+      attemptNumber: invocation.attemptNumber,
+      attemptLifecycle: invocation.attemptLifecycle,
+      attemptLoaded: invocation.attemptLoaded,
+      attemptContextValid: invocation.attemptContextValid,
+      sourceTaskRevision: invocation.taskStateRevision,
+      currentTaskRevision: invocation.currentTaskRevision,
+      taskContextLoaded: invocation.taskContextLoaded,
+      taskContextValid: invocation.taskContextValid,
+      recordRevision: invocation.recordRevision,
+      outcomeCertainty: invocation.outcomeCertainty,
+      retryable: invocation.retryable,
+      result: invocation.result,
+      failure: invocation.failure,
+    },
+    providerRequirements: providerRequirementsForReconciliation(reconciliation),
+    safety: taskExecutionInvocationPreviewSafety,
+    issues: [
+      ...reconciliation.issues.map((item) =>
+        createTaskStateCliIssue({
+          code: item.code,
+          message: item.message,
+          category: item.category,
+        }),
+      ),
+      ...input.status.issues.map((item) =>
+        createTaskStateCliIssue({
+          code: item.code,
+          message: item.message,
+          category: item.category,
+        }),
+      ),
+    ],
+  };
+}
+
+function createTaskExecutionInvocationReconcilePreviewErrorJsonOutput(input: {
+  readonly taskId: string;
+  readonly invocationId?: string | null;
+  readonly error: AeosError;
+  readonly status?: Extract<
+    TaskExecutionInvocationReconcilePreviewJsonOutput,
+    { readonly ok: false }
+  >["status"];
+}): Extract<TaskExecutionInvocationReconcilePreviewJsonOutput, { readonly ok: false }> {
+  return {
+    ok: false,
+    status: input.status ?? "failed_to_load",
+    taskId: input.taskId,
+    invocationId: input.invocationId ?? null,
+    reconciliation: null,
+    providerRequirements: emptyTaskExecutionInvocationPreviewProviderRequirements,
+    error: {
+      code: input.error.code,
+      message: input.error.message,
+      category: input.error.category,
+    },
+    safety: taskExecutionInvocationPreviewSafety,
+    issues: [createTaskStateCliIssueFromError(input.error)],
+  };
+}
+
+function printTaskExecutionInvocationReconcilePreviewOutput(
+  output: Extract<
+    TaskExecutionInvocationReconcilePreviewJsonOutput,
+    { readonly ok: true }
+  >,
+): void {
+  const invocation = output.invocation;
+  const reconciliation = output.reconciliation;
+
+  console.log("Invocation Reconciliation Preview");
+  console.log("");
+  console.log(`Task id: ${output.taskId}`);
+  console.log(`Invocation id: ${output.invocationId}`);
+  console.log(`Lifecycle: ${reconciliation.lifecycle ?? "unknown"}`);
+  console.log(`Attempt: ${invocation.attemptId}`);
+  console.log(`Attempt lifecycle: ${invocation.attemptLifecycle ?? "unknown"}`);
+  console.log(`Source task revision: ${invocation.sourceTaskRevision}`);
+  console.log(
+    `Current task revision: ${invocation.currentTaskRevision ?? "unknown"}`,
+  );
+  console.log(`Stale: ${String(reconciliation.staleAgainstCurrentTask)}`);
+  console.log(`Recovery status: ${reconciliation.status}`);
+  console.log(`Recommended safe action: ${reconciliation.action}`);
+  console.log(
+    `Reconciliation required: ${String(reconciliation.reconciliationRequired)}`,
+  );
+  console.log(`Safe to blind retry: ${String(reconciliation.safeToBlindRetry)}`);
+  console.log(
+    `Retry requires new authority: ${String(
+      reconciliation.retryRequiresNewAuthority,
+    )}`,
+  );
+  console.log(
+    `Current authority eligible: ${String(
+      reconciliation.currentAuthorityEligible,
+    )}`,
+  );
+  console.log("");
+  console.log("Provider capability requirements:");
+  console.log(
+    `Idempotency lookup useful: ${String(
+      output.providerRequirements.idempotencyLookupUseful,
+    )}`,
+  );
+  console.log(
+    `Status query useful: ${String(
+      output.providerRequirements.statusQueryUseful,
+    )}`,
+  );
+  console.log(
+    `Result replay useful: ${String(
+      output.providerRequirements.resultReplayUseful,
+    )}`,
+  );
+  console.log(`Outcome known: ${String(reconciliation.outcomeKnown)}`);
+  console.log(
+    `Persisted result available: ${String(
+      reconciliation.persistedResultAvailable,
+    )}`,
+  );
+  console.log(`Issues: ${output.issues.length}`);
+  for (const item of output.issues) {
+    console.log(`- ${item.code}: ${item.message}`);
+  }
+  console.log("");
+  console.log(`Read only: ${String(output.safety.readOnly)}`);
+  console.log(`Provider called: ${String(output.safety.providerCalled)}`);
+  console.log(`Retry performed: ${String(output.safety.retryPerformed)}`);
+  console.log(
+    `Invocation modified: ${String(output.safety.invocationModified)}`,
+  );
+  console.log(`Task modified: ${String(output.safety.taskModified)}`);
+  console.log(`Attempt modified: ${String(output.safety.attemptModified)}`);
+  console.log(`Work completed: ${String(output.safety.workCompleted)}`);
+  console.log(`Task completed: ${String(output.safety.taskCompleted)}`);
+}
+
+function printTaskExecutionInvocationReconcilePreviewError(
+  output: Extract<
+    TaskExecutionInvocationReconcilePreviewJsonOutput,
+    { readonly ok: false }
+  >,
+): void {
+  console.error("Invocation Reconciliation Preview");
+  console.error(`Task id: ${output.taskId}`);
+  console.error(`Invocation id: ${output.invocationId ?? "none"}`);
+  console.error(`Status: ${output.status}`);
+  console.error(`Error: ${output.error.code}`);
+  console.error(`Message: ${output.error.message}`);
+  console.error("Read only: true");
+  console.error("Provider called: false");
+  console.error("Retry performed: false");
+  console.error("Invocation modified: false");
+  console.error("Task modified: false");
+  console.error("Attempt modified: false");
+  console.error("Work completed: false");
+  console.error("Task completed: false");
+}
+
 function parseTaskStateTransitionArgs(args: readonly string[]): {
   readonly json: boolean;
   readonly preview: boolean;
@@ -6148,10 +6465,9 @@ async function handleTaskExecutionStart(args: readonly string[]): Promise<void> 
 
 async function handleTaskExecutionInvocation(args: readonly string[]): Promise<void> {
   const subcommand = args[0];
-  const statusArgs = args.slice(1);
   const json = args.includes("--json");
 
-  if (subcommand !== "status") {
+  if (subcommand !== "status" && subcommand !== "reconcile") {
     const error = createTaskStateCliError({
       code: "task_execution_invocation_unknown_command",
       message: "Unknown task execution invocation command.",
@@ -6169,12 +6485,218 @@ async function handleTaskExecutionInvocation(args: readonly string[]): Promise<v
       console.error(
         "Usage: aeos task execution invocation status <task-id> --invocation-id <invocation-id> [--json]",
       );
+      console.error(
+        "Usage: aeos task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id> [--json]",
+      );
     }
 
     setExitCode(1);
     return;
   }
 
+  if (subcommand === "reconcile") {
+    const reconcileArgs = args.slice(1);
+    let taskId: string | undefined;
+    let invocationId: string | undefined;
+    let preview = false;
+    const errors: AeosError[] = [];
+
+    for (let index = 0; index < reconcileArgs.length; index += 1) {
+      const arg = reconcileArgs[index];
+
+      if (arg === "--json") {
+        continue;
+      }
+
+      if (arg === "--preview") {
+        preview = true;
+        continue;
+      }
+
+      if (arg === "--invocation-id") {
+        const value = reconcileArgs[index + 1];
+
+        if (value === undefined || value.startsWith("--")) {
+          errors.push(
+            createTaskStateCliError({
+              code: "task_execution_invocation_reconcile_invocation_id_required",
+              message:
+                "Task execution invocation reconcile preview requires --invocation-id <invocation-id>.",
+            }),
+          );
+        } else if (invocationId !== undefined) {
+          errors.push(
+            createTaskStateCliError({
+              code: "task_execution_invocation_reconcile_duplicate_invocation_id",
+              message:
+                "Task execution invocation reconcile preview accepts one invocation id.",
+            }),
+          );
+          index += 1;
+        } else {
+          invocationId = value;
+          index += 1;
+        }
+        continue;
+      }
+
+      if (arg.startsWith("--")) {
+        errors.push(
+          createTaskStateCliError({
+            code: "task_execution_invocation_reconcile_unknown_option",
+            message: "Unknown task execution invocation reconcile option.",
+          }),
+        );
+        continue;
+      }
+
+      if (taskId !== undefined) {
+        errors.push(
+          createTaskStateCliError({
+            code: "task_execution_invocation_reconcile_duplicate_task_id",
+            message:
+              "Task execution invocation reconcile preview accepts one task id.",
+          }),
+        );
+        continue;
+      }
+
+      taskId = arg;
+    }
+
+    if (!preview) {
+      const error = createTaskStateCliError({
+        code: "task_execution_invocation_reconcile_apply_not_implemented",
+        message:
+          "Task execution invocation reconciliation apply is not implemented; use --preview for read-only inspection.",
+      });
+      const output = createTaskExecutionInvocationReconcilePreviewErrorJsonOutput({
+        taskId: taskId ?? "",
+        invocationId: invocationId ?? null,
+        error,
+        status: "task_execution_invocation_reconcile_apply_not_implemented",
+      });
+
+      if (json) {
+        writeTaskExecutionInvocationReconcilePreviewJson(output);
+      } else {
+        printTaskExecutionInvocationReconcilePreviewError(output);
+        console.error(
+          "Usage: aeos task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id> [--json]",
+        );
+      }
+
+      setExitCode(1);
+      return;
+    }
+
+    if (taskId === undefined || taskId.trim().length === 0) {
+      errors.push(
+        createTaskStateCliError({
+          code: "task_execution_invocation_reconcile_task_id_required",
+          message:
+            "Task execution invocation reconcile preview requires a task id.",
+        }),
+      );
+    }
+
+    if (invocationId === undefined || invocationId.trim().length === 0) {
+      errors.push(
+        createTaskStateCliError({
+          code: "task_execution_invocation_reconcile_invocation_id_required",
+          message:
+            "Task execution invocation reconcile preview requires --invocation-id <invocation-id>.",
+        }),
+      );
+    }
+
+    if (errors.length > 0) {
+      const output = createTaskExecutionInvocationReconcilePreviewErrorJsonOutput({
+        taskId: taskId ?? "",
+        invocationId: invocationId ?? null,
+        error: errors[0]!,
+        status: "invalid_arguments",
+      });
+
+      if (json) {
+        writeTaskExecutionInvocationReconcilePreviewJson(output);
+      } else {
+        printTaskExecutionInvocationReconcilePreviewError(output);
+        console.error(
+          "Usage: aeos task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id> [--json]",
+        );
+      }
+
+      setExitCode(1);
+      return;
+    }
+
+    const invocationResult = await loadTaskExecutionInvocation({
+      projectRoot: getCwd(),
+      taskId: taskId!,
+      invocationId: invocationId!,
+    });
+
+    if (!invocationResult.ok) {
+      const output = createTaskExecutionInvocationReconcilePreviewErrorJsonOutput({
+        taskId: taskId!,
+        invocationId: invocationId!,
+        error: invocationResult.error,
+      });
+
+      if (json) {
+        writeTaskExecutionInvocationReconcilePreviewJson(output);
+      } else {
+        printTaskExecutionInvocationReconcilePreviewError(output);
+      }
+
+      setExitCode(1);
+      return;
+    }
+
+    const statusResult = await loadTaskExecutionInvocationStatus({
+      projectRoot: getCwd(),
+      taskId: taskId!,
+      invocationId: invocationId!,
+    });
+
+    if (!statusResult.ok) {
+      const output = createTaskExecutionInvocationReconcilePreviewErrorJsonOutput({
+        taskId: taskId!,
+        invocationId: invocationId!,
+        error: statusResult.error,
+      });
+
+      if (json) {
+        writeTaskExecutionInvocationReconcilePreviewJson(output);
+      } else {
+        printTaskExecutionInvocationReconcilePreviewError(output);
+      }
+
+      setExitCode(1);
+      return;
+    }
+
+    const reconciliation = evaluateTaskExecutionInvocationReconciliation({
+      record: invocationResult.value.record,
+      currentTaskRevision:
+        statusResult.value.invocation.currentTaskRevision ?? undefined,
+    });
+    const output = createTaskExecutionInvocationReconcilePreviewJsonOutput({
+      status: statusResult.value,
+      reconciliation,
+    });
+
+    if (json) {
+      writeTaskExecutionInvocationReconcilePreviewJson(output);
+    } else {
+      printTaskExecutionInvocationReconcilePreviewOutput(output);
+    }
+
+    return;
+  }
+
+  const statusArgs = args.slice(1);
   let taskId: string | undefined;
   let invocationId: string | undefined;
   const errors: AeosError[] = [];
@@ -6270,6 +6792,9 @@ async function handleTaskExecutionInvocation(args: readonly string[]): Promise<v
       console.error(
         "Usage: aeos task execution invocation status <task-id> --invocation-id <invocation-id> [--json]",
       );
+      console.error(
+        "Usage: aeos task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id> [--json]",
+      );
     }
 
     setExitCode(1);
@@ -6340,6 +6865,9 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
       );
       console.error(
         "Usage: aeos task execution invocation status <task-id> --invocation-id <invocation-id> [--json]",
+      );
+      console.error(
+        "Usage: aeos task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id> [--json]",
       );
     }
 
@@ -8451,6 +8979,9 @@ async function handleTask(args: readonly string[]): Promise<void> {
     );
     console.error(
       "Usage: aeos task execution invocation status <task-id> --invocation-id <invocation-id> [--json]",
+    );
+    console.error(
+      "Usage: aeos task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id> [--json]",
     );
     console.error("Usage: aeos task status <task-id> [--json]");
     console.error("Usage: aeos task resume --preview <task-id> [--json]");

@@ -41,6 +41,9 @@ Current foundation:
 - `aeos task execution invocation status <task-id> --invocation-id
   <invocation-id>` exists as a read-only persisted invocation inspection
   command.
+- `aeos task execution invocation reconcile --preview <task-id>
+  --invocation-id <invocation-id>` exists as a read-only persisted invocation
+  reconciliation/recovery inspection command.
 - `aeos task status <task-id>` exists as a read-only persisted-state inspection
   command.
 - `aeos task resume --preview <task-id>` exists as a read-only resume handoff
@@ -482,6 +485,66 @@ reports `readOnly: true`, `dependencyInvokedByStatus: false`, mutation flags
 false, completion/verifier/audit flags false, `safeToBlindRetry: false`, and
 deterministic issues. It does not include ownership secrets, raw stack traces,
 or raw filesystem/runtime errors.
+
+### `aeos task execution invocation reconcile --preview`
+Loads one existing persisted invocation by task id and system-derived invocation
+id, then renders the core reconciliation decision without applying it:
+
+```text
+aeos task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id>
+```
+
+The task id and invocation id are selectors only. The command does not accept
+raw invocation JSON, arbitrary lifecycle/status flags, retry flags, outcome
+overrides, ownership tokens, operator idempotency keys, provider implementation
+configuration, or free-form evidence JSON.
+
+Preview validates the persisted invocation, loads current task state and the
+associated attempt when available, and exposes source task revision, current
+task revision, stale historical context, attempt lifecycle, context validity,
+reconciliation requirement, retry authority, and current authority eligibility.
+A stale historical record remains inspectable but cannot become current
+execution or retry authority.
+
+Lifecycle preview semantics are conservative:
+
+- `reserved`: no blind retry; same-record recovery requires separate
+  system/operator authority and is not granted by preview.
+- `invoking`: outcome is uncertain after a crash window; reconciliation is
+  required and blind retry is prohibited.
+- `returned`: persisted result/reference is authoritative for invocation
+  outcome only; no duplicate invocation, no work completion, no task completion,
+  no verifier pass, and no policy approval.
+- `failed`: automatic retry is prohibited; a structured retryable failure only
+  indicates future explicit retry authority may be possible and requires new
+  authority.
+- `outcome_unknown`: sticky unknown; preview cannot clear it, downgrade it to
+  failed, replay it as returned, or authorize blind retry.
+
+Provider capability inspection is requirements-only. Preview may report whether
+idempotency lookup, status query, or result replay would be useful for uncertain
+records, but operator claims are not provider authority and no adapter can be
+enabled from this command. Simulated provider evidence is not accepted in the
+CLI preview.
+
+Preview is strictly read-only. It does not call providers, call model/tool
+adapters, retry, create attempts, create invocations, mutate invocation state,
+clear `outcome_unknown`, persist reconciliation evidence, update task or
+attempt state, run audit/policy/verifier runtime, complete work, or complete the
+task. Ownership secrets are redacted. Task/model/executor/provider prose such
+as safe to retry, definitely failed, completed, verified, approved, or all done
+is non-authoritative.
+
+Without `--preview`, reconciliation apply fails closed with
+`task_execution_invocation_reconcile_apply_not_implemented`.
+
+### `aeos task execution invocation reconcile --preview --json`
+Same preview behavior as human mode, but stdout is exactly one JSON object.
+Valid previews report `status: "invocation_reconciliation_preview_ready"`,
+`safeToBlindRetry: false`, read-only/no-provider/no-retry/no-mutation safety
+flags, provider requirement booleans, and deterministic issues. Missing,
+corrupt, invalid, unsafe, or non-preview requests exit non-zero with
+deterministic JSON errors and no raw stack traces.
 
 ### `aeos task status`
 Loads authoritative persisted task state by task id from the project-local state

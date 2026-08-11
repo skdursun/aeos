@@ -20,8 +20,11 @@ import {
   createInitialTaskState,
   invokeStartedTaskExecutionAttempt,
   prepareTaskExecutionAttempt,
+  reserveTaskExecutionInvocation,
   saveTaskState,
   saveTaskExecutionAttempt,
+  transitionTaskExecutionAttempt,
+  updateTaskExecutionInvocation,
 } from "../../../packages/core/dist/index.js";
 
 const cliPath = fileURLToPath(new URL("../dist/index.js", import.meta.url));
@@ -1611,6 +1614,77 @@ function expectTaskExecutionInvocationStatusErrorJsonShape(
   }
 }
 
+function expectTaskExecutionInvocationReconcilePreviewJsonShape(message, value, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== true ||
+    value.status !== "invocation_reconciliation_preview_ready" ||
+    typeof value.taskId !== "string" ||
+    typeof value.invocationId !== "string" ||
+    typeof value.reconciliation !== "object" ||
+    value.reconciliation === null ||
+    typeof value.reconciliation.status !== "string" ||
+    typeof value.reconciliation.action !== "string" ||
+    typeof value.reconciliation.reconciliationRequired !== "boolean" ||
+    value.reconciliation.safeToBlindRetry !== false ||
+    typeof value.reconciliation.retryRequiresNewAuthority !== "boolean" ||
+    typeof value.reconciliation.currentAuthorityEligible !== "boolean" ||
+    typeof value.reconciliation.outcomeKnown !== "boolean" ||
+    typeof value.reconciliation.persistedResultAvailable !== "boolean" ||
+    typeof value.providerRequirements !== "object" ||
+    value.providerRequirements === null ||
+    typeof value.providerRequirements.idempotencyLookupUseful !== "boolean" ||
+    typeof value.providerRequirements.statusQueryUseful !== "boolean" ||
+    typeof value.providerRequirements.resultReplayUseful !== "boolean" ||
+    typeof value.safety !== "object" ||
+    value.safety === null ||
+    value.safety.readOnly !== true ||
+    value.safety.providerCalled !== false ||
+    value.safety.retryPerformed !== false ||
+    value.safety.invocationModified !== false ||
+    value.safety.taskModified !== false ||
+    value.safety.attemptModified !== false ||
+    value.safety.workCompleted !== false ||
+    value.safety.taskCompleted !== false ||
+    value.safety.verifierPassed !== false ||
+    value.safety.policyApproved !== false ||
+    value.safety.ownershipSecretRendered !== false ||
+    !Array.isArray(value.issues)
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectTaskExecutionInvocationReconcilePreviewErrorJsonShape(
+  message,
+  value,
+  expectedCode,
+  result,
+) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== false ||
+    value.reconciliation !== null ||
+    typeof value.error !== "object" ||
+    value.error === null ||
+    value.error.code !== expectedCode ||
+    value.safety?.readOnly !== true ||
+    value.safety?.providerCalled !== false ||
+    value.safety?.retryPerformed !== false ||
+    value.safety?.invocationModified !== false ||
+    value.safety?.taskModified !== false ||
+    value.safety?.attemptModified !== false ||
+    value.safety?.workCompleted !== false ||
+    value.safety?.taskCompleted !== false ||
+    !Array.isArray(value.issues) ||
+    !value.issues.some((issue) => issue.code === expectedCode)
+  ) {
+    fail(message, result);
+  }
+}
+
 function expectTaskStateInitSuccessJsonShape(message, value, result) {
   if (
     typeof value !== "object" ||
@@ -1835,6 +1909,16 @@ expectOutputIncludes(
   'help output did not include "task execution start --preview <task-id> --attempt-id <attempt-id> --expected-revision <number> --json"',
   helpCommand,
   "task execution start --preview <task-id> --attempt-id <attempt-id> --expected-revision <number> --json",
+);
+expectOutputIncludes(
+  'help output did not include "task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id>"',
+  helpCommand,
+  "task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id>",
+);
+expectOutputIncludes(
+  'help output did not include "task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id> --json"',
+  helpCommand,
+  "task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id> --json",
 );
 expectOutputIncludes(
   'help output did not include "task status <task-id>"',
@@ -6406,6 +6490,492 @@ try {
       repeatedInvocationStatusJson,
     );
   }
+  const invocationReconcileFilesBefore = listRelativeFiles(
+    join(taskStateCliRoot, ".aeos"),
+  );
+  const invocationReconcileStateBefore = stateFileSnapshot(statusStatePath);
+  const invocationReconcileAttemptBefore = readFileSync(persistedAttemptPath, "utf8");
+  const invocationReconcileBytesBefore = readFileSync(invocationStatusPath, "utf8");
+  const invocationReconcileMtimeBefore = statSync(invocationStatusPath).mtimeMs;
+  const invocationReconcileHuman = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "invocation",
+    "reconcile",
+    "--preview",
+    statusTaskId,
+    "--invocation-id",
+    cliInvocationResult.invocationId,
+  ]);
+  expectExitCode(
+    "task execution invocation reconcile preview human exited nonzero",
+    invocationReconcileHuman,
+    0,
+  );
+  for (const expectedText of [
+    "Invocation Reconciliation Preview",
+    `Task id: ${statusTaskId}`,
+    `Invocation id: ${cliInvocationResult.invocationId}`,
+    "Lifecycle: returned",
+    "Recovery status: returned",
+    "Recommended safe action: use_persisted_result",
+    "Reconciliation required: false",
+    "Safe to blind retry: false",
+    "Retry requires new authority: false",
+    "Current authority eligible: false",
+    "Provider capability requirements:",
+    "Persisted result available: true",
+    "Read only: true",
+    "Provider called: false",
+    "Retry performed: false",
+    "Invocation modified: false",
+    "Task modified: false",
+    "Attempt modified: false",
+    "Work completed: false",
+    "Task completed: false",
+  ]) {
+    expectOutputIncludes(
+      `task execution invocation reconcile preview human missing ${expectedText}`,
+      invocationReconcileHuman,
+      expectedText,
+    );
+  }
+  expectOutputExcludes(
+    "task execution invocation reconcile preview human leaked ownership token",
+    invocationReconcileHuman,
+    persistedInvocationForStatus.ownership.ownershipToken,
+  );
+  const invocationReconcileJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "invocation",
+    "reconcile",
+    "--preview",
+    statusTaskId,
+    "--invocation-id",
+    cliInvocationResult.invocationId,
+    "--json",
+  ]);
+  expectExitCode(
+    "task execution invocation reconcile preview --json exited nonzero",
+    invocationReconcileJson,
+    0,
+  );
+  const parsedInvocationReconcileJson = parseJsonOnlyStdout(
+    "task execution invocation reconcile preview --json output was not valid JSON only",
+    invocationReconcileJson,
+  );
+  expectTaskExecutionInvocationReconcilePreviewJsonShape(
+    "task execution invocation reconcile preview --json shape was invalid",
+    parsedInvocationReconcileJson,
+    invocationReconcileJson,
+  );
+  if (
+    parsedInvocationReconcileJson.taskId !== statusTaskId ||
+    parsedInvocationReconcileJson.invocationId !== cliInvocationResult.invocationId ||
+    parsedInvocationReconcileJson.reconciliation.lifecycle !== "returned" ||
+    parsedInvocationReconcileJson.reconciliation.status !== "returned" ||
+    parsedInvocationReconcileJson.reconciliation.action !== "use_persisted_result" ||
+    parsedInvocationReconcileJson.reconciliation.reconciliationRequired !== false ||
+    parsedInvocationReconcileJson.reconciliation.safeToBlindRetry !== false ||
+    parsedInvocationReconcileJson.reconciliation.retryRequiresNewAuthority !== false ||
+    parsedInvocationReconcileJson.reconciliation.staleAgainstCurrentTask !== false ||
+    parsedInvocationReconcileJson.reconciliation.currentAuthorityEligible !== false ||
+    parsedInvocationReconcileJson.reconciliation.outcomeKnown !== true ||
+    parsedInvocationReconcileJson.reconciliation.persistedResultAvailable !== true ||
+    parsedInvocationReconcileJson.providerRequirements.idempotencyLookupUseful !== false ||
+    parsedInvocationReconcileJson.providerRequirements.statusQueryUseful !== false ||
+    parsedInvocationReconcileJson.providerRequirements.resultReplayUseful !== false ||
+    parsedInvocationReconcileJson.invocation.result.executorClaims.completed !== true ||
+    parsedInvocationReconcileJson.safety.workCompleted !== false ||
+    parsedInvocationReconcileJson.safety.taskCompleted !== false ||
+    parsedInvocationReconcileJson.safety.verifierPassed !== false ||
+    parsedInvocationReconcileJson.safety.policyApproved !== false
+  ) {
+    fail("task execution invocation reconcile preview --json lost safety semantics", invocationReconcileJson);
+  }
+  if (
+    invocationReconcileJson.stdout.includes(
+      persistedInvocationForStatus.ownership.ownershipToken,
+    ) ||
+    invocationReconcileJson.stdout.includes("ownershipToken")
+  ) {
+    fail("task execution invocation reconcile preview --json leaked ownership authority", invocationReconcileJson);
+  }
+  expectStateFileSnapshotSame(
+    "task execution invocation reconcile preview modified task state",
+    statusStatePath,
+    invocationReconcileStateBefore,
+    invocationReconcileJson,
+  );
+  if (
+    readFileSync(invocationStatusPath, "utf8") !== invocationReconcileBytesBefore ||
+    statSync(invocationStatusPath).mtimeMs !== invocationReconcileMtimeBefore ||
+    readFileSync(persistedAttemptPath, "utf8") !== invocationReconcileAttemptBefore
+  ) {
+    fail("task execution invocation reconcile preview modified persisted authority", invocationReconcileJson);
+  }
+  expectSameFiles(
+    "task execution invocation reconcile preview changed AEOS files",
+    invocationReconcileFilesBefore,
+    listRelativeFiles(join(taskStateCliRoot, ".aeos")),
+  );
+  const repeatedInvocationReconcileJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "invocation",
+    "reconcile",
+    "--preview",
+    statusTaskId,
+    "--invocation-id",
+    cliInvocationResult.invocationId,
+    "--json",
+  ]);
+  expectExitCode(
+    "repeated task execution invocation reconcile preview --json exited nonzero",
+    repeatedInvocationReconcileJson,
+    0,
+  );
+  if (repeatedInvocationReconcileJson.stdout !== invocationReconcileJson.stdout) {
+    fail(
+      "repeated task execution invocation reconcile preview --json was not deterministic",
+      repeatedInvocationReconcileJson,
+    );
+  }
+  const invocationReconcileApplyJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "invocation",
+    "reconcile",
+    statusTaskId,
+    "--invocation-id",
+    cliInvocationResult.invocationId,
+    "--json",
+  ]);
+  expectNonzero("task execution invocation reconcile apply exited zero", invocationReconcileApplyJson);
+  const parsedInvocationReconcileApplyJson = parseJsonOnlyStdout(
+    "task execution invocation reconcile apply output was not valid JSON only",
+    invocationReconcileApplyJson,
+  );
+  expectTaskExecutionInvocationReconcilePreviewErrorJsonShape(
+    "task execution invocation reconcile apply did not fail closed",
+    parsedInvocationReconcileApplyJson,
+    "task_execution_invocation_reconcile_apply_not_implemented",
+    invocationReconcileApplyJson,
+  );
+  expectSameFiles(
+    "task execution invocation reconcile apply gate changed AEOS files",
+    invocationReconcileFilesBefore,
+    listRelativeFiles(join(taskStateCliRoot, ".aeos")),
+  );
+  const providerCapabilityFlagJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "invocation",
+    "reconcile",
+    "--preview",
+    statusTaskId,
+    "--invocation-id",
+    cliInvocationResult.invocationId,
+    "--supports-status-query",
+    "--json",
+  ]);
+  expectNonzero("task execution invocation reconcile provider flag exited zero", providerCapabilityFlagJson);
+  const parsedProviderCapabilityFlagJson = parseJsonOnlyStdout(
+    "task execution invocation reconcile provider flag output was not valid JSON only",
+    providerCapabilityFlagJson,
+  );
+  expectTaskExecutionInvocationReconcilePreviewErrorJsonShape(
+    "task execution invocation reconcile provider flag did not fail closed",
+    parsedProviderCapabilityFlagJson,
+    "task_execution_invocation_reconcile_unknown_option",
+    providerCapabilityFlagJson,
+  );
+
+  async function createStartedInvocationFixture(attemptNumber) {
+    const minute = String(attemptNumber).padStart(2, "0").slice(-2);
+    const prepared = prepareTaskExecutionAttempt({
+      state: statusStateAfterStartApply,
+      expectedRevision: 1,
+      batchId: "batch-main",
+      attemptNumber,
+      createdAt: `2026-08-10T00:${minute}:00.000Z`,
+    });
+
+    if (!prepared.ok) {
+      fail(`task execution invocation reconcile fixture ${attemptNumber} did not prepare`);
+    }
+
+    const started = transitionTaskExecutionAttempt({
+      attempt: prepared.value.attempt,
+      intent: { kind: "start" },
+      occurredAt: `2026-08-10T00:${minute}:01.000Z`,
+    });
+
+    if (!started.ok) {
+      fail(`task execution invocation reconcile fixture ${attemptNumber} did not start`);
+    }
+
+    const saved = await saveTaskExecutionAttempt({
+      projectRoot: taskStateCliRoot,
+      attempt: started.value.attempt,
+    });
+
+    if (!saved.ok) {
+      fail(`task execution invocation reconcile fixture ${attemptNumber} did not save`);
+    }
+
+    return started.value.attempt;
+  }
+
+  async function reserveInvocationFixture(attemptNumber) {
+    const minute = String(attemptNumber).padStart(2, "0").slice(-2);
+    const attempt = await createStartedInvocationFixture(attemptNumber);
+    const reserved = await reserveTaskExecutionInvocation({
+      projectRoot: taskStateCliRoot,
+      state: statusStateAfterStartApply,
+      attempt,
+      dependencyKind: "test_noop",
+      expectedRevision: 1,
+      claimedAt: `2026-08-10T00:${minute}:02.000Z`,
+    });
+
+    if (!reserved.ok) {
+      fail(`task execution invocation reconcile fixture ${attemptNumber} did not reserve`);
+    }
+
+    return reserved.value;
+  }
+
+  async function updateInvocationFixture(reservation, expectedLifecycle, intent) {
+    const updated = await updateTaskExecutionInvocation({
+      projectRoot: taskStateCliRoot,
+      taskId: reservation.record.taskId,
+      invocationId: reservation.record.invocationId,
+      ownershipToken: reservation.record.ownership.ownershipToken,
+      expectedLifecycle,
+      intent,
+    });
+
+    if (!updated.ok) {
+      fail(`task execution invocation reconcile fixture ${reservation.record.invocationId} did not update`);
+    }
+
+    return updated.value;
+  }
+
+  const reservedPreviewFixture = await reserveInvocationFixture(20);
+  const invokingPreviewReservation = await reserveInvocationFixture(21);
+  const invokingPreviewFixture = await updateInvocationFixture(
+    invokingPreviewReservation,
+    "reserved",
+    {
+      kind: "enter_invocation",
+      occurredAt: "2026-08-10T00:03:03.000Z",
+    },
+  );
+  const unknownPreviewReservation = await reserveInvocationFixture(22);
+  const unknownEnteredFixture = await updateInvocationFixture(
+    unknownPreviewReservation,
+    "reserved",
+    {
+      kind: "enter_invocation",
+      occurredAt: "2026-08-10T00:04:03.000Z",
+    },
+  );
+  const unknownPreviewFixture = await updateTaskExecutionInvocation({
+    projectRoot: taskStateCliRoot,
+    taskId: unknownEnteredFixture.record.taskId,
+    invocationId: unknownEnteredFixture.record.invocationId,
+    ownershipToken: unknownPreviewReservation.record.ownership.ownershipToken,
+    expectedLifecycle: "invoking",
+    intent: {
+      kind: "mark_outcome_unknown",
+      occurredAt: "2026-08-10T00:04:04.000Z",
+    },
+  });
+  if (!unknownPreviewFixture.ok) {
+    fail("task execution invocation reconcile fixture did not mark outcome unknown");
+  }
+  const failedPreviewReservation = await reserveInvocationFixture(23);
+  const failedEnteredFixture = await updateInvocationFixture(
+    failedPreviewReservation,
+    "reserved",
+    {
+      kind: "enter_invocation",
+      occurredAt: "2026-08-10T00:05:03.000Z",
+    },
+  );
+  const failedPreviewFixture = await updateTaskExecutionInvocation({
+    projectRoot: taskStateCliRoot,
+    taskId: failedEnteredFixture.record.taskId,
+    invocationId: failedEnteredFixture.record.invocationId,
+    ownershipToken: failedPreviewReservation.record.ownership.ownershipToken,
+    expectedLifecycle: "invoking",
+    intent: {
+      kind: "record_failed",
+      failure: {
+        code: "retryable_preview_failure",
+        category: "execution_failure",
+        retryable: true,
+        diagnostic: "Retryable failure requires new authority.",
+        failedAt: "2026-08-10T00:05:04.000Z",
+      },
+    },
+  });
+  if (!failedPreviewFixture.ok) {
+    fail("task execution invocation reconcile fixture did not record retryable failure");
+  }
+
+  for (const lifecycleCase of [
+    {
+      label: "reserved",
+      invocationId: reservedPreviewFixture.record.invocationId,
+      lifecycle: "reserved",
+      action: "operator_review_required",
+      reconciliationRequired: false,
+      outcomeKnown: false,
+      retryRequiresNewAuthority: false,
+      providerUseful: false,
+    },
+    {
+      label: "invoking",
+      invocationId: invokingPreviewFixture.record.invocationId,
+      lifecycle: "invoking",
+      action: "reconciliation_required",
+      reconciliationRequired: true,
+      outcomeKnown: false,
+      retryRequiresNewAuthority: false,
+      providerUseful: true,
+    },
+    {
+      label: "outcome_unknown",
+      invocationId: unknownPreviewFixture.value.record.invocationId,
+      lifecycle: "outcome_unknown",
+      action: "reconciliation_required",
+      reconciliationRequired: true,
+      outcomeKnown: false,
+      retryRequiresNewAuthority: false,
+      providerUseful: true,
+    },
+    {
+      label: "failed",
+      invocationId: failedPreviewFixture.value.record.invocationId,
+      lifecycle: "failed",
+      action: "explicit_retry_required",
+      reconciliationRequired: false,
+      outcomeKnown: true,
+      retryRequiresNewAuthority: true,
+      providerUseful: false,
+    },
+  ]) {
+    const preview = runCliFrom(taskStateCliRoot, [
+      "task",
+      "execution",
+      "invocation",
+      "reconcile",
+      "--preview",
+      statusTaskId,
+      "--invocation-id",
+      lifecycleCase.invocationId,
+      "--json",
+    ]);
+    expectExitCode(
+      `task execution invocation reconcile ${lifecycleCase.label} preview exited nonzero`,
+      preview,
+      0,
+    );
+    const parsedPreview = parseJsonOnlyStdout(
+      `task execution invocation reconcile ${lifecycleCase.label} preview output was not valid JSON only`,
+      preview,
+    );
+    expectTaskExecutionInvocationReconcilePreviewJsonShape(
+      `task execution invocation reconcile ${lifecycleCase.label} preview shape was invalid`,
+      parsedPreview,
+      preview,
+    );
+    if (
+      parsedPreview.reconciliation.lifecycle !== lifecycleCase.lifecycle ||
+      parsedPreview.reconciliation.status !== lifecycleCase.lifecycle ||
+      parsedPreview.reconciliation.action !== lifecycleCase.action ||
+      parsedPreview.reconciliation.reconciliationRequired !== lifecycleCase.reconciliationRequired ||
+      parsedPreview.reconciliation.safeToBlindRetry !== false ||
+      parsedPreview.reconciliation.retryRequiresNewAuthority !== lifecycleCase.retryRequiresNewAuthority ||
+      parsedPreview.reconciliation.currentAuthorityEligible !== false ||
+      parsedPreview.reconciliation.outcomeKnown !== lifecycleCase.outcomeKnown ||
+      parsedPreview.providerRequirements.idempotencyLookupUseful !== lifecycleCase.providerUseful ||
+      parsedPreview.providerRequirements.statusQueryUseful !== lifecycleCase.providerUseful ||
+      parsedPreview.providerRequirements.resultReplayUseful !== lifecycleCase.providerUseful ||
+      parsedPreview.safety.providerCalled !== false ||
+      parsedPreview.safety.retryPerformed !== false ||
+      parsedPreview.safety.invocationModified !== false ||
+      parsedPreview.safety.workCompleted !== false ||
+      parsedPreview.safety.taskCompleted !== false
+    ) {
+      fail(`task execution invocation reconcile ${lifecycleCase.label} preview lost lifecycle safety`, preview);
+    }
+  }
+
+  const stalePreviewRoot = mkdtempSync(join(tmpdir(), "aeos-cli-stale-invocation-preview-"));
+  const staleTaskDir = join(stalePreviewRoot, ".aeos", "state", "tasks");
+  const staleAttemptDir = join(stalePreviewRoot, ".aeos", "state", "executions", statusTaskId);
+  const staleInvocationDir = join(stalePreviewRoot, ".aeos", "state", "invocations", statusTaskId);
+  mkdirSync(staleTaskDir, { recursive: true });
+  mkdirSync(staleAttemptDir, { recursive: true });
+  mkdirSync(staleInvocationDir, { recursive: true });
+  writeFileSync(
+    join(staleTaskDir, `${statusTaskId}.json`),
+    `${JSON.stringify(
+      {
+        ...statusStateAfterStartApply,
+        revision: 2,
+        updatedAt: "2026-08-10T00:06:00.000Z",
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  writeFileSync(
+    join(staleAttemptDir, `${persistedStartedAttempt.attemptId}.json`),
+    readFileSync(persistedAttemptPath, "utf8"),
+  );
+  writeFileSync(
+    join(staleInvocationDir, `${cliInvocationResult.invocationId}.json`),
+    invocationReconcileBytesBefore,
+  );
+  const stalePreviewJson = runCliFrom(stalePreviewRoot, [
+    "task",
+    "execution",
+    "invocation",
+    "reconcile",
+    "--preview",
+    statusTaskId,
+    "--invocation-id",
+    cliInvocationResult.invocationId,
+    "--json",
+  ]);
+  expectExitCode("task execution invocation reconcile stale preview exited nonzero", stalePreviewJson, 0);
+  const parsedStalePreviewJson = parseJsonOnlyStdout(
+    "task execution invocation reconcile stale preview output was not valid JSON only",
+    stalePreviewJson,
+  );
+  expectTaskExecutionInvocationReconcilePreviewJsonShape(
+    "task execution invocation reconcile stale preview shape was invalid",
+    parsedStalePreviewJson,
+    stalePreviewJson,
+  );
+  if (
+    parsedStalePreviewJson.invocation.sourceTaskRevision !== 1 ||
+    parsedStalePreviewJson.invocation.currentTaskRevision !== 2 ||
+    parsedStalePreviewJson.reconciliation.staleAgainstCurrentTask !== true ||
+    parsedStalePreviewJson.reconciliation.currentAuthorityEligible !== false ||
+    parsedStalePreviewJson.reconciliation.reconciliationRequired !== true ||
+    !parsedStalePreviewJson.issues.some((issue) =>
+      issue.code === "task_execution_invocation_reconciliation_stale_task_revision"
+    )
+  ) {
+    fail("task execution invocation reconcile stale preview lost historical safety", stalePreviewJson);
+  }
   const missingInvocationStatusRoot = mkdtempSync(
     join(tmpdir(), "aeos-cli-missing-invocation-status-"),
   );
@@ -6432,6 +7002,34 @@ try {
   );
   if (existsSync(join(missingInvocationStatusRoot, ".aeos"))) {
     fail("task execution invocation status missing created state directories", missingInvocationStatusJson);
+  }
+  const missingInvocationPreviewJson = runCliFrom(missingInvocationStatusRoot, [
+    "task",
+    "execution",
+    "invocation",
+    "reconcile",
+    "--preview",
+    "missing-task",
+    "--invocation-id",
+    "missing-invocation",
+    "--json",
+  ]);
+  expectNonzero("task execution invocation reconcile missing preview exited zero", missingInvocationPreviewJson);
+  const parsedMissingInvocationPreviewJson = parseJsonOnlyStdout(
+    "task execution invocation reconcile missing preview output was not valid JSON only",
+    missingInvocationPreviewJson,
+  );
+  expectTaskExecutionInvocationReconcilePreviewErrorJsonShape(
+    "task execution invocation reconcile missing preview did not fail closed",
+    parsedMissingInvocationPreviewJson,
+    "task_execution_invocation_not_found",
+    missingInvocationPreviewJson,
+  );
+  if (
+    missingInvocationPreviewJson.stdout.includes("safeToBlindRetry\":true") ||
+    existsSync(join(missingInvocationStatusRoot, ".aeos"))
+  ) {
+    fail("task execution invocation reconcile missing preview created authority or allowed retry", missingInvocationPreviewJson);
   }
   const corruptInvocationStatusRoot = mkdtempSync(
     join(tmpdir(), "aeos-cli-corrupt-invocation-status-"),
@@ -6469,6 +7067,41 @@ try {
     "task_execution_invocation_corrupt_json",
     corruptInvocationStatusJson,
   );
+  const corruptInvocationPreviewBefore = readFileSync(
+    join(corruptInvocationStatusDir, `${cliInvocationResult.invocationId}.json`),
+    "utf8",
+  );
+  const corruptInvocationPreviewJson = runCliFrom(corruptInvocationStatusRoot, [
+    "task",
+    "execution",
+    "invocation",
+    "reconcile",
+    "--preview",
+    statusTaskId,
+    "--invocation-id",
+    cliInvocationResult.invocationId,
+    "--json",
+  ]);
+  expectNonzero("task execution invocation reconcile corrupt preview exited zero", corruptInvocationPreviewJson);
+  const parsedCorruptInvocationPreviewJson = parseJsonOnlyStdout(
+    "task execution invocation reconcile corrupt preview output was not valid JSON only",
+    corruptInvocationPreviewJson,
+  );
+  expectTaskExecutionInvocationReconcilePreviewErrorJsonShape(
+    "task execution invocation reconcile corrupt preview did not fail closed",
+    parsedCorruptInvocationPreviewJson,
+    "task_execution_invocation_corrupt_json",
+    corruptInvocationPreviewJson,
+  );
+  if (
+    corruptInvocationPreviewJson.stdout.includes("safeToBlindRetry\":true") ||
+    readFileSync(
+      join(corruptInvocationStatusDir, `${cliInvocationResult.invocationId}.json`),
+      "utf8",
+    ) !== corruptInvocationPreviewBefore
+  ) {
+    fail("task execution invocation reconcile corrupt preview modified authority or allowed retry", corruptInvocationPreviewJson);
+  }
   const unsafeInvocationStatusJson = runCliFrom(taskStateCliRoot, [
     "task",
     "execution",

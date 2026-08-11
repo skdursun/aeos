@@ -671,12 +671,35 @@ future external dependency call but before durable returned/failed evidence
 remains `outcome_unknown` or reconciliation territory. Production adapters
 remain blocked.
 
-## Invocation Reconciliation Foundation
+## Invocation Reconciliation Preview
+Invocation reconciliation preview exposes the pure recovery decision model for
+an existing persisted invocation:
+
+```text
+aeos task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id>
+aeos task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id> --json
+```
+
+`--invocation-id` is a selector only. The CLI does not accept invocation JSON,
+arbitrary lifecycle flags, retry flags, outcome overrides, ownership tokens,
+operator idempotency keys, provider implementation/config flags, or free-form
+evidence JSON. Without `--preview`, the command fails closed with
+`task_execution_invocation_reconcile_apply_not_implemented`; no reconciliation
+apply exists in this MVP.
+
 `evaluateTaskExecutionInvocationReconciliation` is a pure recovery decision
 model for persisted invocation authority. It does not load files, call
 providers, call adapters, run shell/processes, execute work, write audit events,
 run policy, run verifiers, retry, resume, mutate task state, mutate attempt
 state, mutate invocation records, or complete work.
+
+The CLI loads the persisted invocation through core persistence, validates the
+record, loads current task state and the associated attempt when available, and
+then evaluates reconciliation in memory. Preview is strictly read-only: it does
+not reserve, enter, retry, create attempts, create invocations, clear
+`outcome_unknown`, change `invoking` to `failed` or `returned`, persist
+reconciliation evidence, update task or attempt state, run audit/policy/verifier
+runtime, complete work, or complete the task.
 
 The evaluator classifies invocation lifecycle records conservatively:
 
@@ -689,7 +712,9 @@ The evaluator classifies invocation lifecycle records conservatively:
   completed it. Blind retry is prohibited and reconciliation is required.
 - `returned`: the invocation outcome is durably known. AEOS should use the
   persisted invocation result/reference and must not call the dependency again.
-  Returned still is not work completion or task completion.
+  Returned still is not work completion, task completion, verifier approval, or
+  policy approval. If the returned record is stale against current task state,
+  preview reports reconciliation required for the stale historical context.
 - `failed`: deterministic invocation-level failure is durably known. Automatic
   retry is prohibited. If the structured system failure is retryable, future
   retry planning requires explicit new retry authority tied to the prior
@@ -714,7 +739,13 @@ operator/system review rather than blind invocation.
 
 Historical records remain inspectable. If an invocation source task revision is
 stale against the current task revision, reconciliation reports stale context
-and does not make the historical record current execution authority.
+and does not make the historical record current execution authority. Stale
+history can be inspected, but it cannot authorize current execution or retry.
+
+The preview output reports provider capability requirements as inspection data
+only, for example whether idempotency lookup, status query, or result replay
+would be useful for an uncertain `invoking` or `outcome_unknown` record. These
+requirements are not provider authority and cannot enable an adapter.
 
 Provider reconciliation capability is represented as typed system adapter
 metadata only:
@@ -740,6 +771,10 @@ Typed evidence can be evaluated in memory when compatible typed provider
 capability metadata is supplied. It still does not persist resolution. TASK-0293
 does not automatically change `invoking` or `outcome_unknown` to `returned` or
 `failed`.
+
+TASK-0294 CLI preview does not accept simulated evidence. Future apply work must
+use typed authoritative reconciliation evidence; task/model/operator/provider
+prose remains non-authoritative.
 
 Self-report remains non-authoritative. Text such as "failed, retry it",
 "definitely not executed", "provider never received it", "all complete",

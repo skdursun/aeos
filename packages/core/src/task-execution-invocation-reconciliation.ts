@@ -588,6 +588,7 @@ export function evaluateTaskExecutionInvocationReconciliation(
       persistedResult: resultFromRecord(record.result),
       providerCapabilities: capabilities,
       evidenceConclusion,
+      reconciliationRequired: stale,
       issues,
     });
   }

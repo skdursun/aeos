@@ -15558,6 +15558,11 @@ try {
     "task execution invocation reconciliation smoke O should not make stale records current authority",
   );
   assert.equal(
+    staleReconciliation.reconciliationRequired,
+    true,
+    "task execution invocation reconciliation smoke O should require reconciliation when returned history is stale",
+  );
+  assert.equal(
     JSON.stringify(unknownReconciliation).includes(
       unknownPersisted.value.record.ownership.ownershipToken,
     ),

@@ -87,6 +87,8 @@ condition.
   invocation status CLI.
 - TASK-0293: Design and implement invocation reconciliation/recovery foundation
   for invoking/outcome_unknown records.
+- TASK-0294: Implement read-only invocation reconciliation preview CLI and
+  provider capability inspection model.
 
 ## Do Not Load By Default
 
@@ -97,11 +99,12 @@ condition.
 
 ## Next Task
 
-TASK-0294 Implement read-only invocation reconciliation preview CLI and provider
-capability inspection model.
+TASK-0295 Design and implement explicit typed invocation reconciliation apply
+foundation without provider calls or retry.
 
-Purpose: Expose invocation recovery decisions without applying them, mutating
-invocation records, enabling production adapters, or performing provider calls.
+Purpose: Persist a reconciliation resolution only from typed authoritative
+reconciliation evidence while still avoiding provider calls, retry execution,
+and adapter execution.
 
 ## Current Plans
 
