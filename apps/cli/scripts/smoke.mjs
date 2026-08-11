@@ -17,12 +17,17 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  appendTaskExecutionAuditEvent,
   createInitialTaskState,
+  createTaskExecutionInvocationDispatchIntentAuditEvent,
+  createTaskExecutionPolicyApprovalRecord,
+  deriveTaskExecutionPolicyGateId,
   invokeStartedTaskExecutionAttempt,
   prepareTaskExecutionAttempt,
   reserveTaskExecutionInvocation,
   saveTaskState,
   saveTaskExecutionAttempt,
+  saveTaskExecutionPolicyApproval,
   transitionTaskExecutionAttempt,
   updateTaskExecutionInvocation,
 } from "../../../packages/core/dist/index.js";
@@ -35,10 +40,14 @@ function runCli(args) {
   return runCliFrom(projectRoot, args);
 }
 
-function runCliFrom(cwd, args) {
+function runCliFrom(cwd, args, options = {}) {
   return spawnSync(process.execPath, [cliPath, ...args], {
     cwd,
     encoding: "utf8",
+    env: {
+      ...process.env,
+      ...(options.env ?? {}),
+    },
   });
 }
 
@@ -1110,6 +1119,242 @@ function taskStatePath(rootPath, taskId) {
   return join(rootPath, ".aeos", "state", "tasks", `${taskId}.json`);
 }
 
+function trustedProductionProviderProfilesPath(rootPath) {
+  return join(rootPath, ".aeos", "system", "production-provider-profiles.json");
+}
+
+function createTrustedDispatchProfile({
+  providerProfileId = "trusted-cli-fixture",
+  kind = "controlled_http_test_fixture",
+  adapterId = "trusted-cli-production-adapter",
+  policyRequired = true,
+  credentialRequired = true,
+  auditRequired = true,
+  realCallReady = false,
+  recoveryEvidenceAuthority = "test_authoritative",
+  endpoint,
+  timeoutMs = 50,
+  outcomeStatus = "returned",
+} = {}) {
+  return {
+    providerProfileId,
+    authority: "system",
+    kind,
+    adapterId,
+    providerRef: `${providerProfileId}:provider`,
+    providerFamilyRef: "trusted-cli-fixture-family",
+    configurationVersion: "trusted-cli-profile-v1",
+    implementationVersion: "trusted-cli-profile-v1",
+    capabilityVersion: "trusted-cli-profile-v1",
+    credentialRequired,
+    policyRequired,
+    auditRequired,
+    realCallReady,
+    recoveryEvidenceAuthority,
+    ...(endpoint === undefined ? {} : { endpoint, timeoutMs }),
+    capabilities: {
+      supportsIdempotencyKey: true,
+      supportsLookupByIdempotencyKey: true,
+      supportsInvocationStatusQuery: true,
+      supportsResultReplay: true,
+      providesDeterministicProviderInvocationReference: true,
+      supportsBoundedErrors: true,
+      supportsCancellation: false,
+      supportsStreaming: false,
+      supportsToolCalls: false,
+      supportsNetworkAccess: true,
+      supportsExternalSideEffects: true,
+      supportsFailureNormalization: true,
+    },
+    recovery: {
+      idempotencyProven: true,
+      duplicateSuppressionProven: true,
+      providerReferenceProven: true,
+      lookupProven: true,
+      statusQueryProven: true,
+      resultReplayProven: true,
+      crashRecoveryProven: true,
+      blindRetryPrevented: true,
+    },
+    credential: {
+      credentialRef: "provider.production.primary",
+      secretProviderRef: "trusted-cli-env-provider",
+      environmentVariableName: "AEOS_CLI_SMOKE_PROVIDER_SECRET",
+      credentialKind: "bearer_token",
+      credentialScope: ["production_execution"],
+      resolutionReference:
+        "credential-resolution:trusted-cli-env-provider:provider.production.primary",
+    },
+    testFixtureOutcome: {
+      status: outcomeStatus,
+      providerInvocationRef: `provider-ref:${providerProfileId}`,
+      output: {
+        completed: true,
+        verified: true,
+        allDone: true,
+        safeToRetry: true,
+        taskCompleted: true,
+        result: "fixture-result",
+      },
+      code: "trusted_cli_fixture_outcome_unknown",
+      diagnostic: "Fixture outcome requires reconciliation.",
+    },
+  };
+}
+
+function writeTrustedDispatchProfiles(rootPath, profiles) {
+  const profilePath = trustedProductionProviderProfilesPath(rootPath);
+  mkdirSync(join(rootPath, ".aeos", "system"), { recursive: true });
+  writeFileSync(
+    profilePath,
+    `${JSON.stringify({ schemaVersion: 1, profiles }, null, 2)}\n`,
+  );
+  return profilePath;
+}
+
+async function createDispatchCliFixture({
+  rootPrefix,
+  taskId,
+  attemptNumber = 1,
+  profile = createTrustedDispatchProfile(),
+  writeProfile = true,
+  writeApproval = true,
+  writeAudit = true,
+  stateOverrides = {},
+} = {}) {
+  const rootPath = mkdtempSync(join(tmpdir(), rootPrefix));
+  const state = createPersistedTaskState(taskId, stateOverrides);
+  const statePath = await savePersistedTaskState(rootPath, state);
+  const prepared = prepareTaskExecutionAttempt({
+    state,
+    expectedRevision: state.revision,
+    batchId: state.currentBatchId,
+    attemptNumber,
+    createdAt: "2026-08-10T02:00:00.000Z",
+  });
+  if (!prepared.ok) {
+    fail(`could not prepare dispatch CLI fixture: ${prepared.error.code}`);
+  }
+  const started = transitionTaskExecutionAttempt({
+    attempt: prepared.value.attempt,
+    intent: {
+      kind: "start",
+    },
+    occurredAt: "2026-08-10T02:00:01.000Z",
+  });
+  if (!started.ok) {
+    fail(`could not start dispatch CLI fixture: ${started.error.code}`);
+  }
+  const attemptSave = await saveTaskExecutionAttempt({
+    projectRoot: rootPath,
+    attempt: started.value.attempt,
+  });
+  if (!attemptSave.ok) {
+    fail(`could not save dispatch CLI fixture attempt: ${attemptSave.error.code}`);
+  }
+  const reservation = await reserveTaskExecutionInvocation({
+    projectRoot: rootPath,
+    state,
+    attempt: started.value.attempt,
+    dependencyKind: "test_noop",
+    expectedRevision: state.revision,
+    latestAttemptNumberForContext: attemptNumber,
+    claimedAt: "2026-08-10T02:00:02.000Z",
+    ownerId: `owner-${taskId}`,
+    ownershipToken: `ownership-token-${taskId}`,
+  });
+  if (!reservation.ok) {
+    fail(`could not reserve dispatch CLI fixture invocation: ${reservation.error.code}`);
+  }
+
+  if (writeProfile) {
+    writeTrustedDispatchProfiles(rootPath, [profile]);
+  }
+
+  const gate = deriveTaskExecutionPolicyGateId({
+    taskId,
+    taskStateRevision: state.revision,
+    attemptId: started.value.attempt.attemptId,
+    invocationId: reservation.value.record.invocationId,
+  });
+  if (!gate.ok) {
+    fail(`could not derive dispatch CLI policy gate: ${gate.error.code}`);
+  }
+  const approvalBinding = {
+    policyGateId: gate.value,
+    taskId,
+    taskStateRevision: state.revision,
+    attemptId: started.value.attempt.attemptId,
+    invocationId: reservation.value.record.invocationId,
+    adapterId: profile.adapterId,
+    operation: "execute_task_attempt",
+    requiredPermissions: ["network", "external_side_effect"],
+  };
+  let approval = null;
+  if (writeApproval) {
+    const approvalRecord = createTaskExecutionPolicyApprovalRecord({
+      ...approvalBinding,
+      decision: "approved",
+      createdAt: "2026-08-10T02:00:03.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    if (!approvalRecord.ok) {
+      fail(`could not create dispatch CLI approval: ${approvalRecord.error.code}`);
+    }
+    const approvalSave = await saveTaskExecutionPolicyApproval({
+      projectRoot: rootPath,
+      approval: approvalRecord.value,
+    });
+    if (!approvalSave.ok) {
+      fail(`could not save dispatch CLI approval: ${approvalSave.error.code}`);
+    }
+    approval = approvalRecord.value;
+  }
+
+  if (writeAudit) {
+    const auditEvent = createTaskExecutionInvocationDispatchIntentAuditEvent({
+      record: reservation.value.record,
+      adapterId: profile.adapterId,
+      operation: "execute_task_attempt",
+      policyGateId: gate.value,
+      policyDecisionReference: approval?.approvalId ?? null,
+      policyAuthorized: approval !== null,
+      auditRequired: profile.auditRequired !== false,
+      credentialRef: "provider.production.primary",
+      secretProviderRef: "trusted-cli-env-provider",
+      credentialResolutionReference:
+        "credential-resolution:trusted-cli-env-provider:provider.production.primary",
+      occurredAt: "2026-08-10T02:00:04.000Z",
+    });
+    if (!auditEvent.ok) {
+      fail(`could not create dispatch CLI audit: ${auditEvent.error.code}`);
+    }
+    const auditAppend = await appendTaskExecutionAuditEvent({
+      projectRoot: rootPath,
+      taskId,
+      event: auditEvent.value,
+      forbiddenValues: ["cli-smoke-secret"],
+    });
+    if (!auditAppend.ok) {
+      fail(`could not append dispatch CLI audit: ${auditAppend.error.code}`);
+    }
+  }
+
+  return {
+    rootPath,
+    taskId,
+    statePath,
+    revision: state.revision,
+    profile,
+    attempt: started.value.attempt,
+    invocation: reservation.value.record,
+    invocationPath: reservation.value.path,
+    secretEnv: {
+      AEOS_CLI_SMOKE_PROVIDER_SECRET: "cli-smoke-secret",
+    },
+  };
+}
+
 function writePersistedTaskStateFixture(rootPath, taskId, state) {
   const stateRoot = join(rootPath, ".aeos", "state", "tasks");
   mkdirSync(stateRoot, { recursive: true });
@@ -1757,6 +2002,75 @@ function expectTaskExecutionPolicyApprovalErrorJsonShape(
   }
 }
 
+function expectTaskExecutionDispatchErrorJsonShape(
+  message,
+  value,
+  expectedCode,
+  result,
+) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== false ||
+    typeof value.error !== "object" ||
+    value.error === null ||
+    value.error.code !== expectedCode ||
+    value.providerOutcomeKnown !== false ||
+    value.productionCompletionReady !== false ||
+    value.safety?.providerCalled !== false ||
+    value.safety?.oneShotAuthorityConsumed !== false ||
+    value.safety?.workCompleted !== false ||
+    value.safety?.taskCompleted !== false ||
+    value.safety?.verifierRun !== false ||
+    value.safety?.rawSecretRendered !== false ||
+    value.safety?.ownershipSecretRendered !== false ||
+    value.safety?.blindRetry !== false ||
+    value.safety?.automatedRealProviderCall !== false ||
+    !Array.isArray(value.issues) ||
+    !value.issues.some((issue) => issue.code === expectedCode)
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectTaskExecutionDispatchSuccessJsonShape(message, value, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== true ||
+    ![
+      "production_dispatch_returned",
+      "production_dispatch_failed",
+      "production_dispatch_outcome_unknown",
+    ].includes(value.status) ||
+    typeof value.taskId !== "string" ||
+    typeof value.invocationId !== "string" ||
+    typeof value.providerProfileId !== "string" ||
+    typeof value.providerProfileKind !== "string" ||
+    typeof value.realCallReady !== "boolean" ||
+    typeof value.providerOutcomeKnown !== "boolean" ||
+    typeof value.reconciliationRequired !== "boolean" ||
+    typeof value.postDispatchAuditWritten !== "boolean" ||
+    value.productionCompletionReady !== false ||
+    value.safety?.providerCalled !== true ||
+    value.safety?.oneShotAuthorityConsumed !== true ||
+    value.safety?.invocationModified !== true ||
+    value.safety?.taskModified !== false ||
+    value.safety?.attemptModified !== false ||
+    value.safety?.workCompleted !== false ||
+    value.safety?.taskCompleted !== false ||
+    value.safety?.verifierRun !== false ||
+    value.safety?.completionAuthority !== false ||
+    value.safety?.rawSecretRendered !== false ||
+    value.safety?.ownershipSecretRendered !== false ||
+    value.safety?.blindRetry !== false ||
+    value.safety?.automatedRealProviderCall !== false ||
+    !Array.isArray(value.issues)
+  ) {
+    fail(message, result);
+  }
+}
+
 function expectTaskStateInitSuccessJsonShape(message, value, result) {
   if (
     typeof value !== "object" ||
@@ -2006,6 +2320,11 @@ expectOutputIncludes(
   'help output did not include "task execution policy status <task-id> --invocation-id <invocation-id> --expected-revision <number>"',
   helpCommand,
   "task execution policy status <task-id> --invocation-id <invocation-id> --expected-revision <number>",
+);
+expectOutputIncludes(
+  'help output did not include "task execution dispatch <task-id> --invocation-id <invocation-id> --expected-revision <number>"',
+  helpCommand,
+  "task execution dispatch <task-id> --invocation-id <invocation-id> --expected-revision <number>",
 );
 expectOutputIncludes(
   'help output did not include "task status <task-id>"',
@@ -7486,6 +7805,534 @@ try {
     "task_execution_policy_expected_revision_mismatch",
     policyApprovalStaleJson,
   );
+
+  const dispatchMissingJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "dispatch",
+    "missing-task",
+    "--invocation-id",
+    "missing-invocation",
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution dispatch missing task exited zero", dispatchMissingJson);
+  const parsedDispatchMissingJson = parseJsonOnlyStdout(
+    "task execution dispatch missing task output was not valid JSON only",
+    dispatchMissingJson,
+  );
+  expectTaskExecutionDispatchErrorJsonShape(
+    "task execution dispatch missing task did not fail closed",
+    parsedDispatchMissingJson,
+    "task_state_not_found",
+    dispatchMissingJson,
+  );
+
+  for (const [flag, code] of [
+    ["--endpoint", "task_execution_dispatch_arbitrary_endpoint_forbidden"],
+    ["--api-key", "task_execution_dispatch_raw_credential_forbidden"],
+    ["--force", "task_execution_dispatch_authority_override_forbidden"],
+  ]) {
+    const forbiddenDispatchJson = runCliFrom(taskStateCliRoot, [
+      "task",
+      "execution",
+      "dispatch",
+      statusTaskId,
+      "--invocation-id",
+      policyApprovalInvocationId,
+      "--expected-revision",
+      "1",
+      "--json",
+      flag,
+      "forbidden-value",
+    ]);
+    expectNonzero(`task execution dispatch forbidden ${flag} exited zero`, forbiddenDispatchJson);
+    const parsedForbiddenDispatchJson = parseJsonOnlyStdout(
+      `task execution dispatch forbidden ${flag} output was not valid JSON only`,
+      forbiddenDispatchJson,
+    );
+    expectTaskExecutionDispatchErrorJsonShape(
+      `task execution dispatch forbidden ${flag} did not fail closed`,
+      parsedForbiddenDispatchJson,
+      code,
+      forbiddenDispatchJson,
+    );
+  }
+
+  const dispatchMissingConfig = await createDispatchCliFixture({
+    rootPrefix: "aeos-cli-dispatch-missing-config-",
+    taskId: "TASK-CLI-DISPATCH-MISSING-CONFIG",
+    writeProfile: false,
+  });
+  const missingConfigJson = runCliFrom(dispatchMissingConfig.rootPath, [
+    "task",
+    "execution",
+    "dispatch",
+    dispatchMissingConfig.taskId,
+    "--invocation-id",
+    dispatchMissingConfig.invocation.invocationId,
+    "--expected-revision",
+    "1",
+    "--provider-profile",
+    dispatchMissingConfig.profile.providerProfileId,
+    "--json",
+  ], { env: dispatchMissingConfig.secretEnv });
+  expectNonzero("task execution dispatch missing trusted config exited zero", missingConfigJson);
+  const parsedMissingConfigJson = parseJsonOnlyStdout(
+    "task execution dispatch missing trusted config output was not valid JSON only",
+    missingConfigJson,
+  );
+  expectTaskExecutionDispatchErrorJsonShape(
+    "task execution dispatch missing trusted config did not fail closed",
+    parsedMissingConfigJson,
+    "task_execution_production_provider_profile_missing",
+    missingConfigJson,
+  );
+
+  const dispatchStale = await createDispatchCliFixture({
+    rootPrefix: "aeos-cli-dispatch-stale-",
+    taskId: "TASK-CLI-DISPATCH-STALE",
+  });
+  const staleDispatchJson = runCliFrom(dispatchStale.rootPath, [
+    "task",
+    "execution",
+    "dispatch",
+    dispatchStale.taskId,
+    "--invocation-id",
+    dispatchStale.invocation.invocationId,
+    "--expected-revision",
+    "2",
+    "--provider-profile",
+    dispatchStale.profile.providerProfileId,
+    "--json",
+  ], { env: dispatchStale.secretEnv });
+  expectNonzero("task execution dispatch stale revision exited zero", staleDispatchJson);
+  const parsedStaleDispatchJson = parseJsonOnlyStdout(
+    "task execution dispatch stale revision output was not valid JSON only",
+    staleDispatchJson,
+  );
+  expectTaskExecutionDispatchErrorJsonShape(
+    "task execution dispatch stale revision did not fail closed",
+    parsedStaleDispatchJson,
+    "task_state_revision_conflict",
+    staleDispatchJson,
+  );
+
+  const dispatchMissingApproval = await createDispatchCliFixture({
+    rootPrefix: "aeos-cli-dispatch-missing-approval-",
+    taskId: "TASK-CLI-DISPATCH-MISSING-APPROVAL",
+    writeApproval: false,
+    writeAudit: false,
+  });
+  const missingApprovalJson = runCliFrom(dispatchMissingApproval.rootPath, [
+    "task",
+    "execution",
+    "dispatch",
+    dispatchMissingApproval.taskId,
+    "--invocation-id",
+    dispatchMissingApproval.invocation.invocationId,
+    "--expected-revision",
+    "1",
+    "--provider-profile",
+    dispatchMissingApproval.profile.providerProfileId,
+    "--json",
+  ], { env: dispatchMissingApproval.secretEnv });
+  expectNonzero("task execution dispatch missing approval exited zero", missingApprovalJson);
+  const parsedMissingApprovalJson = parseJsonOnlyStdout(
+    "task execution dispatch missing approval output was not valid JSON only",
+    missingApprovalJson,
+  );
+  expectTaskExecutionDispatchErrorJsonShape(
+    "task execution dispatch missing approval did not fail closed",
+    parsedMissingApprovalJson,
+    "task_execution_policy_approval_not_found",
+    missingApprovalJson,
+  );
+
+  const dispatchMissingCredential = await createDispatchCliFixture({
+    rootPrefix: "aeos-cli-dispatch-missing-credential-",
+    taskId: "TASK-CLI-DISPATCH-MISSING-CREDENTIAL",
+  });
+  const missingCredentialJson = runCliFrom(dispatchMissingCredential.rootPath, [
+    "task",
+    "execution",
+    "dispatch",
+    dispatchMissingCredential.taskId,
+    "--invocation-id",
+    dispatchMissingCredential.invocation.invocationId,
+    "--expected-revision",
+    "1",
+    "--provider-profile",
+    dispatchMissingCredential.profile.providerProfileId,
+    "--json",
+  ], { env: { AEOS_CLI_SMOKE_PROVIDER_SECRET: "" } });
+  expectNonzero("task execution dispatch missing credential exited zero", missingCredentialJson);
+  const parsedMissingCredentialJson = parseJsonOnlyStdout(
+    "task execution dispatch missing credential output was not valid JSON only",
+    missingCredentialJson,
+  );
+  expectTaskExecutionDispatchErrorJsonShape(
+    "task execution dispatch missing credential did not fail closed",
+    parsedMissingCredentialJson,
+    "task_execution_credential_missing",
+    missingCredentialJson,
+  );
+
+  const dispatchMissingAudit = await createDispatchCliFixture({
+    rootPrefix: "aeos-cli-dispatch-missing-audit-",
+    taskId: "TASK-CLI-DISPATCH-MISSING-AUDIT",
+    writeAudit: false,
+  });
+  const missingAuditJson = runCliFrom(dispatchMissingAudit.rootPath, [
+    "task",
+    "execution",
+    "dispatch",
+    dispatchMissingAudit.taskId,
+    "--invocation-id",
+    dispatchMissingAudit.invocation.invocationId,
+    "--expected-revision",
+    "1",
+    "--provider-profile",
+    dispatchMissingAudit.profile.providerProfileId,
+    "--json",
+  ], { env: dispatchMissingAudit.secretEnv });
+  expectNonzero("task execution dispatch missing audit exited zero", missingAuditJson);
+  const parsedMissingAuditJson = parseJsonOnlyStdout(
+    "task execution dispatch missing audit output was not valid JSON only",
+    missingAuditJson,
+  );
+  expectTaskExecutionDispatchErrorJsonShape(
+    "task execution dispatch missing audit did not fail closed",
+    parsedMissingAuditJson,
+    "task_execution_dispatch_pre_dispatch_audit_missing",
+    missingAuditJson,
+  );
+
+  const recoveryBlockedProfile = createTrustedDispatchProfile({
+    providerProfileId: "trusted-cli-http-not-ready",
+    kind: "controlled_http",
+    adapterId: "trusted-cli-http-not-ready-adapter",
+    endpoint: "https://example.invalid/aeos/provider",
+    realCallReady: false,
+    recoveryEvidenceAuthority: "provider_runtime_evidence",
+  });
+  const dispatchRecoveryBlocked = await createDispatchCliFixture({
+    rootPrefix: "aeos-cli-dispatch-recovery-blocked-",
+    taskId: "TASK-CLI-DISPATCH-RECOVERY-BLOCKED",
+    profile: recoveryBlockedProfile,
+  });
+  const recoveryBlockedJson = runCliFrom(dispatchRecoveryBlocked.rootPath, [
+    "task",
+    "execution",
+    "dispatch",
+    dispatchRecoveryBlocked.taskId,
+    "--invocation-id",
+    dispatchRecoveryBlocked.invocation.invocationId,
+    "--expected-revision",
+    "1",
+    "--provider-profile",
+    recoveryBlockedProfile.providerProfileId,
+    "--json",
+  ], { env: dispatchRecoveryBlocked.secretEnv });
+  expectNonzero("task execution dispatch recovery-blocked exited zero", recoveryBlockedJson);
+  const parsedRecoveryBlockedJson = parseJsonOnlyStdout(
+    "task execution dispatch recovery-blocked output was not valid JSON only",
+    recoveryBlockedJson,
+  );
+  expectTaskExecutionDispatchErrorJsonShape(
+    "task execution dispatch recovery-blocked did not fail closed",
+    parsedRecoveryBlockedJson,
+    "task_execution_production_dispatch_provider_recovery_not_ready",
+    recoveryBlockedJson,
+  );
+
+  const dispatchEligible = await createDispatchCliFixture({
+    rootPrefix: "aeos-cli-dispatch-eligible-",
+    taskId: "TASK-CLI-DISPATCH-ELIGIBLE",
+  });
+  const eligibleDispatchJson = runCliFrom(dispatchEligible.rootPath, [
+    "task",
+    "execution",
+    "dispatch",
+    dispatchEligible.taskId,
+    "--invocation-id",
+    dispatchEligible.invocation.invocationId,
+    "--expected-revision",
+    "1",
+    "--provider-profile",
+    dispatchEligible.profile.providerProfileId,
+    "--json",
+  ], { env: dispatchEligible.secretEnv });
+  expectExitCode("task execution dispatch eligible exited nonzero", eligibleDispatchJson, 0);
+  const parsedEligibleDispatchJson = parseJsonOnlyStdout(
+    "task execution dispatch eligible output was not valid JSON only",
+    eligibleDispatchJson,
+  );
+  expectTaskExecutionDispatchSuccessJsonShape(
+    "task execution dispatch eligible shape was invalid",
+    parsedEligibleDispatchJson,
+    eligibleDispatchJson,
+  );
+  if (
+    parsedEligibleDispatchJson.status !== "production_dispatch_returned" ||
+    parsedEligibleDispatchJson.realCallReady !== false ||
+    parsedEligibleDispatchJson.providerOutcomeKnown !== true ||
+    parsedEligibleDispatchJson.reconciliationRequired !== false ||
+    parsedEligibleDispatchJson.postDispatchAuditWritten !== true ||
+    eligibleDispatchJson.stdout.includes("cli-smoke-secret") ||
+    eligibleDispatchJson.stdout.includes("completed") ||
+    eligibleDispatchJson.stdout.includes("safeToRetry")
+  ) {
+    fail("task execution dispatch eligible lost safety semantics", eligibleDispatchJson);
+  }
+  const eligibleInvocationStatusJson = runCliFrom(dispatchEligible.rootPath, [
+    "task",
+    "execution",
+    "invocation",
+    "status",
+    dispatchEligible.taskId,
+    "--invocation-id",
+    dispatchEligible.invocation.invocationId,
+    "--json",
+  ]);
+  expectExitCode("task execution dispatch status after eligible exited nonzero", eligibleInvocationStatusJson, 0);
+  const parsedEligibleInvocationStatusJson = parseJsonOnlyStdout(
+    "task execution dispatch status after eligible output was not valid JSON only",
+    eligibleInvocationStatusJson,
+  );
+  expectTaskExecutionInvocationStatusJsonShape(
+    "task execution dispatch status after eligible shape was invalid",
+    parsedEligibleInvocationStatusJson,
+    eligibleInvocationStatusJson,
+  );
+  if (
+    parsedEligibleInvocationStatusJson.invocation.lifecycle !== "returned" ||
+    eligibleInvocationStatusJson.stdout.includes("cli-smoke-secret") ||
+    eligibleInvocationStatusJson.stdout.includes("\"completed\":true") ||
+    eligibleInvocationStatusJson.stdout.includes("\"verified\":true") ||
+    eligibleInvocationStatusJson.stdout.includes("\"safeToRetry\":true")
+  ) {
+    fail("task execution dispatch status after eligible trusted provider completion claims", eligibleInvocationStatusJson);
+  }
+  const eligibleInvocationBytesBeforeRepeat = readFileSync(
+    dispatchEligible.invocationPath,
+    "utf8",
+  );
+  const repeatedEligibleDispatchJson = runCliFrom(dispatchEligible.rootPath, [
+    "task",
+    "execution",
+    "dispatch",
+    dispatchEligible.taskId,
+    "--invocation-id",
+    dispatchEligible.invocation.invocationId,
+    "--expected-revision",
+    "1",
+    "--provider-profile",
+    dispatchEligible.profile.providerProfileId,
+    "--json",
+  ], { env: dispatchEligible.secretEnv });
+  expectNonzero("task execution dispatch repeated eligible exited zero", repeatedEligibleDispatchJson);
+  const parsedRepeatedEligibleDispatchJson = parseJsonOnlyStdout(
+    "task execution dispatch repeated eligible output was not valid JSON only",
+    repeatedEligibleDispatchJson,
+  );
+  expectTaskExecutionDispatchErrorJsonShape(
+    "task execution dispatch repeated eligible did not fail closed",
+    parsedRepeatedEligibleDispatchJson,
+    "task_execution_dispatch_invocation_already_consumed",
+    repeatedEligibleDispatchJson,
+  );
+  const eligiblePersistedInvocationAfterRepeat = JSON.parse(
+    readFileSync(dispatchEligible.invocationPath, "utf8"),
+  );
+  if (
+    eligiblePersistedInvocationAfterRepeat.lifecycle !== "returned" ||
+    readFileSync(dispatchEligible.invocationPath, "utf8") !==
+      eligibleInvocationBytesBeforeRepeat
+  ) {
+    fail("task execution dispatch repeated eligible mutated persisted provider result", repeatedEligibleDispatchJson);
+  }
+
+  const dispatchHuman = await createDispatchCliFixture({
+    rootPrefix: "aeos-cli-dispatch-human-",
+    taskId: "TASK-CLI-DISPATCH-HUMAN",
+  });
+  const eligibleDispatchHuman = runCliFrom(dispatchHuman.rootPath, [
+    "task",
+    "execution",
+    "dispatch",
+    dispatchHuman.taskId,
+    "--invocation-id",
+    dispatchHuman.invocation.invocationId,
+    "--expected-revision",
+    "1",
+    "--provider-profile",
+    dispatchHuman.profile.providerProfileId,
+  ], { env: dispatchHuman.secretEnv });
+  expectExitCode("task execution dispatch human eligible exited nonzero", eligibleDispatchHuman, 0);
+  for (const forbiddenText of [
+    "cli-smoke-secret",
+    "completed",
+    "safeToRetry",
+    "verified",
+    "Authorization",
+    "Bearer",
+  ]) {
+    expectOutputExcludes(
+      `task execution dispatch human leaked ${forbiddenText}`,
+      eligibleDispatchHuman,
+      forbiddenText,
+    );
+  }
+
+  const unknownProfile = createTrustedDispatchProfile({
+    providerProfileId: "trusted-cli-unknown",
+    outcomeStatus: "outcome_unknown",
+  });
+  const dispatchUnknown = await createDispatchCliFixture({
+    rootPrefix: "aeos-cli-dispatch-unknown-",
+    taskId: "TASK-CLI-DISPATCH-UNKNOWN",
+    profile: unknownProfile,
+  });
+  const unknownDispatchJson = runCliFrom(dispatchUnknown.rootPath, [
+    "task",
+    "execution",
+    "dispatch",
+    dispatchUnknown.taskId,
+    "--invocation-id",
+    dispatchUnknown.invocation.invocationId,
+    "--expected-revision",
+    "1",
+    "--provider-profile",
+    unknownProfile.providerProfileId,
+    "--json",
+  ], { env: dispatchUnknown.secretEnv });
+  expectExitCode("task execution dispatch unknown outcome exited nonzero", unknownDispatchJson, 0);
+  const parsedUnknownDispatchJson = parseJsonOnlyStdout(
+    "task execution dispatch unknown outcome output was not valid JSON only",
+    unknownDispatchJson,
+  );
+  expectTaskExecutionDispatchSuccessJsonShape(
+    "task execution dispatch unknown outcome shape was invalid",
+    parsedUnknownDispatchJson,
+    unknownDispatchJson,
+  );
+  if (
+    parsedUnknownDispatchJson.status !== "production_dispatch_outcome_unknown" ||
+    parsedUnknownDispatchJson.providerOutcomeKnown !== false ||
+    parsedUnknownDispatchJson.reconciliationRequired !== true
+  ) {
+    fail("task execution dispatch unknown outcome did not require reconciliation", unknownDispatchJson);
+  }
+  const repeatedUnknownDispatchJson = runCliFrom(dispatchUnknown.rootPath, [
+    "task",
+    "execution",
+    "dispatch",
+    dispatchUnknown.taskId,
+    "--invocation-id",
+    dispatchUnknown.invocation.invocationId,
+    "--expected-revision",
+    "1",
+    "--provider-profile",
+    unknownProfile.providerProfileId,
+    "--json",
+  ], { env: dispatchUnknown.secretEnv });
+  expectNonzero("task execution dispatch repeated unknown exited zero", repeatedUnknownDispatchJson);
+  const parsedRepeatedUnknownDispatchJson = parseJsonOnlyStdout(
+    "task execution dispatch repeated unknown output was not valid JSON only",
+    repeatedUnknownDispatchJson,
+  );
+  expectTaskExecutionDispatchErrorJsonShape(
+    "task execution dispatch repeated unknown did not fail closed",
+    parsedRepeatedUnknownDispatchJson,
+    "task_execution_dispatch_invocation_already_consumed",
+    repeatedUnknownDispatchJson,
+  );
+  const unknownPersistedInvocationAfterRepeat = JSON.parse(
+    readFileSync(dispatchUnknown.invocationPath, "utf8"),
+  );
+  if (unknownPersistedInvocationAfterRepeat.lifecycle !== "outcome_unknown") {
+    fail("task execution dispatch repeated unknown redispatched or changed outcome", repeatedUnknownDispatchJson);
+  }
+
+  const canonicalDispatchWorkItems = Array.from({ length: 400 }, (_, index) => ({
+    id: `dispatch-canonical-work-${index + 1}`,
+    state: index < 20 ? "failed" : "pending",
+    batchId: "dispatch-canonical-batch",
+  }));
+  const dispatchCanonical = await createDispatchCliFixture({
+    rootPrefix: "aeos-cli-dispatch-canonical-",
+    taskId: "TASK-CLI-DISPATCH-CANONICAL-400-20",
+    stateOverrides: {
+      workItems: canonicalDispatchWorkItems,
+      batches: [
+        {
+          id: "dispatch-canonical-batch",
+          workItemIds: canonicalDispatchWorkItems.map((workItem) => workItem.id),
+          expectedItemCount: 400,
+          completedCount: 0,
+          failedCount: 20,
+          skippedCount: 0,
+          retryableCount: 0,
+        },
+      ],
+      pendingWorkItemIds: canonicalDispatchWorkItems
+        .filter((workItem) => workItem.state === "pending")
+        .map((workItem) => workItem.id),
+      retryableWorkItemIds: [],
+      currentBatchId: "dispatch-canonical-batch",
+      nextBatchId: "dispatch-canonical-batch",
+      plan: {
+        status: "planned",
+        summary: {
+          workItemCount: 400,
+          batchCount: 1,
+          stepCount: 1,
+          verifierRequired: true,
+          approvalRequired: false,
+          issueCount: 0,
+        },
+      },
+    },
+  });
+  const canonicalDispatchJson = runCliFrom(dispatchCanonical.rootPath, [
+    "task",
+    "execution",
+    "dispatch",
+    dispatchCanonical.taskId,
+    "--invocation-id",
+    dispatchCanonical.invocation.invocationId,
+    "--expected-revision",
+    "1",
+    "--provider-profile",
+    dispatchCanonical.profile.providerProfileId,
+    "--json",
+  ], { env: dispatchCanonical.secretEnv });
+  expectExitCode("400/20 task execution dispatch exited nonzero", canonicalDispatchJson, 0);
+  const parsedCanonicalDispatchJson = parseJsonOnlyStdout(
+    "400/20 task execution dispatch output was not valid JSON only",
+    canonicalDispatchJson,
+  );
+  expectTaskExecutionDispatchSuccessJsonShape(
+    "400/20 task execution dispatch shape was invalid",
+    parsedCanonicalDispatchJson,
+    canonicalDispatchJson,
+  );
+  const dispatchCanonicalStateAfter = JSON.parse(
+    readFileSync(dispatchCanonical.statePath, "utf8"),
+  );
+  if (
+    dispatchCanonicalStateAfter.workItems.length !== 400 ||
+    dispatchCanonicalStateAfter.pendingWorkItemIds.length !== 380 ||
+    dispatchCanonicalStateAfter.batches[0]?.failedCount !== 20 ||
+    dispatchCanonicalStateAfter.completionGate.completed !== false ||
+    dispatchCanonicalStateAfter.completionGate.verified !== false ||
+    dispatchCanonicalStateAfter.safety.completed !== false ||
+    dispatchCanonicalStateAfter.safety.verified !== false
+  ) {
+    fail("400/20 task execution dispatch mutated work accounting or completion", canonicalDispatchJson);
+  }
 
   const startApprovalFlagJson = runCliFrom(taskStateCliRoot, [
     "task",

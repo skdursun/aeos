@@ -9,19 +9,27 @@ import {
   evaluateTaskStateTransition,
   evaluateTaskExecutionInvocationReconciliation,
   createTaskExecutionPolicyApprovalRecord,
+  authorizeTaskExecutionProductionDispatch,
+  dispatchTaskExecutionProductionProvider,
   deriveTaskExecutionPolicyGateId,
+  evaluateTaskExecutionPermissionGate,
+  loadTaskExecutionAuditEvents,
   loadTaskExecutionAttempt,
   loadTaskExecutionInvocation,
   loadTaskExecutionInvocationStatus,
   loadTaskExecutionPolicyApprovalForContext,
+  loadTaskExecutionTrustedProductionProviderProfile,
   loadTaskResumeHandoff,
   loadTaskState,
   mapTaskContractToRunnerPlanningInput,
   parseTaskPlanInputFile,
   planAgenticRunner,
   prepareTaskExecutionAttempt,
+  prepareTaskExecutionProductionDispatch,
+  resolveTaskExecutionCredential,
   runAgenticRunnerDryRun,
   runInitPipeline,
+  sanitizeTaskExecutionCredentialResult,
   saveTaskExecutionAttempt,
   saveTaskExecutionPolicyApproval,
   saveTaskState,
@@ -29,6 +37,7 @@ import {
   transitionPersistedTaskState,
   updateTaskExecutionAttempt,
   validateAeosTask,
+  TASK_EXECUTION_PRODUCTION_DISPATCH_BOUNDARY,
 } from "@aeos/core";
 import type {
   AgenticRunnerDryRunInput,
@@ -131,6 +140,8 @@ Commands:
   task execution policy deny <task-id> --invocation-id <invocation-id> --expected-revision <number> --json
   task execution policy status <task-id> --invocation-id <invocation-id> --expected-revision <number>
   task execution policy status <task-id> --invocation-id <invocation-id> --expected-revision <number> --json
+  task execution dispatch <task-id> --invocation-id <invocation-id> --expected-revision <number> [--provider-profile <trusted-profile-id>]
+  task execution dispatch <task-id> --invocation-id <invocation-id> --expected-revision <number> [--provider-profile <trusted-profile-id>] --json
   task status <task-id>
   task status <task-id> --json
   task resume --preview <task-id>
@@ -737,6 +748,72 @@ type TaskExecutionInvocationStatusJsonOutput =
         readonly category: string;
       };
       readonly safety: TaskExecutionInvocationStatusSafety;
+      readonly issues: readonly TaskStateCliIssue[];
+    };
+
+type TaskExecutionProductionDispatchSafety = {
+  readonly providerCalled: boolean;
+  readonly oneShotAuthorityConsumed: boolean;
+  readonly invocationModified: boolean;
+  readonly taskModified: false;
+  readonly attemptModified: false;
+  readonly workCompleted: false;
+  readonly taskCompleted: false;
+  readonly verifierRun: false;
+  readonly completionAuthority: false;
+  readonly rawSecretRendered: false;
+  readonly ownershipSecretRendered: false;
+  readonly blindRetry: false;
+  readonly automatedRealProviderCall: false;
+};
+
+type TaskExecutionProductionDispatchJsonOutput =
+  | {
+      readonly ok: true;
+      readonly status:
+        | "production_dispatch_returned"
+        | "production_dispatch_failed"
+        | "production_dispatch_outcome_unknown";
+      readonly taskId: string;
+      readonly invocationId: string;
+      readonly providerProfileId: string;
+      readonly providerProfileKind: string;
+      readonly realCallReady: boolean;
+      readonly dispatchDecision: string;
+      readonly invocationLifecycle: string | null;
+      readonly invocationRevision: number | null;
+      readonly providerOutcomeKnown: boolean;
+      readonly reconciliationRequired: boolean;
+      readonly postDispatchAuditWritten: boolean;
+      readonly productionCompletionReady: false;
+      readonly safety: TaskExecutionProductionDispatchSafety;
+      readonly issues: readonly TaskStateCliIssue[];
+    }
+  | {
+      readonly ok: false;
+      readonly status:
+        | "invalid_arguments"
+        | "failed_to_load"
+        | "task_state_revision_conflict"
+        | "production_dispatch_blocked";
+      readonly taskId: string;
+      readonly invocationId: string | null;
+      readonly providerProfileId: string | null;
+      readonly providerProfileKind: string | null;
+      readonly realCallReady: false;
+      readonly dispatchDecision: string | null;
+      readonly invocationLifecycle: string | null;
+      readonly invocationRevision: number | null;
+      readonly providerOutcomeKnown: false;
+      readonly reconciliationRequired: boolean;
+      readonly postDispatchAuditWritten: false;
+      readonly productionCompletionReady: false;
+      readonly error: {
+        readonly code: string;
+        readonly message: string;
+        readonly category: string;
+      };
+      readonly safety: TaskExecutionProductionDispatchSafety;
       readonly issues: readonly TaskStateCliIssue[];
     };
 
@@ -4179,6 +4256,1003 @@ function printTaskExecutionInvocationStatusError(
   console.error("Task completed: false");
 }
 
+const taskExecutionProductionDispatchBlockedSafety:
+  TaskExecutionProductionDispatchSafety = {
+    providerCalled: false,
+    oneShotAuthorityConsumed: false,
+    invocationModified: false,
+    taskModified: false,
+    attemptModified: false,
+    workCompleted: false,
+    taskCompleted: false,
+    verifierRun: false,
+    completionAuthority: false,
+    rawSecretRendered: false,
+    ownershipSecretRendered: false,
+    blindRetry: false,
+    automatedRealProviderCall: false,
+  };
+
+function writeTaskExecutionProductionDispatchJson(
+  output: TaskExecutionProductionDispatchJsonOutput,
+): void {
+  writeJsonLine(output);
+}
+
+function createTaskExecutionProductionDispatchErrorJsonOutput(input: {
+  readonly taskId: string;
+  readonly invocationId?: string | null;
+  readonly providerProfileId?: string | null;
+  readonly providerProfileKind?: string | null;
+  readonly dispatchDecision?: string | null;
+  readonly invocationLifecycle?: string | null;
+  readonly invocationRevision?: number | null;
+  readonly reconciliationRequired?: boolean;
+  readonly error: AeosError;
+  readonly status?: Extract<
+    TaskExecutionProductionDispatchJsonOutput,
+    { readonly ok: false }
+  >["status"];
+}): Extract<TaskExecutionProductionDispatchJsonOutput, { readonly ok: false }> {
+  return {
+    ok: false,
+    status: input.status ?? "production_dispatch_blocked",
+    taskId: input.taskId,
+    invocationId: input.invocationId ?? null,
+    providerProfileId: input.providerProfileId ?? null,
+    providerProfileKind: input.providerProfileKind ?? null,
+    realCallReady: false,
+    dispatchDecision: input.dispatchDecision ?? null,
+    invocationLifecycle: input.invocationLifecycle ?? null,
+    invocationRevision: input.invocationRevision ?? null,
+    providerOutcomeKnown: false,
+    reconciliationRequired: input.reconciliationRequired ?? false,
+    postDispatchAuditWritten: false,
+    productionCompletionReady: false,
+    error: {
+      code: input.error.code,
+      message: input.error.message,
+      category: input.error.category,
+    },
+    safety: taskExecutionProductionDispatchBlockedSafety,
+    issues: [createTaskStateCliIssueFromError(input.error)],
+  };
+}
+
+function printTaskExecutionProductionDispatchOutput(
+  output: Extract<TaskExecutionProductionDispatchJsonOutput, { readonly ok: true }>,
+): void {
+  console.log("Execution Production Dispatch");
+  console.log("");
+  console.log(`Task id: ${output.taskId}`);
+  console.log(`Invocation id: ${output.invocationId}`);
+  console.log(`Provider profile: ${output.providerProfileId}`);
+  console.log(`Profile kind: ${output.providerProfileKind}`);
+  console.log(`Status: ${output.status}`);
+  console.log(`Dispatch decision: ${output.dispatchDecision}`);
+  console.log(`Invocation lifecycle: ${output.invocationLifecycle ?? "unknown"}`);
+  console.log(`Provider outcome known: ${String(output.providerOutcomeKnown)}`);
+  console.log(
+    `Reconciliation required: ${String(output.reconciliationRequired)}`,
+  );
+  console.log(
+    `Post-dispatch audit written: ${String(output.postDispatchAuditWritten)}`,
+  );
+  console.log(`Production completion ready: false`);
+  console.log(`Provider called: ${String(output.safety.providerCalled)}`);
+  console.log("Raw secret rendered: false");
+  console.log("Ownership secret rendered: false");
+}
+
+function printTaskExecutionProductionDispatchError(
+  output: Extract<TaskExecutionProductionDispatchJsonOutput, { readonly ok: false }>,
+): void {
+  console.error("Execution Production Dispatch");
+  console.error(`Task id: ${output.taskId}`);
+  console.error(`Invocation id: ${output.invocationId ?? "none"}`);
+  console.error(`Provider profile: ${output.providerProfileId ?? "none"}`);
+  console.error(`Status: ${output.status}`);
+  console.error(`Error: ${output.error.code}`);
+  console.error(`Message: ${output.error.message}`);
+  console.error(`Provider called: false`);
+  console.error(`Task completed: false`);
+  console.error(`Raw secret rendered: false`);
+  console.error(`Ownership secret rendered: false`);
+}
+
+function parseTaskExecutionDispatchArgs(args: readonly string[]): {
+  readonly json: boolean;
+  readonly taskId?: string;
+  readonly invocationId?: string;
+  readonly expectedRevision?: string;
+  readonly providerProfileId: string;
+  readonly error?: AeosError;
+} {
+  let json = false;
+  let taskId: string | undefined;
+  let invocationId: string | undefined;
+  let expectedRevision: string | undefined;
+  let providerProfileId = "default";
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+
+    if (arg === "--invocation-id") {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        return {
+          json,
+          taskId,
+          invocationId,
+          expectedRevision,
+          providerProfileId,
+          error: createTaskStateCliError({
+            code: "task_execution_dispatch_invocation_id_required",
+            message:
+              "Task execution dispatch requires --invocation-id <invocation-id>.",
+          }),
+        };
+      }
+      if (invocationId !== undefined) {
+        return {
+          json,
+          taskId,
+          invocationId,
+          expectedRevision,
+          providerProfileId,
+          error: createTaskStateCliError({
+            code: "task_execution_dispatch_duplicate_invocation_id",
+            message: "Task execution dispatch accepts one invocation id.",
+          }),
+        };
+      }
+      invocationId = value;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--expected-revision") {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        return {
+          json,
+          taskId,
+          invocationId,
+          expectedRevision,
+          providerProfileId,
+          error: createTaskStateCliError({
+            code: "task_execution_dispatch_expected_revision_required",
+            message:
+              "Task execution dispatch requires --expected-revision <number>.",
+          }),
+        };
+      }
+      if (expectedRevision !== undefined) {
+        return {
+          json,
+          taskId,
+          invocationId,
+          expectedRevision,
+          providerProfileId,
+          error: createTaskStateCliError({
+            code: "task_execution_dispatch_duplicate_expected_revision",
+            message: "Task execution dispatch accepts one expected revision.",
+          }),
+        };
+      }
+      expectedRevision = value;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--provider-profile") {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        return {
+          json,
+          taskId,
+          invocationId,
+          expectedRevision,
+          providerProfileId,
+          error: createTaskStateCliError({
+            code: "task_execution_dispatch_provider_profile_required",
+            message:
+              "Task execution dispatch requires --provider-profile <trusted-profile-id> when the default profile is not used.",
+          }),
+        };
+      }
+      providerProfileId = value;
+      index += 1;
+      continue;
+    }
+
+    if (
+      arg === "--endpoint" ||
+      arg === "--url" ||
+      arg === "--provider-url"
+    ) {
+      return {
+        json,
+        taskId,
+        invocationId,
+        expectedRevision,
+        providerProfileId,
+        error: createTaskStateCliError({
+          code: "task_execution_dispatch_arbitrary_endpoint_forbidden",
+          message:
+            "Task execution dispatch does not accept arbitrary provider endpoints.",
+          category: "permission",
+        }),
+      };
+    }
+
+    if (
+      arg === "--api-key" ||
+      arg === "--token" ||
+      arg === "--secret" ||
+      arg === "--credential-value"
+    ) {
+      return {
+        json,
+        taskId,
+        invocationId,
+        expectedRevision,
+        providerProfileId,
+        error: createTaskStateCliError({
+          code: "task_execution_dispatch_raw_credential_forbidden",
+          message:
+            "Task execution dispatch does not accept raw credentials.",
+          category: "permission",
+        }),
+      };
+    }
+
+    if (
+      arg === "--force" ||
+      arg === "--production" ||
+      arg === "--production=true" ||
+      arg === "--safe-to-retry" ||
+      arg === "--completed"
+    ) {
+      return {
+        json,
+        taskId,
+        invocationId,
+        expectedRevision,
+        providerProfileId,
+        error: createTaskStateCliError({
+          code: "task_execution_dispatch_authority_override_forbidden",
+          message:
+            "Task execution dispatch does not accept force, completion, retry, or production override authority.",
+          category: "permission",
+        }),
+      };
+    }
+
+    if (arg.startsWith("--")) {
+      return {
+        json,
+        taskId,
+        invocationId,
+        expectedRevision,
+        providerProfileId,
+        error: createTaskStateCliError({
+          code: "task_execution_dispatch_unknown_option",
+          message: "Unknown task execution dispatch option.",
+        }),
+      };
+    }
+
+    if (taskId !== undefined) {
+      return {
+        json,
+        taskId,
+        invocationId,
+        expectedRevision,
+        providerProfileId,
+        error: createTaskStateCliError({
+          code: "task_execution_dispatch_duplicate_task_id",
+          message: "Task execution dispatch accepts one task id.",
+        }),
+      };
+    }
+
+    taskId = arg;
+  }
+
+  return {
+    json,
+    taskId,
+    invocationId,
+    expectedRevision,
+    providerProfileId,
+  };
+}
+
+function parseExpectedDispatchRevision(value: string | undefined):
+  | { readonly ok: true; readonly value: number }
+  | { readonly ok: false; readonly error: AeosError } {
+  if (value === undefined) {
+    return {
+      ok: false,
+      error: createTaskStateCliError({
+        code: "task_execution_dispatch_expected_revision_required",
+        message:
+          "Task execution dispatch requires --expected-revision <number>.",
+      }),
+    };
+  }
+
+  const revision = Number(value);
+  if (!Number.isInteger(revision) || revision <= 0) {
+    return {
+      ok: false,
+      error: createTaskStateCliError({
+        code: "task_execution_dispatch_expected_revision_invalid",
+        message:
+          "Task execution dispatch expected revision must be a positive integer.",
+      }),
+    };
+  }
+
+  return { ok: true, value: revision };
+}
+
+function errorFromIssue(input: {
+  readonly code: string;
+  readonly message: string;
+  readonly category?: AeosError["category"];
+}): AeosError {
+  return createTaskStateCliError({
+    code: input.code,
+    message: input.message,
+    category: input.category ?? "validation",
+  });
+}
+
+function findPreDispatchAuditEvent(input: {
+  readonly events: readonly unknown[];
+  readonly taskId: string;
+  readonly invocationId: string;
+  readonly adapterId: string;
+  readonly credentialResolutionReference: string | null;
+  readonly policyDecisionReference: string | null;
+}): unknown | undefined {
+  return [...input.events].reverse().find((event) => {
+    if (typeof event !== "object" || event === null) {
+      return false;
+    }
+    const record = event as {
+      readonly eventKind?: unknown;
+      readonly taskId?: unknown;
+      readonly invocationId?: unknown;
+      readonly adapter?: {
+        readonly adapterId?: unknown;
+      };
+      readonly credential?: {
+        readonly credentialResolutionReference?: unknown;
+      };
+      readonly policy?: {
+        readonly policyDecisionReference?: unknown;
+      };
+    };
+
+    return record.eventKind === "execution_invocation_dispatch_intent" &&
+      record.taskId === input.taskId &&
+      record.invocationId === input.invocationId &&
+      record.adapter?.adapterId === input.adapterId &&
+      (input.credentialResolutionReference === null ||
+        record.credential?.credentialResolutionReference ===
+          input.credentialResolutionReference) &&
+      (input.policyDecisionReference === null ||
+        record.policy?.policyDecisionReference ===
+          input.policyDecisionReference);
+  });
+}
+
+function runtimeFetch() {
+  const fetchFn = (globalThis as {
+    readonly fetch?: (
+      url: string,
+      init: {
+        readonly method: "POST";
+        readonly redirect?: "error";
+        readonly headers: Record<string, string>;
+        readonly body: string;
+      },
+    ) => Promise<{
+      readonly ok: boolean;
+      readonly status: number;
+      readonly headers: {
+        readonly get: (name: string) => string | null;
+      };
+      readonly text: () => Promise<string>;
+    }>;
+  }).fetch;
+
+  return fetchFn;
+}
+
+async function handleTaskExecutionDispatch(args: readonly string[]): Promise<void> {
+  const parsedArgs = parseTaskExecutionDispatchArgs(args);
+
+  function writeOrPrint(
+    output: TaskExecutionProductionDispatchJsonOutput,
+  ): void {
+    if (parsedArgs.json) {
+      writeTaskExecutionProductionDispatchJson(output);
+    } else if (output.ok) {
+      printTaskExecutionProductionDispatchOutput(output);
+    } else {
+      printTaskExecutionProductionDispatchError(output);
+    }
+  }
+
+  if (parsedArgs.error !== undefined) {
+    writeOrPrint(
+      createTaskExecutionProductionDispatchErrorJsonOutput({
+        taskId: parsedArgs.taskId ?? "",
+        invocationId: parsedArgs.invocationId ?? null,
+        providerProfileId: parsedArgs.providerProfileId,
+        error: parsedArgs.error,
+        status: "invalid_arguments",
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  if (parsedArgs.taskId === undefined || parsedArgs.taskId.trim().length === 0) {
+    writeOrPrint(
+      createTaskExecutionProductionDispatchErrorJsonOutput({
+        taskId: "",
+        invocationId: parsedArgs.invocationId ?? null,
+        providerProfileId: parsedArgs.providerProfileId,
+        error: createTaskStateCliError({
+          code: "task_execution_dispatch_task_id_required",
+          message: "Task execution dispatch requires a task id.",
+        }),
+        status: "invalid_arguments",
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  if (
+    parsedArgs.invocationId === undefined ||
+    parsedArgs.invocationId.trim().length === 0
+  ) {
+    writeOrPrint(
+      createTaskExecutionProductionDispatchErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: null,
+        providerProfileId: parsedArgs.providerProfileId,
+        error: createTaskStateCliError({
+          code: "task_execution_dispatch_invocation_id_required",
+          message:
+            "Task execution dispatch requires --invocation-id <invocation-id>.",
+        }),
+        status: "invalid_arguments",
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const expectedRevision = parseExpectedDispatchRevision(
+    parsedArgs.expectedRevision,
+  );
+  if (!expectedRevision.ok) {
+    writeOrPrint(
+      createTaskExecutionProductionDispatchErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        providerProfileId: parsedArgs.providerProfileId,
+        error: expectedRevision.error,
+        status: "invalid_arguments",
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const stateResult = await loadTaskState({
+    projectRoot: getCwd(),
+    taskId: parsedArgs.taskId,
+  });
+  if (!stateResult.ok) {
+    writeOrPrint(
+      createTaskExecutionProductionDispatchErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        providerProfileId: parsedArgs.providerProfileId,
+        error: stateResult.error,
+        status: "failed_to_load",
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  if (stateResult.value.state.revision !== expectedRevision.value) {
+    writeOrPrint(
+      createTaskExecutionProductionDispatchErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        providerProfileId: parsedArgs.providerProfileId,
+        error: createTaskStateRevisionConflictError({
+          expectedRevision: expectedRevision.value,
+          actualRevision: stateResult.value.state.revision,
+        }),
+        status: "task_state_revision_conflict",
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const invocationResult = await loadTaskExecutionInvocation({
+    projectRoot: getCwd(),
+    taskId: parsedArgs.taskId,
+    invocationId: parsedArgs.invocationId,
+  });
+  if (!invocationResult.ok) {
+    writeOrPrint(
+      createTaskExecutionProductionDispatchErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        providerProfileId: parsedArgs.providerProfileId,
+        error: invocationResult.error,
+        status: "failed_to_load",
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const invocation = invocationResult.value.record;
+  if (invocation.lifecycle !== "reserved") {
+    writeOrPrint(
+      createTaskExecutionProductionDispatchErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        providerProfileId: parsedArgs.providerProfileId,
+        invocationLifecycle: invocation.lifecycle,
+        invocationRevision: invocation.revision,
+        reconciliationRequired:
+          invocation.lifecycle === "invoking" ||
+          invocation.lifecycle === "outcome_unknown",
+        error: createTaskStateCliError({
+          code: "task_execution_dispatch_invocation_already_consumed",
+          message:
+            "Task execution dispatch can only consume one-shot authority for a current reserved invocation.",
+          category: "conflict",
+        }),
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const attemptResult = await loadTaskExecutionAttempt({
+    projectRoot: getCwd(),
+    taskId: invocation.taskId,
+    attemptId: invocation.attemptId,
+  });
+  if (!attemptResult.ok) {
+    writeOrPrint(
+      createTaskExecutionProductionDispatchErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        providerProfileId: parsedArgs.providerProfileId,
+        error: attemptResult.error,
+        status: "failed_to_load",
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const profileResult =
+    await loadTaskExecutionTrustedProductionProviderProfile({
+      projectRoot: getCwd(),
+      providerProfileId: parsedArgs.providerProfileId,
+      fetch: runtimeFetch(),
+    });
+  if (!profileResult.ok) {
+    writeOrPrint(
+      createTaskExecutionProductionDispatchErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        providerProfileId: parsedArgs.providerProfileId,
+        error: profileResult.error,
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const profile = profileResult.value;
+  const request = {
+    invocationId: invocation.invocationId,
+    idempotencyKey: invocation.idempotencyKey,
+    taskId: invocation.taskId,
+    sourceTaskRevision: invocation.taskStateRevision,
+    attemptId: invocation.attemptId,
+    attemptNumber: invocation.attemptNumber,
+    ...(invocation.workItemId === undefined
+      ? {}
+      : { workItemId: invocation.workItemId }),
+    ...(invocation.batchId === undefined ? {} : { batchId: invocation.batchId }),
+    operationKind: "execute_task_attempt" as const,
+    adapterIdentity: profile.adapterConfiguration.identity,
+    inputReference: `aeos://task/${invocation.taskId}/invocation/${invocation.invocationId}`,
+    ...(profile.adapterConfiguration.credentialReference === undefined
+      ? {}
+      : {
+          credentialReference:
+            profile.adapterConfiguration.credentialReference,
+        }),
+    permissionRequirements: profile.adapterConfiguration.permissions,
+  };
+  const policyGateIdResult = deriveTaskExecutionPolicyGateId({
+    taskId: invocation.taskId,
+    taskStateRevision: invocation.taskStateRevision,
+    attemptId: invocation.attemptId,
+    invocationId: invocation.invocationId,
+  });
+  if (!policyGateIdResult.ok) {
+    writeOrPrint(
+      createTaskExecutionProductionDispatchErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        providerProfileId: profile.providerProfileId,
+        providerProfileKind: profile.kind,
+        error: policyGateIdResult.error,
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const approvalBinding = {
+    policyGateId: policyGateIdResult.value,
+    taskId: invocation.taskId,
+    taskStateRevision: invocation.taskStateRevision,
+    attemptId: invocation.attemptId,
+    invocationId: invocation.invocationId,
+    adapterId: profile.adapterConfiguration.identity.adapterId,
+    operation: "execute_task_attempt" as const,
+    requiredPermissions: ["network" as const, "external_side_effect" as const],
+  };
+  const approvalResult = profile.adapterConfiguration.policyRequired
+    ? await loadTaskExecutionPolicyApprovalForContext({
+        projectRoot: getCwd(),
+        binding: approvalBinding,
+      })
+    : undefined;
+  if (profile.adapterConfiguration.policyRequired && approvalResult?.ok !== true) {
+    const error = approvalResult?.ok === false
+      ? approvalResult.error
+      : createTaskStateCliError({
+          code: "task_execution_dispatch_policy_approval_missing",
+          message:
+            "Task execution dispatch requires a durable exact-context policy approval.",
+          category: "policy",
+        });
+    writeOrPrint(
+      createTaskExecutionProductionDispatchErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        providerProfileId: profile.providerProfileId,
+        providerProfileKind: profile.kind,
+        error,
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const permissionGate = evaluateTaskExecutionPermissionGate({
+    request,
+    adapterIdentity: profile.adapterConfiguration.identity,
+    adapterCapabilities: profile.adapterConfiguration.capabilities,
+    adapterPermissions: profile.adapterConfiguration.permissions,
+    operationKind: "execute_task_attempt",
+    policyRequirement: {
+      required: profile.adapterConfiguration.policyRequired,
+      policyGateId: policyGateIdResult.value,
+      referenceId: policyGateIdResult.value,
+      authority: "system",
+    },
+    ...(approvalResult?.ok === true
+      ? { policyAuthorizationProof: approvalResult.value.proof }
+      : {}),
+    credentialReferenceRequired:
+      profile.adapterConfiguration.credentialRequired,
+    auditRequired: true,
+  });
+  if (!permissionGate.allowed) {
+    const gateIssue = permissionGate.issues.find(
+      (item) => item.severity === "error",
+    );
+    writeOrPrint(
+      createTaskExecutionProductionDispatchErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        providerProfileId: profile.providerProfileId,
+        providerProfileKind: profile.kind,
+        error: errorFromIssue({
+          code: gateIssue?.code ?? "task_execution_dispatch_permission_denied",
+          message:
+            gateIssue?.message ??
+            "Task execution dispatch permission gate denied this invocation.",
+          category: gateIssue?.category,
+        }),
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const credentialResult = await resolveTaskExecutionCredential({
+    request,
+    permissionGateResult: permissionGate,
+    credentialRequired: profile.adapterConfiguration.credentialRequired,
+    provider: profile.credentialProvider,
+    credentialReference: profile.adapterConfiguration.credentialReference,
+    requiredCredentialScope: profile.credentialScope,
+  });
+  if (
+    !credentialResult.ok ||
+    (profile.adapterConfiguration.credentialRequired &&
+      credentialResult.resolvedCredential === undefined)
+  ) {
+    const credentialIssue = credentialResult.issues.find(
+      (item) => item.severity === "error",
+    );
+    writeOrPrint(
+      createTaskExecutionProductionDispatchErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        providerProfileId: profile.providerProfileId,
+        providerProfileKind: profile.kind,
+        error: errorFromIssue({
+          code:
+            credentialIssue?.code ??
+            "task_execution_dispatch_credential_missing",
+          message:
+            credentialIssue?.message ??
+            "Task execution dispatch requires a resolved ephemeral credential.",
+          category: credentialIssue?.category ?? "permission",
+        }),
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const auditResult = await loadTaskExecutionAuditEvents({
+    projectRoot: getCwd(),
+    taskId: invocation.taskId,
+  });
+  const preDispatchAudit = auditResult.ok
+    ? findPreDispatchAuditEvent({
+        events: auditResult.value.events,
+        taskId: invocation.taskId,
+        invocationId: invocation.invocationId,
+        adapterId: profile.adapterConfiguration.identity.adapterId,
+        credentialResolutionReference:
+          credentialResult.resolutionReference ?? null,
+        policyDecisionReference:
+          approvalResult?.ok === true
+            ? approvalResult.value.status.approvalId
+            : null,
+      })
+    : undefined;
+  if (preDispatchAudit === undefined) {
+    writeOrPrint(
+      createTaskExecutionProductionDispatchErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        providerProfileId: profile.providerProfileId,
+        providerProfileKind: profile.kind,
+        error: createTaskStateCliError({
+          code: "task_execution_dispatch_pre_dispatch_audit_missing",
+          message:
+            "Task execution dispatch requires an existing durable pre-dispatch audit event.",
+          category: "unknown",
+        }),
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const prepared = prepareTaskExecutionProductionDispatch({
+    configuration: profile.adapterConfiguration,
+    request,
+    invocationRecord: invocation,
+    permissionGateResult: permissionGate,
+    credentialResolutionResult: credentialResult,
+    preDispatchAuditEvent: preDispatchAudit,
+    forbiddenCredentialValues:
+      credentialResult.resolvedCredential === undefined
+        ? []
+        : [credentialResult.resolvedCredential.value],
+  });
+  if (!prepared.ProductionDispatchPrepared || prepared.preparedDispatch === null) {
+    const adapterIssue = prepared.issues.find(
+      (item) => item.severity === "error",
+    );
+    writeOrPrint(
+      createTaskExecutionProductionDispatchErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        providerProfileId: profile.providerProfileId,
+        providerProfileKind: profile.kind,
+        error: errorFromIssue({
+          code:
+            adapterIssue?.code ??
+            "task_execution_dispatch_preparation_blocked",
+          message:
+            adapterIssue?.message ??
+            "Task execution dispatch preparation failed closed.",
+          category: adapterIssue?.category,
+        }),
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const authorization = await authorizeTaskExecutionProductionDispatch({
+    state: stateResult.value.state,
+    attempt: attemptResult.value.attempt,
+    invocationRecord: invocation,
+    preparedDispatch: prepared.preparedDispatch,
+    adapterReadiness: prepared,
+    providerConformance: profile.providerConformance,
+    permissionGateResult: permissionGate,
+    policyApprovalStatus:
+      approvalResult?.ok === true ? approvalResult.value.status : undefined,
+    credentialResolutionResult:
+      sanitizeTaskExecutionCredentialResult(credentialResult),
+    preDispatchAuditEvent: preDispatchAudit,
+    latestAttemptNumberForContext: invocation.attemptNumber,
+    expectedInvocationRevision: invocation.revision,
+    projectRoot: getCwd(),
+  });
+  if (!authorization.invocationTransitioned) {
+    const authIssue = authorization.issues.find(
+      (item) => item.severity === "error",
+    );
+    writeOrPrint(
+      createTaskExecutionProductionDispatchErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        providerProfileId: profile.providerProfileId,
+        providerProfileKind: profile.kind,
+        dispatchDecision: authorization.decision,
+        invocationLifecycle: authorization.invocation.lifecycle,
+        invocationRevision: authorization.invocation.revision,
+        error: errorFromIssue({
+          code:
+            authIssue?.code ??
+            "task_execution_dispatch_authorization_blocked",
+          message:
+            authIssue?.message ??
+            "Task execution dispatch authorization did not reach the durable invoking boundary.",
+          category: authIssue?.category,
+        }),
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const oneShotAuthority = {
+    authority: "system_operator" as const,
+    purpose: "one_shot_production_dispatch" as const,
+    operatorInitiated: true as const,
+    taskId: prepared.preparedDispatch.taskId,
+    taskRevision: prepared.preparedDispatch.sourceTaskRevision,
+    attemptId: prepared.preparedDispatch.attemptId,
+    invocationId: prepared.preparedDispatch.invocationId,
+    invocationRevision: authorization.persistedInvocation!.revision,
+    idempotencyKey: prepared.preparedDispatch.idempotencyKey,
+    adapterId: prepared.preparedDispatch.adapterId,
+    providerRef: prepared.preparedDispatch.provider.providerRef,
+    operation: "execute_task_attempt" as const,
+    boundary: "EXTERNAL_PROVIDER_CALL" as const,
+    issuedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    nonce: `operator-cli:${prepared.preparedDispatch.invocationId}:${authorization.persistedInvocation!.revision}`,
+    consumed: false as const,
+  };
+  const providerDispatch = await dispatchTaskExecutionProductionProvider({
+    projectRoot: getCwd(),
+    invocationRecord: invocation,
+    preparedDispatch: prepared.preparedDispatch,
+    dispatchAuthorization: authorization,
+    oneShotAuthority,
+    transport: profile.transport,
+    credential:
+      credentialResult.resolvedCredential === undefined
+        ? undefined
+        : {
+            kind: credentialResult.resolvedCredential.kind,
+            value: credentialResult.resolvedCredential.value,
+            resolutionReference:
+              credentialResult.resolutionReference ??
+              credentialResult.resolvedCredential.resolutionReference ??
+              "",
+          },
+    forbiddenCredentialValues:
+      credentialResult.resolvedCredential === undefined
+        ? []
+        : [credentialResult.resolvedCredential.value],
+  });
+
+  const output: Extract<
+    TaskExecutionProductionDispatchJsonOutput,
+    { readonly ok: true }
+  > = {
+    ok: true,
+    status:
+      providerDispatch.status === "provider_returned"
+        ? "production_dispatch_returned"
+        : providerDispatch.status === "provider_failed"
+          ? "production_dispatch_failed"
+          : "production_dispatch_outcome_unknown",
+    taskId: invocation.taskId,
+    invocationId: invocation.invocationId,
+    providerProfileId: profile.providerProfileId,
+    providerProfileKind: profile.kind,
+    realCallReady: profile.realCallReady,
+    dispatchDecision: authorization.decision,
+    invocationLifecycle: providerDispatch.invocationLifecycle,
+    invocationRevision: providerDispatch.invocationRevision,
+    providerOutcomeKnown:
+      providerDispatch.status === "provider_returned" ||
+      providerDispatch.status === "provider_failed",
+    reconciliationRequired: providerDispatch.reconciliationRequired,
+    postDispatchAuditWritten: providerDispatch.postDispatchAuditWritten,
+    productionCompletionReady: false,
+    safety: {
+      providerCalled: providerDispatch.providerCalled,
+      oneShotAuthorityConsumed: providerDispatch.oneShotAuthorityConsumed,
+      invocationModified: true,
+      taskModified: false,
+      attemptModified: false,
+      workCompleted: false,
+      taskCompleted: false,
+      verifierRun: false,
+      completionAuthority: false,
+      rawSecretRendered: false,
+      ownershipSecretRendered: false,
+      blindRetry: false,
+      automatedRealProviderCall: false,
+    },
+    issues: providerDispatch.issues.map((item) =>
+      createTaskStateCliIssue({
+        code: item.code,
+        message: item.message,
+        category: item.category,
+      }),
+    ),
+  };
+
+  writeOrPrint(output);
+  setExitCode(providerDispatch.providerCalled ? 0 : 1);
+}
+
 const taskExecutionInvocationPreviewSafety: TaskExecutionInvocationPreviewSafety = {
   readOnly: true,
   providerCalled: false,
@@ -7577,7 +8651,8 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
     args[0] !== "prepare" &&
     args[0] !== "start" &&
     args[0] !== "invocation" &&
-    args[0] !== "policy"
+    args[0] !== "policy" &&
+    args[0] !== "dispatch"
   ) {
     const json = args.includes("--json");
     const error = createTaskStateCliError({
@@ -7620,6 +8695,9 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
       console.error(
         "Usage: aeos task execution policy status <task-id> --invocation-id <invocation-id> --expected-revision <number> [--json]",
       );
+      console.error(
+        "Usage: aeos task execution dispatch <task-id> --invocation-id <invocation-id> --expected-revision <number> [--provider-profile <trusted-profile-id>] [--json]",
+      );
     }
 
     setExitCode(1);
@@ -7638,6 +8716,11 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
 
   if (args[0] === "policy") {
     await handleTaskExecutionPolicy(args.slice(1));
+    return;
+  }
+
+  if (args[0] === "dispatch") {
+    await handleTaskExecutionDispatch(args.slice(1));
     return;
   }
 

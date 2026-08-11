@@ -116,6 +116,8 @@ import {
   createTaskExecutionPolicyAuthorizationProofFromApproval,
   createEnvironmentReferenceCredentialProvider,
   authorizeTaskExecutionProductionDispatch,
+  createControlledHttpProductionProviderDispatchTransport,
+  dispatchTaskExecutionProductionProvider,
   evaluateTaskExecutionAdapterConformance,
   evaluateTaskExecutionProductionDispatchGate,
   evaluateTaskExecutionProductionCredentialProviderConfiguration,
@@ -20023,6 +20025,457 @@ try {
         "task execution production dispatch smoke P should persist invoking in the invocation store only",
       );
 
+      function createSmokeOneShotAuthority({
+        fixture,
+        authorization,
+        nonce,
+        consumed = false,
+        invocationId = fixture.dispatchRecord.invocationId,
+        invocationRevision = authorization.persistedInvocation.revision,
+      }) {
+        return {
+          authority: "system_operator",
+          purpose: "one_shot_production_dispatch",
+          operatorInitiated: true,
+          taskId: fixture.dispatchRecord.taskId,
+          taskRevision: fixture.dispatchRecord.taskStateRevision,
+          attemptId: fixture.dispatchRecord.attemptId,
+          invocationId,
+          invocationRevision,
+          idempotencyKey: fixture.dispatchRecord.idempotencyKey,
+          adapterId: fixture.dispatchPrepared.preparedDispatch.adapterId,
+          providerRef:
+            fixture.dispatchPrepared.preparedDispatch.provider.providerRef,
+          operation: "execute_task_attempt",
+          boundary: TASK_EXECUTION_PRODUCTION_DISPATCH_BOUNDARY,
+          issuedAt: "2026-08-08T01:03:01.000Z",
+          expiresAt: "2026-08-08T01:04:01.000Z",
+          nonce,
+          consumed,
+        };
+      }
+
+      function smokeCredentialForFixture(fixture) {
+        return {
+          kind: fixture.dispatchCredential.resolvedCredential.kind,
+          value: fixture.dispatchCredential.resolvedCredential.value,
+          resolutionReference: fixture.dispatchCredential.resolutionReference,
+        };
+      }
+
+      async function authorizeSmokeProductionFixture({
+        fixture,
+        latestAttemptNumber,
+        occurredAt,
+      }) {
+        return authorizeTaskExecutionProductionDispatch({
+          state: firstUpdate.value.state,
+          attempt: fixture.dispatchStartedAttempt,
+          invocationRecord: fixture.dispatchRecord,
+          preparedDispatch: fixture.dispatchPrepared.preparedDispatch,
+          adapterReadiness: fixture.dispatchPrepared,
+          providerConformance,
+          permissionGateResult: fixture.dispatchGate,
+          policyApprovalStatus: fixture.dispatchApprovalStatus,
+          credentialResolutionResult: sanitizeTaskExecutionCredentialResult(
+            fixture.dispatchCredential,
+          ),
+          preDispatchAuditEvent: fixture.dispatchAudit,
+          latestAttemptNumberForContext: latestAttemptNumber,
+          expectedInvocationRevision: fixture.dispatchRecord.revision,
+          projectRoot: fixture.dispatchRoot,
+          occurredAt,
+        });
+      }
+
+      let task0308FakeProviderCallCount = 0;
+      const task0308FakeTransport = {
+        dispatch: async (request) => {
+          task0308FakeProviderCallCount += 1;
+          assert.equal(
+            request.idempotencyKey,
+            dispatchFixture.dispatchRecord.idempotencyKey,
+            "task execution production provider dispatch smoke should propagate exact idempotency key",
+          );
+          assert.equal(
+            request.credential.value,
+            environmentFakeSecret,
+            "task execution production provider dispatch smoke should pass ephemeral credential only in memory",
+          );
+          return {
+            status: "returned",
+            providerInvocationRef: "provider-ref-task-0308-returned",
+            output: {
+              completed: true,
+              verified: true,
+              approved: true,
+              allDone: true,
+              safeToRetry: true,
+              taskCompleted: true,
+              policyAuthorized: true,
+              result: "provider returned invocation evidence only",
+              secretEcho: environmentFakeSecret,
+            },
+            outputReference: "provider-result-task-0308",
+            diagnosticCode: "provider_returned",
+            message: `provider returned without authority ${environmentFakeSecret}`,
+            metadata: {
+              safeToRetry: true,
+              providerInvocationRef: "provider-ref-task-0308-returned",
+            },
+            observedAt: "2026-08-08T01:03:05.000Z",
+          };
+        },
+      };
+
+      const missingOneShotDispatch =
+        await dispatchTaskExecutionProductionProvider({
+          projectRoot: dispatchFixture.dispatchRoot,
+          invocationRecord: dispatchFixture.dispatchRecord,
+          preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+          dispatchAuthorization,
+          transport: task0308FakeTransport,
+          credential: smokeCredentialForFixture(dispatchFixture),
+          forbiddenCredentialValues: [environmentFakeSecret],
+          occurredAt: "2026-08-08T01:03:05.000Z",
+        });
+      assert.equal(
+        missingOneShotDispatch.providerCalled,
+        false,
+        "task execution production provider dispatch smoke 0308-A should block without one-shot authority",
+      );
+      assert.equal(
+        task0308FakeProviderCallCount,
+        0,
+        "task execution production provider dispatch smoke 0308-A should not call transport without one-shot authority",
+      );
+
+      const consumedOneShotDispatch =
+        await dispatchTaskExecutionProductionProvider({
+          projectRoot: dispatchFixture.dispatchRoot,
+          invocationRecord: dispatchFixture.dispatchRecord,
+          preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+          dispatchAuthorization,
+          oneShotAuthority: createSmokeOneShotAuthority({
+            fixture: dispatchFixture,
+            authorization: dispatchAuthorization,
+            nonce: "task-0308-consumed",
+            consumed: true,
+          }),
+          transport: task0308FakeTransport,
+          credential: smokeCredentialForFixture(dispatchFixture),
+          forbiddenCredentialValues: [environmentFakeSecret],
+          occurredAt: "2026-08-08T01:03:05.000Z",
+        });
+      assert.equal(
+        consumedOneShotDispatch.providerCalled,
+        false,
+        "task execution production provider dispatch smoke 0308-B should block replayed one-shot authority",
+      );
+      assert.equal(
+        task0308FakeProviderCallCount,
+        0,
+        "task execution production provider dispatch smoke 0308-B should not call transport for replayed authority",
+      );
+
+      const task0308Returned =
+        await dispatchTaskExecutionProductionProvider({
+          projectRoot: dispatchFixture.dispatchRoot,
+          invocationRecord: dispatchFixture.dispatchRecord,
+          preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+          dispatchAuthorization,
+          oneShotAuthority: createSmokeOneShotAuthority({
+            fixture: dispatchFixture,
+            authorization: dispatchAuthorization,
+            nonce: "task-0308-returned",
+          }),
+          transport: task0308FakeTransport,
+          credential: smokeCredentialForFixture(dispatchFixture),
+          forbiddenCredentialValues: [environmentFakeSecret],
+          occurredAt: "2026-08-08T01:03:05.000Z",
+        });
+      assert.equal(
+        task0308Returned.status,
+        "provider_returned",
+        "task execution production provider dispatch smoke 0308-C should persist returned invocation evidence",
+      );
+      assert.equal(
+        task0308Returned.oneShotAuthorityConsumed,
+        true,
+        "task execution production provider dispatch smoke 0308-C should consume one-shot authority after crossing the boundary",
+      );
+      assert.equal(
+        task0308Returned.productionCompletionReady,
+        false,
+        "task execution production provider dispatch smoke 0308-C should not enable completion authority",
+      );
+      assert.equal(
+        task0308FakeProviderCallCount,
+        1,
+        "task execution production provider dispatch smoke 0308-C should make exactly one fake provider call",
+      );
+      const task0308ReturnedRecord = await loadTaskExecutionInvocation({
+        projectRoot: dispatchFixture.dispatchRoot,
+        taskId: dispatchFixture.dispatchRecord.taskId,
+        invocationId: dispatchFixture.dispatchRecord.invocationId,
+      });
+      assert.equal(
+        task0308ReturnedRecord.value.record.lifecycle,
+        "returned",
+        "task execution production provider dispatch smoke 0308-C should persist returned lifecycle",
+      );
+      assert.equal(
+        JSON.stringify(task0308ReturnedRecord.value.record).includes(
+          environmentFakeSecret,
+        ),
+        false,
+        "task execution production provider dispatch smoke 0308-C should not persist raw credential material",
+      );
+      assert.equal(
+        JSON.stringify(task0308ReturnedRecord.value.record.result.output).includes(
+          "completed",
+        ),
+        false,
+        "task execution production provider dispatch smoke 0308-C should strip hostile completion claims",
+      );
+      const task0308AuditEvents = await loadTaskExecutionAuditEvents({
+        projectRoot: dispatchFixture.dispatchRoot,
+        taskId: dispatchFixture.dispatchRecord.taskId,
+      });
+      assert.equal(
+        task0308AuditEvents.value.events.length,
+        2,
+        "task execution production provider dispatch smoke 0308-C should append bounded post-dispatch audit",
+      );
+      let controlledHttpCallCount = 0;
+      const controlledHttpTransport =
+        createControlledHttpProductionProviderDispatchTransport({
+          configuration: {
+            authority: "system",
+            providerRef:
+              dispatchFixture.dispatchPrepared.preparedDispatch.provider
+                .providerRef,
+            endpoint: "https://provider.example.test/aeos/dispatch",
+            timeoutMs: 1000,
+            maxRequestBytes: 4096,
+            maxResponseBytes: 4096,
+            credentialMode: "authorization_bearer",
+          },
+          fetch: async (url, init) => {
+            controlledHttpCallCount += 1;
+            assert.equal(
+              url,
+              "https://provider.example.test/aeos/dispatch",
+              "task execution controlled HTTP provider smoke should use system configured endpoint",
+            );
+            assert.equal(
+              init.headers["idempotency-key"],
+              dispatchFixture.dispatchRecord.idempotencyKey,
+              "task execution controlled HTTP provider smoke should propagate idempotency header",
+            );
+            assert.equal(
+              init.headers.authorization,
+              `Bearer ${environmentFakeSecret}`,
+              "task execution controlled HTTP provider smoke should use ephemeral bearer credential only in transport",
+            );
+            return {
+              ok: true,
+              status: 200,
+              headers: {
+                get: () => null,
+              },
+              text: async () =>
+                JSON.stringify({
+                  status: "returned",
+                  providerInvocationRef:
+                    "provider-ref-task-0308-controlled-http",
+                  output: {
+                    completed: true,
+                    result: "controlled http provider evidence",
+                  },
+                }),
+            };
+          },
+        });
+      const controlledHttpResult = await controlledHttpTransport.dispatch({
+        preparedDispatch: dispatchFixture.dispatchPrepared.preparedDispatch,
+        idempotencyKey: dispatchFixture.dispatchRecord.idempotencyKey,
+        providerRef:
+          dispatchFixture.dispatchPrepared.preparedDispatch.provider.providerRef,
+        credential: smokeCredentialForFixture(dispatchFixture),
+        input: {
+          instructionReference: "smoke://controlled-http-provider",
+        },
+      });
+      assert.equal(
+        controlledHttpResult.status,
+        "returned",
+        "task execution controlled HTTP provider smoke should normalize bounded returned response",
+      );
+      assert.equal(
+        controlledHttpCallCount,
+        1,
+        "task execution controlled HTTP provider smoke should perform one fake HTTP call",
+      );
+
+      const wrongOneShotFixture = await createProductionDispatchGateFixture({
+        attemptNumber: 57,
+        rootPrefix: "aeos-production-dispatch-wrong-oneshot-",
+      });
+      const wrongOneShotAuthorization = await authorizeSmokeProductionFixture({
+        fixture: wrongOneShotFixture,
+        latestAttemptNumber: 57,
+        occurredAt: "2026-08-08T01:03:07.000Z",
+      });
+      const wrongOneShotDispatch =
+        await dispatchTaskExecutionProductionProvider({
+          projectRoot: wrongOneShotFixture.dispatchRoot,
+          invocationRecord: wrongOneShotFixture.dispatchRecord,
+          preparedDispatch:
+            wrongOneShotFixture.dispatchPrepared.preparedDispatch,
+          dispatchAuthorization: wrongOneShotAuthorization,
+          oneShotAuthority: createSmokeOneShotAuthority({
+            fixture: wrongOneShotFixture,
+            authorization: wrongOneShotAuthorization,
+            nonce: "task-0308-wrong-invocation",
+            invocationId: "wrong-invocation-id",
+          }),
+          transport: task0308FakeTransport,
+          credential: smokeCredentialForFixture(wrongOneShotFixture),
+          forbiddenCredentialValues: [environmentFakeSecret],
+          occurredAt: "2026-08-08T01:03:08.000Z",
+        });
+      assert.equal(
+        wrongOneShotDispatch.providerCalled,
+        false,
+        "task execution production provider dispatch smoke 0308-D should block wrong invocation authority before transport",
+      );
+
+      let task0308UnknownCallCount = 0;
+      const timeoutFixture = await createProductionDispatchGateFixture({
+        attemptNumber: 58,
+        rootPrefix: "aeos-production-dispatch-timeout-",
+      });
+      const timeoutAuthorization = await authorizeSmokeProductionFixture({
+        fixture: timeoutFixture,
+        latestAttemptNumber: 58,
+        occurredAt: "2026-08-08T01:03:09.000Z",
+      });
+      const timeoutDispatch = await dispatchTaskExecutionProductionProvider({
+        projectRoot: timeoutFixture.dispatchRoot,
+        invocationRecord: timeoutFixture.dispatchRecord,
+        preparedDispatch: timeoutFixture.dispatchPrepared.preparedDispatch,
+        dispatchAuthorization: timeoutAuthorization,
+        oneShotAuthority: createSmokeOneShotAuthority({
+          fixture: timeoutFixture,
+          authorization: timeoutAuthorization,
+          nonce: "task-0308-timeout",
+        }),
+        transport: {
+          dispatch: async () => {
+            task0308UnknownCallCount += 1;
+            return {
+              status: "outcome_unknown",
+              code: "task_execution_production_provider_dispatch_timeout",
+              diagnostic: "provider timeout; status lookup required",
+              observedAt: "2026-08-08T01:03:10.000Z",
+            };
+          },
+        },
+        credential: smokeCredentialForFixture(timeoutFixture),
+        forbiddenCredentialValues: [environmentFakeSecret],
+        occurredAt: "2026-08-08T01:03:10.000Z",
+      });
+      assert.equal(
+        timeoutDispatch.status,
+        "provider_outcome_unknown",
+        "task execution production provider dispatch smoke 0308-E should persist provider timeout as outcome_unknown",
+      );
+      assert.equal(
+        timeoutDispatch.reconciliationRequired,
+        true,
+        "task execution production provider dispatch smoke 0308-E should require reconciliation for ambiguous provider timeout",
+      );
+      assert.equal(
+        task0308UnknownCallCount,
+        1,
+        "task execution production provider dispatch smoke 0308-E should not retry timeout transport",
+      );
+      const timeoutRecord = await loadTaskExecutionInvocation({
+        projectRoot: timeoutFixture.dispatchRoot,
+        taskId: timeoutFixture.dispatchRecord.taskId,
+        invocationId: timeoutFixture.dispatchRecord.invocationId,
+      });
+      assert.equal(
+        timeoutRecord.value.record.lifecycle,
+        "outcome_unknown",
+        "task execution production provider dispatch smoke 0308-E should leave ambiguous outcome for reconciliation",
+      );
+
+      let task0308PersistenceFailureCalls = 0;
+      const persistenceFailureFixture =
+        await createProductionDispatchGateFixture({
+          attemptNumber: 59,
+          rootPrefix: "aeos-production-dispatch-persist-failure-",
+        });
+      const persistenceFailureAuthorization =
+        await authorizeSmokeProductionFixture({
+          fixture: persistenceFailureFixture,
+          latestAttemptNumber: 59,
+          occurredAt: "2026-08-08T01:03:11.000Z",
+        });
+      const stalePersistenceAuthorization = {
+        ...persistenceFailureAuthorization,
+        persistedInvocation: {
+          ...persistenceFailureAuthorization.persistedInvocation,
+          revision:
+            persistenceFailureAuthorization.persistedInvocation.revision + 1,
+        },
+      };
+      const persistenceFailureDispatch =
+        await dispatchTaskExecutionProductionProvider({
+          projectRoot: persistenceFailureFixture.dispatchRoot,
+          invocationRecord: persistenceFailureFixture.dispatchRecord,
+          preparedDispatch:
+            persistenceFailureFixture.dispatchPrepared.preparedDispatch,
+          dispatchAuthorization: stalePersistenceAuthorization,
+          oneShotAuthority: createSmokeOneShotAuthority({
+            fixture: persistenceFailureFixture,
+            authorization: stalePersistenceAuthorization,
+            nonce: "task-0308-persist-failure",
+          }),
+          transport: {
+            dispatch: async () => {
+              task0308PersistenceFailureCalls += 1;
+              return {
+                status: "returned",
+                providerInvocationRef:
+                  "provider-ref-task-0308-persist-failure",
+                output: { result: "accepted before local persistence conflict" },
+                observedAt: "2026-08-08T01:03:12.000Z",
+              };
+            },
+          },
+          credential: smokeCredentialForFixture(persistenceFailureFixture),
+          forbiddenCredentialValues: [environmentFakeSecret],
+          occurredAt: "2026-08-08T01:03:12.000Z",
+        });
+      assert.equal(
+        persistenceFailureDispatch.status,
+        "outcome_persistence_failed",
+        "task execution production provider dispatch smoke 0308-F should report provider accepted plus local persistence uncertainty",
+      );
+      assert.equal(
+        persistenceFailureDispatch.reconciliationRequired,
+        true,
+        "task execution production provider dispatch smoke 0308-F should require reconciliation after local persistence uncertainty",
+      );
+      assert.equal(
+        task0308PersistenceFailureCalls,
+        1,
+        "task execution production provider dispatch smoke 0308-F should not retry after persistence uncertainty",
+      );
+
       const optionalAuditFixture = await createProductionDispatchGateFixture({
         attemptNumber: 53,
         rootPrefix: "aeos-production-dispatch-optional-audit-",
@@ -20659,6 +21112,41 @@ try {
         canonicalDispatchAuthorization.externalCallAllowed,
         false,
         "task execution production dispatch smoke AI should keep canonical 400/20 external calls disabled",
+      );
+      const canonicalProviderDispatch =
+        await dispatchTaskExecutionProductionProvider({
+          projectRoot: canonicalDispatchFixture.dispatchRoot,
+          invocationRecord: canonicalDispatchFixture.dispatchRecord,
+          preparedDispatch:
+            canonicalDispatchFixture.dispatchPrepared.preparedDispatch,
+          dispatchAuthorization: canonicalDispatchAuthorization,
+          oneShotAuthority: createSmokeOneShotAuthority({
+            fixture: canonicalDispatchFixture,
+            authorization: canonicalDispatchAuthorization,
+            nonce: "task-0308-canonical-400-20",
+          }),
+          transport: {
+            dispatch: async () => ({
+              status: "returned",
+              providerInvocationRef: "provider-ref-task-0308-400-20",
+              output: {
+                allDone: true,
+                taskCompleted: true,
+                verified: true,
+                approved: true,
+                result: "provider-shaped response is invocation evidence only",
+              },
+              observedAt: "2026-08-08T01:03:13.000Z",
+            }),
+          },
+          credential: smokeCredentialForFixture(canonicalDispatchFixture),
+          forbiddenCredentialValues: [environmentFakeSecret],
+          occurredAt: "2026-08-08T01:03:13.000Z",
+        });
+      assert.equal(
+        canonicalProviderDispatch.status,
+        "provider_returned",
+        "task execution production provider dispatch smoke 0308-G should allow a one-shot fake provider return for canonical 400/20",
       );
       const canonicalDispatchBatch = canonicalDispatchState.batches[0];
       const canonicalDispatchAccounted =

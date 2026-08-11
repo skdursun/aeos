@@ -50,7 +50,10 @@ AEOS already has the design and contract foundations for this lifecycle:
   `packages/core/src/agentic-coverage-verifier-logic.ts` define the current
   side-effect-free coverage verifier.
 
-There is not yet a runner execution implementation or task CLI runtime.
+There is not yet a full runner execution implementation. The task execution
+foundation now includes explicit task-state, attempt, invocation, policy,
+credential, audit, reconciliation, and controlled production dispatch CLI
+boundaries through TASK-0308.
 
 ## Execution Responsibilities
 The execution lifecycle should:
@@ -81,7 +84,60 @@ The execution lifecycle must not:
   secret actions directly outside adapter and policy boundaries;
 - broaden task scope, read unlisted context, or write excluded files;
 - rewrite prior attempts when retrying;
-- implement CLI commands in this design task.
+- treat any provider response as completion, verification, retry, policy, or
+  work-accounting authority.
+
+## Controlled Production Provider Dispatch
+
+TASK-0308 adds the first controlled production provider dispatch path.
+
+The operator command is:
+
+```text
+aeos task execution dispatch <task-id> --invocation-id <invocation-id> --expected-revision <number> [--provider-profile <trusted-profile-id>]
+```
+
+The command operates only on an existing authoritative invocation. It cannot
+create an invocation, choose an arbitrary endpoint, provide raw credentials,
+grant policy approval, skip audit, retry an ambiguous invocation, or complete
+work.
+
+Trusted provider configuration is system-owned and closed. Runtime profiles are
+loaded from `.aeos/system/production-provider-profiles.json`; profiles bind a
+provider profile id to a fixed provider kind, endpoint/config authority,
+operation mapping, credential reference, and recovery-capability evidence. The
+CLI may select an existing trusted profile id, but it cannot override endpoint,
+credential reference, credential value, capabilities, or recovery semantics.
+
+The production path remains ordered:
+
+1. load task revision;
+2. validate started attempt;
+3. load exact current invocation and idempotency key;
+4. load trusted provider profile;
+5. validate provider recovery conformance;
+6. evaluate permission and policy approval;
+7. resolve environment-reference credential after policy;
+8. require durable pre-dispatch audit;
+9. durably transition invocation to `invoking`;
+10. consume invocation-specific one-shot operator authority;
+11. call the controlled provider transport;
+12. persist returned, failed, or outcome_unknown;
+13. append bounded post-dispatch audit.
+
+`controlled_http` is the real runtime transport shape. It requires HTTPS,
+bounded request/response sizes, timeout, redirect failure, idempotency
+propagation, and sanitized errors. `controlled_http_test_fixture` exists for
+deterministic smoke coverage and does not make network calls.
+
+Provider result remains invocation evidence only. Hostile provider claims such
+as `completed`, `verified`, `allDone`, or `safeToRetry` are ignored. Completion,
+verifier, work accounting, retry, and reconciliation authority remain separate.
+
+First real-call readiness is provider-specific. A trusted HTTP profile is not
+real-call-ready unless it carries accepted runtime evidence for idempotency,
+stable provider invocation reference, lookup/status/replay, result retrieval,
+and crash reconciliation semantics.
 
 ## Execution Input Model
 MVP execution input should be serializable and task-scoped:

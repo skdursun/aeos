@@ -114,6 +114,8 @@ condition.
   conformance harness with TEST transport only.
 - TASK-0307: Controlled production dispatch authority/gate with real provider
   execution still disabled.
+- TASK-0308: First controlled production provider integration and one-shot
+  operator dispatch CLI boundary with no automated real calls.
 
 ## Do Not Load By Default
 
@@ -124,14 +126,14 @@ condition.
 
 ## Next Task
 
-TASK-0308 First controlled production provider integration and one-shot dispatch
-enable boundary.
+TASK-0309 Provider-specific recovery conformance evidence and first controlled
+real-call readiness review.
 
-Purpose: Attach one explicitly selected provider/adapter implementation to the
-single dispatch authority boundary. The first real call must be one controlled
-operator-initiated invocation with exact invocation-bound authority, retry
-disabled, completion authority disabled, durable audit enabled, and
-reconciliation available.
+Purpose: Select one trusted provider profile candidate and prove, from provider
+runtime evidence rather than configuration prose, that it satisfies TASK-0306
+idempotency, stable provider reference, lookup/status/replay, durable outcome
+retrieval, and crash-reconciliation semantics before any real provider call is
+marked ready.
 
 ## Current Plans
 
