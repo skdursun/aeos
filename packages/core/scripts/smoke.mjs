@@ -105,6 +105,8 @@ import {
   createInitialTaskState,
   createTaskResumeHandoff,
   authorizeTaskExecutionStart,
+  buildTaskExecutionProviderReconciliationRequest,
+  collectTaskExecutionProviderReconciliationEvidence,
   createReservedTaskExecutionInvocationRecord,
   deriveTaskExecutionInvocationIdentity,
   deriveTaskExecutionInvocationIdentityForAttempt,
@@ -342,6 +344,38 @@ function createTestAuthoritativeEvidenceSource(evidenceFactory) {
       return typeof evidenceFactory === "function"
         ? evidenceFactory(request, source)
         : evidenceFactory;
+    },
+  };
+}
+
+function createSmokeTestReconciliationAdapter({
+  adapterId = "core-smoke-test-reconciliation",
+  capabilities = {
+    supportsIdempotencyKey: true,
+    supportsLookupByIdempotencyKey: true,
+    supportsInvocationStatusQuery: true,
+    supportsResultReplay: true,
+  },
+  rawResult,
+  throwError = false,
+} = {}) {
+  const calls = [];
+
+  return {
+    calls,
+    adapter: {
+      kind: "test_reconciliation",
+      adapterId,
+      capabilities,
+      reconcile(request) {
+        calls.push(JSON.parse(JSON.stringify(request)));
+
+        if (throwError) {
+          throw new Error("provider bridge failed\n    at smoke-provider:1:1");
+        }
+
+        return typeof rawResult === "function" ? rawResult(request) : rawResult;
+      },
     },
   };
 }
@@ -15876,6 +15910,603 @@ try {
       path: entered.value.path,
     };
   }
+
+  const providerBridgeRequestProbe = createSmokeTestReconciliationAdapter({
+    rawResult: (request) => ({
+      status: "in_progress",
+      invocationId: request.invocationId,
+      idempotencyKey: request.idempotencyKey,
+      taskId: request.taskId,
+      taskStateRevision: request.taskStateRevision,
+      attemptId: request.attemptId,
+      attemptNumber: request.attemptNumber,
+      workItemId: request.workItemId,
+      batchId: request.batchId,
+      requestFingerprint: request.requestFingerprint,
+      observedAt: "2026-08-08T00:50:00.000Z",
+    }),
+  });
+  const providerBridgeRequest = buildTaskExecutionProviderReconciliationRequest({
+    record: invokingPersisted.value.record,
+    adapter: providerBridgeRequestProbe.adapter,
+  });
+  assert.equal(
+    providerBridgeRequest.ok,
+    true,
+    "task execution provider reconciliation smoke A should accept deterministic test adapter",
+  );
+  assert.deepEqual(
+    {
+      invocationId: providerBridgeRequest.request.invocationId,
+      idempotencyKey: providerBridgeRequest.request.idempotencyKey,
+      taskId: providerBridgeRequest.request.taskId,
+      taskStateRevision: providerBridgeRequest.request.taskStateRevision,
+      attemptId: providerBridgeRequest.request.attemptId,
+      attemptNumber: providerBridgeRequest.request.attemptNumber,
+      workItemId: providerBridgeRequest.request.workItemId,
+      batchId: providerBridgeRequest.request.batchId,
+      dependencyKind: providerBridgeRequest.request.dependencyKind,
+      requestFingerprint: providerBridgeRequest.request.requestFingerprint,
+    },
+    {
+      invocationId: invokingPersisted.value.record.invocationId,
+      idempotencyKey: invokingPersisted.value.record.idempotencyKey,
+      taskId: invokingPersisted.value.record.taskId,
+      taskStateRevision: invokingPersisted.value.record.taskStateRevision,
+      attemptId: invokingPersisted.value.record.attemptId,
+      attemptNumber: invokingPersisted.value.record.attemptNumber,
+      workItemId: invokingPersisted.value.record.workItemId,
+      batchId: invokingPersisted.value.record.batchId,
+      dependencyKind: invokingPersisted.value.record.dependencyKind,
+      requestFingerprint: invokingPersisted.value.record.request.fingerprint,
+    },
+    "task execution provider reconciliation smoke D should build request from authoritative invocation record",
+  );
+  assert.equal(
+    JSON.stringify(providerBridgeRequest.request).includes(
+      invokingPersisted.value.record.ownership.ownershipToken,
+    ),
+    false,
+    "task execution provider reconciliation smoke E should not expose ownership token in request",
+  );
+  assert.equal(
+    JSON.stringify(providerBridgeRequest.request).includes("ownershipToken"),
+    false,
+    "task execution provider reconciliation smoke E should not expose ownership token field",
+  );
+
+  let unsupportedProviderCalls = 0;
+  const unsupportedProviderBridge =
+    await collectTaskExecutionProviderReconciliationEvidence({
+      record: invokingPersisted.value.record,
+      adapter: {
+        kind: "openai",
+        adapterId: "production-provider",
+        capabilities: providerCapabilities,
+        reconcile() {
+          unsupportedProviderCalls += 1;
+          return { status: "returned" };
+        },
+      },
+    });
+  assert.equal(
+    unsupportedProviderBridge.ok,
+    false,
+    "task execution provider reconciliation smoke B should reject unsupported provider adapter kind",
+  );
+  assert.equal(
+    unsupportedProviderCalls,
+    0,
+    "task execution provider reconciliation smoke B should not call unsupported provider adapter",
+  );
+  assert.ok(
+    unsupportedProviderBridge.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_provider_reconciliation_adapter_kind_unsupported",
+    ),
+    "task execution provider reconciliation smoke B should report closed adapter-kind allowlist",
+  );
+
+  const missingStatusCapability = createSmokeTestReconciliationAdapter({
+    capabilities: {
+      supportsIdempotencyKey: true,
+      supportsLookupByIdempotencyKey: true,
+      supportsInvocationStatusQuery: false,
+      supportsResultReplay: true,
+    },
+    rawResult: {
+      status: "returned",
+      capabilities: {
+        supportsInvocationStatusQuery: true,
+      },
+    },
+  });
+  const missingStatusCapabilityResult =
+    await collectTaskExecutionProviderReconciliationEvidence({
+      record: invokingPersisted.value.record,
+      adapter: missingStatusCapability.adapter,
+    });
+  assert.equal(
+    missingStatusCapabilityResult.ok,
+    false,
+    "task execution provider reconciliation smoke C should use adapter-owned capabilities only",
+  );
+  assert.equal(
+    missingStatusCapability.calls.length,
+    0,
+    "task execution provider reconciliation smoke Q should block collection when status-query capability is missing",
+  );
+  assert.ok(
+    missingStatusCapabilityResult.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_provider_reconciliation_status_query_unsupported",
+    ),
+    "task execution provider reconciliation smoke Q should report missing status-query capability",
+  );
+
+  const missingReplayCapability = createSmokeTestReconciliationAdapter({
+    capabilities: {
+      supportsIdempotencyKey: true,
+      supportsLookupByIdempotencyKey: true,
+      supportsInvocationStatusQuery: true,
+      supportsResultReplay: false,
+    },
+    rawResult: (request) => ({
+      status: "returned",
+      invocationId: request.invocationId,
+      idempotencyKey: request.idempotencyKey,
+      taskId: request.taskId,
+      taskStateRevision: request.taskStateRevision,
+      attemptId: request.attemptId,
+      attemptNumber: request.attemptNumber,
+      requestFingerprint: request.requestFingerprint,
+      invocationOk: true,
+      observedAt: "2026-08-08T00:50:01.000Z",
+    }),
+  });
+  const missingReplayCapabilityResult =
+    await collectTaskExecutionProviderReconciliationEvidence({
+      record: invokingPersisted.value.record,
+      adapter: missingReplayCapability.adapter,
+    });
+  assert.equal(
+    missingReplayCapability.calls.length,
+    1,
+    "task execution provider reconciliation smoke R should allow status query before returned replay is rejected",
+  );
+  assert.equal(
+    missingReplayCapabilityResult.ok,
+    false,
+    "task execution provider reconciliation smoke R should reject returned result replay without capability",
+  );
+  assert.equal(
+    missingReplayCapabilityResult.evidence,
+    null,
+    "task execution provider reconciliation smoke R should not produce returned evidence without result replay capability",
+  );
+
+  const providerStatusCases = [
+    {
+      label: "returned",
+      expectedEvidenceKind: "provider_returned",
+      rawResult: (request) => ({
+        status: "returned",
+        invocationId: request.invocationId,
+        idempotencyKey: request.idempotencyKey,
+        taskId: request.taskId,
+        taskStateRevision: request.taskStateRevision,
+        attemptId: request.attemptId,
+        attemptNumber: request.attemptNumber,
+        requestFingerprint: request.requestFingerprint,
+        invocationOk: true,
+        completed: true,
+        verified: true,
+        approved: true,
+        safeToRetry: true,
+        allDone: true,
+        taskCompleted: true,
+        output: {
+          invocationDiagnostic: "returned",
+        },
+        diagnosticCode: "smoke_provider_returned",
+        message: "Provider returned invocation diagnostics only.",
+        observedAt: "2026-08-08T00:50:02.000Z",
+      }),
+    },
+    {
+      label: "failed",
+      expectedEvidenceKind: "provider_failed",
+      rawResult: (request) => ({
+        status: "failed",
+        invocationId: request.invocationId,
+        idempotencyKey: request.idempotencyKey,
+        taskId: request.taskId,
+        taskStateRevision: request.taskStateRevision,
+        attemptId: request.attemptId,
+        attemptNumber: request.attemptNumber,
+        requestFingerprint: request.requestFingerprint,
+        failureCode: "smoke_provider_failed",
+        failureCategory: "adapter_failure",
+        diagnostic: "Provider prose says retryable and safe to retry.",
+        observedAt: "2026-08-08T00:50:03.000Z",
+      }),
+    },
+    {
+      label: "in_progress",
+      expectedEvidenceKind: "provider_in_progress",
+      rawResult: (request) => ({
+        status: "in_progress",
+        idempotencyKey: request.idempotencyKey,
+        observedAt: "2026-08-08T00:50:04.000Z",
+      }),
+    },
+    {
+      label: "not_found",
+      expectedEvidenceKind: "provider_not_found",
+      rawResult: (request) => ({
+        status: "not_found",
+        idempotencyKey: request.idempotencyKey,
+        observedAt: "2026-08-08T00:50:05.000Z",
+      }),
+    },
+    {
+      label: "unavailable",
+      expectedEvidenceKind: "provider_status_unavailable",
+      rawResult: {
+        status: "unavailable",
+        observedAt: "2026-08-08T00:50:06.000Z",
+      },
+    },
+    {
+      label: "unknown",
+      expectedEvidenceKind: "provider_status_unavailable",
+      rawResult: {
+        status: "task_completed",
+        completed: true,
+        observedAt: "2026-08-08T00:50:07.000Z",
+      },
+    },
+  ];
+
+  for (const statusCase of providerStatusCases) {
+    const adapter = createSmokeTestReconciliationAdapter({
+      rawResult: statusCase.rawResult,
+    });
+    const collected = await collectTaskExecutionProviderReconciliationEvidence({
+      record: invokingPersisted.value.record,
+      adapter: adapter.adapter,
+    });
+    assert.equal(
+      adapter.calls.length,
+      1,
+      `task execution provider reconciliation smoke ${statusCase.label} should call test bridge once`,
+    );
+    assert.equal(
+      collected.evidence?.kind,
+      statusCase.expectedEvidenceKind,
+      `task execution provider reconciliation smoke ${statusCase.label} should normalize closed status`,
+    );
+    assert.equal(
+      collected.evidence?.source.kind,
+      "test_authoritative",
+      `task execution provider reconciliation smoke ${statusCase.label} should produce TASK-0295 test evidence source`,
+    );
+    assert.equal(
+      collected.evidence?.provenance.adapterKind,
+      "test_reconciliation",
+      `task execution provider reconciliation smoke ${statusCase.label} should preserve adapter provenance`,
+    );
+    assert.equal(
+      collected.evidence?.provenance.capabilities.supportsInvocationStatusQuery,
+      true,
+      `task execution provider reconciliation smoke ${statusCase.label} should preserve capability provenance`,
+    );
+  }
+
+  const hostileReturnedBridge = await collectTaskExecutionProviderReconciliationEvidence({
+    record: invokingPersisted.value.record,
+    adapter: createSmokeTestReconciliationAdapter({
+      rawResult: {
+        status: "returned",
+        invocationOk: true,
+        idempotencyKey: invokingPersisted.value.record.idempotencyKey,
+        completed: true,
+        verified: true,
+        approved: true,
+        safeToRetry: true,
+        allDone: true,
+        taskCompleted: true,
+        observedAt: "2026-08-08T00:50:08.000Z",
+      },
+    }).adapter,
+  });
+  assert.equal(
+    hostileReturnedBridge.evidence.completed,
+    undefined,
+    "task execution provider reconciliation smoke O should strip raw completed claim",
+  );
+  assert.equal(
+    hostileReturnedBridge.evidence.verified,
+    undefined,
+    "task execution provider reconciliation smoke O should strip raw verified claim",
+  );
+  assert.equal(
+    hostileReturnedBridge.evidence.safeToRetry,
+    undefined,
+    "task execution provider reconciliation smoke O should strip raw safe-to-retry claim",
+  );
+  assert.equal(
+    hostileReturnedBridge.safety.workCompleted,
+    false,
+    "task execution provider reconciliation smoke O should not authorize work completion",
+  );
+  assert.equal(
+    hostileReturnedBridge.safety.taskCompleted,
+    false,
+    "task execution provider reconciliation smoke O should not authorize task completion",
+  );
+
+  const idempotencyMismatchBridge =
+    await collectTaskExecutionProviderReconciliationEvidence({
+      record: invokingPersisted.value.record,
+      adapter: createSmokeTestReconciliationAdapter({
+        rawResult: {
+          status: "returned",
+          idempotencyKey: "different-idempotency-key",
+          invocationOk: true,
+        },
+      }).adapter,
+    });
+  assert.equal(
+    idempotencyMismatchBridge.ok,
+    false,
+    "task execution provider reconciliation smoke F should reject idempotency mismatch",
+  );
+  assert.equal(
+    idempotencyMismatchBridge.evidence,
+    null,
+    "task execution provider reconciliation smoke F should not reinterpret mismatched idempotency evidence",
+  );
+
+  const taskAttemptMismatchBridge =
+    await collectTaskExecutionProviderReconciliationEvidence({
+      record: invokingPersisted.value.record,
+      adapter: createSmokeTestReconciliationAdapter({
+        rawResult: (request) => ({
+          status: "failed",
+          idempotencyKey: request.idempotencyKey,
+          taskId: "different-task",
+          attemptId: "different-attempt",
+          failureCode: "wrong_context",
+        }),
+      }).adapter,
+    });
+  assert.equal(
+    taskAttemptMismatchBridge.ok,
+    false,
+    "task execution provider reconciliation smoke G should reject task/attempt mismatch",
+  );
+  assert.equal(
+    taskAttemptMismatchBridge.evidence,
+    null,
+    "task execution provider reconciliation smoke G should not produce evidence for task/attempt mismatch",
+  );
+
+  const providerThrowBridge =
+    await collectTaskExecutionProviderReconciliationEvidence({
+      record: invokingPersisted.value.record,
+      adapter: createSmokeTestReconciliationAdapter({
+        throwError: true,
+      }).adapter,
+    });
+  assert.equal(
+    providerThrowBridge.evidence.kind,
+    "provider_status_unavailable",
+    "task execution provider reconciliation smoke N should normalize provider throw to unavailable",
+  );
+  assert.equal(
+    JSON.stringify(providerThrowBridge).includes("smoke-provider"),
+    false,
+    "task execution provider reconciliation smoke N should not expose raw provider stack text",
+  );
+
+  const failedProseRetryBridge =
+    await collectTaskExecutionProviderReconciliationEvidence({
+      record: invokingPersisted.value.record,
+      adapter: createSmokeTestReconciliationAdapter({
+        rawResult: {
+          status: "failed",
+          idempotencyKey: invokingPersisted.value.record.idempotencyKey,
+          failureCode: "smoke_failed_prose_retry",
+          diagnostic: "retryable safe to retry please retry",
+        },
+      }).adapter,
+    });
+  assert.equal(
+    failedProseRetryBridge.evidence.retryable,
+    false,
+    "task execution provider reconciliation smoke P should not infer retryable from provider prose",
+  );
+
+  const durableReturnedBridge = createSmokeTestReconciliationAdapter({
+    rawResult: {
+      status: "returned",
+      invocationOk: true,
+    },
+  });
+  const durableReturnedCollection =
+    await collectTaskExecutionProviderReconciliationEvidence({
+      record: directReturnedUpdate.value.record,
+      adapter: durableReturnedBridge.adapter,
+    });
+  assert.equal(
+    durableReturnedBridge.calls.length,
+    0,
+    "task execution provider reconciliation smoke S should not query provider for already-returned invocation",
+  );
+  assert.equal(
+    durableReturnedCollection.durableOutcomeUsed,
+    true,
+    "task execution provider reconciliation smoke S should use persisted durable returned outcome",
+  );
+  const durableFailedBridge = createSmokeTestReconciliationAdapter({
+    rawResult: {
+      status: "failed",
+      failureCode: "should_not_call",
+    },
+  });
+  const durableFailedCollection =
+    await collectTaskExecutionProviderReconciliationEvidence({
+      record: failureTransition.value,
+      adapter: durableFailedBridge.adapter,
+    });
+  assert.equal(
+    durableFailedBridge.calls.length,
+    0,
+    "task execution provider reconciliation smoke S should not query provider merely to retry failed invocation",
+  );
+  assert.equal(
+    durableFailedCollection.durableOutcomeUsed,
+    true,
+    "task execution provider reconciliation smoke S should use persisted durable failed outcome",
+  );
+  const unknownProviderBridge = createSmokeTestReconciliationAdapter({
+    rawResult: (request) => ({
+      status: "in_progress",
+      idempotencyKey: request.idempotencyKey,
+    }),
+  });
+  await collectTaskExecutionProviderReconciliationEvidence({
+    record: unknownPersisted.value.record,
+    adapter: unknownProviderBridge.adapter,
+  });
+  assert.equal(
+    unknownProviderBridge.calls.length,
+    1,
+    "task execution provider reconciliation smoke T should allow outcome_unknown provider query",
+  );
+
+  const providerReturnedApplyFixture = await createReconciliationApplyFixture({
+    attemptNumber: 50,
+  });
+  const providerReturnedTaskBefore = await readFile(
+    reconciliationApplyStatePath,
+    "utf8",
+  );
+  const providerReturnedAttemptBefore = await readFile(
+    providerReturnedApplyFixture.attemptPath,
+    "utf8",
+  );
+  const providerReturnedCollection =
+    await collectTaskExecutionProviderReconciliationEvidence({
+      record: providerReturnedApplyFixture.record,
+      adapter: createSmokeTestReconciliationAdapter({
+        rawResult: (request) => ({
+          status: "returned",
+          invocationId: request.invocationId,
+          idempotencyKey: request.idempotencyKey,
+          taskId: request.taskId,
+          taskStateRevision: request.taskStateRevision,
+          attemptId: request.attemptId,
+          attemptNumber: request.attemptNumber,
+          requestFingerprint: request.requestFingerprint,
+          invocationOk: true,
+          output: {
+            completed: true,
+            allDone: true,
+            verified: true,
+          },
+          diagnosticCode: "smoke_provider_bridge_returned",
+          observedAt: "2026-08-08T00:50:09.000Z",
+        }),
+      }).adapter,
+    });
+  const providerReturnedPreview = evaluateTaskExecutionInvocationReconciliation({
+    record: providerReturnedApplyFixture.record,
+    currentTaskRevision: reconciliationApplyState.revision,
+    providerCapabilities: providerReturnedCollection.capabilities,
+    evidence: providerReturnedCollection.evidence,
+  });
+  assert.equal(
+    providerReturnedPreview.evidenceConclusion,
+    "returned",
+    "task execution provider reconciliation smoke U should be accepted by TASK-0295 preview path",
+  );
+  const providerReturnedApply =
+    await applyTaskExecutionInvocationReconciliation({
+      projectRoot: reconciliationApplyRoot,
+      taskId: providerReturnedApplyFixture.record.taskId,
+      invocationId: providerReturnedApplyFixture.record.invocationId,
+      expectedInvocationRevision: providerReturnedApplyFixture.record.revision,
+      evidenceSource: providerReturnedCollection.evidenceSource,
+    });
+  assert.equal(
+    providerReturnedApply.lifecycle,
+    "returned",
+    "task execution provider reconciliation smoke V should resolve returned evidence through TASK-0295 apply",
+  );
+  assert.equal(
+    providerReturnedApply.safety.taskModified,
+    false,
+    "task execution provider reconciliation smoke X should not mutate task state",
+  );
+  assert.equal(
+    providerReturnedApply.safety.attemptModified,
+    false,
+    "task execution provider reconciliation smoke Y should not mutate attempt state",
+  );
+  assert.equal(
+    await readFile(reconciliationApplyStatePath, "utf8"),
+    providerReturnedTaskBefore,
+    "task execution provider reconciliation smoke X should leave task state bytes unchanged",
+  );
+  assert.equal(
+    await readFile(providerReturnedApplyFixture.attemptPath, "utf8"),
+    providerReturnedAttemptBefore,
+    "task execution provider reconciliation smoke Y should leave attempt bytes unchanged",
+  );
+
+  const providerFailedApplyFixture = await createReconciliationApplyFixture({
+    attemptNumber: 51,
+  });
+  const providerFailedCollection =
+    await collectTaskExecutionProviderReconciliationEvidence({
+      record: providerFailedApplyFixture.record,
+      adapter: createSmokeTestReconciliationAdapter({
+        rawResult: (request) => ({
+          status: "failed",
+          idempotencyKey: request.idempotencyKey,
+          failureCode: "smoke_provider_bridge_failed",
+          failureCategory: "adapter_failure",
+          retryable: true,
+          observedAt: "2026-08-08T00:51:05.000Z",
+        }),
+      }).adapter,
+    });
+  const providerFailedApply = await applyTaskExecutionInvocationReconciliation({
+    projectRoot: reconciliationApplyRoot,
+    taskId: providerFailedApplyFixture.record.taskId,
+    invocationId: providerFailedApplyFixture.record.invocationId,
+    expectedInvocationRevision: providerFailedApplyFixture.record.revision,
+    evidenceSource: providerFailedCollection.evidenceSource,
+  });
+  assert.equal(
+    providerFailedApply.lifecycle,
+    "failed",
+    "task execution provider reconciliation smoke W should resolve failed evidence through TASK-0295 apply",
+  );
+  assert.equal(
+    providerFailedApply.retryRequiresNewAuthority,
+    true,
+    "task execution provider reconciliation smoke W should preserve retryability as new-authority-only",
+  );
+  assert.equal(
+    providerFailedApply.safety.retryPerformed,
+    false,
+    "task execution provider reconciliation smoke W should not auto-retry",
+  );
 
   const applyReturnedFixture = await createReconciliationApplyFixture({
     attemptNumber: 30,

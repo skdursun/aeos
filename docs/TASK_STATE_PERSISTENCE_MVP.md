@@ -874,6 +874,94 @@ adapter-declared idempotency and reconciliation capabilities, invocation
 identity propagation, durable ownership, explicit `outcome_unknown` handling, a
 typed reconciliation protocol, and a no-blind-retry recovery policy.
 
+## Provider Reconciliation Adapter Boundary
+TASK-0296 adds a model/provider-agnostic core contract for collecting
+reconciliation observations from a dependency-injected provider bridge. The
+boundary is pure from AEOS state perspective: it does not write task state,
+attempt state, invocation records, audit events, verifier results, policy
+decisions, retries, or completion state.
+
+The only accepted adapter kind is:
+
+```ts
+kind: "test_reconciliation"
+```
+
+Production provider kinds such as OpenAI, Anthropic, shell, HTTP, filesystem,
+tool, or generic external adapters remain unsupported and are rejected before
+their callback can run. TASK-0296 adds no real provider runtime and performs no
+network calls. The only exercised implementation is an in-memory smoke-test
+bridge supplied by dependency injection; it is not exported as public API.
+
+Capabilities are system-owned adapter metadata, not task/model/operator data:
+
+- `supportsIdempotencyKey`
+- `supportsLookupByIdempotencyKey`
+- `supportsInvocationStatusQuery`
+- `supportsResultReplay`
+
+Contradictory or insufficient combinations fail closed. Status observation
+requires idempotency-key support, lookup-by-idempotency-key support, and
+invocation status query support. Returned result replay requires explicit
+result-replay capability. Provider prose or task/model claims about
+capabilities are ignored.
+
+The reconciliation request is built only from the validated persisted
+invocation record: invocation id, idempotency key, task id, source task
+revision, attempt id and number, work item, batch, dependency kind, request
+fingerprint, allowed operation references, and verifier gate facts. Ownership
+tokens, lock tokens, internal update credentials, and unrelated secrets are not
+sent to the provider bridge and are not rendered in normalized evidence.
+
+Raw provider output is never authoritative AEOS evidence. It becomes usable
+only after adapter-kind validation, system capability validation, authoritative
+request binding, exact idempotency/context binding, closed status
+normalization, provenance creation, and mismatch rejection. If raw output names
+a different idempotency key, invocation id, task, attempt, work item, batch, or
+request fingerprint, it is rejected and not reinterpreted as current evidence.
+
+The normalized provider status set is closed:
+
+- `provider_returned`
+- `provider_failed`
+- `provider_in_progress`
+- `provider_not_found`
+- `provider_status_unavailable`
+
+Unknown raw status, invalid response shape, provider throw, or query failure is
+normalized conservatively to unavailable or rejected without raw stack authority.
+Unavailable does not mean failed, not found, or safe to retry.
+
+`provider_not_found` is also conservative. It does not prove the request was
+never sent, had no side effects, failed, or is safe to retry. `provider_in_progress`
+keeps reconciliation required and does not mutate lifecycle. `provider_returned`
+may carry bounded invocation diagnostics only; completion, verification,
+approval, `allDone`, or `safeToRetry` claims remain non-authoritative.
+`provider_failed` may carry structured failure details and a typed retryable
+boolean, but retryability is never inferred from message text and never creates
+a retry.
+
+Normalized provider evidence includes provenance showing it passed through the
+allowed test reconciliation adapter, matches the exact invocation/idempotency
+context, records the normalized status, and records the system-owned
+capabilities that supported the observation. The helper can expose this as the
+existing TASK-0295 `test_authoritative` evidence source so
+`applyTaskExecutionInvocationReconciliation` remains the only lifecycle
+resolution policy.
+
+Known durable outcomes are not queried. A returned record uses the persisted
+result; a failed record uses the persisted failure and does not ask a provider
+whether to retry. Provider reconciliation is useful only for uncertain
+`invoking` or `outcome_unknown` records. Repeated provider queries are
+read/reconciliation operations, not task execution, and still perform no AEOS
+state mutation until explicit TASK-0295 apply. Future real providers may have
+cost or rate-limit implications, but TASK-0296 does not enable them.
+
+The CLI remains provider-call-free. No CLI flags accept provider status,
+provider capabilities, safe-to-retry claims, returned evidence, or arbitrary
+evidence JSON. Production adapter readiness is deferred to a separate safety
+review gate.
+
 ## Execution Preparation Preview
 `aeos task execution prepare --preview <task-id> --expected-revision <number>`
 loads authoritative persisted task state, validates it, checks the explicit

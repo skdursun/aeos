@@ -91,6 +91,8 @@ condition.
   provider capability inspection model.
 - TASK-0295: Design and implement explicit typed invocation reconciliation
   apply foundation without provider calls or retry.
+- TASK-0296: Design provider reconciliation adapter contract and test-only
+  provider evidence bridge.
 
 ## Do Not Load By Default
 
@@ -101,12 +103,12 @@ condition.
 
 ## Next Task
 
-TASK-0296 Design provider reconciliation adapter contract and test-only provider
-evidence bridge.
+TASK-0297 Provider reconciliation bridge targeted safety review and production
+adapter readiness gate.
 
-Purpose: Define the next provider reconciliation adapter contract and a
-test-only/in-memory provider evidence bridge while still making no real network
-calls and keeping production adapters disabled.
+Purpose: Determine whether the provider reconciliation architecture is ready to
+define a production adapter execution contract, without enabling production
+provider calls.
 
 ## Current Plans
 
