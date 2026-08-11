@@ -1498,6 +1498,137 @@ Real credential providers, verifier runtime, production approval dispatch
 integration, retry/resume execution, task completion, and production adapters
 remain missing.
 
+## TASK-0303 Production Call Readiness Recalibration
+TASK-0303 reviewed only the current execution authority chain and known
+production-call blockers after the adapter, permission, credential, audit, and
+durable approval foundations. No new production runtime was implemented and no
+real provider calls were enabled.
+
+Readiness decisions:
+
+- `ProductionCredentialContractReady`: no. The reference boundary is strong,
+  but runtime resolution still rejects every non-TEST provider and has no
+  production resolver identity, scope, expiry, or provider-selection policy.
+- `ProductionAdapterImplementationReady`: no. The adapter contract is useful,
+  but executable adapter kind is still closed to `test_execution`, real
+  side-effect permissions are forbidden, and production invocation remains
+  globally disabled.
+- `ProductionDispatchContractReady`: no. The intended dispatch order is
+  understood, but no production dispatcher stitches reservation, durable proof,
+  credential resolution, required audit, adapter invocation, result persistence,
+  and reconciliation together.
+- `FirstControlledProductionCallReady`: no.
+- `ProductionCompletionReady`: no.
+
+Current strongest guarantee: AEOS has authoritative task revision, attempt,
+start, invocation identity/idempotency, ownership, duplicate suppression,
+policy proof, credential-reference, audit, adapter normalization, and
+reconciliation foundations that fail closed and do not trust task/model/adapter
+prose for completion, verification, policy, retry, or credential authority.
+Production execution remains disabled.
+
+Must be completed before the first controlled real provider call:
+
+- production credential resolver contract/runtime with no raw secret
+  persistence or rendering, strict scope binding, expiry handling, safe
+  provider identity, and resolution only after permission/policy authorization;
+- production adapter contract support for a real provider kind while execution
+  remains disabled by default;
+- production dispatch integration that reserves the invocation/idempotency
+  authority, loads exact durable policy proof, resolves credentials, requires
+  pre-dispatch audit, enters `invoking`, calls the adapter, persists
+  returned/failed/outcome-unknown evidence, and attempts post-dispatch audit;
+- provider idempotency propagation, deterministic provider invocation
+  reference, status lookup by idempotency key, and result replay or equivalent
+  durable outcome retrieval for the first provider;
+- crash-window handling that treats post-boundary throws, timeouts, process
+  death, or persistence failure as `outcome_unknown` until provider
+  reconciliation resolves the invocation.
+
+Recommended production dispatch ordering:
+
+```text
+derive/reserve invocation authority
+  -> adapter conformance and system capability/permission evaluation
+  -> load exact durable policy proof when required
+  -> resolve credential after the gate is allowed
+  -> append required pre-dispatch audit
+  -> enter invocation as invoking
+  -> call production adapter with AEOS idempotency key
+  -> persist returned, failed, or outcome_unknown invocation evidence
+  -> append post-dispatch audit or report audit incomplete
+  -> reconcile ambiguous outcomes through provider lookup/replay
+```
+
+Reservation comes before durable approval use because approval proof is bound to
+the exact invocation id and idempotency context. The external call still occurs
+only after permission/policy, credential resolution, and required pre-dispatch
+audit have succeeded.
+
+Blockers that may remain until production-complete orchestration:
+
+- retry execution protocol and retry attempt creation;
+- execution result to work accounting and coverage update;
+- verifier runtime;
+- completion-gate and task-completion transition;
+- mature stale-lock recovery, lease expiry, and cross-process/distributed
+  ownership hardening;
+- revocation/mutable policy decision state beyond exact binding plus optional
+  expiry;
+- external secret managers beyond the first local provider style.
+
+Credential recommendation: implement a provider-neutral production credential
+runtime first, with one tightly scoped local environment-reference resolver for
+the first controlled call. Persist only the logical credential reference and
+environment variable name/reference metadata; never persist or render the
+value. Resolve only after permission/policy authorization, pass the value as
+short-lived non-enumerable runtime input, bind scope and expiry, and reject
+task/model/operator raw secret prose. OS keychain and external secret managers
+can follow after the first controlled call path is proven.
+
+Crash and reconciliation recommendation: before a real call, the chosen provider
+must prove idempotency-key propagation plus lookup/status/replay behavior in a
+conformance harness. If AEOS cannot prove the provider outcome after crossing
+the external boundary, the invocation must remain `outcome_unknown` and block
+blind retry until authoritative reconciliation resolves it.
+
+Retry timing: retry is not required before one controlled provider call if
+retry remains disabled and unresolved or failed invocations never auto-repeat.
+Production-ready orchestration does require an explicit retry protocol that
+creates new authority tied to the prior invocation and structured failure.
+
+Work accounting and verifier timing: a real provider call may precede
+work-accounting and verifier runtimes only if the returned provider result is
+stored as invocation evidence/diagnostics. It must not update work counts,
+coverage, verifier status, completion gate, attempt success, or task
+completion. The existing 400/20 invariant confirms this separation.
+
+Cross-process timing: cooperative local locking is enough for a single
+operator-controlled local first call. General production-ready execution and
+concurrent workers require stronger lease/stale-lock recovery and multi-record
+ownership hardening, but not a distributed lock before the first local
+milestone.
+
+Hostile real adapter output remains non-authoritative. Claims such as
+`completed=true`, `verified=true`, `approved=true`, `safeToRetry=true`,
+`allDone=true`, `taskCompleted=true`, or `policyAuthorized=true` have no direct
+route to work completion, task completion, verifier pass, policy grant, or
+retry authority.
+
+Compressed milestone path:
+
+1. Production credential provider boundary with calls still disabled.
+2. Production adapter contract/implementation vertical slice with calls still
+   disabled.
+3. Provider idempotency, status lookup, replay, and crash conformance harness.
+4. Controlled production dispatch integration behind an explicit disabled-by-
+   default real-call gate.
+5. First controlled real provider call with diagnostic invocation evidence only.
+6. Execution result to work accounting and coverage update.
+7. Verifier runtime and completion-gate/task-completion pipeline.
+
+Recommended next boundary: production credential provider boundary.
+
 ## Execution Preparation Preview
 `aeos task execution prepare --preview <task-id> --expected-revision <number>`
 loads authoritative persisted task state, validates it, checks the explicit

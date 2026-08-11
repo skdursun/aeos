@@ -104,6 +104,8 @@ condition.
 - TASK-0301: Design and implement durable execution audit runtime foundation.
 - TASK-0302: Design and implement durable production policy approval proof
   runtime foundation.
+- TASK-0303: Production-call blocker readiness review after policy, credential,
+  and audit foundations.
 
 ## Do Not Load By Default
 
@@ -114,13 +116,14 @@ condition.
 
 ## Next Task
 
-TASK-0303 Production-call blocker readiness review after policy + credential +
-audit foundations.
+TASK-0304 Production credential provider boundary with production execution
+still disabled.
 
-Purpose: Re-evaluate whether the next highest-value production-call blocker is
-the production secret provider, production adapter implementation,
-crash/recovery, or another remaining hard blocker. Do not assume one before the
-review.
+Purpose: Add a provider-neutral production credential resolver contract/runtime
+boundary plus one tightly scoped local environment-reference resolver. Preserve
+no raw secret persistence/rendering, resolve only after permission/policy
+authorization, keep provider calls disabled, and do not implement production
+adapters, retry, verifier, or completion.
 
 ## Current Plans
 
