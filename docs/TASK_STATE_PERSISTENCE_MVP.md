@@ -1024,6 +1024,138 @@ system-owned capability declaration, and a no-blind-retry reconciliation path
 are required. Cancellation is recommended where the provider supports
 long-running work.
 
+## Execution Adapter Contract - TASK-0298
+TASK-0298 adds a vendor-neutral execution adapter contract in core without
+enabling production execution. The public boundary is
+`TaskExecutionAdapter` and related request, capability, permission, credential
+reference, raw response, normalized result, failure, and conformance result
+types.
+
+The only executable adapter kind in this task is:
+
+```ts
+kind: "test_execution"
+```
+
+No OpenAI, Anthropic, shell, filesystem, tool, HTTP, or production-provider
+adapter kind is callable through this contract. The deterministic implementation
+used for coverage exists only inside core smoke code and is not exported.
+
+Adapter identity is system-owned. The identity includes adapter id, adapter
+kind, implementation version, capability version, and
+`identityAuthority: "system"`. Task prose, model output, operator text, or raw
+provider output cannot choose authoritative adapter identity, invocation id, or
+idempotency key.
+
+Capabilities are explicit system/provider metadata:
+
+- `supportsIdempotencyKey`
+- `supportsLookupByIdempotencyKey`
+- `supportsInvocationStatusQuery`
+- `supportsResultReplay`
+- `providesDeterministicProviderInvocationReference`
+- `supportsBoundedErrors`
+- `supportsCancellation`
+- `supportsStreaming`
+- `supportsToolCalls`
+- `supportsExternalSideEffects`
+
+Capability does not grant permission. Permissions are a separate
+system-authorized contract covering policy requirement/authorization, external
+side-effect permission, network, filesystem, process/shell, tool-call, and
+model-invocation permission. For TASK-0298 test execution all real external
+permissions remain false, and adapters cannot self-authorize policy. Policy
+required is not policy authorized.
+
+The credential boundary accepts safe references only: credential ref, optional
+secret-provider ref, credential scope, system authority, and an explicit
+`rawCredentialMaterialPresent: false`. Raw credential fields such as API keys,
+tokens, secrets, passwords, and authorization headers are not normal invocation
+fields and are stripped from normalized adapter output.
+
+Invocation requests are built from authoritative AEOS invocation context:
+invocation id, persisted idempotency key, task id, source task revision,
+attempt id and number, optional work item and batch, operation kind, system
+adapter identity, safe input/reference, credential reference, permission
+requirements, and trace reference. The adapter receives no task-state mutation
+functions, persistence capabilities, audit writers, verifier runtime, policy
+runtime, shell, filesystem execution, or provider SDK runtime.
+
+Idempotency propagation is explicit. The request carries the persisted AEOS
+idempotency key unchanged. The conformance harness verifies the test adapter
+receives that exact key and rejects raw responses that echo a different
+idempotency key or a different invocation/task/attempt binding.
+
+Raw adapter output is normalized to bounded invocation facts only. Normalized
+results may report invocation returned/failed/in-progress/unavailable,
+provider invocation reference, output/reference, diagnostic code/message,
+metadata, failure classification, reconciliation capabilities, and issues.
+They cannot grant work completion, task completion, verifier pass, approval,
+policy authorization, retry safety, completion-gate satisfaction, audit writes,
+or task-state mutation.
+
+Failure categories are closed for this contract:
+
+- `unavailable`
+- `timeout`
+- `rejected`
+- `invalid_request`
+- `provider_error`
+- `unknown`
+
+Raw stack traces are not normalized as authoritative diagnostics, and
+retryability is not inferred from prose.
+
+The execution adapter capability model reuses the TASK-0296 reconciliation
+semantics for idempotency-key support, lookup by idempotency key, invocation
+status query, and result replay. This keeps future recovery requirements
+consistent across execution and provider reconciliation boundaries.
+
+`evaluateTaskExecutionAdapterConformance` is a deterministic, dependency-free
+conformance harness. It validates adapter identity, test-only kind, capability
+shape, production-capability profile, permissions, credential references,
+idempotency propagation, invocation binding, result normalization, hostile
+output stripping, secret stripping, bounded error normalization, reconciliation
+capability alignment, and no mutation of supplied state snapshots. The harness
+does not enable production calls.
+
+Conformance distinguishes:
+
+- `testExecutionConformant`: true only for safe `test_execution` behavior.
+- `productionContractConformant`: true only when the minimum production
+  contract profile is represented.
+- `productionExecutionEnabled`: always false in TASK-0298.
+
+A test adapter may pass test conformance while failing the production profile.
+Even a production-contract-conformant object remains non-executable for real
+provider calls.
+
+The hostile output regression includes raw claims such as `completed`,
+`verified`, `approved`, `allDone`, `safeToRetry`, `taskCompleted`, and
+`policyAuthorized`. Normalization strips those authority fields and reports
+them as ignored diagnostics only. Secret-like fields such as `apiKey`, `token`,
+`secret`, `password`, and authorization headers are stripped from normalized
+results.
+
+The 400/20 invariant remains unchanged:
+
+```text
+400 expected work items
+20 accounted work items
+380 remaining work items
+adapter returns completed/verified/allDone
+```
+
+Execution adapter normalization and conformance do not create completion
+authority, verifier authority, approval authority, retry authority, or task
+state mutation.
+
+Production execution remains disabled because the hard blockers from TASK-0297
+still stand: policy runtime/proof, credential runtime, adapter permission and
+policy gate enforcement, durable audit runtime, crash/recovery provider
+integration, retry protocol, and execution-result to work-accounting,
+coverage, verifier, completion-gate, and task-completion pipeline.
+
 ## Execution Preparation Preview
 `aeos task execution prepare --preview <task-id> --expected-revision <number>`
 loads authoritative persisted task state, validates it, checks the explicit

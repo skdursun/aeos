@@ -95,6 +95,8 @@ condition.
   provider evidence bridge.
 - TASK-0297: Provider reconciliation bridge targeted safety review and
   production adapter readiness gate.
+- TASK-0298: Design and implement vendor-neutral production execution adapter
+  contract and conformance harness with TEST implementation only.
 
 ## Do Not Load By Default
 
@@ -105,11 +107,11 @@ condition.
 
 ## Next Task
 
-TASK-0298 Design and implement vendor-neutral production execution adapter
-contract and conformance harness with TEST implementation only.
+TASK-0299 Design and implement adapter permission/policy execution gate
+foundation.
 
-Purpose: Define the production execution adapter contract boundary and
-conformance tests without enabling real provider calls.
+Purpose: Add the next test-only foundation for adapter permission enforcement
+and policy proof without enabling real provider calls.
 
 ## Current Plans
 

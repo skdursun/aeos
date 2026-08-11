@@ -108,10 +108,12 @@ import {
   buildTaskExecutionProviderReconciliationRequest,
   collectTaskExecutionProviderReconciliationEvidence,
   createReservedTaskExecutionInvocationRecord,
+  evaluateTaskExecutionAdapterConformance,
   deriveTaskExecutionInvocationIdentity,
   deriveTaskExecutionInvocationIdentityForAttempt,
   getTaskExecutionInvocationStoragePath,
   invokeStartedTaskExecutionAttempt,
+  TASK_EXECUTION_ADAPTER_PRODUCTION_EXECUTION_ENABLED,
   deriveNextTaskExecutionAttemptNumber,
   deriveLatestTaskExecutionAttemptNumber,
   evaluateTaskStateTransition,
@@ -375,6 +377,107 @@ function createSmokeTestReconciliationAdapter({
         }
 
         return typeof rawResult === "function" ? rawResult(request) : rawResult;
+      },
+    },
+  };
+}
+
+function createSmokeTestExecutionAdapterIdentity(overrides = {}) {
+  return {
+    adapterId: "core-smoke-test-execution",
+    adapterKind: "test_execution",
+    implementationVersion: "0.0.0-smoke",
+    capabilityVersion: "0.0.0-smoke",
+    identityAuthority: "system",
+    ...overrides,
+  };
+}
+
+function createSmokeTestExecutionAdapterCapabilities(overrides = {}) {
+  return {
+    supportsIdempotencyKey: true,
+    supportsLookupByIdempotencyKey: true,
+    supportsInvocationStatusQuery: true,
+    supportsResultReplay: true,
+    providesDeterministicProviderInvocationReference: false,
+    supportsBoundedErrors: true,
+    supportsCancellation: false,
+    supportsStreaming: false,
+    supportsToolCalls: false,
+    supportsExternalSideEffects: false,
+    ...overrides,
+  };
+}
+
+function createSmokeTestExecutionAdapterPermissions(overrides = {}) {
+  return {
+    permissionAuthority: "system",
+    policyRequired: true,
+    policyAuthorized: false,
+    externalSideEffectPermission: false,
+    networkPermission: false,
+    filesystemPermission: false,
+    processPermission: false,
+    shellPermission: false,
+    toolCallPermission: false,
+    modelInvocationPermission: false,
+    ...overrides,
+  };
+}
+
+function createSmokeTestExecutionAdapterRequest(record, adapterIdentity, overrides = {}) {
+  return {
+    invocationId: record.invocationId,
+    idempotencyKey: record.idempotencyKey,
+    taskId: record.taskId,
+    sourceTaskRevision: record.taskStateRevision,
+    attemptId: record.attemptId,
+    attemptNumber: record.attemptNumber,
+    workItemId: record.workItemId,
+    batchId: record.batchId,
+    operationKind: "execute_task_attempt",
+    adapterIdentity,
+    input: {
+      instructionReference: "smoke://execution-adapter-input",
+    },
+    credentialReference: {
+      credentialRef: "smoke-credential-reference",
+      secretProviderRef: "smoke-secret-provider-reference",
+      credentialScope: ["test_execution"],
+      credentialAuthority: "system",
+      rawCredentialMaterialPresent: false,
+    },
+    permissionRequirements: createSmokeTestExecutionAdapterPermissions(),
+    trace: {
+      correlationId: "smoke-execution-adapter-correlation",
+    },
+    ...overrides,
+  };
+}
+
+function createSmokeTestExecutionAdapter({
+  identity = createSmokeTestExecutionAdapterIdentity(),
+  capabilities = createSmokeTestExecutionAdapterCapabilities(),
+  permissions = createSmokeTestExecutionAdapterPermissions(),
+  rawResponse,
+  throwError = false,
+} = {}) {
+  const calls = [];
+
+  return {
+    calls,
+    adapter: {
+      identity,
+      capabilities,
+      permissions,
+      invoke(request) {
+        calls.push(JSON.parse(JSON.stringify(request)));
+
+        if (throwError) {
+          throw new Error("smoke execution adapter failed\n    at smoke-execution:1:1");
+        }
+
+        return typeof rawResponse === "function" ? rawResponse(request) : rawResponse;
       },
     },
   };
@@ -16506,6 +16609,451 @@ try {
     providerFailedApply.safety.retryPerformed,
     false,
     "task execution provider reconciliation smoke W should not auto-retry",
+  );
+
+  const executionAdapterIdentity = createSmokeTestExecutionAdapterIdentity();
+  const executionAdapterRequest = createSmokeTestExecutionAdapterRequest(
+    invokingPersisted.value.record,
+    executionAdapterIdentity,
+  );
+  const executionAdapterStateSnapshot = JSON.stringify(firstUpdate.value.state);
+  const executionAdapterAttemptSnapshot = JSON.stringify(invocationStartedAttempt);
+  const validExecutionAdapter = createSmokeTestExecutionAdapter({
+    identity: executionAdapterIdentity,
+    rawResponse: (request) => ({
+      status: "returned",
+      invocationId: request.invocationId,
+      idempotencyKey: request.idempotencyKey,
+      taskId: request.taskId,
+      sourceTaskRevision: request.sourceTaskRevision,
+      attemptId: request.attemptId,
+      attemptNumber: request.attemptNumber,
+      workItemId: request.workItemId,
+      batchId: request.batchId,
+      invocationOk: true,
+      output: {
+        value: "smoke execution adapter returned",
+      },
+      outputReference: "smoke://execution-adapter-returned",
+      diagnosticCode: "smoke_execution_adapter_returned",
+      message: "Execution adapter return is invocation diagnostic only.",
+    }),
+  });
+  const validExecutionConformance =
+    await evaluateTaskExecutionAdapterConformance({
+      adapter: validExecutionAdapter.adapter,
+      request: executionAdapterRequest,
+      expectedIdempotencyKey: invokingPersisted.value.record.idempotencyKey,
+      taskOrModelCapabilityClaims: {
+        supportsExternalSideEffects: true,
+        networkPermission: true,
+      },
+      taskOrModelAdapterIdentityClaims: {
+        adapterId: "model-selected-adapter",
+      },
+      stateSnapshotBefore: executionAdapterStateSnapshot,
+      stateSnapshotAfter: executionAdapterStateSnapshot,
+      attemptSnapshotBefore: executionAdapterAttemptSnapshot,
+      attemptSnapshotAfter: executionAdapterAttemptSnapshot,
+    });
+  assert.equal(
+    validExecutionConformance.adapterIdentity.adapterId,
+    executionAdapterIdentity.adapterId,
+    "task execution adapter conformance smoke A should accept valid test adapter identity",
+  );
+  assert.equal(
+    validExecutionConformance.capabilities.supportsIdempotencyKey,
+    true,
+    "task execution adapter conformance smoke C should accept system-owned capability metadata",
+  );
+  assert.ok(
+    validExecutionConformance.issues.some(
+      (item) => item.code === "task_execution_adapter_task_capability_claims_ignored",
+    ),
+    "task execution adapter conformance smoke D should ignore task/model capability claims",
+  );
+  assert.equal(
+    validExecutionAdapter.calls[0].idempotencyKey,
+    invokingPersisted.value.record.idempotencyKey,
+    "task execution adapter conformance smoke E should pass exact persisted idempotency key",
+  );
+  assert.equal(
+    validExecutionConformance.normalizedResult.outcomeStatus,
+    "returned",
+    "task execution adapter conformance smoke H should normalize returned response",
+  );
+  assert.equal(
+    validExecutionConformance.testExecutionConformant,
+    true,
+    "task execution adapter conformance smoke T should pass test execution conformance",
+  );
+  assert.equal(
+    validExecutionConformance.productionContractConformant,
+    false,
+    "task execution adapter conformance smoke U should fail intentionally incomplete production profile",
+  );
+  assert.equal(
+    validExecutionConformance.productionExecutionEnabled,
+    false,
+    "task execution adapter conformance smoke V should keep production execution disabled",
+  );
+  assert.equal(
+    TASK_EXECUTION_ADAPTER_PRODUCTION_EXECUTION_ENABLED,
+    false,
+    "task execution adapter conformance smoke V should expose disabled production execution constant",
+  );
+  assert.deepEqual(
+    validExecutionConformance.reconciliationCapabilities,
+    {
+      supportsIdempotencyKey: true,
+      supportsLookupByIdempotencyKey: true,
+      supportsInvocationStatusQuery: true,
+      supportsResultReplay: true,
+    },
+    "task execution adapter conformance smoke W should align reconciliation capabilities",
+  );
+  assert.equal(
+    validExecutionConformance.safety.taskStateModified,
+    false,
+    "task execution adapter conformance smoke X should report no task-state mutation",
+  );
+  assert.equal(
+    validExecutionConformance.safety.attemptStateModified,
+    false,
+    "task execution adapter conformance smoke X should report no attempt-state mutation",
+  );
+
+  const invalidIdentityConformance =
+    await evaluateTaskExecutionAdapterConformance({
+      adapter: createSmokeTestExecutionAdapter({
+        identity: createSmokeTestExecutionAdapterIdentity({
+          adapterId: "../unsafe-adapter",
+        }),
+        rawResponse: {
+          status: "returned",
+          invocationOk: true,
+        },
+      }).adapter,
+      request: executionAdapterRequest,
+    });
+  assert.equal(
+    invalidIdentityConformance.testExecutionConformant,
+    false,
+    "task execution adapter conformance smoke B should reject invalid adapter identity",
+  );
+  assert.ok(
+    invalidIdentityConformance.issues.some(
+      (item) => item.code === "task_execution_adapter_invalid",
+    ),
+    "task execution adapter conformance smoke B should report invalid adapter issue",
+  );
+
+  const idempotencyMismatchConformance =
+    await evaluateTaskExecutionAdapterConformance({
+      adapter: createSmokeTestExecutionAdapter({
+        identity: executionAdapterIdentity,
+        rawResponse: {
+          status: "returned",
+          idempotencyKey: "wrong-idempotency-key",
+          invocationOk: true,
+        },
+      }).adapter,
+      request: executionAdapterRequest,
+    });
+  assert.equal(
+    idempotencyMismatchConformance.normalizedResult.outcomeStatus,
+    "rejected",
+    "task execution adapter conformance smoke F should reject mismatched idempotency response",
+  );
+  assert.ok(
+    idempotencyMismatchConformance.issues.some(
+      (item) => item.code === "task_execution_adapter_idempotency_mismatch",
+    ),
+    "task execution adapter conformance smoke F should report idempotency mismatch",
+  );
+
+  const invocationMismatchConformance =
+    await evaluateTaskExecutionAdapterConformance({
+      adapter: createSmokeTestExecutionAdapter({
+        identity: executionAdapterIdentity,
+        rawResponse: {
+          status: "returned",
+          invocationId: "wrong-invocation-id",
+          invocationOk: true,
+        },
+      }).adapter,
+      request: executionAdapterRequest,
+    });
+  assert.equal(
+    invocationMismatchConformance.normalizedResult.outcomeStatus,
+    "rejected",
+    "task execution adapter conformance smoke G should reject mismatched invocation binding",
+  );
+  assert.ok(
+    invocationMismatchConformance.issues.some(
+      (item) => item.code === "task_execution_adapter_invocation_binding_mismatch",
+    ),
+    "task execution adapter conformance smoke G should report invocation binding mismatch",
+  );
+
+  const structuredFailureConformance =
+    await evaluateTaskExecutionAdapterConformance({
+      adapter: createSmokeTestExecutionAdapter({
+        identity: executionAdapterIdentity,
+        rawResponse: {
+          status: "failed",
+          failureCode: "smoke_execution_rejected",
+          failureCategory: "rejected",
+          message: "The test adapter rejected the request.",
+        },
+      }).adapter,
+      request: executionAdapterRequest,
+    });
+  assert.equal(
+    structuredFailureConformance.normalizedResult.outcomeStatus,
+    "failed",
+    "task execution adapter conformance smoke I should normalize structured failure",
+  );
+  assert.equal(
+    structuredFailureConformance.normalizedResult.failure.category,
+    "rejected",
+    "task execution adapter conformance smoke I should preserve bounded failure category",
+  );
+
+  const throwingExecutionConformance =
+    await evaluateTaskExecutionAdapterConformance({
+      adapter: createSmokeTestExecutionAdapter({
+        identity: executionAdapterIdentity,
+        throwError: true,
+      }).adapter,
+      request: executionAdapterRequest,
+    });
+  assert.equal(
+    throwingExecutionConformance.normalizedResult.outcomeStatus,
+    "unavailable",
+    "task execution adapter conformance smoke J should normalize thrown adapter errors",
+  );
+  assert.equal(
+    JSON.stringify(throwingExecutionConformance).includes("at smoke-execution"),
+    false,
+    "task execution adapter conformance smoke J should not expose raw stack text",
+  );
+
+  const hostileExecutionConformance =
+    await evaluateTaskExecutionAdapterConformance({
+      adapter: createSmokeTestExecutionAdapter({
+        identity: executionAdapterIdentity,
+        rawResponse: (request) => ({
+          status: "returned",
+          idempotencyKey: request.idempotencyKey,
+          invocationOk: true,
+          output: {
+            completed: true,
+            verified: true,
+            approved: true,
+            allDone: true,
+            safeToRetry: true,
+            taskCompleted: true,
+            policyAuthorized: true,
+            retainedDiagnostic: "bounded diagnostic output",
+            apiKey: "sk-smoke-api-key",
+            token: "smoke-token",
+            secret: "smoke-secret",
+            password: "smoke-password",
+            headers: {
+              authorization: "Bearer smoke-token",
+            },
+          },
+          metadata: {
+            completed: true,
+            verified: true,
+            approved: true,
+            apiKey: "sk-smoke-metadata",
+          },
+        }),
+      }).adapter,
+      request: executionAdapterRequest,
+    });
+  assert.equal(
+    hostileExecutionConformance.normalizedResult.output.completed,
+    undefined,
+    "task execution adapter conformance smoke K should strip hostile completion fields",
+  );
+  assert.equal(
+    hostileExecutionConformance.normalizedResult.output.verified,
+    undefined,
+    "task execution adapter conformance smoke L should strip hostile verification fields",
+  );
+  assert.equal(
+    hostileExecutionConformance.normalizedResult.output.approved,
+    undefined,
+    "task execution adapter conformance smoke M should strip hostile approval fields",
+  );
+  assert.equal(
+    hostileExecutionConformance.normalizedResult.safety.taskCompleted,
+    false,
+    "task execution adapter conformance smoke K should not grant task completion authority",
+  );
+  assert.equal(
+    hostileExecutionConformance.normalizedResult.safety.verified,
+    false,
+    "task execution adapter conformance smoke L should not grant verification authority",
+  );
+  assert.equal(
+    hostileExecutionConformance.normalizedResult.safety.approved,
+    false,
+    "task execution adapter conformance smoke M should not grant approval authority",
+  );
+  assert.equal(
+    JSON.stringify(hostileExecutionConformance.normalizedResult).includes(
+      "sk-smoke",
+    ),
+    false,
+    "task execution adapter conformance smoke N should strip raw credential values",
+  );
+  assert.equal(
+    JSON.stringify(hostileExecutionConformance.normalizedResult).includes(
+      "authorization",
+    ),
+    false,
+    "task execution adapter conformance smoke N should strip authorization header fields",
+  );
+
+  const toolCapableNoPermissionConformance =
+    await evaluateTaskExecutionAdapterConformance({
+      adapter: createSmokeTestExecutionAdapter({
+        identity: executionAdapterIdentity,
+        capabilities: createSmokeTestExecutionAdapterCapabilities({
+          supportsToolCalls: true,
+        }),
+        rawResponse: {
+          status: "returned",
+          invocationOk: true,
+        },
+      }).adapter,
+      request: executionAdapterRequest,
+    });
+  assert.equal(
+    toolCapableNoPermissionConformance.permissions.toolCallPermission,
+    false,
+    "task execution adapter conformance smoke O should keep capability distinct from granted permission",
+  );
+  assert.equal(
+    toolCapableNoPermissionConformance.permissions.networkPermission,
+    false,
+    "task execution adapter conformance smoke P should keep network permission false for test adapter",
+  );
+  assert.equal(
+    toolCapableNoPermissionConformance.permissions.filesystemPermission,
+    false,
+    "task execution adapter conformance smoke Q should keep filesystem permission false",
+  );
+  assert.equal(
+    toolCapableNoPermissionConformance.permissions.shellPermission,
+    false,
+    "task execution adapter conformance smoke R should keep shell permission false",
+  );
+
+  const permissionEscalationConformance =
+    await evaluateTaskExecutionAdapterConformance({
+      adapter: createSmokeTestExecutionAdapter({
+        identity: executionAdapterIdentity,
+        permissions: createSmokeTestExecutionAdapterPermissions({
+          networkPermission: true,
+          filesystemPermission: true,
+          shellPermission: true,
+        }),
+        rawResponse: {
+          status: "returned",
+          invocationOk: true,
+        },
+      }).adapter,
+      request: {
+        ...executionAdapterRequest,
+        permissionRequirements: createSmokeTestExecutionAdapterPermissions({
+          networkPermission: true,
+          filesystemPermission: true,
+          shellPermission: true,
+        }),
+      },
+    });
+  assert.equal(
+    permissionEscalationConformance.testExecutionConformant,
+    false,
+    "task execution adapter conformance smoke O should reject permission self-elevation",
+  );
+  assert.ok(
+    permissionEscalationConformance.issues.some(
+      (item) => item.code === "task_execution_adapter_network_permission_forbidden",
+    ),
+    "task execution adapter conformance smoke P should report forbidden network permission",
+  );
+  assert.ok(
+    permissionEscalationConformance.issues.some(
+      (item) => item.code === "task_execution_adapter_filesystem_permission_forbidden",
+    ),
+    "task execution adapter conformance smoke Q should report forbidden filesystem permission",
+  );
+  assert.ok(
+    permissionEscalationConformance.issues.some(
+      (item) => item.code === "task_execution_adapter_shell_permission_forbidden",
+    ),
+    "task execution adapter conformance smoke R should report forbidden shell permission",
+  );
+
+  const sideEffectCapabilityConformance =
+    await evaluateTaskExecutionAdapterConformance({
+      adapter: createSmokeTestExecutionAdapter({
+        identity: executionAdapterIdentity,
+        capabilities: createSmokeTestExecutionAdapterCapabilities({
+          supportsExternalSideEffects: true,
+        }),
+        rawResponse: {
+          status: "returned",
+          invocationOk: true,
+        },
+      }).adapter,
+      request: executionAdapterRequest,
+    });
+  assert.equal(
+    sideEffectCapabilityConformance.testExecutionConformant,
+    false,
+    "task execution adapter conformance smoke S should prevent test adapter external side-effect capability",
+  );
+  assert.ok(
+    sideEffectCapabilityConformance.issues.some(
+      (item) =>
+        item.code === "task_execution_adapter_test_external_side_effects_unsupported",
+    ),
+    "task execution adapter conformance smoke S should report unsupported side-effect capability",
+  );
+
+  const productionContractConformance =
+    await evaluateTaskExecutionAdapterConformance({
+      adapter: createSmokeTestExecutionAdapter({
+        identity: executionAdapterIdentity,
+        capabilities: createSmokeTestExecutionAdapterCapabilities({
+          providesDeterministicProviderInvocationReference: true,
+        }),
+        rawResponse: (request) => ({
+          status: "returned",
+          idempotencyKey: request.idempotencyKey,
+          invocationOk: true,
+          providerInvocationRef: "provider-invocation-smoke-001",
+          reconciliationRef: "provider-reconciliation-smoke-001",
+        }),
+      }).adapter,
+      request: executionAdapterRequest,
+    });
+  assert.equal(
+    productionContractConformance.productionContractConformant,
+    true,
+    "task execution adapter conformance smoke U should pass production contract profile when all required capabilities and provider reference exist",
+  );
+  assert.equal(
+    productionContractConformance.productionExecutionEnabled,
+    false,
+    "task execution adapter conformance smoke V should keep production execution disabled even for contract-conformant adapters",
   );
 
   const applyReturnedFixture = await createReconciliationApplyFixture({
