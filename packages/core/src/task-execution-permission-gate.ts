@@ -49,13 +49,11 @@ export interface TaskExecutionPermissionGatePolicyRequirement {
 }
 
 export type TaskExecutionPolicyAuthorizationDecision =
-  | "allowed"
-  | "denied"
-  | "approval_required"
-  | "unknown";
+  | "approved"
+  | "denied";
 
 export interface TaskExecutionPolicyAuthorizationProofSource {
-  readonly kind: "test_policy_authority";
+  readonly kind: "test_policy_authority" | "local_operator_policy_authority";
   readonly authority: "system";
   readonly sourceId: string;
 }
@@ -351,7 +349,8 @@ function proofSourceValid(
   return (
     proof !== undefined &&
     isRecord(proof.source) &&
-    proof.source.kind === "test_policy_authority" &&
+    (proof.source.kind === "test_policy_authority" ||
+      proof.source.kind === "local_operator_policy_authority") &&
     proof.source.authority === "system" &&
     isSafeId(proof.source.sourceId)
   );
@@ -710,16 +709,7 @@ export function evaluateTaskExecutionPermissionGate(
           category: "policy",
         }),
       );
-    } else if (proof.decision === "approval_required") {
-      issues.push(
-        issue({
-          code: "task_execution_permission_gate_policy_approval_required",
-          message:
-            "Policy authorization proof reports that approval remains required.",
-          category: "policy",
-        }),
-      );
-    } else if (proof.decision !== "allowed") {
+    } else if (proof.decision !== "approved") {
       issues.push(
         issue({
           code: "task_execution_permission_gate_policy_decision_unknown",
@@ -765,7 +755,7 @@ export function evaluateTaskExecutionPermissionGate(
     policyRequired: policyRequirement.required,
     policyAuthorized:
       policyRequirement.required &&
-      input.policyAuthorizationProof?.decision === "allowed" &&
+      input.policyAuthorizationProof?.decision === "approved" &&
       allowed,
     policyGateId: policyRequirement.policyGateId,
     credentialReferenceRequired,

@@ -1685,6 +1685,78 @@ function expectTaskExecutionInvocationReconcilePreviewErrorJsonShape(
   }
 }
 
+function expectTaskExecutionPolicyApprovalJsonShape(message, value, result) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== true ||
+    ![
+      "policy_approval_persisted",
+      "policy_denial_persisted",
+      "policy_approval_status_loaded",
+    ].includes(value.status) ||
+    typeof value.taskId !== "string" ||
+    typeof value.invocationId !== "string" ||
+    typeof value.expectedRevision !== "number" ||
+    typeof value.approval !== "object" ||
+    value.approval === null ||
+    typeof value.approval.approvalId !== "string" ||
+    typeof value.approval.policyGateId !== "string" ||
+    typeof value.approval.taskStateRevision !== "number" ||
+    !["approved", "denied"].includes(value.approval.decision) ||
+    value.approval.authority !== "system" ||
+    !Array.isArray(value.approval.requiredPermissions) ||
+    typeof value.proofUsableForGate !== "boolean" ||
+    typeof value.safety !== "object" ||
+    value.safety === null ||
+    typeof value.safety.approvalPersisted !== "boolean" ||
+    value.safety.adapterInvoked !== false ||
+    value.safety.providerCalled !== false ||
+    value.safety.credentialResolved !== false ||
+    value.safety.taskModified !== false ||
+    value.safety.attemptModified !== false ||
+    value.safety.invocationModified !== false ||
+    value.safety.workCompleted !== false ||
+    value.safety.taskCompleted !== false ||
+    value.safety.verifierRun !== false ||
+    value.safety.productionExecutionEnabled !== false ||
+    value.safety.ownershipSecretRendered !== false ||
+    !Array.isArray(value.issues)
+  ) {
+    fail(message, result);
+  }
+}
+
+function expectTaskExecutionPolicyApprovalErrorJsonShape(
+  message,
+  value,
+  expectedCode,
+  result,
+) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== false ||
+    value.approval !== null ||
+    value.proofUsableForGate !== false ||
+    typeof value.error !== "object" ||
+    value.error === null ||
+    value.error.code !== expectedCode ||
+    value.safety?.adapterInvoked !== false ||
+    value.safety?.providerCalled !== false ||
+    value.safety?.credentialResolved !== false ||
+    value.safety?.taskModified !== false ||
+    value.safety?.attemptModified !== false ||
+    value.safety?.invocationModified !== false ||
+    value.safety?.workCompleted !== false ||
+    value.safety?.taskCompleted !== false ||
+    !Array.isArray(value.issues) ||
+    !value.issues.some((issue) => issue.code === expectedCode)
+  ) {
+    fail(message, result);
+  }
+}
+
 function expectTaskStateInitSuccessJsonShape(message, value, result) {
   if (
     typeof value !== "object" ||
@@ -1919,6 +1991,21 @@ expectOutputIncludes(
   'help output did not include "task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id> --json"',
   helpCommand,
   "task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id> --json",
+);
+expectOutputIncludes(
+  'help output did not include "task execution policy approve <task-id> --invocation-id <invocation-id> --expected-revision <number>"',
+  helpCommand,
+  "task execution policy approve <task-id> --invocation-id <invocation-id> --expected-revision <number>",
+);
+expectOutputIncludes(
+  'help output did not include "task execution policy deny <task-id> --invocation-id <invocation-id> --expected-revision <number>"',
+  helpCommand,
+  "task execution policy deny <task-id> --invocation-id <invocation-id> --expected-revision <number>",
+);
+expectOutputIncludes(
+  'help output did not include "task execution policy status <task-id> --invocation-id <invocation-id> --expected-revision <number>"',
+  helpCommand,
+  "task execution policy status <task-id> --invocation-id <invocation-id> --expected-revision <number>",
 );
 expectOutputIncludes(
   'help output did not include "task status <task-id>"',
@@ -7178,6 +7265,227 @@ try {
   ) {
     fail("task execution duplicate start apply appended duplicate started event", duplicateStartApplyJson);
   }
+
+  const policyApprovalPreparedAttempt = prepareTaskExecutionAttempt({
+    state: JSON.parse(readFileSync(statusStatePath, "utf8")),
+    expectedRevision: 1,
+    batchId: "batch-main",
+    attemptNumber: 120,
+    createdAt: "2026-08-09T00:08:00.000Z",
+  });
+  if (!policyApprovalPreparedAttempt.ok) {
+    fail(`could not prepare policy approval fixture: ${policyApprovalPreparedAttempt.error.code}`);
+  }
+  const policyApprovalStartedAttempt = transitionTaskExecutionAttempt({
+    attempt: policyApprovalPreparedAttempt.value.attempt,
+    intent: {
+      kind: "start",
+    },
+    occurredAt: "2026-08-09T00:08:01.000Z",
+  });
+  if (!policyApprovalStartedAttempt.ok) {
+    fail(`could not start policy approval fixture: ${policyApprovalStartedAttempt.error.code}`);
+  }
+  const policyApprovalAttemptSave = await saveTaskExecutionAttempt({
+    projectRoot: taskStateCliRoot,
+    attempt: policyApprovalStartedAttempt.value.attempt,
+  });
+  if (!policyApprovalAttemptSave.ok) {
+    fail(`could not save policy approval fixture: ${policyApprovalAttemptSave.error.code}`);
+  }
+  const policyApprovalReservation = await reserveTaskExecutionInvocation({
+    projectRoot: taskStateCliRoot,
+    state: JSON.parse(readFileSync(statusStatePath, "utf8")),
+    attempt: policyApprovalStartedAttempt.value.attempt,
+    dependencyKind: "test_noop",
+    expectedRevision: 1,
+    claimedAt: "2026-08-09T00:08:02.000Z",
+    ownerId: "owner-policy-approval-cli",
+    ownershipToken: "ownership-token-policy-approval-cli",
+  });
+  if (!policyApprovalReservation.ok) {
+    fail(`could not reserve policy approval invocation: ${policyApprovalReservation.error.code}`);
+  }
+  const policyApprovalInvocationId =
+    policyApprovalReservation.value.record.invocationId;
+  const policyApprovalStateSnapshot = stateFileSnapshot(statusStatePath);
+  const policyApprovalAttemptBytesBefore = readFileSync(
+    policyApprovalAttemptSave.value.path,
+    "utf8",
+  );
+  const policyApprovalInvocationBytesBefore = readFileSync(
+    policyApprovalReservation.value.path,
+    "utf8",
+  );
+  const policyApprovalStatusMissingJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "policy",
+    "status",
+    statusTaskId,
+    "--invocation-id",
+    policyApprovalInvocationId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution policy status missing exited zero", policyApprovalStatusMissingJson);
+  const parsedPolicyApprovalStatusMissingJson = parseJsonOnlyStdout(
+    "task execution policy status missing output was not valid JSON only",
+    policyApprovalStatusMissingJson,
+  );
+  expectTaskExecutionPolicyApprovalErrorJsonShape(
+    "task execution policy status missing did not fail closed",
+    parsedPolicyApprovalStatusMissingJson,
+    "task_execution_policy_approval_not_found",
+    policyApprovalStatusMissingJson,
+  );
+  const policyApprovalForceJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "policy",
+    "approve",
+    statusTaskId,
+    "--invocation-id",
+    policyApprovalInvocationId,
+    "--expected-revision",
+    "1",
+    "--force",
+    "--json",
+  ]);
+  expectNonzero("task execution policy approval force exited zero", policyApprovalForceJson);
+  const parsedPolicyApprovalForceJson = parseJsonOnlyStdout(
+    "task execution policy approval force output was not valid JSON only",
+    policyApprovalForceJson,
+  );
+  expectTaskExecutionPolicyApprovalErrorJsonShape(
+    "task execution policy approval force did not fail closed",
+    parsedPolicyApprovalForceJson,
+    "task_execution_policy_operator_authority_forbidden",
+    policyApprovalForceJson,
+  );
+  const policyApprovalJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "policy",
+    "approve",
+    statusTaskId,
+    "--invocation-id",
+    policyApprovalInvocationId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectExitCode("task execution policy approve exited nonzero", policyApprovalJson, 0);
+  const parsedPolicyApprovalJson = parseJsonOnlyStdout(
+    "task execution policy approve output was not valid JSON only",
+    policyApprovalJson,
+  );
+  expectTaskExecutionPolicyApprovalJsonShape(
+    "task execution policy approve shape was invalid",
+    parsedPolicyApprovalJson,
+    policyApprovalJson,
+  );
+  if (
+    parsedPolicyApprovalJson.status !== "policy_approval_persisted" ||
+    parsedPolicyApprovalJson.approval.decision !== "approved" ||
+    parsedPolicyApprovalJson.proofUsableForGate !== true ||
+    !parsedPolicyApprovalJson.approval.requiredPermissions.includes("external_side_effect") ||
+    policyApprovalJson.stdout.includes("ownership-token-policy-approval-cli") ||
+    policyApprovalJson.stdout.includes("fake-task-0302-secret")
+  ) {
+    fail("task execution policy approve did not persist sanitized exact approval", policyApprovalJson);
+  }
+  expectStateFileSnapshotSame(
+    "task execution policy approve modified task state",
+    statusStatePath,
+    policyApprovalStateSnapshot,
+    policyApprovalJson,
+  );
+  if (
+    readFileSync(policyApprovalAttemptSave.value.path, "utf8") !==
+      policyApprovalAttemptBytesBefore ||
+    readFileSync(policyApprovalReservation.value.path, "utf8") !==
+      policyApprovalInvocationBytesBefore
+  ) {
+    fail("task execution policy approve mutated attempt or invocation authority", policyApprovalJson);
+  }
+  const policyApprovalStatusJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "policy",
+    "status",
+    statusTaskId,
+    "--invocation-id",
+    policyApprovalInvocationId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectExitCode("task execution policy status exited nonzero", policyApprovalStatusJson, 0);
+  const parsedPolicyApprovalStatusJson = parseJsonOnlyStdout(
+    "task execution policy status output was not valid JSON only",
+    policyApprovalStatusJson,
+  );
+  expectTaskExecutionPolicyApprovalJsonShape(
+    "task execution policy status shape was invalid",
+    parsedPolicyApprovalStatusJson,
+    policyApprovalStatusJson,
+  );
+  if (
+    parsedPolicyApprovalStatusJson.approval.approvalId !==
+      parsedPolicyApprovalJson.approval.approvalId ||
+    parsedPolicyApprovalStatusJson.safety.approvalPersisted !== false ||
+    policyApprovalStatusJson.stdout.includes("ownership-token-policy-approval-cli")
+  ) {
+    fail("task execution policy status did not load sanitized approval", policyApprovalStatusJson);
+  }
+  const policyApprovalDenyConflictJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "policy",
+    "deny",
+    statusTaskId,
+    "--invocation-id",
+    policyApprovalInvocationId,
+    "--expected-revision",
+    "1",
+    "--json",
+  ]);
+  expectNonzero("task execution policy deny conflict exited zero", policyApprovalDenyConflictJson);
+  const parsedPolicyApprovalDenyConflictJson = parseJsonOnlyStdout(
+    "task execution policy deny conflict output was not valid JSON only",
+    policyApprovalDenyConflictJson,
+  );
+  expectTaskExecutionPolicyApprovalErrorJsonShape(
+    "task execution policy deny conflict did not fail closed",
+    parsedPolicyApprovalDenyConflictJson,
+    "task_execution_policy_approval_authority_conflict",
+    policyApprovalDenyConflictJson,
+  );
+  const policyApprovalStaleJson = runCliFrom(taskStateCliRoot, [
+    "task",
+    "execution",
+    "policy",
+    "approve",
+    statusTaskId,
+    "--invocation-id",
+    policyApprovalInvocationId,
+    "--expected-revision",
+    "2",
+    "--json",
+  ]);
+  expectNonzero("task execution policy stale approval exited zero", policyApprovalStaleJson);
+  const parsedPolicyApprovalStaleJson = parseJsonOnlyStdout(
+    "task execution policy stale approval output was not valid JSON only",
+    policyApprovalStaleJson,
+  );
+  expectTaskExecutionPolicyApprovalErrorJsonShape(
+    "task execution policy stale approval did not fail closed",
+    parsedPolicyApprovalStaleJson,
+    "task_execution_policy_expected_revision_mismatch",
+    policyApprovalStaleJson,
+  );
 
   const startApprovalFlagJson = runCliFrom(taskStateCliRoot, [
     "task",

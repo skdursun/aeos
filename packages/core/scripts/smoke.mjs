@@ -112,6 +112,8 @@ import {
   createTaskExecutionInvocationDispatchIntentAuditEvent,
   createTaskExecutionInvocationReturnedAuditEvent,
   createTaskExecutionPermissionEvaluatedAuditEvent,
+  createTaskExecutionPolicyApprovalRecord,
+  createTaskExecutionPolicyAuthorizationProofFromApproval,
   evaluateTaskExecutionAdapterConformance,
   evaluateTaskExecutionPermissionGate,
   resolveTaskExecutionCredential,
@@ -129,7 +131,9 @@ import {
   applyTaskExecutionInvocationReconciliation,
   evaluateTaskExecutionInvocationReconciliation,
   getTaskExecutionAttemptStoragePath,
+  getTaskExecutionPolicyApprovalStoragePath,
   getTaskStateStoragePath,
+  loadTaskExecutionPolicyApprovalForContext,
   loadTaskExecutionAttempt,
   loadTaskExecutionAuditEvents,
   loadTaskExecutionInvocation,
@@ -139,7 +143,9 @@ import {
   prepareTaskExecutionAttempt,
   reserveTaskExecutionInvocation,
   saveTaskState,
+  saveTaskExecutionPolicyApproval,
   saveTaskExecutionAttempt,
+  sanitizeTaskExecutionPolicyApprovalRecord,
   summarizeCliTaskPlanPlannerIntegrationResult,
   transitionTaskExecutionAttempt,
   transitionTaskExecutionInvocationRecord,
@@ -153,6 +159,7 @@ import {
   validateTaskExecutionInvocationRecord,
   updateTaskState,
   validatePersistedTaskState,
+  validateTaskExecutionPolicyApprovalRecord,
   verifyTaskExecutionAuditChain,
   verifyAgenticCoverage,
 } from "../dist/index.js";
@@ -590,7 +597,7 @@ function createSmokeTestPolicyAuthorizationProof({
   request,
   adapterId,
   policyGateId = "smoke-policy-gate",
-  decision = "allowed",
+  decision = "approved",
   requiredPermissions = [],
   overrides = {},
 } = {}) {
@@ -17371,6 +17378,349 @@ try {
     "task execution permission gate smoke Q should not render or resolve credential references",
   );
 
+  const approvalBinding = {
+    policyGateId: gatePolicyRequirement.policyGateId,
+    taskId: executionAdapterRequest.taskId,
+    taskStateRevision: executionAdapterRequest.sourceTaskRevision,
+    attemptId: executionAdapterRequest.attemptId,
+    invocationId: executionAdapterRequest.invocationId,
+    adapterId: executionAdapterIdentity.adapterId,
+    operation: executionAdapterRequest.operationKind,
+    requiredPermissions: [],
+  };
+  const approvalRecordResult = createTaskExecutionPolicyApprovalRecord({
+    ...approvalBinding,
+    decision: "approved",
+    createdAt: "2026-08-08T01:00:10.000Z",
+    expiresAt: "2026-08-08T02:00:00.000Z",
+  });
+  assert.equal(
+    approvalRecordResult.ok,
+    true,
+    "task execution policy approval smoke B should create exact-context local operator approval",
+  );
+  const approvalRoot = await mkdtemp(
+    join(tmpdir(), "aeos-policy-approval-runtime-"),
+  );
+  const approvalSave = await saveTaskExecutionPolicyApproval({
+    projectRoot: approvalRoot,
+    approval: approvalRecordResult.value,
+  });
+  assert.equal(
+    approvalSave.ok,
+    true,
+    "task execution policy approval smoke B should persist explicit exact-context approval",
+  );
+  assert.equal(
+    approvalSave.value.status,
+    "created",
+    "task execution policy approval smoke B should use immutable create status",
+  );
+  const duplicateApprovalSave = await saveTaskExecutionPolicyApproval({
+    projectRoot: approvalRoot,
+    approval: approvalRecordResult.value,
+  });
+  assert.equal(
+    duplicateApprovalSave.ok,
+    true,
+    "task execution policy approval smoke L should accept duplicate exact approval deterministically",
+  );
+  assert.equal(
+    duplicateApprovalSave.value.status,
+    "already_exists",
+    "task execution policy approval smoke L should not overwrite duplicate exact approval",
+  );
+  assert.equal(
+    duplicateApprovalSave.value.approval.approvalId,
+    approvalRecordResult.value.approvalId,
+    "task execution policy approval smoke L should preserve deterministic approval identity",
+  );
+  const approvalLoad = await loadTaskExecutionPolicyApprovalForContext({
+    projectRoot: approvalRoot,
+    binding: approvalBinding,
+    now: "2026-08-08T01:00:30.000Z",
+  });
+  assert.equal(
+    approvalLoad.ok,
+    true,
+    "task execution policy approval smoke C should load exact approval proof",
+  );
+  assert.equal(
+    approvalLoad.value.status.expired,
+    false,
+    "task execution policy approval smoke C should report fresh approval as unexpired",
+  );
+  assert.equal(
+    JSON.stringify(approvalLoad.value.status).includes("ownershipToken"),
+    false,
+    "task execution policy approval smoke Q should keep ownership token fields out of sanitized status",
+  );
+  assert.equal(
+    JSON.stringify(approvalLoad.value.status).includes("fake-task-0302-secret"),
+    false,
+    "task execution policy approval smoke P should keep raw secret values out of sanitized status",
+  );
+  const durableProofGate = evaluateTaskExecutionPermissionGate({
+    request: executionAdapterRequest,
+    adapterIdentity: executionAdapterIdentity,
+    adapterCapabilities: createSmokeTestExecutionAdapterCapabilities(),
+    adapterPermissions: createSmokeTestExecutionAdapterPermissions(),
+    operationKind: "execute_task_attempt",
+    policyRequirement: gatePolicyRequirement,
+    policyAuthorizationProof: approvalLoad.value.proof,
+    evaluatedAt: "2026-08-08T01:00:30.000Z",
+  });
+  assert.equal(
+    durableProofGate.allowed,
+    true,
+    "task execution policy approval smoke D should allow exact durable proof through TEST policy gate",
+  );
+  assert.equal(
+    durableProofGate.policyAuthorized,
+    true,
+    "task execution policy approval smoke D should set policyAuthorized only for exact approved proof",
+  );
+  assert.equal(
+    durableProofGate.safety.productionExecutionEnabled,
+    false,
+    "task execution policy approval smoke W should keep production execution disabled after approval",
+  );
+  const deniedApprovalResult = createTaskExecutionPolicyApprovalRecord({
+    ...approvalBinding,
+    decision: "denied",
+    createdAt: "2026-08-08T01:00:11.000Z",
+  });
+  assert.equal(
+    deniedApprovalResult.ok,
+    true,
+    "task execution policy approval smoke J should create exact-context denial record",
+  );
+  const deniedProofResult = createTaskExecutionPolicyAuthorizationProofFromApproval({
+    approval: deniedApprovalResult.value,
+  });
+  assert.equal(
+    deniedProofResult.ok,
+    true,
+    "task execution policy approval smoke J should derive denial proof",
+  );
+  const deniedDurableGate = evaluateTaskExecutionPermissionGate({
+    request: executionAdapterRequest,
+    adapterIdentity: executionAdapterIdentity,
+    adapterCapabilities: createSmokeTestExecutionAdapterCapabilities(),
+    adapterPermissions: createSmokeTestExecutionAdapterPermissions(),
+    operationKind: "execute_task_attempt",
+    policyRequirement: gatePolicyRequirement,
+    policyAuthorizationProof: deniedProofResult.value,
+  });
+  assert.equal(
+    deniedDurableGate.decision,
+    "denied",
+    "task execution policy approval smoke J should block denied durable proof",
+  );
+  const expiredApprovalResult = createTaskExecutionPolicyApprovalRecord({
+    ...approvalBinding,
+    decision: "approved",
+    createdAt: "2026-08-08T00:30:00.000Z",
+    expiresAt: "2026-08-08T00:59:59.000Z",
+  });
+  assert.equal(
+    expiredApprovalResult.ok,
+    true,
+    "task execution policy approval smoke K should create expiring approval fixture",
+  );
+  const expiredProofResult =
+    createTaskExecutionPolicyAuthorizationProofFromApproval({
+      approval: expiredApprovalResult.value,
+    });
+  assert.equal(
+    expiredProofResult.ok,
+    true,
+    "task execution policy approval smoke K should derive expired approval proof fixture",
+  );
+  const expiredGate = evaluateTaskExecutionPermissionGate({
+    request: executionAdapterRequest,
+    adapterIdentity: executionAdapterIdentity,
+    adapterCapabilities: createSmokeTestExecutionAdapterCapabilities(),
+    adapterPermissions: createSmokeTestExecutionAdapterPermissions(),
+    operationKind: "execute_task_attempt",
+    policyRequirement: gatePolicyRequirement,
+    policyAuthorizationProof: expiredProofResult.value,
+    evaluatedAt: "2026-08-08T01:00:00.000Z",
+  });
+  assert.equal(
+    expiredGate.allowed,
+    false,
+    "task execution policy approval smoke K should block expired durable proof",
+  );
+  assert.ok(
+    expiredGate.issues.some(
+      (item) => item.code === "task_execution_permission_gate_policy_proof_expired",
+    ),
+    "task execution policy approval smoke K should report expired proof issue",
+  );
+  const conflictingDenialSave = await saveTaskExecutionPolicyApproval({
+    projectRoot: approvalRoot,
+    approval: deniedApprovalResult.value,
+  });
+  assert.equal(
+    conflictingDenialSave.ok,
+    false,
+    "task execution policy approval smoke L should reject contradictory decision for same context",
+  );
+  assert.equal(
+    conflictingDenialSave.error.code,
+    "task_execution_policy_approval_authority_conflict",
+    "task execution policy approval smoke L should fail contradictory duplicate as authority conflict",
+  );
+  const approvalWithUnknownField = validateTaskExecutionPolicyApprovalRecord({
+    ...approvalRecordResult.value,
+    ownershipToken: "must-not-persist",
+  });
+  assert.equal(
+    approvalWithUnknownField.ok,
+    false,
+    "task execution policy approval smoke Q should reject unknown secret-capability fields",
+  );
+  const approvalStoragePath = getTaskExecutionPolicyApprovalStoragePath({
+    projectRoot: approvalRoot,
+    taskId: approvalRecordResult.value.taskId,
+    approvalId: approvalRecordResult.value.approvalId,
+  });
+  assert.equal(
+    approvalStoragePath.ok,
+    true,
+    "task execution policy approval smoke C should resolve deterministic storage path",
+  );
+  const approvalBytes = await readFile(approvalStoragePath.value.path, "utf8");
+  assert.equal(
+    approvalBytes.includes("fake-task-0302-secret"),
+    false,
+    "task execution policy approval smoke P should not persist raw secret values",
+  );
+  assert.equal(
+    approvalBytes.includes("ownershipToken"),
+    false,
+    "task execution policy approval smoke Q should not persist invocation ownership capability",
+  );
+  const corruptApprovalRoot = await mkdtemp(
+    join(tmpdir(), "aeos-policy-approval-corrupt-"),
+  );
+  const corruptApprovalPath = getTaskExecutionPolicyApprovalStoragePath({
+    projectRoot: corruptApprovalRoot,
+    taskId: approvalRecordResult.value.taskId,
+    approvalId: approvalRecordResult.value.approvalId,
+  });
+  assert.equal(corruptApprovalPath.ok, true);
+  await mkdir(corruptApprovalPath.value.taskApprovalRoot, { recursive: true });
+  await writeNodeFile(corruptApprovalPath.value.path, "{", "utf8");
+  const corruptApprovalLoad = await loadTaskExecutionPolicyApprovalForContext({
+    projectRoot: corruptApprovalRoot,
+    binding: approvalBinding,
+  });
+  assert.equal(
+    corruptApprovalLoad.ok,
+    false,
+    "task execution policy approval smoke M should block corrupt approval record",
+  );
+  assert.equal(
+    corruptApprovalLoad.error.code,
+    "task_execution_policy_approval_corrupt_json",
+    "task execution policy approval smoke M should fail closed on corrupt approval JSON",
+  );
+  const approvalRootSymlinkFixtureRoot = await mkdtemp(
+    join(tmpdir(), "aeos-policy-approval-root-symlink-"),
+  );
+  const approvalRootSymlinkOutsideRoot = await mkdtemp(
+    join(tmpdir(), "aeos-policy-approval-outside-"),
+  );
+  await mkdir(join(approvalRootSymlinkFixtureRoot, ".aeos", "state", "policy"), {
+    recursive: true,
+  });
+  await symlink(
+    approvalRootSymlinkOutsideRoot,
+    join(approvalRootSymlinkFixtureRoot, ".aeos", "state", "policy", "approvals"),
+  );
+  const rootSymlinkSave = await saveTaskExecutionPolicyApproval({
+    projectRoot: approvalRootSymlinkFixtureRoot,
+    approval: approvalRecordResult.value,
+  });
+  assert.equal(
+    rootSymlinkSave.ok,
+    false,
+    "task execution policy approval smoke N should block approval root symlink",
+  );
+  assert.equal(
+    rootSymlinkSave.error.code,
+    "task_execution_policy_approval_unsafe_state_root",
+    "task execution policy approval smoke N should report unsafe approval root",
+  );
+  const fileSymlinkApprovalRoot = await mkdtemp(
+    join(tmpdir(), "aeos-policy-approval-file-symlink-"),
+  );
+  const fileSymlinkPath = getTaskExecutionPolicyApprovalStoragePath({
+    projectRoot: fileSymlinkApprovalRoot,
+    taskId: approvalRecordResult.value.taskId,
+    approvalId: approvalRecordResult.value.approvalId,
+  });
+  assert.equal(fileSymlinkPath.ok, true);
+  await mkdir(fileSymlinkPath.value.taskApprovalRoot, { recursive: true });
+  const outsideApprovalFile = join(fileSymlinkApprovalRoot, "outside-approval.json");
+  await writeNodeFile(outsideApprovalFile, approvalBytes, "utf8");
+  await symlink(outsideApprovalFile, fileSymlinkPath.value.path);
+  const fileSymlinkLoad = await loadTaskExecutionPolicyApprovalForContext({
+    projectRoot: fileSymlinkApprovalRoot,
+    binding: approvalBinding,
+  });
+  assert.equal(
+    fileSymlinkLoad.ok,
+    false,
+    "task execution policy approval smoke O should block approval file symlink",
+  );
+  assert.equal(
+    fileSymlinkLoad.error.code,
+    "task_execution_policy_approval_unsafe_target",
+    "task execution policy approval smoke O should report unsafe approval target",
+  );
+  const unsafeApprovalPath = getTaskExecutionPolicyApprovalStoragePath({
+    projectRoot: approvalRoot,
+    taskId: "../unsafe-task",
+    approvalId: approvalRecordResult.value.approvalId,
+  });
+  assert.equal(
+    unsafeApprovalPath.ok,
+    false,
+    "task execution policy approval smoke path should reject unsafe task id",
+  );
+  const statusSnapshot = sanitizeTaskExecutionPolicyApprovalRecord({
+    approval: approvalRecordResult.value,
+    now: "2026-08-08T01:00:30.000Z",
+  });
+  assert.equal(
+    statusSnapshot.safety.adapterInvoked,
+    false,
+    "task execution policy approval smoke T should not invoke adapters",
+  );
+  assert.equal(
+    statusSnapshot.safety.taskModified,
+    false,
+    "task execution policy approval smoke U should not mutate task state",
+  );
+  assert.equal(
+    statusSnapshot.safety.invocationModified,
+    false,
+    "task execution policy approval smoke U should not mutate invocation state",
+  );
+  assert.equal(
+    statusSnapshot.safety.workCompleted,
+    false,
+    "task execution policy approval smoke Y should not complete approved work",
+  );
+  assert.equal(
+    statusSnapshot.safety.verifierRun,
+    false,
+    "task execution policy approval smoke Y should not satisfy verifier",
+  );
+
   const missingProofGate = evaluateTaskExecutionPermissionGate({
     request: executionAdapterRequest,
     adapterIdentity: executionAdapterIdentity,
@@ -17445,6 +17795,32 @@ try {
           binding: {
             ...validPolicyProof.binding,
             taskRevision: executionAdapterRequest.sourceTaskRevision - 1,
+          },
+        },
+      }),
+    ],
+    [
+      "task execution permission gate smoke H should block mismatched operation proof",
+      createSmokeTestPolicyAuthorizationProof({
+        request: executionAdapterRequest,
+        adapterId: executionAdapterIdentity.adapterId,
+        overrides: {
+          binding: {
+            ...validPolicyProof.binding,
+            operationKind: "cancel_invocation",
+          },
+        },
+      }),
+    ],
+    [
+      "task execution permission gate smoke I should block mismatched permission-set proof",
+      createSmokeTestPolicyAuthorizationProof({
+        request: executionAdapterRequest,
+        adapterId: executionAdapterIdentity.adapterId,
+        overrides: {
+          binding: {
+            ...validPolicyProof.binding,
+            requiredPermissions: ["tool_call"],
           },
         },
       }),

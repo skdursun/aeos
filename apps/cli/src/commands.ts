@@ -8,9 +8,12 @@ import {
   deriveLatestTaskExecutionAttemptNumber,
   evaluateTaskStateTransition,
   evaluateTaskExecutionInvocationReconciliation,
+  createTaskExecutionPolicyApprovalRecord,
+  deriveTaskExecutionPolicyGateId,
   loadTaskExecutionAttempt,
   loadTaskExecutionInvocation,
   loadTaskExecutionInvocationStatus,
+  loadTaskExecutionPolicyApprovalForContext,
   loadTaskResumeHandoff,
   loadTaskState,
   mapTaskContractToRunnerPlanningInput,
@@ -20,6 +23,7 @@ import {
   runAgenticRunnerDryRun,
   runInitPipeline,
   saveTaskExecutionAttempt,
+  saveTaskExecutionPolicyApproval,
   saveTaskState,
   transitionTaskExecutionAttempt,
   transitionPersistedTaskState,
@@ -59,6 +63,7 @@ import type {
   TaskExecutionAttempt,
   TaskExecutionInvocationReadOnlyStatus,
   TaskExecutionInvocationReconciliationResult,
+  TaskExecutionPolicyApprovalPublicStatus,
   TaskExecutionStartAuthorizationResult,
 } from "@aeos/core";
 import { handleContext } from "./context.js";
@@ -120,6 +125,12 @@ Commands:
   task execution invocation status <task-id> --invocation-id <invocation-id> --json
   task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id>
   task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id> --json
+  task execution policy approve <task-id> --invocation-id <invocation-id> --expected-revision <number>
+  task execution policy approve <task-id> --invocation-id <invocation-id> --expected-revision <number> --json
+  task execution policy deny <task-id> --invocation-id <invocation-id> --expected-revision <number>
+  task execution policy deny <task-id> --invocation-id <invocation-id> --expected-revision <number> --json
+  task execution policy status <task-id> --invocation-id <invocation-id> --expected-revision <number>
+  task execution policy status <task-id> --invocation-id <invocation-id> --expected-revision <number> --json
   task status <task-id>
   task status <task-id> --json
   task resume --preview <task-id>
@@ -811,6 +822,60 @@ type TaskExecutionInvocationReconcilePreviewJsonOutput =
       readonly issues: readonly TaskStateCliIssue[];
     };
 
+type TaskExecutionPolicyApprovalSafety = {
+  readonly approvalPersisted: boolean;
+  readonly readOnly: boolean;
+  readonly adapterInvoked: false;
+  readonly providerCalled: false;
+  readonly credentialResolved: false;
+  readonly taskModified: false;
+  readonly attemptModified: false;
+  readonly invocationModified: false;
+  readonly auditUsedAsAuthorization: false;
+  readonly workCompleted: false;
+  readonly taskCompleted: false;
+  readonly verifierRun: false;
+  readonly productionExecutionEnabled: false;
+  readonly ownershipSecretRendered: false;
+};
+
+type TaskExecutionPolicyApprovalJsonOutput =
+  | {
+      readonly ok: true;
+      readonly status:
+        | "policy_approval_persisted"
+        | "policy_denial_persisted"
+        | "policy_approval_status_loaded";
+      readonly taskId: string;
+      readonly invocationId: string;
+      readonly expectedRevision: number;
+      readonly approval: TaskExecutionPolicyApprovalPublicStatus;
+      readonly persistenceStatus: "created" | "already_exists" | "loaded";
+      readonly proofUsableForGate: boolean;
+      readonly safety: TaskExecutionPolicyApprovalSafety;
+      readonly issues: readonly TaskStateCliIssue[];
+    }
+  | {
+      readonly ok: false;
+      readonly status:
+        | "invalid_arguments"
+        | "failed_to_load"
+        | "stale_context"
+        | "approval_persistence_failed";
+      readonly taskId: string;
+      readonly invocationId: string | null;
+      readonly expectedRevision: number | null;
+      readonly approval: null;
+      readonly proofUsableForGate: false;
+      readonly error: {
+        readonly code: string;
+        readonly message: string;
+        readonly category: string;
+      };
+      readonly safety: TaskExecutionPolicyApprovalSafety;
+      readonly issues: readonly TaskStateCliIssue[];
+    };
+
 type TaskStateInitSafety = {
   readonly taskExecution: false;
   readonly adapterCalls: false;
@@ -1451,6 +1516,12 @@ function writeTaskExecutionInvocationStatusJson(
 
 function writeTaskExecutionInvocationReconcilePreviewJson(
   value: TaskExecutionInvocationReconcilePreviewJsonOutput,
+): void {
+  writeJsonLine(value);
+}
+
+function writeTaskExecutionPolicyApprovalJson(
+  value: TaskExecutionPolicyApprovalJsonOutput,
 ): void {
   writeJsonLine(value);
 }
@@ -4126,6 +4197,177 @@ const taskExecutionInvocationPreviewSafety: TaskExecutionInvocationPreviewSafety
   previewUsableAsOwnershipCredential: false,
 };
 
+const taskExecutionPolicyApprovalReadSafety:
+  TaskExecutionPolicyApprovalSafety = {
+    approvalPersisted: false,
+    readOnly: true,
+    adapterInvoked: false,
+    providerCalled: false,
+    credentialResolved: false,
+    taskModified: false,
+    attemptModified: false,
+    invocationModified: false,
+    auditUsedAsAuthorization: false,
+    workCompleted: false,
+    taskCompleted: false,
+    verifierRun: false,
+    productionExecutionEnabled: false,
+    ownershipSecretRendered: false,
+  };
+
+const taskExecutionPolicyApprovalWriteSafety:
+  TaskExecutionPolicyApprovalSafety = {
+    ...taskExecutionPolicyApprovalReadSafety,
+    approvalPersisted: true,
+    readOnly: false,
+  };
+
+function parseExpectedPolicyApprovalRevision(
+  value: string | undefined,
+): { readonly ok: true; readonly value: number } | { readonly ok: false; readonly error: AeosError } {
+  if (value === undefined) {
+    return {
+      ok: false,
+      error: createTaskStateCliError({
+        code: "task_execution_policy_expected_revision_required",
+        message:
+          "Task execution policy approval requires --expected-revision <number>.",
+      }),
+    };
+  }
+
+  if (!/^[1-9][0-9]*$/.test(value)) {
+    return {
+      ok: false,
+      error: createTaskStateCliError({
+        code: "task_execution_policy_expected_revision_invalid",
+        message:
+          "Task execution policy approval expected revision must be a positive integer.",
+      }),
+    };
+  }
+
+  return {
+    ok: true,
+    value: Number(value),
+  };
+}
+
+function createTaskExecutionPolicyApprovalErrorJsonOutput(input: {
+  readonly taskId?: string;
+  readonly invocationId?: string | null;
+  readonly expectedRevision?: number | null;
+  readonly error: AeosError;
+  readonly status?: Extract<
+    TaskExecutionPolicyApprovalJsonOutput,
+    { readonly ok: false }
+  >["status"];
+}): Extract<TaskExecutionPolicyApprovalJsonOutput, { readonly ok: false }> {
+  return {
+    ok: false,
+    status:
+      input.status ??
+      (input.error.category === "conflict"
+        ? "stale_context"
+        : input.error.category === "not_found"
+          ? "failed_to_load"
+          : "invalid_arguments"),
+    taskId: input.taskId ?? "",
+    invocationId: input.invocationId ?? null,
+    expectedRevision: input.expectedRevision ?? null,
+    approval: null,
+    proofUsableForGate: false,
+    error: {
+      code: input.error.code,
+      message: input.error.message,
+      category: input.error.category,
+    },
+    safety: taskExecutionPolicyApprovalReadSafety,
+    issues: [createTaskStateCliIssueFromError(input.error)],
+  };
+}
+
+function createTaskExecutionPolicyApprovalJsonOutput(input: {
+  readonly status:
+    | "policy_approval_persisted"
+    | "policy_denial_persisted"
+    | "policy_approval_status_loaded";
+  readonly taskId: string;
+  readonly invocationId: string;
+  readonly expectedRevision: number;
+  readonly approval: TaskExecutionPolicyApprovalPublicStatus;
+  readonly persistenceStatus: "created" | "already_exists" | "loaded";
+  readonly approvalPersisted: boolean;
+}): Extract<TaskExecutionPolicyApprovalJsonOutput, { readonly ok: true }> {
+  return {
+    ok: true,
+    status: input.status,
+    taskId: input.taskId,
+    invocationId: input.invocationId,
+    expectedRevision: input.expectedRevision,
+    approval: input.approval,
+    persistenceStatus: input.persistenceStatus,
+    proofUsableForGate:
+      input.approval.decision === "approved" && input.approval.expired === false,
+    safety: input.approvalPersisted
+      ? taskExecutionPolicyApprovalWriteSafety
+      : taskExecutionPolicyApprovalReadSafety,
+    issues: [],
+  };
+}
+
+function printTaskExecutionPolicyApprovalOutput(
+  output: Extract<TaskExecutionPolicyApprovalJsonOutput, { readonly ok: true }>,
+): void {
+  console.log("Task Execution Policy Approval");
+  console.log("");
+  console.log(`Task id: ${output.taskId}`);
+  console.log(`Invocation id: ${output.invocationId}`);
+  console.log(`Expected revision: ${output.expectedRevision}`);
+  console.log(`Approval id: ${output.approval.approvalId}`);
+  console.log(`Decision: ${output.approval.decision}`);
+  console.log(`Policy gate: ${output.approval.policyGateId}`);
+  console.log(`Adapter: ${output.approval.adapterId}`);
+  console.log(`Operation: ${output.approval.operation}`);
+  console.log(
+    `Required permissions: ${output.approval.requiredPermissions.join(",") || "none"}`,
+  );
+  console.log(`Expired: ${String(output.approval.expired)}`);
+  console.log(`Persistence: ${output.persistenceStatus}`);
+  console.log(`Proof usable for gate: ${String(output.proofUsableForGate)}`);
+  console.log("");
+  console.log(`Adapter invoked: ${String(output.safety.adapterInvoked)}`);
+  console.log(`Provider called: ${String(output.safety.providerCalled)}`);
+  console.log(`Credential resolved: ${String(output.safety.credentialResolved)}`);
+  console.log(`Task modified: ${String(output.safety.taskModified)}`);
+  console.log(`Attempt modified: ${String(output.safety.attemptModified)}`);
+  console.log(`Invocation modified: ${String(output.safety.invocationModified)}`);
+  console.log(`Work completed: ${String(output.safety.workCompleted)}`);
+  console.log(`Task completed: ${String(output.safety.taskCompleted)}`);
+  console.log(`Verifier run: ${String(output.safety.verifierRun)}`);
+}
+
+function printTaskExecutionPolicyApprovalError(
+  output: Extract<TaskExecutionPolicyApprovalJsonOutput, { readonly ok: false }>,
+): void {
+  console.error("Task Execution Policy Approval");
+  console.error(`Task id: ${output.taskId}`);
+  console.error(`Invocation id: ${output.invocationId ?? "none"}`);
+  console.error(`Status: ${output.status}`);
+  console.error(`Error: ${output.error.code}`);
+  console.error(`Message: ${output.error.message}`);
+  console.error("Proof usable for gate: false");
+  console.error("Adapter invoked: false");
+  console.error("Provider called: false");
+  console.error("Credential resolved: false");
+  console.error("Task modified: false");
+  console.error("Attempt modified: false");
+  console.error("Invocation modified: false");
+  console.error("Work completed: false");
+  console.error("Task completed: false");
+  console.error("Verifier run: false");
+}
+
 const emptyTaskExecutionInvocationPreviewProviderRequirements: TaskExecutionInvocationPreviewProviderRequirements = {
   idempotencyLookupUseful: false,
   statusQueryUseful: false,
@@ -6463,6 +6705,501 @@ async function handleTaskExecutionStart(args: readonly string[]): Promise<void> 
   }
 }
 
+async function handleTaskExecutionPolicy(args: readonly string[]): Promise<void> {
+  const subcommand = args[0];
+  const json = args.includes("--json");
+
+  if (
+    subcommand !== "approve" &&
+    subcommand !== "deny" &&
+    subcommand !== "status"
+  ) {
+    const error = createTaskStateCliError({
+      code: "task_execution_policy_unknown_command",
+      message: "Unknown task execution policy command.",
+    });
+    const output = createTaskExecutionPolicyApprovalErrorJsonOutput({
+      error,
+      status: "invalid_arguments",
+    });
+
+    if (json) {
+      writeTaskExecutionPolicyApprovalJson(output);
+    } else {
+      printTaskExecutionPolicyApprovalError(output);
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  const policyArgs = args.slice(1);
+  let taskId: string | undefined;
+  let invocationId: string | undefined;
+  let expectedRevision: string | undefined;
+  const errors: AeosError[] = [];
+
+  for (let index = 0; index < policyArgs.length; index += 1) {
+    const arg = policyArgs[index];
+
+    if (arg === "--json") {
+      continue;
+    }
+
+    if (arg === "--invocation-id") {
+      const value = policyArgs[index + 1];
+
+      if (value === undefined || value.startsWith("--")) {
+        errors.push(
+          createTaskStateCliError({
+            code: "task_execution_policy_invocation_id_required",
+            message:
+              "Task execution policy approval requires --invocation-id <invocation-id>.",
+          }),
+        );
+      } else if (invocationId !== undefined) {
+        errors.push(
+          createTaskStateCliError({
+            code: "task_execution_policy_duplicate_invocation_id",
+            message: "Task execution policy approval accepts one invocation id.",
+          }),
+        );
+        index += 1;
+      } else {
+        invocationId = value;
+        index += 1;
+      }
+      continue;
+    }
+
+    if (arg === "--expected-revision") {
+      const value = policyArgs[index + 1];
+
+      if (value === undefined || value.startsWith("--")) {
+        errors.push(
+          createTaskStateCliError({
+            code: "task_execution_policy_expected_revision_required",
+            message:
+              "Task execution policy approval requires --expected-revision <number>.",
+          }),
+        );
+      } else if (expectedRevision !== undefined) {
+        errors.push(
+          createTaskStateCliError({
+            code: "task_execution_policy_duplicate_expected_revision",
+            message:
+              "Task execution policy approval accepts one expected revision.",
+          }),
+        );
+        index += 1;
+      } else {
+        expectedRevision = value;
+        index += 1;
+      }
+      continue;
+    }
+
+    if (
+      arg === "--force" ||
+      arg === "--approved" ||
+      arg === "--approved=true" ||
+      arg === "--policy-proof" ||
+      arg === "--approval-json" ||
+      arg === "--adapter" ||
+      arg === "--operation" ||
+      arg === "--permission"
+    ) {
+      errors.push(
+        createTaskStateCliError({
+          code: "task_execution_policy_operator_authority_forbidden",
+          message:
+            "Task execution policy approval does not accept force flags, approval JSON, adapter, operation, or permission authority.",
+          category: "permission",
+        }),
+      );
+      continue;
+    }
+
+    if (arg.startsWith("--")) {
+      errors.push(
+        createTaskStateCliError({
+          code: "task_execution_policy_unknown_option",
+          message: "Unknown task execution policy option.",
+        }),
+      );
+      continue;
+    }
+
+    if (taskId !== undefined) {
+      errors.push(
+        createTaskStateCliError({
+          code: "task_execution_policy_duplicate_task_id",
+          message: "Task execution policy approval accepts one task id.",
+        }),
+      );
+      continue;
+    }
+
+    taskId = arg;
+  }
+
+  if (taskId === undefined || taskId.trim().length === 0) {
+    errors.push(
+      createTaskStateCliError({
+        code: "task_execution_policy_task_id_required",
+        message: "Task execution policy approval requires a task id.",
+      }),
+    );
+  }
+
+  if (invocationId === undefined || invocationId.trim().length === 0) {
+    errors.push(
+      createTaskStateCliError({
+        code: "task_execution_policy_invocation_id_required",
+        message:
+          "Task execution policy approval requires --invocation-id <invocation-id>.",
+      }),
+    );
+  }
+
+  const expectedRevisionResult =
+    parseExpectedPolicyApprovalRevision(expectedRevision);
+
+  if (!expectedRevisionResult.ok) {
+    errors.push(expectedRevisionResult.error);
+  }
+
+  if (errors.length > 0) {
+    const output = createTaskExecutionPolicyApprovalErrorJsonOutput({
+      taskId: taskId ?? "",
+      invocationId: invocationId ?? null,
+      expectedRevision: expectedRevisionResult.ok
+        ? expectedRevisionResult.value
+        : null,
+      error: errors[0]!,
+      status: "invalid_arguments",
+    });
+
+    if (json) {
+      writeTaskExecutionPolicyApprovalJson(output);
+    } else {
+      printTaskExecutionPolicyApprovalError(output);
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  if (!expectedRevisionResult.ok) {
+    setExitCode(1);
+    return;
+  }
+
+  const expectedRevisionValue = expectedRevisionResult.value;
+
+  const stateResult = await loadTaskState({
+    projectRoot: getCwd(),
+    taskId: taskId!,
+  });
+
+  if (!stateResult.ok) {
+    const output = createTaskExecutionPolicyApprovalErrorJsonOutput({
+      taskId: taskId!,
+      invocationId: invocationId!,
+      expectedRevision: expectedRevisionValue,
+      error: stateResult.error,
+    });
+
+    if (json) {
+      writeTaskExecutionPolicyApprovalJson(output);
+    } else {
+      printTaskExecutionPolicyApprovalError(output);
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  if (stateResult.value.state.revision !== expectedRevisionValue) {
+    const output = createTaskExecutionPolicyApprovalErrorJsonOutput({
+      taskId: taskId!,
+      invocationId: invocationId!,
+      expectedRevision: expectedRevisionValue,
+      error: createTaskStateCliError({
+        code: "task_execution_policy_expected_revision_mismatch",
+        message:
+          "Expected task revision does not match current authoritative task state revision.",
+        category: "conflict",
+      }),
+      status: "stale_context",
+    });
+
+    if (json) {
+      writeTaskExecutionPolicyApprovalJson(output);
+    } else {
+      printTaskExecutionPolicyApprovalError(output);
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  const invocationResult = await loadTaskExecutionInvocation({
+    projectRoot: getCwd(),
+    taskId: taskId!,
+    invocationId: invocationId!,
+  });
+
+  if (!invocationResult.ok) {
+    const output = createTaskExecutionPolicyApprovalErrorJsonOutput({
+      taskId: taskId!,
+      invocationId: invocationId!,
+      expectedRevision: expectedRevisionValue,
+      error: invocationResult.error,
+    });
+
+    if (json) {
+      writeTaskExecutionPolicyApprovalJson(output);
+    } else {
+      printTaskExecutionPolicyApprovalError(output);
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  const invocationStatusResult = await loadTaskExecutionInvocationStatus({
+    projectRoot: getCwd(),
+    taskId: taskId!,
+    invocationId: invocationId!,
+  });
+
+  if (!invocationStatusResult.ok) {
+    const output = createTaskExecutionPolicyApprovalErrorJsonOutput({
+      taskId: taskId!,
+      invocationId: invocationId!,
+      expectedRevision: expectedRevisionValue,
+      error: invocationStatusResult.error,
+    });
+
+    if (json) {
+      writeTaskExecutionPolicyApprovalJson(output);
+    } else {
+      printTaskExecutionPolicyApprovalError(output);
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  if (
+    invocationResult.value.record.taskStateRevision !==
+      expectedRevisionValue ||
+    invocationStatusResult.value.invocation.currentTaskRevision !==
+      expectedRevisionValue ||
+    invocationStatusResult.value.invocation.staleAgainstCurrentTask !== false ||
+    invocationStatusResult.value.invocation.taskContextValid !== true ||
+    invocationStatusResult.value.invocation.attemptContextValid !== true ||
+    invocationStatusResult.value.invocation.currentlyExecutionAuthoritative !==
+      true
+  ) {
+    const output = createTaskExecutionPolicyApprovalErrorJsonOutput({
+      taskId: taskId!,
+      invocationId: invocationId!,
+      expectedRevision: expectedRevisionValue,
+      error: createTaskStateCliError({
+        code: "task_execution_policy_context_not_current",
+        message:
+          "Policy approval requires the current authoritative task, attempt, and reserved invocation context.",
+        category: "conflict",
+      }),
+      status: "stale_context",
+    });
+
+    if (json) {
+      writeTaskExecutionPolicyApprovalJson(output);
+    } else {
+      printTaskExecutionPolicyApprovalError(output);
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  const policyGateIdResult = deriveTaskExecutionPolicyGateId({
+    taskId: taskId!,
+    taskStateRevision: expectedRevisionValue,
+    attemptId: invocationResult.value.record.attemptId,
+    invocationId: invocationId!,
+  });
+
+  if (!policyGateIdResult.ok) {
+    const output = createTaskExecutionPolicyApprovalErrorJsonOutput({
+      taskId: taskId!,
+      invocationId: invocationId!,
+      expectedRevision: expectedRevisionValue,
+      error: policyGateIdResult.error,
+    });
+
+    if (json) {
+      writeTaskExecutionPolicyApprovalJson(output);
+    } else {
+      printTaskExecutionPolicyApprovalError(output);
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  const binding = {
+    policyGateId: policyGateIdResult.value,
+    taskId: taskId!,
+    taskStateRevision: expectedRevisionValue,
+    attemptId: invocationResult.value.record.attemptId,
+    invocationId: invocationId!,
+    adapterId: "test-execution-adapter",
+    operation: "execute_task_attempt" as const,
+    requiredPermissions: ["external_side_effect"] as const,
+  };
+
+  if (subcommand === "status") {
+    const approvalLoad = await loadTaskExecutionPolicyApprovalForContext({
+      projectRoot: getCwd(),
+      binding,
+      now: new Date().toISOString(),
+    });
+
+    if (!approvalLoad.ok) {
+      const output = createTaskExecutionPolicyApprovalErrorJsonOutput({
+        taskId: taskId!,
+        invocationId: invocationId!,
+        expectedRevision: expectedRevisionValue,
+        error: approvalLoad.error,
+      });
+
+      if (json) {
+        writeTaskExecutionPolicyApprovalJson(output);
+      } else {
+        printTaskExecutionPolicyApprovalError(output);
+      }
+
+      setExitCode(1);
+      return;
+    }
+
+    const output = createTaskExecutionPolicyApprovalJsonOutput({
+      status: "policy_approval_status_loaded",
+      taskId: taskId!,
+      invocationId: invocationId!,
+      expectedRevision: expectedRevisionValue,
+      approval: approvalLoad.value.status,
+      persistenceStatus: "loaded",
+      approvalPersisted: false,
+    });
+
+    if (json) {
+      writeTaskExecutionPolicyApprovalJson(output);
+    } else {
+      printTaskExecutionPolicyApprovalOutput(output);
+    }
+
+    return;
+  }
+
+  const approvalResult = createTaskExecutionPolicyApprovalRecord({
+    ...binding,
+    decision: subcommand === "approve" ? "approved" : "denied",
+    createdAt: new Date().toISOString(),
+  });
+
+  if (!approvalResult.ok) {
+    const output = createTaskExecutionPolicyApprovalErrorJsonOutput({
+      taskId: taskId!,
+      invocationId: invocationId!,
+      expectedRevision: expectedRevisionValue,
+      error: approvalResult.error,
+      status: "approval_persistence_failed",
+    });
+
+    if (json) {
+      writeTaskExecutionPolicyApprovalJson(output);
+    } else {
+      printTaskExecutionPolicyApprovalError(output);
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  const saveResult = await saveTaskExecutionPolicyApproval({
+    projectRoot: getCwd(),
+    approval: approvalResult.value,
+  });
+
+  if (!saveResult.ok) {
+    const output = createTaskExecutionPolicyApprovalErrorJsonOutput({
+      taskId: taskId!,
+      invocationId: invocationId!,
+      expectedRevision: expectedRevisionValue,
+      error: saveResult.error,
+      status: "approval_persistence_failed",
+    });
+
+    if (json) {
+      writeTaskExecutionPolicyApprovalJson(output);
+    } else {
+      printTaskExecutionPolicyApprovalError(output);
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  const loadedApproval = await loadTaskExecutionPolicyApprovalForContext({
+    projectRoot: getCwd(),
+    binding,
+    now: new Date().toISOString(),
+  });
+
+  if (!loadedApproval.ok) {
+    const output = createTaskExecutionPolicyApprovalErrorJsonOutput({
+      taskId: taskId!,
+      invocationId: invocationId!,
+      expectedRevision: expectedRevisionValue,
+      error: loadedApproval.error,
+      status: "approval_persistence_failed",
+    });
+
+    if (json) {
+      writeTaskExecutionPolicyApprovalJson(output);
+    } else {
+      printTaskExecutionPolicyApprovalError(output);
+    }
+
+    setExitCode(1);
+    return;
+  }
+
+  const output = createTaskExecutionPolicyApprovalJsonOutput({
+    status:
+      subcommand === "approve"
+        ? "policy_approval_persisted"
+        : "policy_denial_persisted",
+    taskId: taskId!,
+    invocationId: invocationId!,
+    expectedRevision: expectedRevisionValue,
+    approval: loadedApproval.value.status,
+    persistenceStatus: saveResult.value.status,
+    approvalPersisted: true,
+  });
+
+  if (json) {
+    writeTaskExecutionPolicyApprovalJson(output);
+  } else {
+    printTaskExecutionPolicyApprovalOutput(output);
+  }
+}
+
 async function handleTaskExecutionInvocation(args: readonly string[]): Promise<void> {
   const subcommand = args[0];
   const json = args.includes("--json");
@@ -6836,7 +7573,12 @@ async function handleTaskExecutionInvocation(args: readonly string[]): Promise<v
 }
 
 async function handleTaskExecution(args: readonly string[]): Promise<void> {
-  if (args[0] !== "prepare" && args[0] !== "start" && args[0] !== "invocation") {
+  if (
+    args[0] !== "prepare" &&
+    args[0] !== "start" &&
+    args[0] !== "invocation" &&
+    args[0] !== "policy"
+  ) {
     const json = args.includes("--json");
     const error = createTaskStateCliError({
       code: "task_execution_unknown_command",
@@ -6869,6 +7611,15 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
       console.error(
         "Usage: aeos task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id> [--json]",
       );
+      console.error(
+        "Usage: aeos task execution policy approve <task-id> --invocation-id <invocation-id> --expected-revision <number> [--json]",
+      );
+      console.error(
+        "Usage: aeos task execution policy deny <task-id> --invocation-id <invocation-id> --expected-revision <number> [--json]",
+      );
+      console.error(
+        "Usage: aeos task execution policy status <task-id> --invocation-id <invocation-id> --expected-revision <number> [--json]",
+      );
     }
 
     setExitCode(1);
@@ -6882,6 +7633,11 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
 
   if (args[0] === "invocation") {
     await handleTaskExecutionInvocation(args.slice(1));
+    return;
+  }
+
+  if (args[0] === "policy") {
+    await handleTaskExecutionPolicy(args.slice(1));
     return;
   }
 
@@ -8982,6 +9738,15 @@ async function handleTask(args: readonly string[]): Promise<void> {
     );
     console.error(
       "Usage: aeos task execution invocation reconcile --preview <task-id> --invocation-id <invocation-id> [--json]",
+    );
+    console.error(
+      "Usage: aeos task execution policy approve <task-id> --invocation-id <invocation-id> --expected-revision <number> [--json]",
+    );
+    console.error(
+      "Usage: aeos task execution policy deny <task-id> --invocation-id <invocation-id> --expected-revision <number> [--json]",
+    );
+    console.error(
+      "Usage: aeos task execution policy status <task-id> --invocation-id <invocation-id> --expected-revision <number> [--json]",
     );
     console.error("Usage: aeos task status <task-id> [--json]");
     console.error("Usage: aeos task resume --preview <task-id> [--json]");

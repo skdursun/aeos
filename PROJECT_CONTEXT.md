@@ -102,6 +102,8 @@ condition.
 - TASK-0300: Design and implement credential reference resolution boundary with
   TEST secret provider only.
 - TASK-0301: Design and implement durable execution audit runtime foundation.
+- TASK-0302: Design and implement durable production policy approval proof
+  runtime foundation.
 
 ## Do Not Load By Default
 
@@ -112,11 +114,13 @@ condition.
 
 ## Next Task
 
-TASK-0302 Design and implement durable production policy approval proof runtime
-foundation.
+TASK-0303 Production-call blocker readiness review after policy + credential +
+audit foundations.
 
-Purpose: Establish TEST/operator-authority controlled production policy
-approval proof runtime without enabling real provider calls by itself.
+Purpose: Re-evaluate whether the next highest-value production-call blocker is
+the production secret provider, production adapter implementation,
+crash/recovery, or another remaining hard blocker. Do not assume one before the
+review.
 
 ## Current Plans
 

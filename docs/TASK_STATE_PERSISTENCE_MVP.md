@@ -370,7 +370,7 @@ Current limitations:
 - no production execution runtime;
 - no retry execution;
 - no verifier runtime integration;
-- no production policy approval runtime;
+- no production provider calls even when durable policy approval proof exists;
 - no automatic resume or retry;
 - no terminal success/completion attempt state.
 
@@ -414,10 +414,11 @@ same task/revision/work/batch context makes an older attempt obsolete and fails
 closed.
 
 Policy requirement is not approval. If current state or the attempt indicates
-policy approval is required, the MVP reports `policy_not_authorized` because no
-authoritative approval proof mechanism exists yet. Task/model/operator prose
-such as "approved" or "start now" is ignored. If policy is not required, the
-policy gate does not block.
+policy approval is required, start authorization still reports
+`policy_not_authorized`; durable TASK-0302 approval proof is enforced by the
+execution permission gate, not by start authorization. Task/model/operator
+prose such as "approved" or "start now" is ignored. If policy is not required,
+the policy gate does not block.
 
 Verifier requirement remains a downstream completion gate. Start authorization
 preserves `verifierRequired` and `completionGatedByVerifier`; it does not run
@@ -686,10 +687,10 @@ execution start preview, invocation status, and reconciliation preview do not
 append audit events.
 
 Production execution remains disabled after TASK-0301. Remaining blockers
-include real production policy approval authority, production secret provider
-runtime, production adapter implementations and conformance, provider
-crash/recovery integration, retry protocol, work accounting, and the
-verifier/completion pipeline.
+include durable production approval proof integration into future production
+dispatch, production secret provider runtime, production adapter
+implementations and conformance, provider crash/recovery integration, retry
+protocol, work accounting, and the verifier/completion pipeline.
 
 ## Invocation Status
 Persisted invocation status is read-only inspection of an existing
@@ -1065,15 +1066,15 @@ valid persisted result/failure/unknown record, sticky `outcome_unknown`
 reconciliation, no blind retry, and no trust in task/model/operator/provider
 prose for completion, approval, retry safety, or provider capability. It does
 not provide universal exactly-once execution, provider-level exactly-once,
-durable audit runtime, policy approval runtime, credential storage, production
-adapter permission enforcement, full crash recovery, or cross-process
-multi-record transactions.
+credential storage, production dispatch integration for durable approval proof,
+production adapter permission enforcement, full crash recovery, or
+cross-process multi-record transactions.
 
 Production call hard blockers:
 
-- no authoritative policy approval runtime for calls that require approval;
-- no credential/secret boundary for production adapter credentials;
-- no production execution adapter permission/capability contract yet;
+- no production dispatch integration for durable approval proof;
+- no production secret provider boundary for production adapter credentials;
+- no production execution adapter implementation yet;
 - no provider idempotency/status/replay conformance harness yet;
 - no durable audit recording requirement/runtime for external side effects;
 - incomplete crash recovery for the window after provider call and before
@@ -1227,9 +1228,9 @@ Execution adapter normalization and conformance do not create completion
 authority, verifier authority, approval authority, retry authority, or task
 state mutation.
 
-Production execution remains disabled because the remaining hard blockers from
-TASK-0297 still stand: production policy runtime/proof, credential runtime,
-durable audit runtime, crash/recovery provider integration, retry protocol, and
+Production execution remains disabled because remaining hard blockers still
+stand: production dispatch integration for durable approval proof, production
+credential runtime, crash/recovery provider integration, retry protocol, and
 execution-result to work-accounting, coverage, verifier, completion-gate, and
 task-completion pipeline.
 
@@ -1268,8 +1269,8 @@ does not block the TEST gate. This does not enable production provider calls:
 credential, audit, production adapter activation, verifier, retry, and
 completion boundaries remain separate.
 
-When policy is required, missing proof fails closed. The only accepted
-TASK-0299 proof source is the TEST-only system source:
+When policy is required, missing proof fails closed. TASK-0299 originally
+accepted only the TEST-only system source:
 
 ```ts
 source.kind === "test_policy_authority"
@@ -1278,15 +1279,15 @@ source.authority === "system"
 
 Operator prose, task prose, model output, adapter output, arbitrary CLI flags,
 free-form text, and production approval services are not accepted as policy
-authorization proof. The TEST policy authority exists only in smoke coverage
-and is not exported as public API.
+authorization proof. TASK-0302 adds the durable local operator approval record
+described below; the TEST policy authority remains only for smoke coverage.
 
 Policy authorization proof is bound to the exact invocation context: task id,
 task revision, attempt id, invocation id, adapter id, operation kind, required
 permission set, and policy gate id. A proof for another invocation, adapter,
 task revision, operation, or permission set is rejected. Unknown proof
-decisions, missing proof decisions, denied proof, approval-required proof,
-expired proof, and invalid proof sources all fail closed.
+decisions, missing proof decisions, denied proof, expired proof, and invalid
+proof sources all fail closed.
 
 Adapter self-authorization remains forbidden. Adapter metadata or output
 claiming `permissionGranted`, `policyAuthorized`, `approved`, network/shell
@@ -1317,6 +1318,103 @@ self-authorization rejection, task/model prose rejection, no credential
 rendering, no audit write, no verifier run, no state mutation, deterministic
 re-evaluation, blocked-gate no-invocation, allowed-gate TEST-only invocation,
 and the existing 400/20 incomplete-work invariant.
+
+## Durable Policy Approval Proof - TASK-0302
+TASK-0302 adds a local durable policy approval proof foundation. Approval is
+authoritative system-owned state, separate from capability, permission, audit,
+task state, attempt state, invocation lifecycle, verifier output, model prose,
+adapter output, and credential resolution.
+
+Approval storage is local and project-scoped:
+
+```text
+.aeos/state/policy/approvals/<task-id>/<approval-id>.json
+```
+
+The approval id is system-derived from the exact approval binding. Operators do
+not provide approval ids, adapter ids, operations, permission sets, approval
+JSON, policy proof JSON, or force flags. Path traversal, unsafe ids, approval
+root symlinks, approval file symlinks, corrupt JSON, invalid schema, unknown
+decisions, and unexpected record fields fail closed.
+
+The closed decision set is:
+
+- `approved`
+- `denied`
+
+Unknown decisions are not interpreted. Revocation is not implemented in
+TASK-0302. The implemented freshness mechanism is exact task revision and
+execution-context binding, plus optional expiry. Expired proof fails
+authorization when evaluated with a clock.
+
+The approval record binds exactly to:
+
+- `policyGateId`
+- `taskId`
+- `taskStateRevision`
+- `attemptId`
+- `invocationId`
+- `adapterId`
+- `operation`
+- required execution permission set
+
+Proof for invocation A cannot approve invocation B. Proof for adapter A cannot
+approve adapter B. Proof from task revision `N` cannot authorize task revision
+`N+1`. Permission-set and operation mismatches fail closed.
+
+The operator authority is explicit:
+
+```text
+aeos task execution policy approve <task-id> --invocation-id <invocation-id> --expected-revision <number>
+aeos task execution policy deny <task-id> --invocation-id <invocation-id> --expected-revision <number>
+aeos task execution policy status <task-id> --invocation-id <invocation-id> --expected-revision <number>
+```
+
+The CLI reloads current task state, the persisted invocation, and the associated
+attempt context before writing approval proof. A stale revision or non-current
+invocation context blocks approval. The command creates only approval proof; it
+does not invoke adapters, resolve credentials, call providers, write audit as
+authorization, mutate task/attempt/invocation state, complete work, complete the
+task, or run the verifier.
+
+Approval persistence is immutable for the exact binding. A duplicate exact
+record is deterministic and does not overwrite. A contradictory decision for
+the same binding is a conflict; TASK-0302 intentionally does not add mutable
+current-decision or revocation state.
+
+Approval records contain safe references only. They do not store credential
+values, API keys, access tokens, bearer tokens, invocation ownership
+capabilities, secret-provider resolved values, raw policy prose, or model/task
+approval text. Sanitized status output exposes only non-secret binding,
+decision, expiry, issues, and safety facts.
+
+The permission gate now accepts durable local operator proof with
+`source.kind === "local_operator_policy_authority"` and the TEST smoke source.
+For `policyRequired: false`, approval proof is not required. For
+`policyRequired: true`, exact valid durable proof is required before
+`policyAuthorized` can become true. Adapter claims such as `approved: true`,
+`policyAuthorized: true`, or `permissionGranted: true` remain ignored and
+forbidden.
+
+Audit remains separate. An audit event can record that a policy check or
+dispatch intent occurred, but audit existence is not approval proof and cannot
+authorize policy. Approval proof does not depend on optional audit semantics.
+
+The 400/20 invariant remains unchanged:
+
+```text
+400 expected work items
+20 accounted work items
+380 remaining work items
+approval proof exists
+```
+
+Approval authorizes only the side-effect policy boundary for an exact execution
+context. It cannot reduce pending work, complete work, complete the task,
+satisfy the verifier, or satisfy the completion gate.
+
+Production execution remains disabled after TASK-0302. The durable proof model
+is a prerequisite boundary, not production dispatch enablement.
 
 ## Credential Resolution Boundary - TASK-0300
 TASK-0300 adds a core credential-resolution boundary without enabling
@@ -1396,9 +1494,9 @@ Production execution remains disabled:
 TASK_EXECUTION_ADAPTER_PRODUCTION_EXECUTION_ENABLED === false
 ```
 
-Real credential providers, durable audit runtime, verifier runtime, production
-policy approval runtime, retry/resume execution, task completion, and
-production adapters remain missing.
+Real credential providers, verifier runtime, production approval dispatch
+integration, retry/resume execution, task completion, and production adapters
+remain missing.
 
 ## Execution Preparation Preview
 `aeos task execution prepare --preview <task-id> --expected-revision <number>`
