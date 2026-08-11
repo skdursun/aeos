@@ -962,6 +962,68 @@ provider capabilities, safe-to-retry claims, returned evidence, or arbitrary
 evidence JSON. Production adapter readiness is deferred to a separate safety
 review gate.
 
+## Production Execution Readiness Gate - TASK-0297
+TASK-0297 reviewed the complete execution-authority chain from persisted task
+state through revision-guarded attempt preparation, start authorization,
+started attempt persistence, invocation ownership/idempotency reservation,
+controlled test invocation, invocation reconciliation, typed reconciliation
+apply, and provider reconciliation normalization.
+
+Readiness decisions:
+
+- `ProductionAdapterContractReady`: yes. AEOS is ready to define a
+  vendor-neutral production execution adapter contract and conformance harness,
+  provided TASK-0298 keeps the implementation test-only and enforces the
+  invariants below.
+- `TestAdapterExecutionReady`: yes for the current dependency-injected
+  test/no-op and test reconciliation paths only.
+- `ProductionProviderCallsReady`: no. Production provider calls remain blocked.
+- `ProductionCompletionReady`: no. Invocation return and reconciliation do not
+  complete work or tasks.
+
+Strongest current guarantee: AEOS provides system-owned task/attempt/invocation
+authority, revision freshness checks, latest-attempt checks, one cooperative
+local reservation per derived invocation identity, duplicate suppression after a
+valid persisted result/failure/unknown record, sticky `outcome_unknown`
+reconciliation, no blind retry, and no trust in task/model/operator/provider
+prose for completion, approval, retry safety, or provider capability. It does
+not provide universal exactly-once execution, provider-level exactly-once,
+durable audit runtime, policy approval runtime, credential storage, production
+adapter permission enforcement, full crash recovery, or cross-process
+multi-record transactions.
+
+Production call hard blockers:
+
+- no authoritative policy approval runtime for calls that require approval;
+- no credential/secret boundary for production adapter credentials;
+- no production execution adapter permission/capability contract yet;
+- no provider idempotency/status/replay conformance harness yet;
+- no durable audit recording requirement/runtime for external side effects;
+- incomplete crash recovery for the window after provider call and before
+  returned/failed persistence;
+- no retry protocol that creates new explicit retry authority;
+- no execution-result to work-accounting, coverage, verifier, completion-gate,
+  and task-completion pipeline;
+- no full cross-process lock/lease/transaction model for production execution.
+
+Required TASK-0298 boundary: design and implement the vendor-neutral production
+execution adapter contract and conformance harness with a test implementation
+only. The contract must make adapter identity, system-owned capabilities,
+permission scope, idempotency propagation, provider invocation references,
+status lookup, result replay, cancellation/query support, normalized response,
+bounded failure classification, and secret redaction explicit. Task, model,
+operator, or provider prose must not be able to claim capabilities, policy
+approval, retry safety, completion, verification, credential values, or allowed
+tools/filesystem/network scope.
+
+Minimum initial production provider profile, before any later enablement:
+idempotency key propagation, deterministic provider invocation reference,
+lookup by idempotency key, status query, result replay or equivalent durable
+outcome retrieval, bounded normalized errors, no raw secret exposure, explicit
+system-owned capability declaration, and a no-blind-retry reconciliation path
+are required. Cancellation is recommended where the provider supports
+long-running work.
+
 ## Execution Preparation Preview
 `aeos task execution prepare --preview <task-id> --expected-revision <number>`
 loads authoritative persisted task state, validates it, checks the explicit

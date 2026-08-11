@@ -93,6 +93,8 @@ condition.
   apply foundation without provider calls or retry.
 - TASK-0296: Design provider reconciliation adapter contract and test-only
   provider evidence bridge.
+- TASK-0297: Provider reconciliation bridge targeted safety review and
+  production adapter readiness gate.
 
 ## Do Not Load By Default
 
@@ -103,12 +105,11 @@ condition.
 
 ## Next Task
 
-TASK-0297 Provider reconciliation bridge targeted safety review and production
-adapter readiness gate.
+TASK-0298 Design and implement vendor-neutral production execution adapter
+contract and conformance harness with TEST implementation only.
 
-Purpose: Determine whether the provider reconciliation architecture is ready to
-define a production adapter execution contract, without enabling production
-provider calls.
+Purpose: Define the production execution adapter contract boundary and
+conformance tests without enabling real provider calls.
 
 ## Current Plans
 
