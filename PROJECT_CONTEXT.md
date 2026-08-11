@@ -99,6 +99,8 @@ condition.
   contract and conformance harness with TEST implementation only.
 - TASK-0299: Design and implement adapter permission/policy execution gate
   foundation with TEST-only enforcement.
+- TASK-0300: Design and implement credential reference resolution boundary with
+  TEST secret provider only.
 
 ## Do Not Load By Default
 
@@ -109,11 +111,10 @@ condition.
 
 ## Next Task
 
-TASK-0300 Design and implement credential reference resolution boundary with
-TEST secret provider only.
+TASK-0301 Design and implement durable execution audit runtime foundation.
 
-Purpose: Resolve TEST credential references only, never persist or render raw
-secrets, and keep production provider calls disabled.
+Purpose: Establish append-only durable audit events for execution authority
+transitions without enabling real provider calls.
 
 ## Current Plans
 

@@ -7,6 +7,9 @@ import type {
 import type {
   TaskExecutionInvocationProviderReconciliationCapabilities,
 } from "./task-execution-invocation-reconciliation.js";
+import type {
+  TaskExecutionResolvedCredential,
+} from "./task-execution-credential.js";
 import type { AeosError, JsonObject, JsonValue } from "./types.js";
 
 export const TASK_EXECUTION_ADAPTER_PRODUCTION_EXECUTION_ENABLED = false;
@@ -84,6 +87,10 @@ export interface TaskExecutionAdapterInvocationRequest {
   readonly credentialReference?: TaskExecutionAdapterCredentialReference;
   readonly permissionRequirements: TaskExecutionAdapterPermissions;
   readonly trace?: TaskExecutionAdapterTraceReference;
+}
+
+export interface TaskExecutionAdapterInvocationRuntime {
+  readonly resolvedCredential?: TaskExecutionResolvedCredential;
 }
 
 export type TaskExecutionAdapterRawStatus =
@@ -214,6 +221,7 @@ export interface TaskExecutionAdapter {
   readonly permissions: TaskExecutionAdapterPermissions;
   readonly invoke: (
     request: TaskExecutionAdapterInvocationRequest,
+    runtime?: TaskExecutionAdapterInvocationRuntime,
   ) =>
     | TaskExecutionAdapterRawResponse
     | unknown
@@ -224,6 +232,7 @@ export interface TaskExecutionAdapterConformanceInput {
   readonly adapter: unknown;
   readonly request: TaskExecutionAdapterInvocationRequest;
   readonly expectedIdempotencyKey?: string;
+  readonly runtime?: TaskExecutionAdapterInvocationRuntime;
   readonly taskOrModelCapabilityClaims?: unknown;
   readonly taskOrModelAdapterIdentityClaims?: unknown;
   readonly stateSnapshotBefore?: string;
@@ -411,6 +420,44 @@ function isForbiddenOutputKey(key: string): boolean {
   return (
     forbiddenAuthorityKeys.has(normalized) ||
     forbiddenSecretKeys.has(normalized)
+  );
+}
+
+function containsForbiddenCredentialValue(input: {
+  readonly value: unknown;
+  readonly forbiddenValues: readonly string[];
+}): boolean {
+  const value = input.value;
+  const forbiddenValues = input.forbiddenValues.filter(
+    (item) => item.length > 0,
+  );
+
+  if (forbiddenValues.length === 0) {
+    return false;
+  }
+
+  if (typeof value === "string") {
+    return forbiddenValues.some((secret) => value.includes(secret));
+  }
+
+  if (Array.isArray(value)) {
+    return value.some((item) =>
+      containsForbiddenCredentialValue({
+        value: item,
+        forbiddenValues,
+      }),
+    );
+  }
+
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return Object.values(value).some((item) =>
+    containsForbiddenCredentialValue({
+      value: item,
+      forbiddenValues,
+    }),
   );
 }
 
@@ -770,6 +817,7 @@ export function normalizeTaskExecutionAdapterResult(input: {
   readonly capabilities: TaskExecutionAdapterCapabilities;
   readonly request: TaskExecutionAdapterInvocationRequest;
   readonly rawResponse: unknown;
+  readonly forbiddenCredentialValues?: readonly string[];
 }): TaskExecutionAdapterNormalizedResult {
   const issues: TaskExecutionAdapterConformanceIssue[] = [];
   const rawResult = rawResponseFromUnknown(input.rawResponse);
@@ -793,6 +841,36 @@ export function normalizeTaskExecutionAdapterResult(input: {
         code: "task_execution_adapter_response_unavailable",
         category: "unavailable",
         message: "Execution adapter response was unavailable.",
+      },
+      issues,
+    });
+  }
+
+  if (
+    containsForbiddenCredentialValue({
+      value: rawResult,
+      forbiddenValues: input.forbiddenCredentialValues ?? [],
+    })
+  ) {
+    issues.push(
+      issue({
+        code: "task_execution_adapter_resolved_credential_echo_rejected",
+        message:
+          "Execution adapter output attempted to echo the resolved credential and was rejected.",
+        category: "validation",
+      }),
+    );
+
+    return baseNormalizedResult({
+      request: input.request,
+      adapterIdentity: input.adapterIdentity,
+      capabilities: input.capabilities,
+      outcomeStatus: "rejected",
+      failure: {
+        code: "task_execution_adapter_resolved_credential_echo_rejected",
+        category: "invalid_request",
+        message:
+          "Execution adapter output attempted to echo an ephemeral credential.",
       },
       issues,
     });
@@ -1315,7 +1393,7 @@ export async function evaluateTaskExecutionAdapterConformance(
   if (!issues.some((item) => item.severity === "error")) {
     try {
       adapterInvoked = true;
-      rawResponse = await adapter.invoke(cloneRequest(input.request));
+      rawResponse = await adapter.invoke(cloneRequest(input.request), input.runtime);
     } catch {
       rawResponse = {
         status: "unavailable",
@@ -1346,6 +1424,10 @@ export async function evaluateTaskExecutionAdapterConformance(
           capabilities: adapter.capabilities,
           request: input.request,
           rawResponse,
+          forbiddenCredentialValues:
+            input.runtime?.resolvedCredential === undefined
+              ? []
+              : [input.runtime.resolvedCredential.value],
         });
   const combinedIssues = [
     ...issues,

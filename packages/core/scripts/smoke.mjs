@@ -110,6 +110,9 @@ import {
   createReservedTaskExecutionInvocationRecord,
   evaluateTaskExecutionAdapterConformance,
   evaluateTaskExecutionPermissionGate,
+  resolveTaskExecutionCredential,
+  sanitizeTaskExecutionCredentialResult,
+  normalizeTaskExecutionAdapterResult,
   deriveTaskExecutionInvocationIdentity,
   deriveTaskExecutionInvocationIdentityForAttempt,
   getTaskExecutionInvocationStoragePath,
@@ -469,21 +472,89 @@ function createSmokeTestExecutionAdapter({
   throwError = false,
 } = {}) {
   const calls = [];
+  const runtimeCalls = [];
 
   return {
     calls,
+    runtimeCalls,
     adapter: {
       identity,
       capabilities,
       permissions,
-      invoke(request) {
+      invoke(request, runtime) {
         calls.push(JSON.parse(JSON.stringify(request)));
+        runtimeCalls.push(runtime);
 
         if (throwError) {
           throw new Error("smoke execution adapter failed\n    at smoke-execution:1:1");
         }
 
-        return typeof rawResponse === "function" ? rawResponse(request) : rawResponse;
+        return typeof rawResponse === "function"
+          ? rawResponse(request, runtime)
+          : rawResponse;
+      },
+    },
+  };
+}
+
+function createSmokeTestSecretProvider({
+  providerId = "smoke-secret-provider-reference",
+  kind = "test_secret_provider",
+  status = "resolved",
+  value = "fake-task-0300-secret-value",
+  expiresAt = "2026-08-08T01:15:00.000Z",
+  scope,
+  throwError = false,
+} = {}) {
+  const calls = [];
+
+  return {
+    calls,
+    provider: {
+      identity: {
+        providerId,
+        kind,
+        authority: "system",
+      },
+      resolve(request) {
+        calls.push(JSON.parse(JSON.stringify(request)));
+
+        if (throwError) {
+          throw new Error("test secret provider failed\n    at smoke-secret:1:1");
+        }
+
+        if (status === "missing") {
+          return {
+            status: "missing",
+            code: "smoke_test_secret_missing",
+            message: "missing fake credential",
+          };
+        }
+
+        if (status === "denied") {
+          return {
+            status: "denied",
+            code: "smoke_test_secret_denied",
+            message: "denied fake credential",
+          };
+        }
+
+        if (status === "error") {
+          return {
+            status: "error",
+            code: "smoke_test_secret_error",
+            message: "sanitized fake provider error",
+          };
+        }
+
+        return {
+          status: "resolved",
+          kind: "bearer_token",
+          value,
+          expiresAt,
+          scope: scope ?? request.credentialScope,
+          resolutionReference: "smoke-resolution-reference",
+        };
       },
     },
   };
@@ -540,6 +611,63 @@ async function evaluateSmokeExecutionAdapterAfterGate({
       adapter,
       request,
       expectedIdempotencyKey: request.idempotencyKey,
+    }),
+  };
+}
+
+async function evaluateSmokeCredentialBoundaryAfterGate({
+  adapter,
+  request,
+  gateInput,
+  provider,
+  credentialRequired = true,
+  requiredCredentialScope,
+  now = "2026-08-08T01:00:00.000Z",
+  taskOrModelCredentialClaims,
+  operatorCredentialClaims,
+}) {
+  const gate = evaluateTaskExecutionPermissionGate(gateInput);
+
+  if (!gate.allowed) {
+    return {
+      gate,
+      credential: null,
+      conformance: null,
+    };
+  }
+
+  const credential = await resolveTaskExecutionCredential({
+    request,
+    permissionGateResult: gate,
+    credentialRequired,
+    provider,
+    requiredCredentialScope,
+    now,
+    taskOrModelCredentialClaims,
+    operatorCredentialClaims,
+  });
+
+  if (credentialRequired && !credential.ok) {
+    return {
+      gate,
+      credential,
+      conformance: null,
+    };
+  }
+
+  return {
+    gate,
+    credential,
+    conformance: await evaluateTaskExecutionAdapterConformance({
+      adapter,
+      request,
+      expectedIdempotencyKey: request.idempotencyKey,
+      runtime:
+        credential.resolvedCredential === undefined
+          ? undefined
+          : {
+              resolvedCredential: credential.resolvedCredential,
+            },
     }),
   };
 }
@@ -17567,6 +17695,507 @@ try {
     }),
     gatePolicyAllowed,
     "task execution permission gate smoke Y should be deterministic for equivalent input",
+  );
+
+  const fakeCredentialValue = "fake-task-0300-secret-value";
+  const credentialProvider = createSmokeTestSecretProvider({
+    value: fakeCredentialValue,
+  });
+  const credentialRuntimeAdapter = createSmokeTestExecutionAdapter({
+    identity: executionAdapterIdentity,
+    rawResponse: (request, runtime) => ({
+      status: "returned",
+      invocationId: request.invocationId,
+      idempotencyKey: request.idempotencyKey,
+      taskId: request.taskId,
+      sourceTaskRevision: request.sourceTaskRevision,
+      attemptId: request.attemptId,
+      attemptNumber: request.attemptNumber,
+      invocationOk:
+        runtime?.resolvedCredential?.value === fakeCredentialValue,
+      output: {
+        credentialObserved: true,
+        retainedDiagnostic: "credential used only in test adapter memory",
+      },
+      outputReference: "smoke://credential-boundary-returned",
+      diagnosticCode: "smoke_credential_boundary_returned",
+    }),
+  });
+  const credentialBoundaryAllowed =
+    await evaluateSmokeCredentialBoundaryAfterGate({
+      adapter: credentialRuntimeAdapter.adapter,
+      request: executionAdapterRequest,
+      gateInput: {
+        request: executionAdapterRequest,
+        adapterIdentity: executionAdapterIdentity,
+        adapterCapabilities: credentialRuntimeAdapter.adapter.capabilities,
+        adapterPermissions: credentialRuntimeAdapter.adapter.permissions,
+        operationKind: "execute_task_attempt",
+        policyRequirement: gatePolicyRequirement,
+        policyAuthorizationProof: validPolicyProof,
+        credentialReferenceRequired: true,
+      },
+      provider: credentialProvider.provider,
+      requiredCredentialScope: ["test_execution"],
+    });
+  assert.equal(
+    credentialBoundaryAllowed.credential.ok,
+    true,
+    "task execution credential boundary smoke A should accept valid credential reference",
+  );
+  assert.equal(
+    credentialBoundaryAllowed.credential.referenceValid,
+    true,
+    "task execution credential boundary smoke A should validate reference metadata",
+  );
+  assert.equal(
+    credentialBoundaryAllowed.credential.providerAccepted,
+    true,
+    "task execution credential boundary smoke D should accept TEST provider",
+  );
+  assert.equal(
+    credentialProvider.calls.length,
+    1,
+    "task execution credential boundary smoke G should call TEST provider once after allowed gate",
+  );
+  assert.equal(
+    credentialRuntimeAdapter.calls.length,
+    1,
+    "task execution credential boundary smoke K should invoke TEST adapter after credential resolution",
+  );
+  assert.equal(
+    credentialRuntimeAdapter.runtimeCalls[0].resolvedCredential.value,
+    fakeCredentialValue,
+    "task execution credential boundary smoke K should pass fake secret only in runtime memory",
+  );
+  assert.equal(
+    credentialBoundaryAllowed.conformance.normalizedResult.invocationOk,
+    true,
+    "task execution credential boundary smoke K should let test adapter consume runtime credential",
+  );
+  assert.equal(
+    JSON.stringify(credentialBoundaryAllowed.conformance.normalizedResult).includes(
+      fakeCredentialValue,
+    ),
+    false,
+    "task execution credential boundary smoke L should keep fake secret out of normalized result",
+  );
+  assert.equal(
+    JSON.stringify(credentialBoundaryAllowed.credential).includes(
+      fakeCredentialValue,
+    ),
+    false,
+    "task execution credential boundary smoke L should keep raw secret out of JSON result serialization",
+  );
+  assert.equal(
+    JSON.stringify(
+      sanitizeTaskExecutionCredentialResult(credentialBoundaryAllowed.credential),
+    ).includes(fakeCredentialValue),
+    false,
+    "task execution credential boundary smoke L should keep sanitized credential result secret-free",
+  );
+  assert.equal(
+    JSON.stringify(invokingPersisted.value.record).includes(fakeCredentialValue),
+    false,
+    "task execution credential boundary smoke M should keep fake secret out of invocation records",
+  );
+  const credentialStatus = await loadTaskExecutionInvocationStatus({
+    projectRoot: persistenceRoot,
+    taskId: invokingPersisted.value.record.taskId,
+    invocationId: invokingPersisted.value.record.invocationId,
+  });
+  assert.equal(
+    JSON.stringify(credentialStatus).includes(fakeCredentialValue),
+    false,
+    "task execution credential boundary smoke M should keep fake secret out of status output",
+  );
+  assert.equal(
+    JSON.stringify(credentialBoundaryAllowed.conformance.issues).includes(
+      fakeCredentialValue,
+    ),
+    false,
+    "task execution credential boundary smoke N should keep fake secret out of issues",
+  );
+  assert.equal(
+    credentialBoundaryAllowed.credential.scopeSatisfied,
+    true,
+    "task execution credential boundary smoke P should pass matching scope",
+  );
+  assert.equal(
+    credentialBoundaryAllowed.credential.productionExecutionEnabled,
+    false,
+    "task execution credential boundary smoke Z should keep production execution disabled",
+  );
+
+  for (const [message, credentialReference] of [
+    [
+      "task execution credential boundary smoke B should reject apiKey on reference",
+      {
+        ...executionAdapterRequest.credentialReference,
+        apiKey: "sk-raw-reference-secret",
+      },
+    ],
+    [
+      "task execution credential boundary smoke C should reject token, secret, and password-like reference fields",
+      {
+        ...executionAdapterRequest.credentialReference,
+        token: "raw-token",
+        secret: "raw-secret",
+        password: "raw-password",
+        privateKey: "raw-private-key",
+      },
+    ],
+  ]) {
+    const unsafeProvider = createSmokeTestSecretProvider();
+    const unsafeReferenceResult = await resolveTaskExecutionCredential({
+      request: {
+        ...executionAdapterRequest,
+        credentialReference,
+      },
+      permissionGateResult: gatePolicyAllowed,
+      credentialRequired: true,
+      provider: unsafeProvider.provider,
+      now: "2026-08-08T01:00:00.000Z",
+    });
+    assert.equal(unsafeReferenceResult.ok, false, message);
+    assert.equal(
+      issueCodes(unsafeReferenceResult).includes(
+        "task_execution_credential_reference_raw_material_rejected",
+      ),
+      true,
+      `${message} with deterministic raw-material issue`,
+    );
+    assert.equal(
+      unsafeProvider.calls.length,
+      0,
+      `${message} before provider resolution`,
+    );
+  }
+
+  const productionProvider = createSmokeTestSecretProvider({
+    kind: "environment",
+  });
+  const productionProviderResult = await resolveTaskExecutionCredential({
+    request: executionAdapterRequest,
+    permissionGateResult: gatePolicyAllowed,
+    credentialRequired: true,
+    provider: productionProvider.provider,
+    now: "2026-08-08T01:00:00.000Z",
+  });
+  assert.equal(
+    productionProviderResult.ok,
+    false,
+    "task execution credential boundary smoke E should reject production provider kind",
+  );
+  assert.equal(
+    productionProvider.calls.length,
+    0,
+    "task execution credential boundary smoke E should not call rejected production provider",
+  );
+
+  const blockedCredentialProvider = createSmokeTestSecretProvider();
+  const blockedCredentialAdapter = createSmokeTestExecutionAdapter({
+    identity: executionAdapterIdentity,
+    rawResponse: {
+      status: "returned",
+      invocationOk: true,
+    },
+  });
+  const blockedCredentialBoundary =
+    await evaluateSmokeCredentialBoundaryAfterGate({
+      adapter: blockedCredentialAdapter.adapter,
+      request: executionAdapterRequest,
+      gateInput: {
+        request: executionAdapterRequest,
+        adapterIdentity: executionAdapterIdentity,
+        adapterCapabilities: blockedCredentialAdapter.adapter.capabilities,
+        adapterPermissions: blockedCredentialAdapter.adapter.permissions,
+        operationKind: "execute_task_attempt",
+        policyRequirement: gatePolicyRequirement,
+      },
+      provider: blockedCredentialProvider.provider,
+    });
+  assert.equal(
+    blockedCredentialBoundary.gate.allowed,
+    false,
+    "task execution credential boundary smoke F should block before credential resolution when policy gate blocks",
+  );
+  assert.equal(
+    blockedCredentialProvider.calls.length,
+    0,
+    "task execution credential boundary smoke F should keep provider call count zero when gate blocks",
+  );
+  assert.equal(
+    blockedCredentialAdapter.calls.length,
+    0,
+    "task execution credential boundary smoke T should not let credential existence bypass policy denial",
+  );
+
+  for (const [status, expectedCode, message] of [
+    [
+      "missing",
+      "task_execution_credential_missing",
+      "task execution credential boundary smoke H should block missing credential",
+    ],
+    [
+      "denied",
+      "task_execution_credential_denied",
+      "task execution credential boundary smoke I should block denied credential",
+    ],
+  ]) {
+    const failureProvider = createSmokeTestSecretProvider({ status });
+    const failureAdapter = createSmokeTestExecutionAdapter({
+      identity: executionAdapterIdentity,
+      rawResponse: {
+        status: "returned",
+        invocationOk: true,
+      },
+    });
+    const failureBoundary = await evaluateSmokeCredentialBoundaryAfterGate({
+      adapter: failureAdapter.adapter,
+      request: executionAdapterRequest,
+      gateInput: {
+        request: executionAdapterRequest,
+        adapterIdentity: executionAdapterIdentity,
+        adapterCapabilities: failureAdapter.adapter.capabilities,
+        adapterPermissions: failureAdapter.adapter.permissions,
+        operationKind: "execute_task_attempt",
+        policyRequirement: gatePolicyRequirement,
+        policyAuthorizationProof: validPolicyProof,
+        credentialReferenceRequired: true,
+      },
+      provider: failureProvider.provider,
+    });
+    assert.equal(failureBoundary.credential.ok, false, message);
+    assert.equal(
+      issueCodes(failureBoundary.credential).includes(expectedCode),
+      true,
+      `${message} with deterministic credential issue`,
+    );
+    assert.equal(
+      failureAdapter.calls.length,
+      0,
+      `${message} before adapter invocation`,
+    );
+  }
+
+  const throwingCredentialProvider = createSmokeTestSecretProvider({
+    throwError: true,
+  });
+  const throwingCredential = await resolveTaskExecutionCredential({
+    request: executionAdapterRequest,
+    permissionGateResult: gatePolicyAllowed,
+    credentialRequired: true,
+    provider: throwingCredentialProvider.provider,
+    now: "2026-08-08T01:00:00.000Z",
+  });
+  assert.equal(
+    throwingCredential.ok,
+    false,
+    "task execution credential boundary smoke J should block provider throw",
+  );
+  assert.equal(
+    JSON.stringify(throwingCredential).includes("at smoke-secret"),
+    false,
+    "task execution credential boundary smoke J should sanitize thrown provider error",
+  );
+
+  const echoCredentialProvider = createSmokeTestSecretProvider({
+    value: fakeCredentialValue,
+  });
+  const echoCredential = await resolveTaskExecutionCredential({
+    request: executionAdapterRequest,
+    permissionGateResult: gatePolicyAllowed,
+    credentialRequired: true,
+    provider: echoCredentialProvider.provider,
+    now: "2026-08-08T01:00:00.000Z",
+  });
+  const echoNormalized = normalizeTaskExecutionAdapterResult({
+    adapterIdentity: executionAdapterIdentity,
+    capabilities: createSmokeTestExecutionAdapterCapabilities(),
+    request: executionAdapterRequest,
+    forbiddenCredentialValues: [echoCredential.resolvedCredential.value],
+    rawResponse: {
+      status: "returned",
+      invocationOk: true,
+      output: {
+        retainedDiagnostic: fakeCredentialValue,
+      },
+      message: `adapter echoed ${fakeCredentialValue}`,
+      metadata: {
+        nested: fakeCredentialValue,
+      },
+    },
+  });
+  assert.equal(
+    echoNormalized.outcomeStatus,
+    "rejected",
+    "task execution credential boundary smoke O should reject adapter echo of exact resolved credential",
+  );
+  assert.equal(
+    JSON.stringify(echoNormalized).includes(fakeCredentialValue),
+    false,
+    "task execution credential boundary smoke O should keep echoed fake secret out of normalized rejection",
+  );
+
+  const scopeMismatchProvider = createSmokeTestSecretProvider();
+  const scopeMismatch = await resolveTaskExecutionCredential({
+    request: executionAdapterRequest,
+    permissionGateResult: gatePolicyAllowed,
+    credentialRequired: true,
+    provider: scopeMismatchProvider.provider,
+    requiredCredentialScope: ["other_operation"],
+    now: "2026-08-08T01:00:00.000Z",
+  });
+  assert.equal(
+    scopeMismatch.ok,
+    false,
+    "task execution credential boundary smoke Q should block scope mismatch",
+  );
+  assert.equal(
+    scopeMismatchProvider.calls.length,
+    0,
+    "task execution credential boundary smoke Q should block scope mismatch before provider call",
+  );
+
+  const expiredProvider = createSmokeTestSecretProvider({
+    expiresAt: "2026-08-08T00:59:59.000Z",
+  });
+  const expiredCredential = await resolveTaskExecutionCredential({
+    request: executionAdapterRequest,
+    permissionGateResult: gatePolicyAllowed,
+    credentialRequired: true,
+    provider: expiredProvider.provider,
+    now: "2026-08-08T01:00:00.000Z",
+  });
+  assert.equal(
+    expiredCredential.ok,
+    false,
+    "task execution credential boundary smoke R should block expired credential",
+  );
+  assert.equal(
+    issueCodes(expiredCredential).includes("task_execution_credential_expired"),
+    true,
+    "task execution credential boundary smoke R should report expired credential issue",
+  );
+
+  const noCredentialRequest = createSmokeTestExecutionAdapterRequest(
+    invokingPersisted.value.record,
+    executionAdapterIdentity,
+    {
+      credentialReference: undefined,
+      permissionRequirements: gateNoPolicyPermissions,
+    },
+  );
+  const noCredentialProvider = createSmokeTestSecretProvider();
+  const noCredentialAdapter = createSmokeTestExecutionAdapter({
+    identity: executionAdapterIdentity,
+    permissions: gateNoPolicyPermissions,
+    rawResponse: {
+      status: "returned",
+      invocationOk: true,
+      output: {
+        retainedDiagnostic: "no credential required",
+      },
+    },
+  });
+  const noCredentialBoundary = await evaluateSmokeCredentialBoundaryAfterGate({
+    adapter: noCredentialAdapter.adapter,
+    request: noCredentialRequest,
+    gateInput: {
+      request: noCredentialRequest,
+      adapterIdentity: executionAdapterIdentity,
+      adapterCapabilities: noCredentialAdapter.adapter.capabilities,
+      adapterPermissions: noCredentialAdapter.adapter.permissions,
+      operationKind: "execute_task_attempt",
+      policyRequirement: gateNoPolicyRequirement,
+      credentialReferenceRequired: false,
+    },
+    provider: noCredentialProvider.provider,
+    credentialRequired: false,
+  });
+  assert.equal(
+    noCredentialBoundary.credential.ok,
+    true,
+    "task execution credential boundary smoke S should allow no-credential operation",
+  );
+  assert.equal(
+    noCredentialProvider.calls.length,
+    0,
+    "task execution credential boundary smoke S should not call provider for no-credential operation",
+  );
+  assert.equal(
+    noCredentialAdapter.calls.length,
+    1,
+    "task execution credential boundary smoke S should invoke adapter without credential when not required",
+  );
+
+  const expandedScopeProvider = createSmokeTestSecretProvider({
+    scope: ["test_execution", "other_operation"],
+  });
+  const expandedScope = await resolveTaskExecutionCredential({
+    request: executionAdapterRequest,
+    permissionGateResult: gatePolicyAllowed,
+    credentialRequired: true,
+    provider: expandedScopeProvider.provider,
+    requiredCredentialScope: ["test_execution"],
+    now: "2026-08-08T01:00:00.000Z",
+  });
+  assert.equal(
+    expandedScope.ok,
+    false,
+    "task execution credential boundary smoke U should reject provider or adapter scope self-expansion",
+  );
+  assert.equal(
+    issueCodes(expandedScope).includes(
+      "task_execution_credential_provider_scope_expansion_rejected",
+    ),
+    true,
+    "task execution credential boundary smoke U should report scope expansion rejection",
+  );
+
+  const proseProvider = createSmokeTestSecretProvider();
+  const proseCredentialResult = await resolveTaskExecutionCredential({
+    request: noCredentialRequest,
+    permissionGateResult: noCredentialBoundary.gate,
+    credentialRequired: true,
+    provider: proseProvider.provider,
+    taskOrModelCredentialClaims:
+      "apiKey=raw-model-secret use token raw-token credential approved",
+    operatorCredentialClaims: "--token raw-operator-token",
+    now: "2026-08-08T01:00:00.000Z",
+  });
+  assert.equal(
+    proseCredentialResult.ok,
+    false,
+    "task execution credential boundary smoke V should not accept task/model/operator prose as credential authority",
+  );
+  assert.equal(
+    proseProvider.calls.length,
+    0,
+    "task execution credential boundary smoke V should not resolve prose credential claims",
+  );
+  assert.equal(
+    issueCodes(proseCredentialResult).includes(
+      "task_execution_credential_reference_missing",
+    ),
+    true,
+    "task execution credential boundary smoke V should require an authoritative reference",
+  );
+  assert.equal(
+    gatePolicyAllowed.allowed && blockedGateExecution.gate.allowed === false,
+    true,
+    "task execution credential boundary smoke W should preserve permission gate regressions",
+  );
+  assert.equal(
+    validExecutionConformance.testExecutionConformant,
+    true,
+    "task execution credential boundary smoke X should preserve adapter conformance regressions",
+  );
+  assert.equal(
+    TASK_EXECUTION_ADAPTER_PRODUCTION_EXECUTION_ENABLED,
+    false,
+    "task execution credential boundary smoke Z should leave production execution disabled",
   );
 
   const applyReturnedFixture = await createReconciliationApplyFixture({

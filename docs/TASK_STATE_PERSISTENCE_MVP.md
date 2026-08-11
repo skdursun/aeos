@@ -1220,8 +1220,8 @@ permitted", "safe to run", or "policy passed" is ignored.
 The credential boundary remains a reference boundary only. The gate may
 represent whether a credential reference is required and present, but it does
 not resolve secrets, inspect API keys, render raw credentials, or pass raw
-credential material. TASK-0300 is the next hard-blocker task for TEST-only
-credential reference resolution.
+credential material. TASK-0300 adds TEST-only credential reference resolution
+after this gate; production credential runtime remains unavailable.
 
 Audit and verifier remain downstream. Passing the permission gate does not mean
 an audit event was written, a verifier was run, work was completed, or the task
@@ -1240,6 +1240,88 @@ self-authorization rejection, task/model prose rejection, no credential
 rendering, no audit write, no verifier run, no state mutation, deterministic
 re-evaluation, blocked-gate no-invocation, allowed-gate TEST-only invocation,
 and the existing 400/20 incomplete-work invariant.
+
+## Credential Resolution Boundary - TASK-0300
+TASK-0300 adds a core credential-resolution boundary without enabling
+production execution. Credential references remain distinct from resolved
+secret values. A credential reference may identify a logical credential id,
+optional provider reference, and scope under `credentialAuthority: "system"`;
+it is not raw credential material and cannot contain API keys, tokens, secrets,
+passwords, authorization headers, bearer values, refresh tokens, or private
+keys.
+
+Resolution ordering is closed:
+
+```text
+adapter conformance
+  -> permission/policy gate
+  -> credential resolution only if gate allowed
+  -> TEST adapter invocation
+```
+
+If the permission or policy gate blocks, the secret provider is not called.
+Credential existence does not grant permission, and permission authorization
+does not guarantee credential availability. Missing, denied, thrown, expired,
+invalid, production-kind, or scope-mismatched credentials block adapter
+invocation.
+
+The only runtime-resolvable provider kind is:
+
+```ts
+kind: "test_secret_provider"
+```
+
+The TEST provider is dependency-injected in smoke coverage only and is not
+exported. No environment variables, Keychain, Vault, cloud secret manager,
+filesystem secret file, network provider, production SDK, or generic external
+provider is read or called. Provider identity is system-owned; task prose,
+model output, operator text, CLI flags, or adapter output cannot choose runtime
+provider code or supply raw credential authority.
+
+`resolveTaskExecutionCredential(...)` builds the resolution request from the
+current authoritative invocation context: task id, task revision, attempt id,
+invocation id, adapter id and kind, operation, credential reference, credential
+scope, policy gate id, and permission/policy authorization result. Task/model
+or operator text such as `apiKey=...`, `use token ...`, or `credential
+approved` is ignored and cannot become resolved credential authority.
+
+Resolved credentials are ephemeral execution input only. The runtime object may
+carry a fake TEST value for the adapter call scope, but the public resolution
+result is sanitized metadata: resolved flag, credential reference id, provider
+id, scope, expiry, resolution reference, gate binding, issues, and safety
+facts. The raw value is intentionally not persisted, rendered, logged, added to
+task state, attached to attempt or invocation records, included in audit/status
+models, or copied into normalized adapter output. JavaScript memory cannot
+guarantee secure zeroization; TASK-0300 limits lifetime and serialization
+instead of claiming memory erasure.
+
+Adapter echo protection is explicit for the resolved value. If a TEST adapter
+attempts to echo the exact ephemeral credential in output, metadata, message,
+diagnostics, or failure data, normalization rejects the response and records a
+sanitized issue without the secret. Existing secret-like output keys remain
+stripped as before.
+
+Credential scope is bound to the system-required adapter operation scope. A
+credential for another adapter or operation does not authorize the current
+operation, and the TEST provider cannot expand the scope returned by the
+system-owned credential reference. Expired resolved credentials are not used.
+Near-expiry refresh is outside this MVP.
+
+No raw secret CLI exists. Existing status and invocation inspection commands
+render persisted invocation metadata only and do not expose fake resolved
+secrets. It remains acceptable for safe credential reference identifiers to
+exist in request metadata where the current contracts already allow references;
+raw values never enter persisted invocation records or status output.
+
+Production execution remains disabled:
+
+```ts
+TASK_EXECUTION_ADAPTER_PRODUCTION_EXECUTION_ENABLED === false
+```
+
+Real credential providers, durable audit runtime, verifier runtime, production
+policy approval runtime, retry/resume execution, task completion, and
+production adapters remain missing.
 
 ## Execution Preparation Preview
 `aeos task execution prepare --preview <task-id> --expected-revision <number>`
