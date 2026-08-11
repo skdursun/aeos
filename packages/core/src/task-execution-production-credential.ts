@@ -235,7 +235,8 @@ function mappingFromUnknown(
     !allowedCredentialKinds.has(value.credentialKind) ||
     !isStringScope(value.credentialScope) ||
     !isSafeId(value.adapterId) ||
-    value.adapterKind !== "test_execution" ||
+    (value.adapterKind !== "test_execution" &&
+      value.adapterKind !== "production_execution") ||
     typeof value.operationKind !== "string" ||
     !allowedOperations.has(value.operationKind as TaskExecutionAdapterOperationKind) ||
     value.configurationAuthority !== "system" ||
@@ -376,7 +377,8 @@ function requestValid(
     isSafeId(request.attemptId) &&
     isSafeId(request.invocationId) &&
     isSafeId(request.adapterId) &&
-    request.adapterKind === "test_execution" &&
+    (request.adapterKind === "test_execution" ||
+      request.adapterKind === "production_execution") &&
     allowedOperations.has(request.operationKind) &&
     isSafeId(request.credentialRef) &&
     isStringScope(request.credentialScope) &&

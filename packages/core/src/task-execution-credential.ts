@@ -448,7 +448,8 @@ function requestBindingIssues(
     !isSafeId(request.attemptId) ||
     !isSafeId(request.invocationId) ||
     !isSafeId(request.adapterIdentity.adapterId) ||
-    request.adapterIdentity.adapterKind !== "test_execution" ||
+    (request.adapterIdentity.adapterKind !== "test_execution" &&
+      request.adapterIdentity.adapterKind !== "production_execution") ||
     request.adapterIdentity.identityAuthority !== "system"
   ) {
     return [

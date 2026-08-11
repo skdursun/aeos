@@ -14,7 +14,7 @@ import type { AeosError, JsonObject, JsonValue } from "./types.js";
 
 export const TASK_EXECUTION_ADAPTER_PRODUCTION_EXECUTION_ENABLED = false;
 
-export type TaskExecutionAdapterKind = "test_execution";
+export type TaskExecutionAdapterKind = "test_execution" | "production_execution";
 
 export type TaskExecutionAdapterOperationKind =
   | "execute_task_attempt"

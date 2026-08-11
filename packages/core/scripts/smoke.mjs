@@ -118,7 +118,9 @@ import {
   evaluateTaskExecutionAdapterConformance,
   evaluateTaskExecutionProductionCredentialProviderConfiguration,
   evaluateTaskExecutionPermissionGate,
+  evaluateTaskExecutionProductionAdapterReadiness,
   resolveTaskExecutionCredential,
+  prepareTaskExecutionProductionDispatch,
   sanitizeTaskExecutionCredentialResult,
   normalizeTaskExecutionAdapterResult,
   deriveTaskExecutionInvocationIdentity,
@@ -466,6 +468,99 @@ function createSmokeTestExecutionAdapterPermissions(overrides = {}) {
     toolCallPermission: false,
     modelInvocationPermission: false,
     ...overrides,
+  };
+}
+
+function createSmokeProductionAdapterIdentity(overrides = {}) {
+  return {
+    adapterId: "core-smoke-production-execution",
+    adapterKind: "production_execution",
+    implementationVersion: "0.0.0-smoke-production",
+    capabilityVersion: "0.0.0-smoke-production",
+    identityAuthority: "system",
+    ...overrides,
+  };
+}
+
+function createSmokeProductionAdapterCapabilities(overrides = {}) {
+  return {
+    supportsIdempotencyKey: true,
+    supportsLookupByIdempotencyKey: true,
+    supportsInvocationStatusQuery: true,
+    supportsResultReplay: true,
+    providesDeterministicProviderInvocationReference: true,
+    supportsBoundedErrors: true,
+    supportsCancellation: false,
+    supportsStreaming: false,
+    supportsToolCalls: false,
+    supportsNetworkAccess: false,
+    supportsFilesystemAccess: false,
+    supportsProcessExecution: false,
+    supportsShellExecution: false,
+    supportsModelInvocation: false,
+    supportsExternalSideEffects: true,
+    supportsFailureNormalization: true,
+    ...overrides,
+  };
+}
+
+function createSmokeProductionAdapterConfiguration({
+  identity = createSmokeProductionAdapterIdentity(),
+  credentialRef = "provider.production.primary",
+  secretProviderRef = "smoke-production-environment-reference-provider",
+  credentialScope = ["production_execution"],
+  capabilities = createSmokeProductionAdapterCapabilities(),
+  permissions = createSmokeTestExecutionAdapterPermissions({
+    externalSideEffectPermission: true,
+  }),
+  credentialRequired = true,
+  auditRequired = true,
+  policyRequired = true,
+} = {}) {
+  return {
+    identity,
+    configurationAuthority: "system",
+    configurationVersion: "production-adapter-config-v1",
+    provider: {
+      providerRef: "provider-neutral-production-candidate",
+      providerFamilyRef: "provider-neutral-family",
+      operationClass: "task_attempt_execution",
+      authority: "system",
+    },
+    operationKind: "execute_task_attempt",
+    capabilities,
+    permissions,
+    credentialRequired,
+    credentialReference: credentialRequired
+      ? {
+          credentialRef,
+          secretProviderRef,
+          credentialScope,
+          credentialAuthority: "system",
+          rawCredentialMaterialPresent: false,
+        }
+      : undefined,
+    auditRequired,
+    policyRequired,
+    reconciliation: {
+      supportsIdempotencyKey: capabilities.supportsIdempotencyKey,
+      supportsLookupByIdempotencyKey:
+        capabilities.supportsLookupByIdempotencyKey,
+      supportsInvocationStatusQuery:
+        capabilities.supportsInvocationStatusQuery,
+      supportsResultReplay: capabilities.supportsResultReplay,
+    },
+    failureNormalization: {
+      authority: "system",
+      categories: [
+        "unavailable",
+        "timeout",
+        "rejected",
+        "invalid_request",
+        "provider_error",
+        "unknown",
+      ],
+    },
   };
 }
 
@@ -18743,6 +18838,472 @@ try {
         TASK_EXECUTION_ADAPTER_PRODUCTION_EXECUTION_ENABLED,
         false,
         "task execution production credential smoke X should leave production execution disabled",
+      );
+    },
+  );
+
+  const productionAdapterIdentity = createSmokeProductionAdapterIdentity();
+  const productionCredentialProviderId =
+    "smoke-production-environment-reference-provider";
+  const productionCredentialRef = "provider.production.primary";
+  const productionCredentialScope = ["production_execution"];
+  const productionAdapterConfiguration =
+    createSmokeProductionAdapterConfiguration({
+      identity: productionAdapterIdentity,
+      credentialRef: productionCredentialRef,
+      secretProviderRef: productionCredentialProviderId,
+      credentialScope: productionCredentialScope,
+    });
+  const productionAdapterRequest = createSmokeTestExecutionAdapterRequest(
+    invokingPersisted.value.record,
+    productionAdapterIdentity,
+    {
+      input: {
+        instructionReference: "smoke://production-adapter-input",
+        idempotencyKey: "hostile-input-override",
+        adapterId: "hostile-input-adapter",
+        endpoint: "https://hostile.invalid",
+        productionExecutionEnabled: true,
+        retainedDiagnostic: "safe bounded payload",
+      },
+      credentialReference: productionAdapterConfiguration.credentialReference,
+      permissionRequirements: productionAdapterConfiguration.permissions,
+    },
+  );
+  const productionPolicyProof = createSmokeTestPolicyAuthorizationProof({
+    request: productionAdapterRequest,
+    adapterId: productionAdapterIdentity.adapterId,
+    requiredPermissions: ["external_side_effect"],
+  });
+  const productionGate = evaluateTaskExecutionPermissionGate({
+    request: productionAdapterRequest,
+    adapterIdentity: productionAdapterIdentity,
+    adapterCapabilities: productionAdapterConfiguration.capabilities,
+    adapterPermissions: productionAdapterConfiguration.permissions,
+    operationKind: "execute_task_attempt",
+    policyRequirement: gatePolicyRequirement,
+    policyAuthorizationProof: productionPolicyProof,
+    auditRequired: true,
+  });
+  assert.equal(
+    productionGate.allowed,
+    true,
+    "task execution production adapter smoke H/J should allow exact durable policy proof before credential resolution",
+  );
+  assert.equal(
+    productionGate.policyAuthorized,
+    true,
+    "task execution production adapter smoke J should represent durable policy authorization",
+  );
+  const productionCredentialProviderIdentity = {
+    providerId: productionCredentialProviderId,
+    kind: "environment_reference",
+    authority: "system",
+    implementationVersion: "production-environment-reference-v1",
+    configurationVersion: "production-environment-reference-config-v1",
+  };
+  const productionCredentialProviderConfiguration = {
+    providerId: productionCredentialProviderId,
+    providerKind: "environment_reference",
+    configurationVersion: "production-environment-reference-config-v1",
+    configurationAuthority: "system",
+    credentials: [
+      {
+        credentialRef: productionCredentialRef,
+        environmentVariableName,
+        credentialKind: "bearer_token",
+        credentialScope: productionCredentialScope,
+        adapterId: productionAdapterIdentity.adapterId,
+        adapterKind: productionAdapterIdentity.adapterKind,
+        operationKind: "execute_task_attempt",
+        configurationAuthority: "system",
+        resolutionReference: "smoke-production-environment-resolution-reference",
+      },
+    ],
+  };
+  let productionEnvironmentReads = [];
+  const createProductionEnvironmentProvider = (
+    configuration = productionCredentialProviderConfiguration,
+  ) =>
+    createEnvironmentReferenceCredentialProvider({
+      identity: productionCredentialProviderIdentity,
+      configuration,
+      readEnvironmentVariable(name) {
+        productionEnvironmentReads.push(name);
+        return process.env[name];
+      },
+    });
+  await withTemporaryEnvironmentValue(
+    environmentVariableName,
+    environmentFakeSecret,
+    async () => {
+      const missingCapabilityReadiness =
+        evaluateTaskExecutionProductionAdapterReadiness({
+          configuration: createSmokeProductionAdapterConfiguration({
+            identity: productionAdapterIdentity,
+            credentialRef: productionCredentialRef,
+            secretProviderRef: productionCredentialProviderId,
+            credentialScope: productionCredentialScope,
+            capabilities: createSmokeProductionAdapterCapabilities({
+              supportsResultReplay: false,
+            }),
+          }),
+          request: productionAdapterRequest,
+          permissionGateResult: productionGate,
+          taskOrModelConfigurationClaims: {
+            provider: "hostile-provider",
+            endpoint: "https://hostile.invalid",
+            productionExecutionEnabled: true,
+          },
+        });
+      assert.equal(
+        missingCapabilityReadiness.contractConformant,
+        false,
+        "task execution production adapter smoke B should fail missing required capability",
+      );
+      assert.ok(
+        missingCapabilityReadiness.issues.some(
+          (item) =>
+            item.code === "task_execution_production_adapter_replay_missing",
+        ),
+        "task execution production adapter smoke B should report missing result replay",
+      );
+      assert.ok(
+        missingCapabilityReadiness.issues.some(
+          (item) =>
+            item.code ===
+            "task_execution_production_adapter_task_model_configuration_claims_ignored",
+        ),
+        "task execution production adapter smoke C/U/V should ignore task/model production configuration claims",
+      );
+
+      productionEnvironmentReads = [];
+      const productionCredential = await resolveTaskExecutionCredential({
+        request: productionAdapterRequest,
+        permissionGateResult: productionGate,
+        credentialRequired: true,
+        provider: createProductionEnvironmentProvider(),
+        requiredCredentialScope: productionCredentialScope,
+        now: "2026-08-08T01:00:00.000Z",
+      });
+      assert.equal(
+        productionCredential.ok,
+        true,
+        "task execution production adapter smoke L should resolve TEST env credential internally",
+      );
+      assert.equal(
+        productionCredential.resolvedCredential.value,
+        environmentFakeSecret,
+        "task execution production adapter smoke L should see fake secret only in memory",
+      );
+      assert.deepEqual(
+        productionEnvironmentReads,
+        [environmentVariableName],
+        "task execution production adapter smoke L should read only the system-mapped AEOS_TEST env variable",
+      );
+
+      const productionDispatchAuditDraft =
+        createTaskExecutionInvocationDispatchIntentAuditEvent({
+          record: invokingPersisted.value.record,
+          adapterId: productionAdapterIdentity.adapterId,
+          operation: "execute_task_attempt",
+          policyGateId: productionGate.policyGateId,
+          policyDecisionReference: productionPolicyProof.proofId,
+          policyAuthorized: true,
+          auditRequired: true,
+          credentialRef: productionCredentialRef,
+          secretProviderRef: productionCredentialProviderId,
+          credentialResolutionReference: productionCredential.resolutionReference,
+          occurredAt: "2026-08-08T01:01:11.000Z",
+        });
+      assert.equal(
+        productionDispatchAuditDraft.ok,
+        true,
+        "task execution production adapter smoke P should create bounded pre-dispatch audit draft",
+      );
+      const productionAuditRoot = await mkdtemp(
+        join(tmpdir(), "aeos-production-adapter-audit-"),
+      );
+      const productionDispatchAuditAppend =
+        await appendTaskExecutionAuditEvent({
+          projectRoot: productionAuditRoot,
+          taskId: productionDispatchAuditDraft.value.taskId,
+          event: productionDispatchAuditDraft.value,
+          forbiddenValues: [environmentFakeSecret],
+        });
+      assert.equal(
+        productionDispatchAuditAppend.ok,
+        true,
+        "task execution production adapter smoke P should persist durable pre-dispatch audit before preparation",
+      );
+
+      const productionPrepared =
+        prepareTaskExecutionProductionDispatch({
+          configuration: productionAdapterConfiguration,
+          request: productionAdapterRequest,
+          invocationRecord: invokingPersisted.value.record,
+          permissionGateResult: productionGate,
+          credentialResolutionResult: productionCredential,
+          preDispatchAuditEvent: productionDispatchAuditAppend.value.event,
+          forbiddenCredentialValues: [environmentFakeSecret],
+          taskOrModelDispatchClaims: {
+            idempotencyKey: "hostile-idempotency",
+            adapterId: "hostile-adapter",
+            provider: "hostile-provider",
+            endpoint: "https://hostile.invalid",
+            credentialRef: "hostile-credential",
+            productionExecutionEnabled: true,
+            policyAuthorized: true,
+            apiKey: "raw-hostile-key",
+          },
+          taskOrModelConfigurationClaims: {
+            provider: "hostile-provider",
+            endpoint: "https://hostile.invalid",
+          },
+        });
+      assert.equal(
+        productionPrepared.ProductionAdapterVerticalSliceReady,
+        true,
+        "task execution production adapter smoke A should accept valid provider-neutral production candidate",
+      );
+      assert.equal(
+        productionPrepared.ProductionDispatchPrepared,
+        true,
+        "task execution production adapter smoke P should prepare production dispatch after audit",
+      );
+      assert.equal(
+        productionPrepared.ProductionExecutionEnabled,
+        false,
+        "task execution production adapter smoke R should keep production execution disabled",
+      );
+      assert.equal(
+        productionPrepared.preparedDispatch.adapterId,
+        productionAdapterIdentity.adapterId,
+        "task execution production adapter smoke D should preserve system-owned adapter identity",
+      );
+      assert.equal(
+        productionPrepared.preparedDispatch.invocationId,
+        invokingPersisted.value.record.invocationId,
+        "task execution production adapter smoke E should preserve invocation binding",
+      );
+      assert.equal(
+        productionPrepared.preparedDispatch.idempotencyKey,
+        invokingPersisted.value.record.idempotencyKey,
+        "task execution production adapter smoke F should propagate exact AEOS idempotency key",
+      );
+      assert.notEqual(
+        productionPrepared.preparedDispatch.idempotencyKey,
+        "hostile-idempotency",
+        "task execution production adapter smoke G should reject attempted idempotency override",
+      );
+      assert.equal(
+        productionPrepared.preparedDispatch.provider.providerRef,
+        productionAdapterConfiguration.provider.providerRef,
+        "task execution production adapter smoke U should use system provider config only",
+      );
+      assert.equal(
+        productionPrepared.preparedDispatch.normalizedRequest.input.endpoint,
+        undefined,
+        "task execution production adapter smoke U should strip task/model endpoint override from normalized request",
+      );
+      assert.equal(
+        "providerInvocationRef" in productionPrepared.preparedDispatch,
+        false,
+        "task execution production adapter smoke Q should leave provider invocation ref absent before real call",
+      );
+      assert.deepEqual(
+        productionPrepared.preparedDispatch.providerContracts,
+        [
+          {
+            name: "lookupByIdempotencyKey",
+            status: "contract_only",
+            providerIoImplemented: false,
+          },
+          {
+            name: "getInvocationStatus",
+            status: "contract_only",
+            providerIoImplemented: false,
+          },
+          {
+            name: "replayResult",
+            status: "contract_only",
+            providerIoImplemented: false,
+          },
+        ],
+        "task execution production adapter smoke W should keep lookup/status/replay contract-only",
+      );
+      assert.equal(
+        productionPrepared.preparedDispatch.safety.providerCalled,
+        false,
+        "task execution production adapter smoke S should not invoke a real provider",
+      );
+      assert.equal(
+        productionPrepared.preparedDispatch.safety.networkCalled,
+        false,
+        "task execution production adapter smoke S should not perform network calls",
+      );
+      assert.equal(
+        JSON.stringify(productionPrepared).includes(environmentFakeSecret),
+        false,
+        "task execution production adapter smoke M should keep fake secret out of prepared dispatch/readiness serialization",
+      );
+      assert.equal(
+        JSON.stringify(productionDispatchAuditAppend.value.event).includes(
+          environmentFakeSecret,
+        ),
+        false,
+        "task execution production adapter smoke N should keep fake secret out of audit",
+      );
+      assert.equal(
+        JSON.stringify(invokingPersisted.value.record).includes(
+          environmentFakeSecret,
+        ),
+        false,
+        "task execution production adapter smoke M should keep fake secret out of invocation record",
+      );
+      assert.ok(
+        productionPrepared.issues.some(
+          (item) =>
+            item.code ===
+            "task_execution_production_adapter_hostile_dispatch_claims_rejected",
+        ),
+        "task execution production adapter smoke G/V should report rejected hostile dispatch claims",
+      );
+      assert.ok(
+        productionPrepared.issues.some(
+          (item) =>
+            item.code ===
+            "task_execution_production_adapter_hostile_secret_claims_rejected",
+        ),
+        "task execution production adapter smoke M should report rejected hostile secret claims",
+      );
+
+      const deniedProductionGate = evaluateTaskExecutionPermissionGate({
+        request: productionAdapterRequest,
+        adapterIdentity: productionAdapterIdentity,
+        adapterCapabilities: productionAdapterConfiguration.capabilities,
+        adapterPermissions: {
+          ...productionAdapterConfiguration.permissions,
+          externalSideEffectPermission: false,
+        },
+        operationKind: "execute_task_attempt",
+        policyRequirement: gatePolicyRequirement,
+        policyAuthorizationProof: productionPolicyProof,
+        requiredPermissions: [
+          {
+            permission: "external_side_effect",
+            required: true,
+            granted: false,
+            authority: "system",
+          },
+        ],
+      });
+      productionEnvironmentReads = [];
+      const deniedProductionPreparation =
+        prepareTaskExecutionProductionDispatch({
+          configuration: productionAdapterConfiguration,
+          request: productionAdapterRequest,
+          invocationRecord: invokingPersisted.value.record,
+          permissionGateResult: deniedProductionGate,
+          credentialResolutionResult: undefined,
+          preDispatchAuditEvent: productionDispatchAuditAppend.value.event,
+        });
+      assert.equal(
+        deniedProductionPreparation.ProductionDispatchPrepared,
+        false,
+        "task execution production adapter smoke H/T should block preparation when permission is denied",
+      );
+      assert.equal(
+        productionEnvironmentReads.length,
+        0,
+        "task execution production adapter smoke H should not resolve credential after permission denial",
+      );
+
+      const missingPolicyGate = evaluateTaskExecutionPermissionGate({
+        request: productionAdapterRequest,
+        adapterIdentity: productionAdapterIdentity,
+        adapterCapabilities: productionAdapterConfiguration.capabilities,
+        adapterPermissions: productionAdapterConfiguration.permissions,
+        operationKind: "execute_task_attempt",
+        policyRequirement: gatePolicyRequirement,
+        auditRequired: true,
+      });
+      assert.equal(
+        missingPolicyGate.allowed,
+        false,
+        "task execution production adapter smoke I should block missing policy proof",
+      );
+
+      productionEnvironmentReads = [];
+      const scopeMismatchCredential = await resolveTaskExecutionCredential({
+        request: productionAdapterRequest,
+        permissionGateResult: productionGate,
+        credentialRequired: true,
+        provider: createProductionEnvironmentProvider({
+          ...productionCredentialProviderConfiguration,
+          credentials: [
+            {
+              ...productionCredentialProviderConfiguration.credentials[0],
+              credentialScope: ["other_scope"],
+            },
+          ],
+        }),
+        requiredCredentialScope: productionCredentialScope,
+        now: "2026-08-08T01:00:00.000Z",
+      });
+      assert.equal(
+        scopeMismatchCredential.ok,
+        false,
+        "task execution production adapter smoke K should block credential scope mismatch",
+      );
+      assert.equal(
+        productionEnvironmentReads.length,
+        0,
+        "task execution production adapter smoke K should block scope mismatch before env read",
+      );
+
+      const missingAuditPreparation =
+        prepareTaskExecutionProductionDispatch({
+          configuration: productionAdapterConfiguration,
+          request: productionAdapterRequest,
+          invocationRecord: invokingPersisted.value.record,
+          permissionGateResult: productionGate,
+          credentialResolutionResult: productionCredential,
+        });
+      assert.equal(
+        missingAuditPreparation.ProductionDispatchPrepared,
+        false,
+        "task execution production adapter smoke O should block when required pre-dispatch audit is absent",
+      );
+
+      const idempotencyOverridePreparation =
+        prepareTaskExecutionProductionDispatch({
+          configuration: productionAdapterConfiguration,
+          request: {
+            ...productionAdapterRequest,
+            idempotencyKey: "hostile-idempotency",
+          },
+          invocationRecord: invokingPersisted.value.record,
+          permissionGateResult: productionGate,
+          credentialResolutionResult: productionCredential,
+          preDispatchAuditEvent: productionDispatchAuditAppend.value.event,
+        });
+      assert.equal(
+        idempotencyOverridePreparation.ProductionDispatchPrepared,
+        false,
+        "task execution production adapter smoke G should fail closed on authoritative idempotency mismatch",
+      );
+
+      assert.equal(
+        firstUpdate.value.state.workItems.find((item) => item.id === "work-a")
+          ?.state,
+        "pending",
+        "task execution production adapter smoke X should not mutate work state",
+      );
+      assert.equal(
+        firstUpdate.value.state.completionGate.completed,
+        false,
+        "task execution production adapter smoke X should not complete task state",
       );
     },
   );

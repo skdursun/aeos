@@ -108,6 +108,8 @@ condition.
   and audit foundations.
 - TASK-0304: Production credential provider boundary with production execution
   still disabled.
+- TASK-0305: First production execution adapter vertical slice with all real
+  calls disabled.
 
 ## Do Not Load By Default
 
@@ -118,12 +120,13 @@ condition.
 
 ## Next Task
 
-TASK-0305 Design and implement first production execution adapter vertical
-slice with all real calls disabled.
+TASK-0306 Design and implement production provider
+idempotency/status/result-replay crash conformance harness with TEST transport
+only.
 
-Purpose: Add one provider-neutral/production adapter implementation boundary
-and prove production capability, idempotency, and reconciliation conformance
-while keeping provider dispatch disabled.
+Purpose: Prove provider idempotency, lookup/status, result replay, and crash
+reconciliation semantics without real provider, network, SDK, HTTP, shell, or
+subprocess calls.
 
 ## Current Plans
 

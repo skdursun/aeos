@@ -1693,7 +1693,125 @@ Compressed milestone path:
 6. Execution result to work accounting and coverage update.
 7. Verifier runtime and completion-gate/task-completion pipeline.
 
-Recommended next boundary: production credential provider boundary.
+Recommended next boundary: production adapter contract/implementation vertical
+slice with calls still disabled.
+
+## TASK-0305 Production Adapter Vertical Slice
+TASK-0305 adds the first provider-neutral production execution adapter vertical
+slice while keeping every real call disabled. The new production candidate kind
+is:
+
+```ts
+adapterKind: "production_execution"
+```
+
+This kind is production-capable contract metadata only. It is not an execution
+enable flag, not a provider SDK, not HTTP, not network, not shell/process, and
+not a real dispatch path. Production execution remains disabled:
+
+```ts
+TASK_EXECUTION_ADAPTER_PRODUCTION_EXECUTION_ENABLED === false
+```
+
+The production adapter configuration is system-owned. It carries adapter id,
+implementation and capability versions, provider reference/family, operation
+class, credential reference/scope, reconciliation capability profile, audit
+requirement, permission requirement, and bounded failure-normalization metadata.
+Task prose, model output, operator text, and arbitrary request data cannot
+replace adapter id, provider reference, credential reference, endpoint, policy
+authorization, idempotency key, or production-execution state. No arbitrary
+endpoint URL is accepted from task/model/operator data.
+
+The minimum production capability profile is explicit and fails closed when any
+required bit is missing:
+
+- idempotency propagation;
+- deterministic provider invocation reference contract;
+- lookup by idempotency key;
+- invocation status query;
+- result replay/equivalent durable outcome retrieval;
+- bounded normalized errors;
+- system-owned capabilities;
+- secret-safe behavior.
+
+The production adapter and provider reconciliation boundary use the same
+capability semantics for `supportsIdempotencyKey`,
+`supportsLookupByIdempotencyKey`, `supportsInvocationStatusQuery`, and
+`supportsResultReplay`. Lookup, status, and replay are contract-only in
+TASK-0305; no provider IO is implemented or simulated as success.
+
+Preparation consumes existing AEOS authority: persisted invocation id,
+idempotency key, task revision, attempt id/number, work item, and batch. The
+adapter cannot generate a new invocation, replace the idempotency key, choose a
+different task/attempt, or change work/batch binding. Mismatches fail closed.
+
+The ordering is:
+
+```text
+authoritative invocation
+-> production adapter candidate conformance/readiness
+-> permission/policy gate
+-> production credential TEST env resolution
+-> durable pre-dispatch audit append
+-> prepared production dispatch object
+-> STOP
+```
+
+Permission and policy remain separate from adapter capability. Capability can
+be true while permission is missing, and preparation blocks before credential
+resolution. If policy is required, the exact durable approval proof must match
+the invocation context before credential resolution or dispatch preparation can
+succeed.
+
+Credential handoff is split between public/system preparation data and
+internal ephemeral execution material. The prepared dispatch contains only
+logical credential ref, scope, provider metadata, and resolution reference. The
+fake TEST secret may exist only in memory during resolution; it is not present
+in prepared dispatch JSON, adapter configuration public view, audit events,
+invocation records, readiness results, issues, or JSON serialization.
+
+When audit is required, preparation requires a durable
+`execution_invocation_dispatch_intent` event bound to the same invocation,
+adapter, idempotency key, policy, and credential metadata. Audit proves a
+pre-dispatch record exists; it does not enable production execution and is not
+policy authorization.
+
+The prepared dispatch carries a bounded normalized request payload/reference
+from AEOS invocation input only. Authority-looking fields such as idempotency,
+adapter, provider, endpoint, credential, policy, completion, or production
+execution flags are stripped or ignored. The prepared dispatch does not contain
+raw credential values, ownership tokens, policy capability secrets, raw
+environment mappings, audit lock tokens, persistence handles, mutation
+functions, verifier capabilities, or audit writers.
+
+No provider invocation reference is fabricated before a real call. The prepared
+dispatch has no `providerInvocationRef`; future provider reference authority
+starts only after an actual provider dispatch boundary exists.
+
+Failure normalization remains bounded to the closed adapter categories and
+does not expose raw stacks, provider secrets, or retry authority from prose.
+Hostile future provider output remains non-authoritative: claims such as
+`completed`, `verified`, `approved`, `allDone`, `safeToRetry`,
+`taskCompleted`, or `policyAuthorized` do not complete work, complete tasks,
+satisfy verifiers, authorize policy, or make retry safe.
+
+The 400 expected / 20 accounted / 380 remaining invariant remains incomplete.
+Production dispatch preparation does not reduce pending work, complete work,
+satisfy the verifier, satisfy completion gates, or complete the task.
+
+TASK-0305 readiness exposes:
+
+- `ProductionAdapterVerticalSliceReady`;
+- `ProductionDispatchPrepared`;
+- `ProductionExecutionEnabled: false`;
+- remaining blockers for provider idempotency conformance, provider status
+  lookup, provider result replay, crash/reconciliation production integration,
+  and an explicit dispatch enable gate.
+
+Recommended next boundary: TASK-0306 production provider
+idempotency/status/result-replay crash conformance harness with TEST transport
+only. TASK-0306 must still perform no real provider, network, SDK, HTTP, shell,
+or subprocess calls.
 
 ## Execution Preparation Preview
 `aeos task execution prepare --preview <task-id> --expected-revision <number>`

@@ -36,7 +36,9 @@ export interface TaskExecutionPermissionRequirement {
 export interface TaskExecutionCapabilityRequirement {
   readonly capability:
     | keyof TaskExecutionAdapterCapabilities
-    | "test_execution_adapter";
+    | "execution_adapter_contract"
+    | "test_execution_adapter"
+    | "production_execution_adapter";
   readonly required: boolean;
   readonly authority: "system";
 }
@@ -246,7 +248,8 @@ function issue(input: {
 function identityValid(identity: TaskExecutionAdapterIdentity): boolean {
   return (
     isSafeId(identity.adapterId) &&
-    identity.adapterKind === "test_execution" &&
+    (identity.adapterKind === "test_execution" ||
+      identity.adapterKind === "production_execution") &&
     isSafeId(identity.implementationVersion) &&
     isSafeId(identity.capabilityVersion) &&
     identity.identityAuthority === "system"
@@ -259,7 +262,7 @@ function operationCapabilityRequirements(
   if (operationKind === "execute_task_attempt") {
     return [
       {
-        capability: "test_execution_adapter",
+        capability: "execution_adapter_contract",
         required: true,
         authority: "system",
       },
@@ -540,8 +543,13 @@ export function evaluateTaskExecutionPermissionGate(
     }
 
     const capabilitySatisfied =
-      capabilityRequirement.capability === "test_execution_adapter"
+      capabilityRequirement.capability === "execution_adapter_contract"
+        ? input.adapterIdentity.adapterKind === "test_execution" ||
+          input.adapterIdentity.adapterKind === "production_execution"
+        : capabilityRequirement.capability === "test_execution_adapter"
         ? input.adapterIdentity.adapterKind === "test_execution"
+        : capabilityRequirement.capability === "production_execution_adapter"
+        ? input.adapterIdentity.adapterKind === "production_execution"
         : input.adapterCapabilities[capabilityRequirement.capability] === true;
 
     if (!capabilitySatisfied) {
