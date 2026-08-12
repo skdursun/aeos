@@ -33,6 +33,8 @@ import { Buffer } from "node:buffer";
 import { realpath } from "node:fs/promises";
 // @ts-expect-error Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
 import { isAbsolute } from "node:path";
+// @ts-expect-error Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
+import process from "node:process";
 
 export const TASK_EXECUTION_LOCAL_WORKER_PROCESS_CONTRACT_READY = true;
 export const TASK_EXECUTION_LOCAL_WORKER_EXTERNAL_PROCESS_ALLOWED = false;
@@ -88,6 +90,7 @@ export interface TaskExecutionLocalWorkerProcessRequest {
   readonly stderrLimitBytes: number;
   readonly environment: {
     readonly authority: "system";
+    readonly inheritance?: TaskExecutionLocalWorkerRuntimeEnvironmentInheritance;
     readonly variables: readonly [];
   };
 }
@@ -165,8 +168,8 @@ export interface TaskExecutionLocalWorkerProcessAuthority {
   readonly timeoutMs: number;
   readonly environment: {
     readonly authority: "system";
-    readonly inheritance: "none";
-    readonly approvedVariableRefs: readonly [];
+    readonly inheritance: TaskExecutionLocalWorkerRuntimeEnvironmentInheritance;
+    readonly approvedVariableRefs: readonly string[];
   };
   readonly realCodexExecutionEnabled: false;
   readonly realClaudeCodeExecutionEnabled: false;
@@ -233,7 +236,9 @@ export interface TaskExecutionLocalWorkerRuntimeExecutableBinding {
   readonly executableRef: string;
   readonly executableKind: TaskExecutionLocalWorkerExecutableKind;
   readonly executablePath: string;
-  readonly executionMode: "benign_test_fixture";
+  readonly executionMode:
+    | "benign_test_fixture"
+    | "real_claude_code_read_only_canary";
 }
 
 export interface TaskExecutionLocalWorkerRuntimeWorkspaceBinding {
@@ -246,12 +251,16 @@ export interface TaskExecutionLocalWorkerRuntimeWorkspaceBinding {
 
 export interface TaskExecutionLocalWorkerRuntimeEnvironmentPolicy {
   readonly authority: "system";
-  readonly inheritance: "none";
+  readonly inheritance: TaskExecutionLocalWorkerRuntimeEnvironmentInheritance;
   readonly variables: readonly {
     readonly name: string;
     readonly value: string;
   }[];
 }
+
+export type TaskExecutionLocalWorkerRuntimeEnvironmentInheritance =
+  | "none"
+  | "system_claude_code_read_only_canary";
 
 export interface TaskExecutionLocalWorkerProcessEvidence {
   readonly invocationRef: string;
@@ -322,6 +331,15 @@ export interface TaskExecutionLocalWorkerProcessRuntimeResult {
 const safeReferencePattern = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,255}$/;
 const safeEnvNamePattern = /^[A-Z_][A-Z0-9_]{0,63}$/;
 const maxEnvironmentVariables = 16;
+const claudeCodeReadOnlyCanaryInheritedEnvNames = [
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "TMPDIR",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+] as const;
 
 function issue(input: {
   readonly code: string;
@@ -615,10 +633,16 @@ export function evaluateTaskExecutionLocalWorkerProcessGate(
     input.preparedInvocation.processRequest.workingDirectory.repositoryWriteAllowed ===
       false;
   const argvReady = (input.argvIssues ?? []).length === 0;
+  const preparedEnvironmentInheritance =
+    input.preparedInvocation.processRequest.environment.inheritance ?? "none";
   const environmentReady =
     input.preparedInvocation.processRequest.environment.authority === "system" &&
     Array.isArray(input.preparedInvocation.processRequest.environment.variables) &&
-    input.preparedInvocation.processRequest.environment.variables.length === 0;
+    input.preparedInvocation.processRequest.environment.variables.length === 0 &&
+    (preparedEnvironmentInheritance === "none" ||
+      (preparedEnvironmentInheritance ===
+        "system_claude_code_read_only_canary" &&
+        input.expectedWorkerFamily === "claude_code"));
   const outputLimitsReady =
     isPositiveInteger(
       input.preparedInvocation.processRequest.stdoutLimitBytes,
@@ -823,8 +847,12 @@ export function evaluateTaskExecutionLocalWorkerProcessGate(
           timeoutMs: input.preparedInvocation.processRequest.timeoutMs,
           environment: {
             authority: "system",
-            inheritance: "none",
-            approvedVariableRefs: [],
+            inheritance: preparedEnvironmentInheritance,
+            approvedVariableRefs:
+              preparedEnvironmentInheritance ===
+              "system_claude_code_read_only_canary"
+                ? [...claudeCodeReadOnlyCanaryInheritedEnvNames]
+                : [],
           },
           realCodexExecutionEnabled:
             TASK_EXECUTION_LOCAL_WORKER_REAL_CODEX_EXECUTION_ENABLED,
@@ -960,9 +988,32 @@ function executableBindingReady(input: {
   readonly authority: TaskExecutionLocalWorkerProcessAuthority;
   readonly executable: TaskExecutionLocalWorkerRuntimeExecutableBinding;
 }): boolean {
+  const toolsIndex = input.authority.argv.indexOf("--tools");
+  const permissionModeIndex = input.authority.argv.indexOf("--permission-mode");
+  const executionModeReady =
+    input.executable.executionMode === "benign_test_fixture" ||
+    (input.executable.executionMode === "real_claude_code_read_only_canary" &&
+      input.authority.workerFamily === "claude_code" &&
+      input.authority.executableKind === "claude_code" &&
+      input.authority.environment.inheritance ===
+        "system_claude_code_read_only_canary" &&
+      input.authority.argv.includes("--safe-mode") &&
+      input.authority.argv.includes("--strict-mcp-config") &&
+      input.authority.argv.includes("--no-session-persistence") &&
+      input.authority.argv.includes("--json-schema") &&
+      input.authority.argv.includes("--tools") &&
+      toolsIndex >= 0 &&
+      input.authority.argv[toolsIndex + 1] === "Read" &&
+      input.authority.argv.includes("--permission-mode") &&
+      permissionModeIndex >= 0 &&
+      input.authority.argv[permissionModeIndex + 1] === "plan" &&
+      !input.authority.argv.some((arg) =>
+        /dangerously-skip-permissions|bypassPermissions/i.test(arg),
+      ));
+
   return (
     input.executable.authority === "system" &&
-    input.executable.executionMode === "benign_test_fixture" &&
+    executionModeReady &&
     input.executable.executableRef === input.authority.executableRef &&
     input.executable.executableKind === input.authority.executableKind &&
     isAbsolute(input.executable.executablePath) &&
@@ -1001,7 +1052,8 @@ function environmentPolicyReady(
 
   if (
     environment.authority !== "system" ||
-    environment.inheritance !== "none" ||
+    (environment.inheritance !== "none" &&
+      environment.inheritance !== "system_claude_code_read_only_canary") ||
     environment.variables.length > maxEnvironmentVariables
   ) {
     return false;
@@ -1018,9 +1070,28 @@ function environmentPolicyReady(
 function environmentFromPolicy(
   environment?: TaskExecutionLocalWorkerRuntimeEnvironmentPolicy,
 ): Record<string, string> {
-  return Object.fromEntries(
+  const variables = Object.fromEntries(
     (environment?.variables ?? []).map((item) => [item.name, item.value]),
   );
+
+  if (environment?.inheritance !== "system_claude_code_read_only_canary") {
+    return variables;
+  }
+
+  for (const name of claudeCodeReadOnlyCanaryInheritedEnvNames) {
+    const value = (process as { env?: Record<string, string | undefined> }).env?.[
+      name
+    ];
+
+    if (value !== undefined) {
+      variables[name] = value;
+    }
+  }
+
+  variables.CLAUDE_CODE_SAFE_MODE = "1";
+  variables.CLAUDE_CODE_SKIP_PROMPT_HISTORY = "1";
+
+  return variables;
 }
 
 function sanitizeOutput(value: string): string {

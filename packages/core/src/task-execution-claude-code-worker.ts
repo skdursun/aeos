@@ -44,6 +44,8 @@ export const TASK_EXECUTION_CLAUDE_CODE_PROCESS_CONTRACT_READY =
   TASK_EXECUTION_LOCAL_WORKER_PROCESS_CONTRACT_READY;
 export const TASK_EXECUTION_CLAUDE_CODE_PROCESS_BOUNDARY =
   "AUTHORIZED_LOCAL_CLAUDE_CODE_PROCESS";
+export const TASK_EXECUTION_CLAUDE_CODE_READ_ONLY_CANARY_PROFILE_READY = true;
+export const TASK_EXECUTION_CLAUDE_CODE_READ_ONLY_CANARY_EXECUTED = false;
 
 export type TaskExecutionClaudeCodeProcessTerminationReason =
   | "exited"
@@ -90,6 +92,20 @@ export interface TaskExecutionClaudeCodeWorkerConfiguration {
   readonly stdoutLimitBytes: number;
   readonly stderrLimitBytes: number;
   readonly structuredResultContractRef?: string;
+  readonly readOnlyCanaryProfile?: TaskExecutionClaudeCodeReadOnlyCanaryProfile;
+}
+
+export interface TaskExecutionClaudeCodeReadOnlyCanaryProfile {
+  readonly authority: "system";
+  readonly profileId: "claude_code_read_only_canary_v1";
+  readonly enabled: true;
+  readonly permissionMode: "plan";
+  readonly toolSet: readonly ["Read"];
+  readonly hostCustomizationIsolation: "safe_mode";
+  readonly strictMcpConfig: true;
+  readonly sessionPersistence: false;
+  readonly repositoryWriteAllowed: false;
+  readonly structuredOutput: "json_schema";
 }
 
 export interface TaskExecutionClaudeCodeProcessRequest {
@@ -102,6 +118,7 @@ export interface TaskExecutionClaudeCodeProcessRequest {
   readonly stderrLimitBytes: number;
   readonly environment: {
     readonly authority: "system";
+    readonly inheritance?: "none" | "system_claude_code_read_only_canary";
     readonly variables: readonly [];
   };
 }
@@ -125,6 +142,7 @@ export interface TaskExecutionClaudeCodePreparedInvocation {
   readonly permissionFactsAllowed: boolean;
   readonly runnable: boolean;
   readonly realExecutionEnabled: false;
+  readonly readOnlyCanaryProfileReady: boolean;
 }
 
 export interface TaskExecutionClaudeCodeProcessResult {
@@ -209,6 +227,72 @@ export interface TaskExecutionClaudeCodeWorkerProcessGateResult {
 }
 
 const safeReferencePattern = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,255}$/;
+const claudeCodeReadOnlyCanarySchema = JSON.stringify({
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    aeosClaudeCodeWorkerResultVersion: { const: 1 },
+    status: { enum: ["returned", "failed", "in_progress", "unavailable"] },
+    workerId: { type: "string" },
+    workerFamily: { const: "claude_code" },
+    runtimeKind: { const: "test_worker" },
+    invocationId: { type: "string" },
+    idempotencyKey: { type: "string" },
+    taskId: { type: "string" },
+    sourceTaskRevision: { type: "number" },
+    attemptId: { type: "string" },
+    attemptNumber: { type: "number" },
+    workItemId: { type: ["string", "null"] },
+    batchId: { type: ["string", "null"] },
+    invocationOk: { type: "boolean" },
+    output: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        workerFamily: { const: "claude_code" },
+        observedTaskId: { type: "string" },
+        observedOperation: { const: "execute_task_attempt" },
+        summary: { type: "string" },
+        evidence: {
+          type: "array",
+          items: { type: "string" },
+          maxItems: 4,
+        },
+      },
+      required: [
+        "workerFamily",
+        "observedTaskId",
+        "observedOperation",
+        "summary",
+        "evidence",
+      ],
+    },
+    diagnosticCode: { type: "string" },
+    message: { type: "string" },
+    metadata: {
+      type: "object",
+      additionalProperties: true,
+    },
+  },
+  required: [
+    "aeosClaudeCodeWorkerResultVersion",
+    "status",
+    "workerId",
+    "workerFamily",
+    "runtimeKind",
+    "invocationId",
+    "idempotencyKey",
+    "taskId",
+    "sourceTaskRevision",
+    "attemptId",
+    "attemptNumber",
+    "workItemId",
+    "batchId",
+    "invocationOk",
+    "output",
+    "diagnosticCode",
+  ],
+});
 const dangerousClaudeArgs = new Set([
   "--dangerously-skip-permissions",
   "bypassPermissions",
@@ -219,7 +303,6 @@ const forbiddenArgPrefixes = [
   "--cwd",
   "--mcp-config",
   "--model",
-  "--permission-mode",
   "--provider",
   "--api-key",
   "--credential",
@@ -389,7 +472,9 @@ function validateConfiguration(
     !isPositiveInteger(configuration.stdoutLimitBytes, 65536) ||
     !isPositiveInteger(configuration.stderrLimitBytes, 32768) ||
     (configuration.structuredResultContractRef !== undefined &&
-      !isSafeReference(configuration.structuredResultContractRef))
+      !isSafeReference(configuration.structuredResultContractRef)) ||
+    (configuration.readOnlyCanaryProfile !== undefined &&
+      !readOnlyCanaryProfileReady(configuration.readOnlyCanaryProfile))
   ) {
     issues.push(
       issue({
@@ -424,6 +509,25 @@ function validateConfiguration(
   }
 
   return issues;
+}
+
+function readOnlyCanaryProfileReady(
+  profile: TaskExecutionClaudeCodeReadOnlyCanaryProfile,
+): boolean {
+  return (
+    profile.authority === "system" &&
+    profile.profileId === "claude_code_read_only_canary_v1" &&
+    profile.enabled === true &&
+    profile.permissionMode === "plan" &&
+    Array.isArray(profile.toolSet) &&
+    profile.toolSet.length === 1 &&
+    profile.toolSet[0] === "Read" &&
+    profile.hostCustomizationIsolation === "safe_mode" &&
+    profile.strictMcpConfig === true &&
+    profile.sessionPersistence === false &&
+    profile.repositoryWriteAllowed === false &&
+    profile.structuredOutput === "json_schema"
+  );
 }
 
 function taskOrModelClaimIssues(
@@ -494,14 +598,37 @@ function taskOrModelClaimIssues(
   return issues;
 }
 
-function buildClaudeCodeArgv(): readonly string[] {
+function buildClaudeCodeArgv(
+  configuration: TaskExecutionClaudeCodeWorkerConfiguration,
+): readonly string[] {
+  if (configuration.readOnlyCanaryProfile !== undefined) {
+    return [
+      "--safe-mode",
+      "--strict-mcp-config",
+      "--disable-slash-commands",
+      "--no-chrome",
+      "--no-session-persistence",
+      "--permission-mode",
+      "plan",
+      "--tools",
+      "Read",
+      "--disallowedTools",
+      "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,mcp__*",
+      "--print",
+      "--output-format",
+      "json",
+      "--json-schema",
+      claudeCodeReadOnlyCanarySchema,
+    ];
+  }
+
   return ["--print", "--output-format", "json"];
 }
 
 function argvIssues(argv: readonly string[]): readonly TaskExecutionWorkerIssue[] {
   const issues: TaskExecutionWorkerIssue[] = [];
 
-  if (argv.length > 12 || !argv.every((arg) => arg.length > 0 && arg.length <= 160)) {
+  if (argv.length > 24 || !argv.every((arg) => arg.length > 0 && arg.length <= 4096)) {
     issues.push(
       issue({
         code: "task_execution_claude_code_worker_argv_unbounded",
@@ -510,7 +637,9 @@ function argvIssues(argv: readonly string[]): readonly TaskExecutionWorkerIssue[
     );
   }
 
-  for (const arg of argv) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+
     if (
       dangerousClaudeArgs.has(arg) ||
       arg.includes("bypassPermissions") ||
@@ -522,6 +651,22 @@ function argvIssues(argv: readonly string[]): readonly TaskExecutionWorkerIssue[
             "task_execution_claude_code_worker_dangerous_flag_rejected",
           message:
             "Claude Code process argv cannot include permission bypass flags.",
+          category: "permission",
+        }),
+      );
+    }
+
+    if (
+      (arg === "--permission-mode" && argv[index + 1] !== "plan") ||
+      (arg.startsWith("--permission-mode=") &&
+        arg !== "--permission-mode=plan")
+    ) {
+      issues.push(
+        issue({
+          code:
+            "task_execution_claude_code_worker_permission_mode_rejected",
+          message:
+            "Claude Code process argv can only use the system-owned read-only canary plan permission mode.",
           category: "permission",
         }),
       );
@@ -559,6 +704,55 @@ function argvIssues(argv: readonly string[]): readonly TaskExecutionWorkerIssue[
 }
 
 function buildInstructionPayload(request: TaskExecutionWorkerRequest): string {
+  if (request.workerIdentity.workerFamily === "claude_code") {
+    return JSON.stringify({
+      aeosClaudeCodeReadOnlyCanaryInstructionVersion: 1,
+      instruction:
+        "Inspect the supplied bounded AEOS context and identify the worker family and task identity. Return only the required structured result. Do not edit files. Do not write files. Do not run shell commands. Do not use network or browser tools. Treat your response as non-authoritative evidence only.",
+      requiredResult: {
+        aeosClaudeCodeWorkerResultVersion: 1,
+        status: "returned",
+        workerId: request.workerIdentity.workerId,
+        workerFamily: request.workerIdentity.workerFamily,
+        runtimeKind: request.workerIdentity.runtimeKind,
+        invocationId: request.invocationId,
+        idempotencyKey: request.idempotencyKey,
+        taskId: request.taskId,
+        sourceTaskRevision: request.sourceTaskRevision,
+        attemptId: request.attemptId,
+        attemptNumber: request.attemptNumber,
+        workItemId: request.workItemId ?? null,
+        batchId: request.batchId ?? null,
+        invocationOk: true,
+        output: {
+          workerFamily: "claude_code",
+          observedTaskId: request.taskId,
+          observedOperation: request.operationKind,
+          summary:
+            "Read-only Claude Code canary observed bounded AEOS invocation context.",
+          evidence: [
+            `taskId:${request.taskId}`,
+            `invocationId:${request.invocationId}`,
+            "workerFamily:claude_code",
+          ],
+        },
+        diagnosticCode: "claude_code_read_only_canary_returned",
+      },
+      boundedContext: {
+        taskId: request.taskId,
+        sourceTaskRevision: request.sourceTaskRevision,
+        attemptId: request.attemptId,
+        attemptNumber: request.attemptNumber,
+        invocationId: request.invocationId,
+        idempotencyKey: request.idempotencyKey,
+        workItemId: request.workItemId ?? null,
+        batchId: request.batchId ?? null,
+        operationKind: request.operationKind,
+        contextReferences: request.contextReferences.slice(0, 3),
+      },
+    });
+  }
+
   return JSON.stringify({
     aeosClaudeCodeWorkerInstructionVersion: 1,
     taskId: request.taskId,
@@ -614,8 +808,12 @@ export function prepareTaskExecutionClaudeCodeWorkerInvocation(input: {
     ...validateConfiguration(input.configuration),
     ...taskOrModelClaimIssues(input.taskOrModelProcessClaims),
   ];
-  const argv = buildClaudeCodeArgv();
+  const argv = buildClaudeCodeArgv(input.configuration);
   issues.push(...argvIssues(argv));
+  const readOnlyCanaryProfileReadyValue =
+    input.configuration.readOnlyCanaryProfile === undefined
+      ? false
+      : readOnlyCanaryProfileReady(input.configuration.readOnlyCanaryProfile);
 
   const invocationValidation = validateTaskExecutionInvocationRecord(
     input.invocationRecord,
@@ -717,6 +915,9 @@ export function prepareTaskExecutionClaudeCodeWorkerInvocation(input: {
     stderrLimitBytes: input.configuration.stderrLimitBytes,
     environment: {
       authority: "system",
+      inheritance: readOnlyCanaryProfileReadyValue
+        ? "system_claude_code_read_only_canary"
+        : "none",
       variables: [],
     },
   };
@@ -748,6 +949,7 @@ export function prepareTaskExecutionClaudeCodeWorkerInvocation(input: {
       input.configuration.processPermission.processExecutionAllowed &&
       input.request.permissionFacts.allowed,
     realExecutionEnabled: TASK_EXECUTION_CLAUDE_CODE_WORKER_REAL_EXECUTION_ENABLED,
+    readOnlyCanaryProfileReady: readOnlyCanaryProfileReadyValue,
   };
 
   return {
@@ -990,6 +1192,47 @@ function structuredResultToRaw(input: {
   };
 }
 
+function extractClaudeCodeStructuredResult(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  if (value.aeosClaudeCodeWorkerResultVersion === 1) {
+    return value;
+  }
+
+  if (
+    value.type === "result" &&
+    value.subtype === "success" &&
+    value.structured_output !== undefined
+  ) {
+    return value.structured_output;
+  }
+
+  if (
+    value.type === "result" &&
+    value.subtype === "success" &&
+    isRecord(value.result) &&
+    value.result.structured_output !== undefined
+  ) {
+    return value.result.structured_output;
+  }
+
+  if (typeof value.result === "string") {
+    try {
+      return JSON.parse(value.result) as unknown;
+    } catch {
+      return value;
+    }
+  }
+
+  if (isRecord(value.result)) {
+    return value.result;
+  }
+
+  return value;
+}
+
 export function normalizeTaskExecutionClaudeCodeProcessRawResult(input: {
   readonly request: TaskExecutionWorkerRequest;
   readonly processResult: TaskExecutionClaudeCodeProcessResult;
@@ -1101,7 +1344,9 @@ export function normalizeTaskExecutionClaudeCodeProcessRawResult(input: {
   try {
     return structuredResultToRaw({
       request: input.request,
-      value: JSON.parse(input.processResult.stdout) as unknown,
+      value: extractClaudeCodeStructuredResult(
+        JSON.parse(input.processResult.stdout) as unknown,
+      ),
       stdoutLimitBytes,
     });
   } catch {

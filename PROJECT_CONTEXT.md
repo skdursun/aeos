@@ -163,6 +163,16 @@ condition.
   deterministic benign child-process smoke coverage while keeping real Codex,
   real Claude Code, cloud, retry, verifier, completion, and work accounting
   authority disabled.
+- TASK-0317: First explicitly controlled real local Claude Code worker canary
+  boundary. Implemented the read-only Claude Code canary profile and AEOS
+  operator command boundary on the existing Claude adapter and shared local
+  process runtime, with safe-mode host customization isolation, restricted
+  read-only tool posture, JSON Schema structured output, system-owned
+  executable/workspace/environment authority, audit-before-launch ordering, and
+  durable one-shot launch consumption. Automated tests made zero real Claude or
+  Codex model calls. RealClaudeCanaryReady=false because local Claude
+  authentication is missing; RealClaudeCanaryExecuted=false; real repository
+  writes remain disabled.
 
 ## Do Not Load By Default
 
@@ -173,9 +183,11 @@ condition.
 
 ## Next Task
 
-TASK-0317 not started: first explicitly controlled real local Claude Code
-worker canary boundary, with automated real Claude calls disabled and no
-completion authority.
+Do not advance to TASK-0318 yet. TASK-0317 implementation is complete, but the
+real read-only Claude canary is still pending operator action. Next action:
+operator authenticates local Claude Code, then prepares and executes exactly one
+authoritative AEOS read-only Claude canary invocation through the TASK-0317
+operator boundary. The canary remains one-shot, non-mutating, and evidence-only.
 
 ## Current Direction
 
@@ -185,9 +197,13 @@ returns to the Codex-orchestrator plus Claude Code worker orchestration
 architecture through provider-neutral adapter foundations, without implementing
 real Codex or Claude Code worker execution yet.
 
-The safest next boundary is the first explicitly controlled real local Claude
-Code worker canary boundary. Automated real Claude calls remain disabled, and
-worker output remains evidence only with no completion authority.
+The current boundary is the first explicitly controlled real local Claude Code
+worker canary. Automated real Claude calls remain disabled, real repository
+writes remain disabled, and worker output remains evidence only with no
+completion authority. Do not move into write-capable Claude work, Codex-to-
+Claude routing, cloud/provider work, work accounting, verifier/completion, or
+TASK-0318 until the operator executes the single read-only canary and its result
+is reviewed.
 
 ## Current Plans
 

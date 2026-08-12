@@ -9,10 +9,13 @@ import {
   evaluateTaskStateTransition,
   evaluateTaskExecutionInvocationReconciliation,
   createTaskExecutionPolicyApprovalRecord,
+  createTaskExecutionInvocationDispatchIntentAuditEvent,
   authorizeTaskExecutionProductionDispatch,
   dispatchTaskExecutionProductionProvider,
   deriveTaskExecutionPolicyGateId,
+  evaluateTaskExecutionClaudeCodeWorkerProcessGate,
   evaluateTaskExecutionPermissionGate,
+  executeTaskExecutionLocalWorkerProcess,
   loadTaskExecutionAuditEvents,
   loadTaskExecutionAttempt,
   loadTaskExecutionInvocation,
@@ -25,18 +28,22 @@ import {
   parseTaskPlanInputFile,
   planAgenticRunner,
   prepareTaskExecutionAttempt,
+  prepareTaskExecutionClaudeCodeWorkerInvocation,
   prepareTaskExecutionProductionDispatch,
   resolveTaskExecutionCredential,
   runAgenticRunnerDryRun,
   runInitPipeline,
   sanitizeTaskExecutionCredentialResult,
   saveTaskExecutionAttempt,
+  appendTaskExecutionAuditEvent,
   saveTaskExecutionPolicyApproval,
   saveTaskState,
   transitionTaskExecutionAttempt,
   transitionPersistedTaskState,
   updateTaskExecutionAttempt,
+  updateTaskExecutionInvocation,
   validateAeosTask,
+  normalizeTaskExecutionClaudeCodeProcessResult,
   TASK_EXECUTION_PRODUCTION_DISPATCH_BOUNDARY,
 } from "@aeos/core";
 import type {
@@ -75,6 +82,8 @@ import type {
   TaskExecutionPolicyApprovalPublicStatus,
   TaskExecutionStartAuthorizationResult,
 } from "@aeos/core";
+// @ts-expect-error Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
+import { realpathSync } from "node:fs";
 import { handleContext } from "./context.js";
 import { getCwd, getFs, setExitCode, writeJsonLine } from "./output.js";
 import { handleStatus } from "./status.js";
@@ -142,6 +151,8 @@ Commands:
   task execution policy status <task-id> --invocation-id <invocation-id> --expected-revision <number> --json
   task execution dispatch <task-id> --invocation-id <invocation-id> --expected-revision <number> [--provider-profile <trusted-profile-id>]
   task execution dispatch <task-id> --invocation-id <invocation-id> --expected-revision <number> [--provider-profile <trusted-profile-id>] --json
+  task execution claude-canary <task-id> --invocation-id <invocation-id> --expected-revision <number> --expected-invocation-revision <number>
+  task execution claude-canary <task-id> --invocation-id <invocation-id> --expected-revision <number> --expected-invocation-revision <number> --json
   task status <task-id>
   task status <task-id> --json
   task resume --preview <task-id>
@@ -814,6 +825,73 @@ type TaskExecutionProductionDispatchJsonOutput =
         readonly category: string;
       };
       readonly safety: TaskExecutionProductionDispatchSafety;
+      readonly issues: readonly TaskStateCliIssue[];
+    };
+
+type TaskExecutionClaudeCanarySafety = {
+  readonly realClaudeModelCall: boolean;
+  readonly oneShotAuthorityConsumed: boolean;
+  readonly invocationModified: boolean;
+  readonly taskModified: false;
+  readonly attemptModified: false;
+  readonly repositoryWriteAllowed: false;
+  readonly repositoryWritten: false;
+  readonly shellExecuted: false;
+  readonly arbitraryClaudeArgsAccepted: false;
+  readonly arbitraryExecutableAccepted: false;
+  readonly arbitraryCwdAccepted: false;
+  readonly workCompleted: false;
+  readonly taskCompleted: false;
+  readonly verifierRun: false;
+  readonly completionAuthority: false;
+  readonly rawSecretRendered: false;
+  readonly ownershipSecretRendered: false;
+  readonly automatedRealClaudeCall: false;
+  readonly realCodexModelCall: false;
+};
+
+type TaskExecutionClaudeCanaryJsonOutput =
+  | {
+      readonly ok: true;
+      readonly status:
+        | "claude_canary_returned"
+        | "claude_canary_failed"
+        | "claude_canary_outcome_unknown";
+      readonly taskId: string;
+      readonly invocationId: string;
+      readonly invocationLifecycle: string | null;
+      readonly invocationRevision: number | null;
+      readonly dispatchDecision: string;
+      readonly processOutcomeKnown: boolean;
+      readonly reconciliationRequired: boolean;
+      readonly postDispatchAuditWritten: boolean;
+      readonly normalizedOutcomeStatus: string;
+      readonly productionCompletionReady: false;
+      readonly safety: TaskExecutionClaudeCanarySafety;
+      readonly issues: readonly TaskStateCliIssue[];
+    }
+  | {
+      readonly ok: false;
+      readonly status:
+        | "invalid_arguments"
+        | "failed_to_load"
+        | "task_state_revision_conflict"
+        | "claude_canary_blocked";
+      readonly taskId: string;
+      readonly invocationId: string | null;
+      readonly invocationLifecycle: string | null;
+      readonly invocationRevision: number | null;
+      readonly dispatchDecision: string | null;
+      readonly processOutcomeKnown: false;
+      readonly reconciliationRequired: boolean;
+      readonly postDispatchAuditWritten: false;
+      readonly productionCompletionReady: false;
+      readonly error: {
+        readonly code: string;
+        readonly message: string;
+        readonly category: string;
+      };
+      readonly safety: TaskExecutionClaudeCanarySafety;
       readonly issues: readonly TaskStateCliIssue[];
     };
 
@@ -4360,6 +4438,108 @@ function printTaskExecutionProductionDispatchError(
   console.error(`Ownership secret rendered: false`);
 }
 
+const taskExecutionClaudeCanaryBlockedSafety: TaskExecutionClaudeCanarySafety = {
+  realClaudeModelCall: false,
+  oneShotAuthorityConsumed: false,
+  invocationModified: false,
+  taskModified: false,
+  attemptModified: false,
+  repositoryWriteAllowed: false,
+  repositoryWritten: false,
+  shellExecuted: false,
+  arbitraryClaudeArgsAccepted: false,
+  arbitraryExecutableAccepted: false,
+  arbitraryCwdAccepted: false,
+  workCompleted: false,
+  taskCompleted: false,
+  verifierRun: false,
+  completionAuthority: false,
+  rawSecretRendered: false,
+  ownershipSecretRendered: false,
+  automatedRealClaudeCall: false,
+  realCodexModelCall: false,
+};
+
+function writeTaskExecutionClaudeCanaryJson(
+  output: TaskExecutionClaudeCanaryJsonOutput,
+): void {
+  writeJsonLine(output);
+}
+
+function createTaskExecutionClaudeCanaryErrorJsonOutput(input: {
+  readonly taskId: string;
+  readonly invocationId?: string | null;
+  readonly dispatchDecision?: string | null;
+  readonly invocationLifecycle?: string | null;
+  readonly invocationRevision?: number | null;
+  readonly reconciliationRequired?: boolean;
+  readonly error: AeosError;
+  readonly status?: Extract<
+    TaskExecutionClaudeCanaryJsonOutput,
+    { readonly ok: false }
+  >["status"];
+}): Extract<TaskExecutionClaudeCanaryJsonOutput, { readonly ok: false }> {
+  return {
+    ok: false,
+    status: input.status ?? "claude_canary_blocked",
+    taskId: input.taskId,
+    invocationId: input.invocationId ?? null,
+    invocationLifecycle: input.invocationLifecycle ?? null,
+    invocationRevision: input.invocationRevision ?? null,
+    dispatchDecision: input.dispatchDecision ?? null,
+    processOutcomeKnown: false,
+    reconciliationRequired: input.reconciliationRequired ?? false,
+    postDispatchAuditWritten: false,
+    productionCompletionReady: false,
+    error: {
+      code: input.error.code,
+      message: input.error.message,
+      category: input.error.category,
+    },
+    safety: taskExecutionClaudeCanaryBlockedSafety,
+    issues: [createTaskStateCliIssueFromError(input.error)],
+  };
+}
+
+function printTaskExecutionClaudeCanaryOutput(
+  output: Extract<TaskExecutionClaudeCanaryJsonOutput, { readonly ok: true }>,
+): void {
+  console.log("Execution Claude Read-Only Canary");
+  console.log("");
+  console.log(`Task id: ${output.taskId}`);
+  console.log(`Invocation id: ${output.invocationId}`);
+  console.log(`Status: ${output.status}`);
+  console.log(`Dispatch decision: ${output.dispatchDecision}`);
+  console.log(`Invocation lifecycle: ${output.invocationLifecycle ?? "unknown"}`);
+  console.log(`Process outcome known: ${String(output.processOutcomeKnown)}`);
+  console.log(
+    `Reconciliation required: ${String(output.reconciliationRequired)}`,
+  );
+  console.log(`Repository writes enabled: false`);
+  console.log(`Shell executed: false`);
+  console.log(`Task completed: false`);
+  console.log(`Production completion ready: false`);
+  console.log(`Real Claude model call: ${String(output.safety.realClaudeModelCall)}`);
+  console.log("Raw secret rendered: false");
+  console.log("Ownership secret rendered: false");
+}
+
+function printTaskExecutionClaudeCanaryError(
+  output: Extract<TaskExecutionClaudeCanaryJsonOutput, { readonly ok: false }>,
+): void {
+  console.error("Execution Claude Read-Only Canary");
+  console.error(`Task id: ${output.taskId}`);
+  console.error(`Invocation id: ${output.invocationId ?? "none"}`);
+  console.error(`Status: ${output.status}`);
+  console.error(`Error: ${output.error.code}`);
+  console.error(`Message: ${output.error.message}`);
+  console.error(`Real Claude model call: false`);
+  console.error(`Repository writes enabled: false`);
+  console.error(`Task completed: false`);
+  console.error(`Raw secret rendered: false`);
+  console.error(`Ownership secret rendered: false`);
+}
+
 function parseTaskExecutionDispatchArgs(args: readonly string[]): {
   readonly json: boolean;
   readonly taskId?: string;
@@ -4574,6 +4754,182 @@ function parseTaskExecutionDispatchArgs(args: readonly string[]): {
   };
 }
 
+function parseTaskExecutionClaudeCanaryArgs(args: readonly string[]): {
+  readonly json: boolean;
+  readonly taskId?: string;
+  readonly invocationId?: string;
+  readonly expectedRevision?: string;
+  readonly expectedInvocationRevision?: string;
+  readonly error?: AeosError;
+} {
+  let json = false;
+  let taskId: string | undefined;
+  let invocationId: string | undefined;
+  let expectedRevision: string | undefined;
+  let expectedInvocationRevision: string | undefined;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+
+    if (arg === "--invocation-id") {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        return {
+          json,
+          taskId,
+          invocationId,
+          expectedRevision,
+          expectedInvocationRevision,
+          error: createTaskStateCliError({
+            code: "task_execution_claude_canary_invocation_id_required",
+            message:
+              "Claude canary requires --invocation-id <invocation-id>.",
+          }),
+        };
+      }
+      if (invocationId !== undefined) {
+        return {
+          json,
+          taskId,
+          invocationId,
+          expectedRevision,
+          expectedInvocationRevision,
+          error: createTaskStateCliError({
+            code: "task_execution_claude_canary_duplicate_invocation_id",
+            message: "Claude canary accepts one invocation id.",
+          }),
+        };
+      }
+      invocationId = value;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--expected-revision") {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        return {
+          json,
+          taskId,
+          invocationId,
+          expectedRevision,
+          expectedInvocationRevision,
+          error: createTaskStateCliError({
+            code: "task_execution_claude_canary_expected_revision_required",
+            message: "Claude canary requires --expected-revision <number>.",
+          }),
+        };
+      }
+      expectedRevision = value;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--expected-invocation-revision") {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        return {
+          json,
+          taskId,
+          invocationId,
+          expectedRevision,
+          expectedInvocationRevision,
+          error: createTaskStateCliError({
+            code:
+              "task_execution_claude_canary_expected_invocation_revision_required",
+            message:
+              "Claude canary requires --expected-invocation-revision <number>.",
+          }),
+        };
+      }
+      expectedInvocationRevision = value;
+      index += 1;
+      continue;
+    }
+
+    if (
+      [
+        "--claude-arg",
+        "--args",
+        "--executable",
+        "--cwd",
+        "--workdir",
+        "--force",
+        "--bypass",
+        "--dangerous",
+        "--dangerously-skip-permissions",
+        "--allow-dangerously-skip-permissions",
+        "--safe-to-retry",
+        "--completed",
+        "--api-key",
+        "--token",
+        "--secret",
+        "--credential-value",
+        "--mcp-config",
+        "--model",
+        "--tools",
+      ].includes(arg)
+    ) {
+      return {
+        json,
+        taskId,
+        invocationId,
+        expectedRevision,
+        expectedInvocationRevision,
+        error: createTaskStateCliError({
+          code: "task_execution_claude_canary_authority_override_forbidden",
+          message:
+            "Claude canary does not accept arbitrary executable, cwd, Claude args, force, retry, completion, credential, MCP, model, or tool authority.",
+          category: "permission",
+        }),
+      };
+    }
+
+    if (arg.startsWith("--")) {
+      return {
+        json,
+        taskId,
+        invocationId,
+        expectedRevision,
+        expectedInvocationRevision,
+        error: createTaskStateCliError({
+          code: "task_execution_claude_canary_unknown_option",
+          message: "Unknown Claude canary option.",
+        }),
+      };
+    }
+
+    if (taskId !== undefined) {
+      return {
+        json,
+        taskId,
+        invocationId,
+        expectedRevision,
+        expectedInvocationRevision,
+        error: createTaskStateCliError({
+          code: "task_execution_claude_canary_duplicate_task_id",
+          message: "Claude canary accepts one task id.",
+        }),
+      };
+    }
+
+    taskId = arg;
+  }
+
+  return {
+    json,
+    taskId,
+    invocationId,
+    expectedRevision,
+    expectedInvocationRevision,
+  };
+}
+
 function parseExpectedDispatchRevision(value: string | undefined):
   | { readonly ok: true; readonly value: number }
   | { readonly ok: false; readonly error: AeosError } {
@@ -4676,6 +5032,635 @@ function runtimeFetch() {
   }).fetch;
 
   return fetchFn;
+}
+
+const trustedClaudeCodeExecutablePath = "/Users/magnero/.local/bin/claude";
+const trustedClaudeCodeExecutableRef =
+  "system:trusted-local-claude-code-2.1.228";
+
+async function handleTaskExecutionClaudeCanary(
+  args: readonly string[],
+): Promise<void> {
+  const parsedArgs = parseTaskExecutionClaudeCanaryArgs(args);
+
+  function writeOrPrint(output: TaskExecutionClaudeCanaryJsonOutput): void {
+    if (parsedArgs.json) {
+      writeTaskExecutionClaudeCanaryJson(output);
+    } else if (output.ok) {
+      printTaskExecutionClaudeCanaryOutput(output);
+    } else {
+      printTaskExecutionClaudeCanaryError(output);
+    }
+  }
+
+  if (parsedArgs.error !== undefined) {
+    writeOrPrint(
+      createTaskExecutionClaudeCanaryErrorJsonOutput({
+        taskId: parsedArgs.taskId ?? "",
+        invocationId: parsedArgs.invocationId ?? null,
+        error: parsedArgs.error,
+        status: "invalid_arguments",
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  if (parsedArgs.taskId === undefined || parsedArgs.taskId.trim().length === 0) {
+    writeOrPrint(
+      createTaskExecutionClaudeCanaryErrorJsonOutput({
+        taskId: "",
+        invocationId: parsedArgs.invocationId ?? null,
+        error: createTaskStateCliError({
+          code: "task_execution_claude_canary_task_id_required",
+          message: "Claude canary requires a task id.",
+        }),
+        status: "invalid_arguments",
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  if (
+    parsedArgs.invocationId === undefined ||
+    parsedArgs.invocationId.trim().length === 0
+  ) {
+    writeOrPrint(
+      createTaskExecutionClaudeCanaryErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: null,
+        error: createTaskStateCliError({
+          code: "task_execution_claude_canary_invocation_id_required",
+          message:
+            "Claude canary requires --invocation-id <invocation-id>.",
+        }),
+        status: "invalid_arguments",
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const expectedRevision = parseExpectedDispatchRevision(
+    parsedArgs.expectedRevision,
+  );
+  if (!expectedRevision.ok) {
+    writeOrPrint(
+      createTaskExecutionClaudeCanaryErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        error: expectedRevision.error,
+        status: "invalid_arguments",
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const expectedInvocationRevision = parseExpectedDispatchRevision(
+    parsedArgs.expectedInvocationRevision,
+  );
+  if (!expectedInvocationRevision.ok) {
+    writeOrPrint(
+      createTaskExecutionClaudeCanaryErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        error: createTaskStateCliError({
+          code:
+            "task_execution_claude_canary_expected_invocation_revision_invalid",
+          message:
+            "Claude canary expected invocation revision must be a positive integer.",
+        }),
+        status: "invalid_arguments",
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const projectRoot = getCwd();
+  const stateResult = await loadTaskState({
+    projectRoot,
+    taskId: parsedArgs.taskId,
+  });
+  if (!stateResult.ok) {
+    writeOrPrint(
+      createTaskExecutionClaudeCanaryErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        error: stateResult.error,
+        status: "failed_to_load",
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  if (stateResult.value.state.revision !== expectedRevision.value) {
+    writeOrPrint(
+      createTaskExecutionClaudeCanaryErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        error: createTaskStateRevisionConflictError({
+          expectedRevision: expectedRevision.value,
+          actualRevision: stateResult.value.state.revision,
+        }),
+        status: "task_state_revision_conflict",
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const invocationResult = await loadTaskExecutionInvocation({
+    projectRoot,
+    taskId: parsedArgs.taskId,
+    invocationId: parsedArgs.invocationId,
+  });
+  if (!invocationResult.ok) {
+    writeOrPrint(
+      createTaskExecutionClaudeCanaryErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        error: invocationResult.error,
+        status: "failed_to_load",
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const invocation = invocationResult.value.record;
+  if (invocation.revision !== expectedInvocationRevision.value) {
+    writeOrPrint(
+      createTaskExecutionClaudeCanaryErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        invocationLifecycle: invocation.lifecycle,
+        invocationRevision: invocation.revision,
+        error: createTaskStateCliError({
+          code:
+            "task_execution_claude_canary_invocation_revision_mismatch",
+          message:
+            "Claude canary requires the expected invocation revision to match persisted one-shot authority.",
+          category: "conflict",
+        }),
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  if (invocation.lifecycle !== "reserved") {
+    writeOrPrint(
+      createTaskExecutionClaudeCanaryErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        invocationLifecycle: invocation.lifecycle,
+        invocationRevision: invocation.revision,
+        reconciliationRequired:
+          invocation.lifecycle === "invoking" ||
+          invocation.lifecycle === "outcome_unknown",
+        error: createTaskStateCliError({
+          code: "task_execution_claude_canary_invocation_already_consumed",
+          message:
+            "Claude canary can only consume one-shot authority for a current reserved invocation.",
+          category: "conflict",
+        }),
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const attemptResult = await loadTaskExecutionAttempt({
+    projectRoot,
+    taskId: invocation.taskId,
+    attemptId: invocation.attemptId,
+  });
+  if (!attemptResult.ok) {
+    writeOrPrint(
+      createTaskExecutionClaudeCanaryErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        error: attemptResult.error,
+        status: "failed_to_load",
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const workerIdentity = {
+    workerId: "system:claude-code-read-only-canary",
+    workerFamily: "claude_code" as const,
+    runtimeKind: "test_worker" as const,
+    implementationVersion: "task-0317",
+    capabilityVersion: "claude-code-read-only-canary-v1",
+    identityAuthority: "system" as const,
+    selectionAuthority: "system" as const,
+  };
+  const adapterIdentity = {
+    adapterId: workerIdentity.workerId,
+    adapterKind: "test_execution" as const,
+    implementationVersion: workerIdentity.implementationVersion,
+    capabilityVersion: workerIdentity.capabilityVersion,
+    identityAuthority: "system" as const,
+  };
+  const adapterCapabilities = {
+    providesDeterministicProviderInvocationReference: false,
+    supportsIdempotencyKey: true,
+    supportsLookupByIdempotencyKey: false,
+    supportsInvocationStatusQuery: false,
+    supportsResultReplay: false,
+    supportsCancellation: false,
+    supportsStreaming: false,
+    supportsToolCalls: false,
+    supportsNetworkAccess: false,
+    supportsFilesystemAccess: false,
+    supportsProcessExecution: true,
+    supportsShellExecution: false,
+    supportsModelInvocation: true,
+    supportsExternalSideEffects: false,
+    supportsBoundedErrors: true,
+  };
+  const adapterPermissions = {
+    permissionAuthority: "system" as const,
+    policyRequired: false,
+    policyAuthorized: false as const,
+    externalSideEffectPermission: false,
+    networkPermission: false,
+    filesystemPermission: false,
+    processPermission: true,
+    shellPermission: false,
+    toolCallPermission: false,
+    modelInvocationPermission: false,
+  };
+  const adapterRequest = {
+    invocationId: invocation.invocationId,
+    idempotencyKey: invocation.idempotencyKey,
+    taskId: invocation.taskId,
+    sourceTaskRevision: invocation.taskStateRevision,
+    attemptId: invocation.attemptId,
+    attemptNumber: invocation.attemptNumber,
+    ...(invocation.workItemId === undefined
+      ? {}
+      : { workItemId: invocation.workItemId }),
+    ...(invocation.batchId === undefined ? {} : { batchId: invocation.batchId }),
+    operationKind: "execute_task_attempt" as const,
+    adapterIdentity,
+    inputReference: `aeos://task/${invocation.taskId}/claude-canary/${invocation.invocationId}`,
+    permissionRequirements: adapterPermissions,
+  };
+  const policyGateIdResult = deriveTaskExecutionPolicyGateId({
+    taskId: invocation.taskId,
+    taskStateRevision: invocation.taskStateRevision,
+    attemptId: invocation.attemptId,
+    invocationId: invocation.invocationId,
+  });
+  if (!policyGateIdResult.ok) {
+    writeOrPrint(
+      createTaskExecutionClaudeCanaryErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        error: policyGateIdResult.error,
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const permissionGate = evaluateTaskExecutionPermissionGate({
+    request: adapterRequest,
+    adapterIdentity,
+    adapterCapabilities,
+    adapterPermissions,
+    operationKind: "execute_task_attempt",
+    policyRequirement: {
+      required: false,
+      policyGateId: policyGateIdResult.value,
+      referenceId: policyGateIdResult.value,
+      authority: "system",
+    },
+    requiredPermissions: [
+      {
+        permission: "process",
+        required: true,
+        granted: true,
+        authority: "system",
+      },
+    ],
+    credentialReferenceRequired: false,
+    auditRequired: true,
+  });
+  if (!permissionGate.allowed) {
+    const gateIssue = permissionGate.issues.find(
+      (item) => item.severity === "error",
+    );
+    writeOrPrint(
+      createTaskExecutionClaudeCanaryErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        error: errorFromIssue({
+          code:
+            gateIssue?.code ??
+            "task_execution_claude_canary_permission_denied",
+          message:
+            gateIssue?.message ??
+            "Claude canary permission gate denied this invocation.",
+          category: gateIssue?.category,
+        }),
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const entered = await updateTaskExecutionInvocation({
+    projectRoot,
+    taskId: invocation.taskId,
+    invocationId: invocation.invocationId,
+    ownershipToken: invocation.ownership.ownershipToken,
+    expectedLifecycle: "reserved",
+    expectedRevision: invocation.revision,
+    intent: {
+      kind: "enter_invocation",
+      occurredAt: new Date().toISOString(),
+    },
+  });
+  if (!entered.ok) {
+    writeOrPrint(
+      createTaskExecutionClaudeCanaryErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        error: entered.error,
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const invokingRecord = entered.value.record;
+  const auditEvent = createTaskExecutionInvocationDispatchIntentAuditEvent({
+    record: invokingRecord,
+    adapterId: workerIdentity.workerId,
+    operation: "execute_task_attempt",
+    policyGateId: permissionGate.policyGateId,
+    policyAuthorized: permissionGate.policyAuthorized,
+    auditRequired: true,
+    occurredAt: new Date().toISOString(),
+  });
+  if (!auditEvent.ok) {
+    writeOrPrint(
+      createTaskExecutionClaudeCanaryErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        invocationLifecycle: invokingRecord.lifecycle,
+        invocationRevision: invokingRecord.revision,
+        error: auditEvent.error,
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const auditAppend = await appendTaskExecutionAuditEvent({
+    projectRoot,
+    taskId: invokingRecord.taskId,
+    event: auditEvent.value,
+    forbiddenValues: [invokingRecord.ownership.ownershipToken],
+  });
+  if (!auditAppend.ok) {
+    writeOrPrint(
+      createTaskExecutionClaudeCanaryErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        invocationLifecycle: invokingRecord.lifecycle,
+        invocationRevision: invokingRecord.revision,
+        error: auditAppend.error,
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const request = {
+    invocationId: invokingRecord.invocationId,
+    idempotencyKey: invokingRecord.idempotencyKey,
+    taskId: invokingRecord.taskId,
+    sourceTaskRevision: invokingRecord.taskStateRevision,
+    attemptId: invokingRecord.attemptId,
+    attemptNumber: invokingRecord.attemptNumber,
+    ...(invokingRecord.workItemId === undefined
+      ? {}
+      : { workItemId: invokingRecord.workItemId }),
+    ...(invokingRecord.batchId === undefined
+      ? {}
+      : { batchId: invokingRecord.batchId }),
+    operationKind: "execute_task_attempt" as const,
+    workerIdentity,
+    boundedInstructions:
+      "Read-only Claude Code canary. Inspect only supplied bounded context. Do not edit, write, run shell, use network, or mutate state.",
+    contextReferences: ["packages/core/src/task-execution-claude-code-worker.ts"],
+    workspace: {
+      authority: "system" as const,
+      workspaceRef: "workspace:pro-performans",
+      projectRef: "project:pro-performans",
+      repositoryRef: "repository:pro-performans",
+      allowedPathRefs: ["packages/core/src/task-execution-claude-code-worker.ts"],
+      repositoryWriteAllowed: false,
+    },
+    permissionFacts: {
+      authority: "system" as const,
+      permissionGateId: permissionGate.policyGateId,
+      allowed: permissionGate.allowed,
+      decision: permissionGate.decision,
+      capabilitySatisfied: permissionGate.capabilitySatisfied,
+      permissionsSatisfied: permissionGate.permissionsSatisfied,
+      policyAuthorized: permissionGate.policyAuthorized,
+      requiredPermissions: ["process" as const],
+    },
+  };
+  const configuration = {
+    authority: "system" as const,
+    identity: workerIdentity,
+    executable: {
+      authority: "system" as const,
+      executableRef: trustedClaudeCodeExecutableRef,
+      executableKind: "claude_code" as const,
+    },
+    workspace: {
+      ...request.workspace,
+      workingDirectoryRef: request.workspace.workspaceRef,
+    },
+    processPermission: {
+      authority: "system" as const,
+      permissionId: "permission:claude-code-read-only-canary-process",
+      requiredPermission: "process" as const,
+      processExecutionAllowed: true,
+    },
+    futureProcessCapability: true,
+    timeoutMs: 120000,
+    stdoutLimitBytes: 32768,
+    stderrLimitBytes: 8192,
+    structuredResultContractRef: "contract:aeos-claude-code-worker-result-v1",
+    readOnlyCanaryProfile: {
+      authority: "system" as const,
+      profileId: "claude_code_read_only_canary_v1" as const,
+      enabled: true as const,
+      permissionMode: "plan" as const,
+      toolSet: ["Read"] as const,
+      hostCustomizationIsolation: "safe_mode" as const,
+      strictMcpConfig: true as const,
+      sessionPersistence: false as const,
+      repositoryWriteAllowed: false as const,
+      structuredOutput: "json_schema" as const,
+    },
+  };
+  const prepared = prepareTaskExecutionClaudeCodeWorkerInvocation({
+    configuration,
+    request,
+    invocationRecord: invokingRecord,
+  });
+  const gate = evaluateTaskExecutionClaudeCodeWorkerProcessGate({
+    configuration,
+    request,
+    invocationRecord: invokingRecord,
+    preparedInvocation: prepared.preparedInvocation,
+    permissionGateResult: permissionGate,
+    preProcessAuditEvent: auditAppend.value.event,
+    expectedInvocationRevision: invokingRecord.revision,
+  });
+  if (!gate.ok || gate.authority === null) {
+    const gateIssue = gate.issues.find((item) => item.severity === "error");
+    writeOrPrint(
+      createTaskExecutionClaudeCanaryErrorJsonOutput({
+        taskId: parsedArgs.taskId,
+        invocationId: parsedArgs.invocationId,
+        dispatchDecision: gate.decision,
+        invocationLifecycle: invokingRecord.lifecycle,
+        invocationRevision: invokingRecord.revision,
+        error: errorFromIssue({
+          code:
+            gateIssue?.code ??
+            "task_execution_claude_canary_process_gate_blocked",
+          message:
+            gateIssue?.message ??
+            "Claude canary process gate did not produce launch authority.",
+          category: gateIssue?.category,
+        }),
+      }),
+    );
+    setExitCode(1);
+    return;
+  }
+
+  const runtime = await executeTaskExecutionLocalWorkerProcess({
+    projectRoot,
+    authority: gate.authority,
+    invocationRecord: invokingRecord,
+    preProcessAuditEvent: auditAppend.value.event,
+    executable: {
+      authority: "system",
+      executableRef: trustedClaudeCodeExecutableRef,
+      executableKind: "claude_code",
+      executablePath: trustedClaudeCodeExecutablePath,
+      executionMode: "real_claude_code_read_only_canary",
+    },
+    workspace: {
+      authority: "system",
+      workspaceRef: request.workspace.workspaceRef,
+      projectRef: request.workspace.projectRef,
+      absolutePath: realpathSync(projectRoot),
+      repositoryWriteAllowed: false,
+    },
+    environment: {
+      authority: "system",
+      inheritance: "system_claude_code_read_only_canary",
+      variables: [],
+    },
+    stdin: prepared.preparedInvocation.processRequest.stdin,
+    forbiddenValues: [invokingRecord.ownership.ownershipToken],
+  });
+  const normalized =
+    runtime.processResult === null
+      ? null
+      : normalizeTaskExecutionClaudeCodeProcessResult({
+          request,
+          processResult: {
+            invocationRef: runtime.processResult.invocationRef,
+            terminationReason: runtime.processResult.terminationReason,
+            exitCode: runtime.processResult.exitCode,
+            signal: runtime.processResult.signal,
+            stdout: runtime.processResult.stdout,
+            stderr: runtime.processResult.stderr,
+            timedOut: runtime.processResult.timedOut,
+            interrupted: runtime.processResult.interrupted,
+            observedAt: runtime.processResult.observedAt,
+          },
+          stdoutLimitBytes: configuration.stdoutLimitBytes,
+          stderrLimitBytes: configuration.stderrLimitBytes,
+        });
+  const output: Extract<
+    TaskExecutionClaudeCanaryJsonOutput,
+    { readonly ok: true }
+  > = {
+    ok: true,
+    status:
+      runtime.status === "process_returned"
+        ? "claude_canary_returned"
+        : runtime.status === "process_failed" ||
+            runtime.status === "process_timeout" ||
+            runtime.status === "process_signal" ||
+            runtime.status === "process_spawn_failed" ||
+            runtime.status === "process_output_oversized"
+          ? "claude_canary_failed"
+          : "claude_canary_outcome_unknown",
+    taskId: invokingRecord.taskId,
+    invocationId: invokingRecord.invocationId,
+    invocationLifecycle: runtime.invocationLifecycle,
+    invocationRevision: runtime.invocationRevision,
+    dispatchDecision: gate.decision,
+    processOutcomeKnown:
+      runtime.status === "process_returned" ||
+      runtime.status === "process_failed",
+    reconciliationRequired: runtime.reconciliationRequired,
+    postDispatchAuditWritten: runtime.postDispatchAuditWritten,
+    normalizedOutcomeStatus: normalized?.outcomeStatus ?? "unavailable",
+    productionCompletionReady: false,
+    safety: {
+      realClaudeModelCall: runtime.processSpawned,
+      oneShotAuthorityConsumed: runtime.oneShotAuthorityConsumed,
+      invocationModified: true,
+      taskModified: false,
+      attemptModified: false,
+      repositoryWriteAllowed: false,
+      repositoryWritten: false,
+      shellExecuted: false,
+      arbitraryClaudeArgsAccepted: false,
+      arbitraryExecutableAccepted: false,
+      arbitraryCwdAccepted: false,
+      workCompleted: false,
+      taskCompleted: false,
+      verifierRun: false,
+      completionAuthority: false,
+      rawSecretRendered: false,
+      ownershipSecretRendered: false,
+      automatedRealClaudeCall: false,
+      realCodexModelCall: false,
+    },
+    issues: [...runtime.issues, ...(normalized?.issues ?? [])].map((item) =>
+      createTaskStateCliIssue({
+        code: item.code,
+        message: item.message,
+        category: item.category,
+      }),
+    ),
+  };
+
+  writeOrPrint(output);
+  setExitCode(runtime.processSpawned ? 0 : 1);
 }
 
 async function handleTaskExecutionDispatch(args: readonly string[]): Promise<void> {
@@ -8652,7 +9637,8 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
     args[0] !== "start" &&
     args[0] !== "invocation" &&
     args[0] !== "policy" &&
-    args[0] !== "dispatch"
+    args[0] !== "dispatch" &&
+    args[0] !== "claude-canary"
   ) {
     const json = args.includes("--json");
     const error = createTaskStateCliError({
@@ -8698,6 +9684,9 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
       console.error(
         "Usage: aeos task execution dispatch <task-id> --invocation-id <invocation-id> --expected-revision <number> [--provider-profile <trusted-profile-id>] [--json]",
       );
+      console.error(
+        "Usage: aeos task execution claude-canary <task-id> --invocation-id <invocation-id> --expected-revision <number> --expected-invocation-revision <number> [--json]",
+      );
     }
 
     setExitCode(1);
@@ -8721,6 +9710,11 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
 
   if (args[0] === "dispatch") {
     await handleTaskExecutionDispatch(args.slice(1));
+    return;
+  }
+
+  if (args[0] === "claude-canary") {
+    await handleTaskExecutionClaudeCanary(args.slice(1));
     return;
   }
 

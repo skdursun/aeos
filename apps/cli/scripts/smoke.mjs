@@ -2033,6 +2033,41 @@ function expectTaskExecutionDispatchErrorJsonShape(
   }
 }
 
+function expectTaskExecutionClaudeCanaryErrorJsonShape(
+  message,
+  value,
+  expectedCode,
+  result,
+) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    value.ok !== false ||
+    typeof value.error !== "object" ||
+    value.error === null ||
+    value.error.code !== expectedCode ||
+    value.processOutcomeKnown !== false ||
+    value.productionCompletionReady !== false ||
+    value.safety?.realClaudeModelCall !== false ||
+    value.safety?.oneShotAuthorityConsumed !== false ||
+    value.safety?.repositoryWriteAllowed !== false ||
+    value.safety?.repositoryWritten !== false ||
+    value.safety?.shellExecuted !== false ||
+    value.safety?.arbitraryClaudeArgsAccepted !== false ||
+    value.safety?.arbitraryExecutableAccepted !== false ||
+    value.safety?.arbitraryCwdAccepted !== false ||
+    value.safety?.automatedRealClaudeCall !== false ||
+    value.safety?.realCodexModelCall !== false ||
+    value.safety?.workCompleted !== false ||
+    value.safety?.taskCompleted !== false ||
+    value.safety?.verifierRun !== false ||
+    !Array.isArray(value.issues) ||
+    !value.issues.some((issue) => issue.code === expectedCode)
+  ) {
+    fail(message, result);
+  }
+}
+
 function expectTaskExecutionDispatchSuccessJsonShape(message, value, result) {
   if (
     typeof value !== "object" ||
@@ -8118,6 +8153,35 @@ try {
   const eligibleInvocationBytesBeforeRepeat = readFileSync(
     dispatchEligible.invocationPath,
     "utf8",
+  );
+  const claudeCanaryAuthorityOverrideJson = runCliFrom(dispatchEligible.rootPath, [
+    "task",
+    "execution",
+    "claude-canary",
+    dispatchEligible.taskId,
+    "--invocation-id",
+    dispatchEligible.invocation.invocationId,
+    "--expected-revision",
+    "1",
+    "--expected-invocation-revision",
+    "1",
+    "--json",
+    "--claude-arg",
+    "--dangerously-skip-permissions",
+  ]);
+  expectNonzero(
+    "task execution claude canary authority override exited zero",
+    claudeCanaryAuthorityOverrideJson,
+  );
+  const parsedClaudeCanaryAuthorityOverrideJson = parseJsonOnlyStdout(
+    "task execution claude canary authority override output was not valid JSON only",
+    claudeCanaryAuthorityOverrideJson,
+  );
+  expectTaskExecutionClaudeCanaryErrorJsonShape(
+    "task execution claude canary authority override did not fail closed",
+    parsedClaudeCanaryAuthorityOverrideJson,
+    "task_execution_claude_canary_authority_override_forbidden",
+    claudeCanaryAuthorityOverrideJson,
   );
   const repeatedEligibleDispatchJson = runCliFrom(dispatchEligible.rootPath, [
     "task",

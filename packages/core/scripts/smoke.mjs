@@ -148,6 +148,8 @@ import {
   prepareTaskExecutionClaudeCodeWorkerInvocation,
   prepareTaskExecutionCodexWorkerInvocation,
   TASK_EXECUTION_CLAUDE_CODE_PROCESS_CONTRACT_READY,
+  TASK_EXECUTION_CLAUDE_CODE_READ_ONLY_CANARY_EXECUTED,
+  TASK_EXECUTION_CLAUDE_CODE_READ_ONLY_CANARY_PROFILE_READY,
   TASK_EXECUTION_CLAUDE_CODE_WORKER_EXTERNAL_PROCESS_ALLOWED,
   TASK_EXECUTION_CLAUDE_CODE_WORKER_REAL_EXECUTION_ENABLED,
   TASK_EXECUTION_CODEX_PROCESS_CONTRACT_READY,
@@ -20021,6 +20023,77 @@ try {
     false,
     "task execution claude code worker smoke A should prepare but not run a real Claude Code process",
   );
+  const smokeClaudeCodeCanaryConfiguration = createSmokeClaudeCodeConfiguration({
+    readOnlyCanaryProfile: {
+      authority: "system",
+      profileId: "claude_code_read_only_canary_v1",
+      enabled: true,
+      permissionMode: "plan",
+      toolSet: ["Read"],
+      hostCustomizationIsolation: "safe_mode",
+      strictMcpConfig: true,
+      sessionPersistence: false,
+      repositoryWriteAllowed: false,
+      structuredOutput: "json_schema",
+    },
+  });
+  const smokeClaudeCodeCanaryPrepared =
+    prepareTaskExecutionClaudeCodeWorkerInvocation({
+      configuration: smokeClaudeCodeCanaryConfiguration,
+      request: claudeProcessWorkerRequest,
+      invocationRecord: invokingPersisted.value.record,
+    });
+  assert.equal(
+    smokeClaudeCodeCanaryPrepared.preparedInvocation.readOnlyCanaryProfileReady,
+    true,
+    "task execution claude code worker canary smoke should mark the read-only profile ready",
+  );
+  assert.equal(
+    TASK_EXECUTION_CLAUDE_CODE_READ_ONLY_CANARY_PROFILE_READY,
+    true,
+    "task execution claude code worker canary smoke should expose read-only profile readiness",
+  );
+  assert.equal(
+    TASK_EXECUTION_CLAUDE_CODE_READ_ONLY_CANARY_EXECUTED,
+    false,
+    "task execution claude code worker canary smoke should not execute a real canary automatically",
+  );
+  assert.ok(
+    smokeClaudeCodeCanaryPrepared.preparedInvocation.processRequest.argv.includes(
+      "--safe-mode",
+    ),
+    "task execution claude code worker canary smoke should isolate host customizations",
+  );
+  assert.ok(
+    smokeClaudeCodeCanaryPrepared.preparedInvocation.processRequest.argv.includes(
+      "--strict-mcp-config",
+    ),
+    "task execution claude code worker canary smoke should disable inherited MCP",
+  );
+  assert.ok(
+    smokeClaudeCodeCanaryPrepared.preparedInvocation.processRequest.argv.includes(
+      "Read",
+    ),
+    "task execution claude code worker canary smoke should allow only read inspection",
+  );
+  assert.deepEqual(
+    smokeClaudeCodeCanaryPrepared.preparedInvocation.processRequest.argv.slice(
+      smokeClaudeCodeCanaryPrepared.preparedInvocation.processRequest.argv.indexOf(
+        "--tools",
+      ),
+      smokeClaudeCodeCanaryPrepared.preparedInvocation.processRequest.argv.indexOf(
+        "--tools",
+      ) + 2,
+    ),
+    ["--tools", "Read"],
+    "task execution claude code worker canary smoke should not grant write or shell tools as allowed tools",
+  );
+  assert.equal(
+    smokeClaudeCodeCanaryPrepared.preparedInvocation.processRequest.environment
+      .inheritance,
+    "system_claude_code_read_only_canary",
+    "task execution claude code worker canary smoke should use narrow system-owned Claude env inheritance",
+  );
   const smokeClaudeCodeConformance =
     await evaluateTaskExecutionClaudeCodeWorkerConformance({
       worker: smokeClaudeCodeAdapter,
@@ -20085,6 +20158,26 @@ try {
       preProcessAuditEvent: claudeCodeProcessAuditAppend.value.event,
       expectedInvocationRevision: invokingPersisted.value.record.revision,
     });
+  const claudeCodeCanaryProcessGate =
+    evaluateTaskExecutionClaudeCodeWorkerProcessGate({
+      configuration: smokeClaudeCodeCanaryConfiguration,
+      request: claudeProcessWorkerRequest,
+      invocationRecord: invokingPersisted.value.record,
+      preparedInvocation: smokeClaudeCodeCanaryPrepared.preparedInvocation,
+      permissionGateResult: codexProcessPermissionGate,
+      preProcessAuditEvent: claudeCodeProcessAuditAppend.value.event,
+      expectedInvocationRevision: invokingPersisted.value.record.revision,
+    });
+  assert.equal(
+    claudeCodeCanaryProcessGate.ok,
+    true,
+    "task execution claude code worker canary smoke should pass the existing process gate with restricted read-only argv",
+  );
+  assert.equal(
+    claudeCodeCanaryProcessGate.authority.environment.inheritance,
+    "system_claude_code_read_only_canary",
+    "task execution claude code worker canary smoke should bind the narrow environment authority",
+  );
   assert.equal(
     claudeCodeProcessGate.ok,
     true,
@@ -20587,6 +20680,40 @@ try {
     successfulClaudeCodeProcess.ok,
     true,
     "task execution claude code worker smoke A should require structured invocationOk for success",
+  );
+  const envelopeClaudeCodeProcess = normalizeTaskExecutionClaudeCodeProcessResult({
+    request: claudeWorkerRequest,
+    processResult: createClaudeCodeProcessResult(claudeWorkerRequest, {
+      stdout: JSON.stringify({
+        type: "result",
+        subtype: "success",
+        session_id: "safe-diagnostic-session",
+        total_cost_usd: 0.01,
+        structured_output: JSON.parse(
+          createClaudeCodeStructuredStdout(claudeWorkerRequest, {
+            output: {
+              workerFamily: "claude_code",
+              observedTaskId: claudeWorkerRequest.taskId,
+              observedOperation: "execute_task_attempt",
+              summary: "bounded canary evidence",
+              evidence: ["workerFamily:claude_code"],
+              completed: true,
+              policyAuthorized: true,
+            },
+          }),
+        ),
+      }),
+    }),
+  });
+  assert.equal(
+    envelopeClaudeCodeProcess.ok,
+    true,
+    "task execution claude code worker canary smoke should normalize structured Claude Code result envelopes",
+  );
+  assert.equal(
+    envelopeClaudeCodeProcess.output.completed,
+    undefined,
+    "task execution claude code worker canary smoke should strip hostile completion fields from envelope output",
   );
 
   const timeoutClaudeCodeProcess = normalizeTaskExecutionClaudeCodeProcessResult({

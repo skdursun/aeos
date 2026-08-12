@@ -987,6 +987,11 @@ export function evaluateTaskExecutionWorkerProcessGate(
           boundary: TASK_EXECUTION_CODEX_PROCESS_BOUNDARY,
           workerFamily: "codex",
           executableKind: "codex_exec",
+          environment: {
+            authority: "system",
+            inheritance: "none",
+            approvedVariableRefs: [],
+          },
           realCodexExecutionEnabled:
             TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
           externalProcessAllowed:
