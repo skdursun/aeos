@@ -13,3 +13,9 @@ approval_mode = "approve"
 
 [mcp_servers.codebase_memory.tools.search_graph]
 approval_mode = "approve"
+
+[mcp_servers.codebase_memory.tools.search_code]
+approval_mode = "approve"
+
+[mcp_servers.codebase_memory.tools.check_index_coverage]
+approval_mode = "approve"
