@@ -782,6 +782,7 @@ export async function evaluateTaskExecutionProductionProviderConformance(
 
   const lookupProven =
     knownLookup.status !== "not_found" &&
+    knownLookup.status !== "unavailable" &&
     knownLookup.lookupIdempotencyKey === input.preparedDispatch.idempotencyKey &&
     unknownLookup.status === "not_found" &&
     wrongLookup.status === "not_found" &&

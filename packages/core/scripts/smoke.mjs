@@ -117,6 +117,8 @@ import {
   createEnvironmentReferenceCredentialProvider,
   authorizeTaskExecutionProductionDispatch,
   createControlledHttpProductionProviderDispatchTransport,
+  createBedrockBatchRecoveryConformanceSubject,
+  BEDROCK_BATCH_RECOVERY_PROFILE,
   dispatchTaskExecutionProductionProvider,
   evaluateTaskExecutionAdapterConformance,
   evaluateTaskExecutionProductionDispatchGate,
@@ -19622,6 +19624,184 @@ try {
         1,
         "task execution production provider conformance smoke audit should not create duplicate audit events for replay",
       );
+
+      const bedrockBatchTransport =
+        createBedrockBatchRecoveryConformanceSubject();
+      const bedrockBatchConformance =
+        await evaluateTaskExecutionProductionProviderConformance({
+          subject: bedrockBatchTransport.subject,
+          preparedDispatch: productionPrepared.preparedDispatch,
+          alternatePreparedDispatch: conformanceAlternatePreparedDispatch,
+          forbiddenValues: [environmentFakeSecret],
+          forbiddenOwnershipToken:
+            invokingPersisted.value.record.ownership.ownershipToken,
+          taskOrModelCapabilityClaims: {
+            clientRequestToken: productionPrepared.preparedDispatch.idempotencyKey,
+            jobArn:
+              "arn:aws:bedrock:us-east-1:123456789012:model-invocation-job/task-model-claim",
+          },
+          providerOutputCapabilityClaims: {
+            completed: true,
+            verified: true,
+            safeToRetry: true,
+            policyAuthorized: true,
+          },
+        });
+      assert.equal(
+        BEDROCK_BATCH_RECOVERY_PROFILE.realCallReady,
+        false,
+        "task execution Bedrock Batch recovery smoke A should keep production real-call gate closed",
+      );
+      assert.equal(
+        bedrockBatchConformance.contractConformant,
+        true,
+        "task execution Bedrock Batch recovery smoke B should satisfy TASK-0306 with TEST-only transport",
+      );
+      assert.equal(
+        bedrockBatchTransport.calls.createModelInvocationJob[0].clientRequestToken,
+        productionPrepared.preparedDispatch.idempotencyKey,
+        "task execution Bedrock Batch recovery smoke C should map AEOS idempotencyKey to clientRequestToken",
+      );
+      assert.equal(
+        bedrockBatchTransport.calls.createModelInvocationJob[1].clientRequestToken,
+        productionPrepared.preparedDispatch.idempotencyKey,
+        "task execution Bedrock Batch recovery smoke D should replay duplicate create with the same clientRequestToken",
+      );
+      assert.equal(
+        bedrockBatchConformance.duplicateSideEffectCount,
+        1,
+        "task execution Bedrock Batch recovery smoke D should rely on Bedrock clientRequestToken idempotency",
+      );
+      assert.equal(
+        bedrockBatchConformance.providerInvocationRef.startsWith(
+          "arn:aws:bedrock:us-east-1:123456789012:model-invocation-job/",
+        ),
+        true,
+        "task execution Bedrock Batch recovery smoke E should treat jobArn as the provider reference",
+      );
+      assert.equal(
+        bedrockBatchTransport.calls.listModelInvocationJobs[0].clientRequestToken,
+        productionPrepared.preparedDispatch.idempotencyKey,
+        "task execution Bedrock Batch recovery smoke F should recover through ListModelInvocationJobs token evidence",
+      );
+      assert.equal(
+        bedrockBatchConformance.lookupProven,
+        true,
+        "task execution Bedrock Batch recovery smoke G should prove exact token lookup and fail closed on mismatched refs",
+      );
+      assert.deepEqual(
+        bedrockBatchTransport.calls.getModelInvocationJob
+          .slice(0, 3)
+          .map((call) => call.jobArn),
+        [
+          bedrockBatchConformance.providerInvocationRef,
+          bedrockBatchTransport.jobsByScenarioAndToken.get(
+            `failure:${productionPrepared.preparedDispatch.idempotencyKey}`,
+          ).jobArn,
+          bedrockBatchTransport.jobsByScenarioAndToken.get(
+            `in_progress:${productionPrepared.preparedDispatch.idempotencyKey}`,
+          ).jobArn,
+        ],
+        "task execution Bedrock Batch recovery smoke H should query documented jobArn status with GetModelInvocationJob",
+      );
+      assert.equal(
+        bedrockBatchConformance.statusQueryProven,
+        true,
+        "task execution Bedrock Batch recovery smoke I should normalize documented Bedrock Batch job statuses",
+      );
+      assert.equal(
+        bedrockBatchTransport.calls.readS3BatchOutput[0].outputS3Uri,
+        `s3://aeos-bedrock-batch-test-output/${productionPrepared.preparedDispatch.idempotencyKey}/`,
+        "task execution Bedrock Batch recovery smoke J should map durable result replay to documented S3 output",
+      );
+      assert.equal(
+        bedrockBatchConformance.resultReplayProven,
+        true,
+        "task execution Bedrock Batch recovery smoke K should replay S3 output without provider side effect",
+      );
+      assert.equal(
+        bedrockBatchConformance.crashRecoveryProven,
+        true,
+        "task execution Bedrock Batch recovery smoke L should recover crash-after-create through token lookup before status/replay",
+      );
+      assert.equal(
+        bedrockBatchConformance.blindRetryPrevented,
+        true,
+        "task execution Bedrock Batch recovery smoke M should prevent blind create replay after unknown token lookup",
+      );
+      assert.equal(
+        JSON.stringify(bedrockBatchConformance).includes(environmentFakeSecret),
+        false,
+        "task execution Bedrock Batch recovery smoke N should not expose credential material",
+      );
+      assert.equal(
+        JSON.stringify(bedrockBatchConformance).includes(
+          invokingPersisted.value.record.ownership.ownershipToken,
+        ),
+        false,
+        "task execution Bedrock Batch recovery smoke O should not expose ownership authority",
+      );
+      assert.equal(
+        bedrockBatchConformance.safety.providerSuccessCompletesWork,
+        false,
+        "task execution Bedrock Batch recovery smoke P should keep provider success as invocation evidence only",
+      );
+      assert.equal(
+        bedrockBatchConformance.safety.providerOutputGrantsRetryAuthority,
+        false,
+        "task execution Bedrock Batch recovery smoke Q should not let Bedrock output grant retry or completion authority",
+      );
+
+      for (const [message, subjectOptions, expectedCode] of [
+        [
+          "task execution Bedrock Batch recovery smoke R should fail closed when Bedrock omits clientRequestToken from list evidence",
+          { listOmitsClientRequestToken: true },
+          "task_execution_production_provider_conformance_lookup_unproven",
+        ],
+        [
+          "task execution Bedrock Batch recovery smoke S should fail closed on ambiguous clientRequestToken lookup",
+          { listReturnsAmbiguousMatches: true },
+          "task_execution_production_provider_conformance_lookup_unproven",
+        ],
+        [
+          "task execution Bedrock Batch recovery smoke T should fail closed when GetModelInvocationJob is unavailable",
+          { getUnavailable: true },
+          "task_execution_production_provider_conformance_status_unproven",
+        ],
+        [
+          "task execution Bedrock Batch recovery smoke U should fail closed when S3 output evidence is unavailable",
+          { s3OutputUnavailable: true },
+          "task_execution_production_provider_conformance_replay_unproven",
+        ],
+        [
+          "task execution Bedrock Batch recovery smoke V should fail if Bedrock does not echo the AEOS idempotency key as clientRequestToken",
+          { createReturnsMismatchedToken: true },
+          "task_execution_production_provider_conformance_idempotency_mismatch",
+        ],
+      ]) {
+        const adversarialBedrock =
+          createBedrockBatchRecoveryConformanceSubject(subjectOptions);
+        const adversarialBedrockConformance =
+          await evaluateTaskExecutionProductionProviderConformance({
+            subject: adversarialBedrock.subject,
+            preparedDispatch: productionPrepared.preparedDispatch,
+            alternatePreparedDispatch: conformanceAlternatePreparedDispatch,
+            forbiddenValues: [environmentFakeSecret],
+            forbiddenOwnershipToken:
+              invokingPersisted.value.record.ownership.ownershipToken,
+          });
+        assert.equal(
+          adversarialBedrockConformance.contractConformant,
+          false,
+          message,
+        );
+        assert.ok(
+          adversarialBedrockConformance.issues.some(
+            (item) => item.code === expectedCode,
+          ),
+          `${message} with deterministic issue code`,
+        );
+      }
 
       async function createProductionDispatchGateFixture({
         attemptNumber,

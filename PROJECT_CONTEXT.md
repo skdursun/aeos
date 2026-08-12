@@ -130,6 +130,17 @@ condition.
   outbox/lock/one-shot-token-only recovery and OpenAI-only continuation remain
   rejected because they do not close the provider-accepted/local-crash-before-
   provider-reference-persistence window without blind redispatch.
+- TASK-0311: Amazon Bedrock Batch Inference recovery profile boundary.
+  Implemented a TEST-only provider-specific recovery fixture with no AWS SDK,
+  credentials, S3, network, real job, retry implementation, dispatch enablement,
+  or real provider call. The conformance slice maps AEOS `idempotencyKey` to
+  Bedrock `clientRequestToken`, `jobArn` to provider reference,
+  `ListModelInvocationJobs` token evidence to crash-window lookup,
+  `GetModelInvocationJob` status to normalized invocation evidence, and S3 batch
+  output to durable result replay. Behavioral tests fail closed on missing or
+  ambiguous token evidence, status unavailability, unavailable S3 output, and
+  token mismatch, while preserving TASK-0307/TASK-0308 permission, credential,
+  audit, invoking, one-shot dispatch, verifier, and completion boundaries.
 
 ## Do Not Load By Default
 
@@ -140,16 +151,7 @@ condition.
 
 ## Next Task
 
-TASK-0311 Amazon Bedrock Batch Inference recovery profile boundary.
-
-Purpose: Add a TEST-only Amazon Bedrock Batch Inference provider profile and
-recovery adapter boundary for `CreateModelInvocationJob`/`ListModelInvocationJobs`/
-`GetModelInvocationJob`/S3 result replay semantics, with real calls still
-disabled. Prove the TASK-0306 crash window by mapping the AEOS invocation
-idempotency key to Bedrock `clientRequestToken`, recovering a missing local
-`jobArn` by exact token/profile lookup before any same-token create replay, and
-failing closed on no match, ambiguous match, unavailable status, or unavailable
-S3 result evidence.
+TASK-0312 not started.
 
 ## Current Plans
 
