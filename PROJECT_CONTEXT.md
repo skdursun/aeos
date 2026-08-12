@@ -142,6 +142,12 @@ condition.
   authority, deterministic TEST process normalization only, and real Codex,
   Claude Code, child-process, cloud, retry, verifier, and completion execution
   disabled.
+- TASK-0314: Controlled real-local Codex worker execution readiness gate. Added
+  the closed local worker process authority for prepared Codex invocations,
+  binding task revision, attempt, invocation, idempotency, worker, workspace,
+  executable, argv, permission, output limits, timeout, and audit intent while
+  keeping real Codex, Claude Code, child-process, cloud, retry, verifier, and
+  completion execution disabled.
 
 ## Do Not Load By Default
 
@@ -152,12 +158,9 @@ condition.
 
 ## Next Task
 
-TASK-0314 not started: Design the first controlled real local Codex worker
-execution boundary readiness gate, without enabling automated real Codex
-execution yet. The next step should decide the exact operator-controlled
-permission, executable resolution, workspace verification, process spawn,
-timeout, output capture, and post-run filesystem evidence checks required
-before `codex exec` can be eligible.
+TASK-0315 not started: Claude Code worker adapter boundary using the existing
+generic worker runtime and proven local-process authority, with real Claude
+execution still disabled.
 
 ## Current Direction
 
@@ -167,12 +170,9 @@ returns to the Codex-orchestrator plus Claude Code worker orchestration
 architecture through provider-neutral adapter foundations, without implementing
 real Codex or Claude Code worker execution yet.
 
-The safest next adapter milestone is a readiness gate for controlled real local
-Codex execution. TASK-0313 proved the adapter shape with deterministic TEST
-transport only; TASK-0314 should keep real execution disabled while specifying
-the remaining spawn, permission, workspace, audit, output capture, and
-filesystem verification requirements for a future operator-controlled
-`codex exec` run.
+The safest next adapter milestone is model parity for Claude Code using the
+same generic worker runtime and proven local-process authority. Real Codex and
+Claude Code execution remain disabled until a later explicitly controlled task.
 
 ## Current Plans
 

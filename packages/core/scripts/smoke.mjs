@@ -121,8 +121,10 @@ import {
   DETERMINISTIC_PROVIDER_RECOVERY_PROFILE,
   dispatchTaskExecutionProductionProvider,
   createTaskExecutionCodexWorkerAdapter,
+  authorizeTaskExecutionWorkerProcess,
   evaluateTaskExecutionAdapterConformance,
   evaluateTaskExecutionCodexWorkerConformance,
+  evaluateTaskExecutionWorkerProcessGate,
   evaluateTaskExecutionWorkerConformance,
   evaluateTaskExecutionProductionDispatchGate,
   evaluateTaskExecutionProductionCredentialProviderConfiguration,
@@ -137,6 +139,8 @@ import {
   normalizeTaskExecutionCodexProcessResult,
   normalizeTaskExecutionWorkerResult,
   prepareTaskExecutionCodexWorkerInvocation,
+  TASK_EXECUTION_CODEX_PROCESS_CONTRACT_READY,
+  TASK_EXECUTION_CODEX_WORKER_EXTERNAL_PROCESS_ALLOWED,
   TASK_EXECUTION_PRODUCTION_DISPATCH_BOUNDARY,
   TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
   TASK_EXECUTION_WORKER_RUNTIME_EXECUTION_ENABLED,
@@ -18470,13 +18474,53 @@ try {
     stderr: "",
     ...overrides,
   });
+  const codexProcessPermissions = createSmokeTestExecutionAdapterPermissions({
+    policyRequired: false,
+    processPermission: true,
+  });
+  const codexProcessGateRequest = createSmokeTestExecutionAdapterRequest(
+    invokingPersisted.value.record,
+    executionAdapterIdentity,
+    {
+      permissionRequirements: codexProcessPermissions,
+      credentialReference: undefined,
+    },
+  );
+  const codexProcessPermissionGate = evaluateTaskExecutionPermissionGate({
+    request: codexProcessGateRequest,
+    adapterIdentity: executionAdapterIdentity,
+    adapterCapabilities: createSmokeTestExecutionAdapterCapabilities({
+      supportsProcessExecution: true,
+    }),
+    adapterPermissions: codexProcessPermissions,
+    operationKind: "execute_task_attempt",
+    policyRequirement: {
+      required: false,
+      policyGateId: "smoke-codex-process-policy-gate",
+      authority: "system",
+    },
+    credentialReferenceRequired: false,
+    auditRequired: true,
+  });
+  assert.equal(
+    codexProcessPermissionGate.allowed,
+    true,
+    "task execution worker process gate smoke setup should authorize process permission facts",
+  );
+  const codexProcessWorkerRequest = createSmokeTestWorkerRequest(
+    invokingPersisted.value.record,
+    codexWorkerIdentity,
+    createSmokeWorkerPermissionFacts(codexProcessPermissionGate, {
+      requiredPermissions: ["process"],
+    }),
+  );
   const smokeCodexConfiguration = createSmokeCodexConfiguration();
   const smokeCodexAdapter = createTaskExecutionCodexWorkerAdapter({
     configuration: smokeCodexConfiguration,
   });
   const smokeCodexPrepared = prepareTaskExecutionCodexWorkerInvocation({
     configuration: smokeCodexConfiguration,
-    request: codexWorkerRequest,
+    request: codexProcessWorkerRequest,
     invocationRecord: invokingPersisted.value.record,
   });
   assert.equal(
@@ -18498,9 +18542,9 @@ try {
     await evaluateTaskExecutionCodexWorkerConformance({
       worker: smokeCodexAdapter,
       configuration: smokeCodexConfiguration,
-      request: codexWorkerRequest,
+      request: codexProcessWorkerRequest,
       invocationRecord: invokingPersisted.value.record,
-      permissionGateResult: workerPermissionGate,
+      permissionGateResult: codexProcessPermissionGate,
       expectedIdempotencyKey: invokingPersisted.value.record.idempotencyKey,
     });
   assert.equal(
@@ -18517,6 +18561,378 @@ try {
     smokeCodexConformance.processCallCount,
     1,
     "task execution codex worker smoke X should count one deterministic simulated process call",
+  );
+
+  const codexProcessAuditDraft =
+    createTaskExecutionInvocationDispatchIntentAuditEvent({
+      record: invokingPersisted.value.record,
+      adapterId: codexWorkerIdentity.workerId,
+      operation: "execute_task_attempt",
+      policyGateId: codexProcessPermissionGate.policyGateId,
+      policyAuthorized: codexProcessPermissionGate.policyAuthorized,
+      auditRequired: true,
+      occurredAt: "2026-08-08T01:04:14.000Z",
+    });
+  assert.equal(
+    codexProcessAuditDraft.ok,
+    true,
+    "task execution worker process gate smoke P should create bounded dispatch-intent audit draft",
+  );
+  const codexProcessAuditRoot = await mkdtemp(
+    join(tmpdir(), "aeos-codex-process-gate-audit-"),
+  );
+  const codexProcessAuditAppend = await appendTaskExecutionAuditEvent({
+    projectRoot: codexProcessAuditRoot,
+    taskId: codexProcessAuditDraft.value.taskId,
+    event: codexProcessAuditDraft.value,
+    forbiddenValues: ["owner-token", "sk-codex-smoke"],
+  });
+  assert.equal(
+    codexProcessAuditAppend.ok,
+    true,
+    "task execution worker process gate smoke P should persist pre-process audit intent",
+  );
+  const codexProcessGate = evaluateTaskExecutionWorkerProcessGate({
+    configuration: smokeCodexConfiguration,
+    request: codexProcessWorkerRequest,
+    invocationRecord: invokingPersisted.value.record,
+    preparedInvocation: smokeCodexPrepared.preparedInvocation,
+    permissionGateResult: codexProcessPermissionGate,
+    preProcessAuditEvent: codexProcessAuditAppend.value.event,
+    expectedInvocationRevision: invokingPersisted.value.record.revision,
+  });
+  assert.equal(
+    codexProcessGate.ok,
+    true,
+    "task execution worker process gate smoke 0314-A should authorize a valid prepared Codex process contract",
+  );
+  assert.equal(
+    codexProcessGate.authority.boundary,
+    "AUTHORIZED_LOCAL_CODEX_PROCESS",
+    "task execution worker process gate smoke 0314-A should expose the explicit local Codex process boundary",
+  );
+  assert.deepEqual(
+    codexProcessGate.authority.argv,
+    smokeCodexPrepared.preparedInvocation.processRequest.argv,
+    "task execution worker process gate smoke 0314-A should bind exact prepared argv",
+  );
+  assert.equal(
+    codexProcessGate.CodexProcessContractReady,
+    true,
+    "task execution worker process gate smoke 0314-A should mark the process contract ready",
+  );
+  assert.equal(
+    TASK_EXECUTION_CODEX_PROCESS_CONTRACT_READY,
+    true,
+    "task execution worker process gate smoke 0314-A should expose contract readiness without execution",
+  );
+  assert.equal(
+    codexProcessGate.RealCodexExecutionEnabled,
+    false,
+    "task execution worker process gate smoke 0314-A should keep real Codex execution disabled",
+  );
+  assert.equal(
+    codexProcessGate.ExternalProcessAllowed,
+    false,
+    "task execution worker process gate smoke 0314-A should keep external process execution disabled",
+  );
+  assert.equal(
+    TASK_EXECUTION_CODEX_WORKER_EXTERNAL_PROCESS_ALLOWED,
+    false,
+    "task execution worker process gate smoke 0314-A should expose external process disabled",
+  );
+  assert.deepEqual(
+    codexProcessGate.authority.environment,
+    {
+      authority: "system",
+      inheritance: "none",
+      approvedVariableRefs: [],
+    },
+    "task execution worker process gate smoke 0314-O should expose only bounded environment inheritance semantics",
+  );
+  assert.equal(
+    JSON.stringify(codexProcessGate).includes("ownershipToken"),
+    false,
+    "task execution worker process gate smoke 0314-R should not expose ownership tokens",
+  );
+  assert.equal(
+    JSON.stringify(codexProcessGate).includes("sk-codex-smoke"),
+    false,
+    "task execution worker process gate smoke 0314-S should not expose credential secrets",
+  );
+
+  const authorizedCodexProcess = authorizeTaskExecutionWorkerProcess({
+    configuration: smokeCodexConfiguration,
+    request: codexProcessWorkerRequest,
+    invocationRecord: invokingPersisted.value.record,
+    preparedInvocation: smokeCodexPrepared.preparedInvocation,
+    permissionGateResult: codexProcessPermissionGate,
+    preProcessAuditEvent: codexProcessAuditAppend.value.event,
+    expectedInvocationRevision: invokingPersisted.value.record.revision,
+  });
+  assert.deepEqual(
+    authorizedCodexProcess.authority,
+    codexProcessGate.authority,
+    "task execution worker process gate smoke 0314-T should not create a second execution authority for repeated evaluation",
+  );
+
+  const gateCaseInputs = [
+    {
+      label: "revision",
+      input: {
+        request: {
+          ...codexProcessWorkerRequest,
+          sourceTaskRevision: codexProcessWorkerRequest.sourceTaskRevision + 1,
+        },
+      },
+      code: "task_execution_worker_process_gate_authority_mismatch",
+    },
+    {
+      label: "attempt",
+      input: {
+        request: {
+          ...codexProcessWorkerRequest,
+          attemptId: "wrong-codex-process-attempt",
+        },
+      },
+      code: "task_execution_worker_process_gate_authority_mismatch",
+    },
+    {
+      label: "invocation-idempotency",
+      input: {
+        request: {
+          ...codexProcessWorkerRequest,
+          invocationId: "wrong-codex-process-invocation",
+          idempotencyKey: "wrong-codex-process-idempotency",
+        },
+      },
+      code: "task_execution_worker_process_gate_authority_mismatch",
+    },
+    {
+      label: "worker-family",
+      input: {
+        request: {
+          ...codexProcessWorkerRequest,
+          workerIdentity: genericWorkerIdentity,
+        },
+      },
+      code: "task_execution_worker_process_gate_worker_not_codex",
+    },
+    {
+      label: "non-system-worker-identity",
+      input: {
+        configuration: {
+          ...smokeCodexConfiguration,
+          identity: {
+            ...codexWorkerIdentity,
+            identityAuthority: "task",
+          },
+        },
+      },
+      code: "task_execution_codex_worker_configuration_invalid",
+    },
+    {
+      label: "workspace",
+      input: {
+        request: {
+          ...codexProcessWorkerRequest,
+          workspace: {
+            ...codexProcessWorkerRequest.workspace,
+            workspaceRef: "workspace:other-codex-process",
+          },
+        },
+      },
+      code: "task_execution_worker_process_gate_process_request_mismatch",
+    },
+    {
+      label: "executable",
+      input: {
+        preparedInvocation: {
+          ...smokeCodexPrepared.preparedInvocation,
+          processRequest: {
+            ...smokeCodexPrepared.preparedInvocation.processRequest,
+            executable: {
+              ...smokeCodexPrepared.preparedInvocation.processRequest
+                .executable,
+              executableRef: "system:other-codex-exec",
+            },
+          },
+        },
+      },
+      code: "task_execution_worker_process_gate_process_request_mismatch",
+    },
+    {
+      label: "dangerous-argv",
+      input: {
+        preparedInvocation: {
+          ...smokeCodexPrepared.preparedInvocation,
+          processRequest: {
+            ...smokeCodexPrepared.preparedInvocation.processRequest,
+            argv: [
+              ...smokeCodexPrepared.preparedInvocation.processRequest.argv,
+              "--dangerously-bypass-approvals-and-sandbox",
+            ],
+          },
+        },
+      },
+      code: "task_execution_codex_worker_dangerous_flag_rejected",
+    },
+    {
+      label: "output-limits",
+      input: {
+        preparedInvocation: {
+          ...smokeCodexPrepared.preparedInvocation,
+          processRequest: {
+            ...smokeCodexPrepared.preparedInvocation.processRequest,
+            stdoutLimitBytes: 0,
+          },
+        },
+      },
+      code: "task_execution_worker_process_gate_output_limits_invalid",
+    },
+    {
+      label: "timeout",
+      input: {
+        preparedInvocation: {
+          ...smokeCodexPrepared.preparedInvocation,
+          processRequest: {
+            ...smokeCodexPrepared.preparedInvocation.processRequest,
+            timeoutMs: 0,
+          },
+        },
+      },
+      code: "task_execution_worker_process_gate_timeout_invalid",
+    },
+    {
+      label: "model-executable-override",
+      input: {
+        taskOrModelProcessClaims: {
+          executable: "/tmp/hostile-codex",
+        },
+      },
+      code: "task_execution_codex_worker_task_model_process_claims_rejected",
+    },
+    {
+      label: "model-env-override",
+      input: {
+        taskOrModelEnvironmentClaims: {
+          PATH: "/tmp/hostile",
+          AEOS_TOKEN: "owner-token",
+        },
+      },
+      code: "task_execution_worker_process_gate_task_model_env_override_rejected",
+    },
+    {
+      label: "audit",
+      input: {
+        preProcessAuditEvent: undefined,
+      },
+      code: "task_execution_worker_process_gate_pre_process_audit_missing",
+    },
+    {
+      label: "duplicate-outcome-unknown",
+      input: {
+        invocationRecord: {
+          ...invokingPersisted.value.record,
+          lifecycle: "outcome_unknown",
+          outcomeUnknownAt: "2026-08-08T01:04:15.000Z",
+          outcomeCertainty: "unknown",
+        },
+      },
+      code: "task_execution_worker_process_gate_invocation_not_invoking",
+    },
+  ];
+
+  for (const gateCase of gateCaseInputs) {
+    const blocked = evaluateTaskExecutionWorkerProcessGate({
+      configuration: smokeCodexConfiguration,
+      request: codexProcessWorkerRequest,
+      invocationRecord: invokingPersisted.value.record,
+      preparedInvocation: smokeCodexPrepared.preparedInvocation,
+      permissionGateResult: codexProcessPermissionGate,
+      preProcessAuditEvent: codexProcessAuditAppend.value.event,
+      expectedInvocationRevision: invokingPersisted.value.record.revision,
+      ...gateCase.input,
+    });
+    assert.equal(
+      blocked.ok,
+      false,
+      `task execution worker process gate smoke 0314 ${gateCase.label} should block readiness`,
+    );
+    assert.equal(
+      blocked.authority,
+      null,
+      `task execution worker process gate smoke 0314 ${gateCase.label} should not produce execution authority`,
+    );
+    assert.ok(
+      blocked.issues.some((item) => item.code === gateCase.code),
+      `task execution worker process gate smoke 0314 ${gateCase.label} should report ${gateCase.code}`,
+    );
+  }
+
+  const capabilityOnlyCodexGate = evaluateTaskExecutionWorkerProcessGate({
+    configuration: smokeCodexConfiguration,
+    request: createSmokeTestWorkerRequest(
+      invokingPersisted.value.record,
+      codexWorkerIdentity,
+      createSmokeWorkerPermissionFacts(codexProcessPermissionGate, {
+        permissionsSatisfied: false,
+        requiredPermissions: [],
+      }),
+    ),
+    invocationRecord: invokingPersisted.value.record,
+    preparedInvocation: smokeCodexPrepared.preparedInvocation,
+    permissionGateResult: codexProcessPermissionGate,
+    preProcessAuditEvent: codexProcessAuditAppend.value.event,
+    expectedInvocationRevision: invokingPersisted.value.record.revision,
+  });
+  assert.equal(
+    capabilityOnlyCodexGate.ok,
+    false,
+    "task execution worker process gate smoke 0314-J should block process capability without process permission facts",
+  );
+  const deniedPermissionCodexGate = evaluateTaskExecutionWorkerProcessGate({
+    configuration: {
+      ...smokeCodexConfiguration,
+      processPermission: {
+        ...smokeCodexConfiguration.processPermission,
+        processExecutionAllowed: false,
+      },
+    },
+    request: codexProcessWorkerRequest,
+    invocationRecord: invokingPersisted.value.record,
+    preparedInvocation: {
+      ...smokeCodexPrepared.preparedInvocation,
+      processPermissionAllowed: false,
+    },
+    permissionGateResult: codexProcessPermissionGate,
+    preProcessAuditEvent: codexProcessAuditAppend.value.event,
+    expectedInvocationRevision: invokingPersisted.value.record.revision,
+  });
+  assert.equal(
+    deniedPermissionCodexGate.ok,
+    false,
+    "task execution worker process gate smoke 0314-K should block denied process permission",
+  );
+  assert.equal(
+    codexProcessGate.ActualCodexCalls,
+    0,
+    "task execution worker process gate smoke 0314-U should make zero Codex calls",
+  );
+  assert.equal(
+    codexProcessGate.ActualWorkerProcessesSpawned,
+    0,
+    "task execution worker process gate smoke 0314-V should spawn zero worker processes",
+  );
+  assert.equal(
+    codexProcessGate.ActualClaudeCalls,
+    0,
+    "task execution worker process gate smoke 0314 should make zero Claude calls",
+  );
+  assert.equal(
+    codexProcessGate.CloudCalls,
+    0,
+    "task execution worker process gate smoke 0314 should make zero cloud calls",
   );
 
   const nonSystemCodexPrepared = prepareTaskExecutionCodexWorkerInvocation({

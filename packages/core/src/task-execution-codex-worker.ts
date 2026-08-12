@@ -4,7 +4,11 @@ import type {
 import {
   validateTaskExecutionInvocationRecord,
 } from "./task-execution-invocation-record.js";
-import type { TaskExecutionPermissionKind } from "./task-execution-permission-gate.js";
+import type { TaskExecutionAuditEvent } from "./task-execution-audit.js";
+import type {
+  TaskExecutionPermissionGateResult,
+  TaskExecutionPermissionKind,
+} from "./task-execution-permission-gate.js";
 import type {
   TaskExecutionWorkerAdapter,
   TaskExecutionWorkerCapabilities,
@@ -25,6 +29,10 @@ import {
 import type { AeosError, JsonObject, JsonValue } from "./types.js";
 
 export const TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED = false;
+export const TASK_EXECUTION_CODEX_WORKER_EXTERNAL_PROCESS_ALLOWED = false;
+export const TASK_EXECUTION_CODEX_PROCESS_CONTRACT_READY = true;
+export const TASK_EXECUTION_CODEX_PROCESS_BOUNDARY =
+  "AUTHORIZED_LOCAL_CODEX_PROCESS";
 
 export type TaskExecutionCodexReasoningEffort =
   | "minimal"
@@ -168,6 +176,95 @@ export interface TaskExecutionCodexWorkerConformanceResult {
   readonly actualClaudeCodeCallCount: 0;
   readonly cloudCallCount: 0;
   readonly realExecutionEnabled: false;
+}
+
+export type TaskExecutionWorkerProcessDecision =
+  | "authorized"
+  | "blocked";
+
+export interface TaskExecutionWorkerProcessReadiness {
+  readonly taskAuthorityReady: boolean;
+  readonly attemptAuthorityReady: boolean;
+  readonly invocationAuthorityReady: boolean;
+  readonly workerAuthorityReady: boolean;
+  readonly executableAuthorityReady: boolean;
+  readonly workspaceAuthorityReady: boolean;
+  readonly argvReady: boolean;
+  readonly environmentReady: boolean;
+  readonly outputLimitsReady: boolean;
+  readonly timeoutReady: boolean;
+  readonly permissionReady: boolean;
+  readonly auditReady: boolean;
+  readonly duplicateExecutionSafetyReady: boolean;
+  readonly processContractReady: boolean;
+  readonly realCodexExecutionEnabled: false;
+  readonly externalProcessAllowed: false;
+  readonly actualCodexCalls: 0;
+  readonly actualClaudeCalls: 0;
+  readonly actualWorkerProcessesSpawned: 0;
+  readonly cloudCalls: 0;
+}
+
+export interface TaskExecutionWorkerProcessAuthority {
+  readonly boundary: typeof TASK_EXECUTION_CODEX_PROCESS_BOUNDARY;
+  readonly taskId: string;
+  readonly taskRevision: number;
+  readonly attemptId: string;
+  readonly attemptNumber: number;
+  readonly invocationId: string;
+  readonly invocationRevision: number;
+  readonly invocationLifecycle: "invoking";
+  readonly idempotencyKey: string;
+  readonly workItemId: string | null;
+  readonly batchId: string | null;
+  readonly workerId: string;
+  readonly workerFamily: "codex";
+  readonly workspaceRef: string;
+  readonly projectRef: string;
+  readonly executableRef: string;
+  readonly executableKind: "codex_exec";
+  readonly argv: readonly string[];
+  readonly requiredPermissions: readonly Extract<TaskExecutionPermissionKind, "process">[];
+  readonly permissionGateId: string;
+  readonly preProcessAuditEventId: string;
+  readonly preProcessAuditSequence: number;
+  readonly stdoutLimitBytes: number;
+  readonly stderrLimitBytes: number;
+  readonly timeoutMs: number;
+  readonly environment: {
+    readonly authority: "system";
+    readonly inheritance: "none";
+    readonly approvedVariableRefs: readonly [];
+  };
+  readonly realCodexExecutionEnabled: false;
+  readonly externalProcessAllowed: false;
+}
+
+export interface TaskExecutionWorkerProcessGateInput {
+  readonly configuration: TaskExecutionCodexWorkerConfiguration;
+  readonly request: TaskExecutionWorkerRequest;
+  readonly invocationRecord: unknown;
+  readonly preparedInvocation: TaskExecutionCodexPreparedInvocation;
+  readonly permissionGateResult?: TaskExecutionPermissionGateResult;
+  readonly preProcessAuditEvent?: TaskExecutionAuditEvent;
+  readonly expectedInvocationRevision?: number;
+  readonly taskOrModelProcessClaims?: unknown;
+  readonly taskOrModelEnvironmentClaims?: unknown;
+}
+
+export interface TaskExecutionWorkerProcessGateResult {
+  readonly ok: boolean;
+  readonly decision: TaskExecutionWorkerProcessDecision;
+  readonly readiness: TaskExecutionWorkerProcessReadiness;
+  readonly authority: TaskExecutionWorkerProcessAuthority | null;
+  readonly issues: readonly TaskExecutionWorkerIssue[];
+  readonly CodexProcessContractReady: boolean;
+  readonly RealCodexExecutionEnabled: false;
+  readonly ExternalProcessAllowed: false;
+  readonly ActualCodexCalls: 0;
+  readonly ActualClaudeCalls: 0;
+  readonly ActualWorkerProcessesSpawned: 0;
+  readonly CloudCalls: 0;
 }
 
 const safeReferencePattern = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,255}$/;
@@ -725,6 +822,492 @@ export function prepareTaskExecutionCodexWorkerInvocation(input: {
     preparedInvocation,
     issues,
   };
+}
+
+function taskOrModelEnvironmentClaimIssues(
+  claims: unknown,
+): readonly TaskExecutionWorkerIssue[] {
+  if (claims === undefined) {
+    return [];
+  }
+
+  return [
+    issue({
+      code: "task_execution_worker_process_gate_task_model_env_override_rejected",
+      message:
+        "Task or model environment claims are rejected; future Codex process environment inheritance is system-owned.",
+      category: "permission",
+    }),
+  ];
+}
+
+function sameOptionalId(left: string | null | undefined, right: string | null | undefined): boolean {
+  return (left ?? null) === (right ?? null);
+}
+
+function codexPreparedInvocationMatchesAuthority(input: {
+  readonly prepared: TaskExecutionCodexPreparedInvocation;
+  readonly request: TaskExecutionWorkerRequest;
+  readonly record: TaskExecutionInvocationRecord;
+  readonly configuration: TaskExecutionCodexWorkerConfiguration;
+}): boolean {
+  const { prepared, request, record, configuration } = input;
+
+  return (
+    prepared.taskId === request.taskId &&
+    prepared.taskId === record.taskId &&
+    prepared.sourceTaskRevision === request.sourceTaskRevision &&
+    prepared.sourceTaskRevision === record.taskStateRevision &&
+    prepared.attemptId === request.attemptId &&
+    prepared.attemptId === record.attemptId &&
+    prepared.attemptNumber === request.attemptNumber &&
+    prepared.attemptNumber === record.attemptNumber &&
+    prepared.invocationId === request.invocationId &&
+    prepared.invocationId === record.invocationId &&
+    prepared.idempotencyKey === request.idempotencyKey &&
+    prepared.idempotencyKey === record.idempotencyKey &&
+    sameOptionalId(prepared.workItemId, request.workItemId) &&
+    sameOptionalId(prepared.workItemId, record.workItemId) &&
+    sameOptionalId(prepared.batchId, request.batchId) &&
+    sameOptionalId(prepared.batchId, record.batchId) &&
+    prepared.workerIdentity.workerId === configuration.identity.workerId &&
+    prepared.workerIdentity.workerId === request.workerIdentity.workerId &&
+    prepared.workerIdentity.workerFamily === "codex" &&
+    request.workerIdentity.workerFamily === "codex"
+  );
+}
+
+function codexProcessRequestMatchesConfiguration(input: {
+  readonly prepared: TaskExecutionCodexPreparedInvocation;
+  readonly configuration: TaskExecutionCodexWorkerConfiguration;
+}): boolean {
+  const request = input.prepared.processRequest;
+  const configuration = input.configuration;
+
+  return (
+    request.executable.authority === "system" &&
+    request.executable.executableKind === "codex_exec" &&
+    request.executable.executableRef === configuration.executable.executableRef &&
+    request.workingDirectory.authority === "system" &&
+    request.workingDirectory.workspaceRef === configuration.workspace.workspaceRef &&
+    request.workingDirectory.projectRef === configuration.workspace.projectRef &&
+    request.workingDirectory.workingDirectoryRef ===
+      configuration.workspace.workingDirectoryRef &&
+    request.timeoutMs === configuration.timeoutMs &&
+    request.stdoutLimitBytes === configuration.stdoutLimitBytes &&
+    request.stderrLimitBytes === configuration.stderrLimitBytes
+  );
+}
+
+function auditEventMatchesCodexProcessAuthority(input: {
+  readonly event?: TaskExecutionAuditEvent;
+  readonly prepared: TaskExecutionCodexPreparedInvocation;
+  readonly gate?: TaskExecutionPermissionGateResult;
+}): boolean {
+  const { event, prepared, gate } = input;
+
+  return (
+    event !== undefined &&
+    gate !== undefined &&
+    event.eventKind === "execution_invocation_dispatch_intent" &&
+    isPositiveInteger(event.sequence, 999999999) &&
+    typeof event.eventDigest === "string" &&
+    event.eventDigest.length > 0 &&
+    event.result.status === "ok" &&
+    event.taskId === prepared.taskId &&
+    event.taskStateRevision === prepared.sourceTaskRevision &&
+    event.attemptId === prepared.attemptId &&
+    event.invocationId === prepared.invocationId &&
+    event.binding.taskId === prepared.taskId &&
+    event.binding.taskStateRevision === prepared.sourceTaskRevision &&
+    event.binding.attemptId === prepared.attemptId &&
+    event.binding.attemptNumber === prepared.attemptNumber &&
+    event.binding.invocationId === prepared.invocationId &&
+    sameOptionalId(event.binding.workItemId, prepared.workItemId) &&
+    sameOptionalId(event.binding.batchId, prepared.batchId) &&
+    event.adapter?.adapterId === prepared.workerIdentity.workerId &&
+    event.adapter?.operation === "execute_task_attempt" &&
+    event.adapter?.idempotencyReference === prepared.idempotencyKey &&
+    event.policy?.policyGateId === gate.policyGateId &&
+    event.policy?.auditRequired === true
+  );
+}
+
+function processGateDecision(
+  issues: readonly TaskExecutionWorkerIssue[],
+): TaskExecutionWorkerProcessDecision {
+  return issues.some((item) => item.severity === "error")
+    ? "blocked"
+    : "authorized";
+}
+
+export function evaluateTaskExecutionWorkerProcessGate(
+  input: TaskExecutionWorkerProcessGateInput,
+): TaskExecutionWorkerProcessGateResult {
+  const issues: TaskExecutionWorkerIssue[] = [
+    ...validateConfiguration(input.configuration),
+    ...taskOrModelClaimIssues(input.taskOrModelProcessClaims),
+    ...taskOrModelEnvironmentClaimIssues(input.taskOrModelEnvironmentClaims),
+    ...argvIssues(input.preparedInvocation.processRequest.argv),
+  ];
+  const invocationResult = validateTaskExecutionInvocationRecord(
+    input.invocationRecord,
+  );
+  const invocation =
+    invocationResult.ok ? invocationResult.value : undefined;
+
+  if (!invocationResult.ok) {
+    issues.push(
+      issue({
+        code: invocationResult.error.code,
+        message:
+          "Codex process readiness requires a valid authoritative AEOS invocation record.",
+        category: invocationResult.error.category,
+      }),
+    );
+  }
+
+  const preparedAuthorityReady =
+    invocation !== undefined &&
+    codexPreparedInvocationMatchesAuthority({
+      prepared: input.preparedInvocation,
+      request: input.request,
+      record: invocation,
+      configuration: input.configuration,
+    });
+
+  if (!preparedAuthorityReady) {
+    issues.push(
+      issue({
+        code: "task_execution_worker_process_gate_authority_mismatch",
+        message:
+          "Codex process readiness must bind exact task, revision, attempt, invocation, idempotency, work item, batch, and worker authority.",
+        category: "conflict",
+      }),
+    );
+  }
+
+  const invocationLifecycleReady = invocation?.lifecycle === "invoking";
+
+  if (invocation !== undefined && !invocationLifecycleReady) {
+    issues.push(
+      issue({
+        code: "task_execution_worker_process_gate_invocation_not_invoking",
+        message:
+          "Codex process readiness is only valid for the current invoking invocation; returned, failed, reserved, or outcome-unknown records cannot launch another process.",
+        category: "conflict",
+      }),
+    );
+  }
+
+  const invocationRevisionReady =
+    invocation !== undefined &&
+    (input.expectedInvocationRevision === undefined ||
+      input.expectedInvocationRevision === invocation.revision);
+
+  if (
+    input.expectedInvocationRevision !== undefined &&
+    (!isPositiveInteger(input.expectedInvocationRevision, 999999999) ||
+      input.expectedInvocationRevision !== invocation?.revision)
+  ) {
+    issues.push(
+      issue({
+        code: "task_execution_worker_process_gate_invocation_revision_mismatch",
+        message:
+          "Codex process readiness requires the expected invocation revision to match persisted authority.",
+        category: "conflict",
+      }),
+    );
+  }
+
+  const exactWorkerReady =
+    input.preparedInvocation.exactWorkerSelected &&
+    isCodexIdentity(input.configuration.identity) &&
+    isCodexIdentity(input.request.workerIdentity);
+
+  if (!exactWorkerReady) {
+    issues.push(
+      issue({
+        code: "task_execution_worker_process_gate_worker_not_codex",
+        message:
+          "Local Codex process readiness requires the exact system-owned Codex worker identity.",
+        category: "permission",
+      }),
+    );
+  }
+
+  const executableAndWorkspaceReady =
+    input.preparedInvocation.invocationAuthorityBound &&
+    input.preparedInvocation.workspaceAuthorityBound &&
+    codexProcessRequestMatchesConfiguration({
+      prepared: input.preparedInvocation,
+      configuration: input.configuration,
+    });
+
+  if (!executableAndWorkspaceReady) {
+    issues.push(
+      issue({
+        code: "task_execution_worker_process_gate_process_request_mismatch",
+        message:
+          "Codex process executable, workspace, timeout, and output limits must match system-owned prepared authority.",
+        category: "permission",
+      }),
+    );
+  }
+
+  const executableReady =
+    input.preparedInvocation.processRequest.executable.authority === "system" &&
+    input.preparedInvocation.processRequest.executable.executableKind ===
+      "codex_exec" &&
+    input.preparedInvocation.processRequest.executable.executableRef ===
+      input.configuration.executable.executableRef &&
+    isSafeReference(
+      input.preparedInvocation.processRequest.executable.executableRef,
+    );
+  const workspaceReady =
+    input.preparedInvocation.processRequest.workingDirectory.authority ===
+      "system" &&
+    input.preparedInvocation.processRequest.workingDirectory.workspaceRef ===
+      input.request.workspace.workspaceRef &&
+    input.preparedInvocation.processRequest.workingDirectory.projectRef ===
+      input.request.workspace.projectRef &&
+    input.preparedInvocation.processRequest.workingDirectory.repositoryWriteAllowed ===
+      false;
+  const argvReady =
+    argvIssues(input.preparedInvocation.processRequest.argv).length === 0;
+  const environmentReady =
+    input.preparedInvocation.processRequest.environment.authority === "system" &&
+    Array.isArray(input.preparedInvocation.processRequest.environment.variables) &&
+    input.preparedInvocation.processRequest.environment.variables.length === 0;
+  const outputLimitsReady =
+    isPositiveInteger(
+      input.preparedInvocation.processRequest.stdoutLimitBytes,
+      65536,
+    ) &&
+    isPositiveInteger(
+      input.preparedInvocation.processRequest.stderrLimitBytes,
+      32768,
+    );
+  const timeoutReady = isPositiveInteger(
+    input.preparedInvocation.processRequest.timeoutMs,
+    600000,
+  );
+
+  if (!environmentReady) {
+    issues.push(
+      issue({
+        code: "task_execution_worker_process_gate_environment_unbounded",
+        message:
+          "Codex process readiness rejects arbitrary environment maps and parent environment exposure.",
+        category: "permission",
+      }),
+    );
+  }
+
+  if (!executableReady || !workspaceReady) {
+    issues.push(
+      issue({
+        code: "task_execution_worker_process_gate_process_request_mismatch",
+        message:
+          "Codex process readiness requires executable and workspace refs to remain exactly bound to system authority.",
+        category: "permission",
+      }),
+    );
+  }
+
+  if (!outputLimitsReady) {
+    issues.push(
+      issue({
+        code: "task_execution_worker_process_gate_output_limits_invalid",
+        message:
+          "Codex process readiness requires explicit bounded stdout and stderr limits.",
+        category: "validation",
+      }),
+    );
+  }
+
+  if (!timeoutReady) {
+    issues.push(
+      issue({
+        code: "task_execution_worker_process_gate_timeout_invalid",
+        message:
+          "Codex process readiness requires an explicit bounded positive timeout.",
+        category: "validation",
+      }),
+    );
+  }
+
+  const permissionReady =
+    input.configuration.futureProcessCapability === true &&
+    input.configuration.processPermission.processExecutionAllowed === true &&
+    input.preparedInvocation.futureProcessCapabilityDeclared === true &&
+    input.preparedInvocation.processPermissionAllowed === true &&
+    input.request.permissionFacts.authority === "system" &&
+    input.request.permissionFacts.allowed === true &&
+    input.request.permissionFacts.capabilitySatisfied === true &&
+    input.request.permissionFacts.permissionsSatisfied === true &&
+    input.request.permissionFacts.requiredPermissions.includes("process") &&
+    input.permissionGateResult?.allowed === true &&
+    input.permissionGateResult.decision === "allowed" &&
+    input.permissionGateResult.capabilitySatisfied === true &&
+    input.permissionGateResult.permissionsSatisfied === true &&
+    input.permissionGateResult.auditRequired === true &&
+    input.permissionGateResult.taskId === input.preparedInvocation.taskId &&
+    input.permissionGateResult.sourceTaskRevision ===
+      input.preparedInvocation.sourceTaskRevision &&
+    input.permissionGateResult.attemptId === input.preparedInvocation.attemptId &&
+    input.permissionGateResult.invocationId ===
+      input.preparedInvocation.invocationId &&
+    input.permissionGateResult.operation === "execute_task_attempt" &&
+    sameOptionalId(
+      input.permissionGateResult.workItemId,
+      input.preparedInvocation.workItemId,
+    ) &&
+    sameOptionalId(
+      input.permissionGateResult.batchId,
+      input.preparedInvocation.batchId,
+    );
+
+  if (!permissionReady) {
+    issues.push(
+      issue({
+        code: "task_execution_worker_process_gate_permission_denied",
+        message:
+          "Codex process readiness requires an allowed system permission gate with authoritative process permission, not capability alone.",
+        category: "permission",
+      }),
+    );
+  }
+
+  const auditReady = auditEventMatchesCodexProcessAuthority({
+    event: input.preProcessAuditEvent,
+    prepared: input.preparedInvocation,
+    gate: input.permissionGateResult,
+  });
+
+  if (!auditReady) {
+    issues.push(
+      issue({
+        code: "task_execution_worker_process_gate_pre_process_audit_missing",
+        message:
+          "Codex process readiness requires a durable matching dispatch-intent audit event before any future local process spawn.",
+        category: "validation",
+      }),
+    );
+  }
+
+  const readiness: TaskExecutionWorkerProcessReadiness = {
+    taskAuthorityReady: preparedAuthorityReady,
+    attemptAuthorityReady: preparedAuthorityReady,
+    invocationAuthorityReady:
+      preparedAuthorityReady &&
+      invocationLifecycleReady &&
+      invocationRevisionReady,
+    workerAuthorityReady: exactWorkerReady,
+    executableAuthorityReady: executableReady,
+    workspaceAuthorityReady: workspaceReady,
+    argvReady,
+    environmentReady,
+    outputLimitsReady,
+    timeoutReady,
+    permissionReady,
+    auditReady,
+    duplicateExecutionSafetyReady:
+      invocationLifecycleReady && invocationRevisionReady,
+    processContractReady: TASK_EXECUTION_CODEX_PROCESS_CONTRACT_READY,
+    realCodexExecutionEnabled: TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
+    externalProcessAllowed: TASK_EXECUTION_CODEX_WORKER_EXTERNAL_PROCESS_ALLOWED,
+    actualCodexCalls: 0,
+    actualClaudeCalls: 0,
+    actualWorkerProcessesSpawned: 0,
+    cloudCalls: 0,
+  };
+  const contractReady =
+    Object.entries(readiness)
+      .filter(
+        ([key]) =>
+          ![
+            "realCodexExecutionEnabled",
+            "externalProcessAllowed",
+            "actualCodexCalls",
+            "actualClaudeCalls",
+            "actualWorkerProcessesSpawned",
+            "cloudCalls",
+          ].includes(key),
+      )
+      .every(([, value]) => value === true) &&
+    TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED === false &&
+    TASK_EXECUTION_CODEX_WORKER_EXTERNAL_PROCESS_ALLOWED === false;
+  const decision = processGateDecision(issues);
+  const authority: TaskExecutionWorkerProcessAuthority | null =
+    decision === "authorized" &&
+    contractReady &&
+    invocation !== undefined &&
+    input.preProcessAuditEvent !== undefined &&
+    input.permissionGateResult !== undefined
+      ? {
+          boundary: TASK_EXECUTION_CODEX_PROCESS_BOUNDARY,
+          taskId: input.preparedInvocation.taskId,
+          taskRevision: input.preparedInvocation.sourceTaskRevision,
+          attemptId: input.preparedInvocation.attemptId,
+          attemptNumber: input.preparedInvocation.attemptNumber,
+          invocationId: input.preparedInvocation.invocationId,
+          invocationRevision: invocation.revision,
+          invocationLifecycle: "invoking",
+          idempotencyKey: input.preparedInvocation.idempotencyKey,
+          workItemId: input.preparedInvocation.workItemId,
+          batchId: input.preparedInvocation.batchId,
+          workerId: input.preparedInvocation.workerIdentity.workerId,
+          workerFamily: "codex",
+          workspaceRef:
+            input.preparedInvocation.processRequest.workingDirectory.workspaceRef,
+          projectRef:
+            input.preparedInvocation.processRequest.workingDirectory.projectRef,
+          executableRef:
+            input.preparedInvocation.processRequest.executable.executableRef,
+          executableKind: "codex_exec",
+          argv: input.preparedInvocation.processRequest.argv,
+          requiredPermissions: ["process"],
+          permissionGateId: input.permissionGateResult.policyGateId,
+          preProcessAuditEventId: input.preProcessAuditEvent.auditEventId,
+          preProcessAuditSequence: input.preProcessAuditEvent.sequence,
+          stdoutLimitBytes:
+            input.preparedInvocation.processRequest.stdoutLimitBytes,
+          stderrLimitBytes:
+            input.preparedInvocation.processRequest.stderrLimitBytes,
+          timeoutMs: input.preparedInvocation.processRequest.timeoutMs,
+          environment: {
+            authority: "system",
+            inheritance: "none",
+            approvedVariableRefs: [],
+          },
+          realCodexExecutionEnabled:
+            TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
+          externalProcessAllowed:
+            TASK_EXECUTION_CODEX_WORKER_EXTERNAL_PROCESS_ALLOWED,
+        }
+      : null;
+
+  return {
+    ok: authority !== null,
+    decision: authority === null ? "blocked" : decision,
+    readiness,
+    authority,
+    issues,
+    CodexProcessContractReady: contractReady,
+    RealCodexExecutionEnabled: TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
+    ExternalProcessAllowed: TASK_EXECUTION_CODEX_WORKER_EXTERNAL_PROCESS_ALLOWED,
+    ActualCodexCalls: 0,
+    ActualClaudeCalls: 0,
+    ActualWorkerProcessesSpawned: 0,
+    CloudCalls: 0,
+  };
+}
+
+export function authorizeTaskExecutionWorkerProcess(
+  input: TaskExecutionWorkerProcessGateInput,
+): TaskExecutionWorkerProcessGateResult {
+  return evaluateTaskExecutionWorkerProcessGate(input);
 }
 
 function boundedDiagnostic(value: string, limit: number): string | undefined {
