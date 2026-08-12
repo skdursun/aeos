@@ -121,6 +121,7 @@ import {
   DETERMINISTIC_PROVIDER_RECOVERY_PROFILE,
   dispatchTaskExecutionProductionProvider,
   evaluateTaskExecutionAdapterConformance,
+  evaluateTaskExecutionWorkerConformance,
   evaluateTaskExecutionProductionDispatchGate,
   evaluateTaskExecutionProductionCredentialProviderConfiguration,
   evaluateTaskExecutionPermissionGate,
@@ -131,7 +132,9 @@ import {
   sanitizeTaskExecutionCredentialResult,
   sanitizeTaskExecutionPolicyApprovalRecord,
   normalizeTaskExecutionAdapterResult,
+  normalizeTaskExecutionWorkerResult,
   TASK_EXECUTION_PRODUCTION_DISPATCH_BOUNDARY,
+  TASK_EXECUTION_WORKER_RUNTIME_EXECUTION_ENABLED,
   deriveTaskExecutionInvocationIdentity,
   deriveTaskExecutionInvocationIdentityForAttempt,
   getTaskExecutionInvocationStoragePath,
@@ -874,6 +877,106 @@ function createSmokeTestExecutionAdapter({
         return typeof rawResponse === "function"
           ? rawResponse(request, runtime)
           : rawResponse;
+      },
+    },
+  };
+}
+
+function createSmokeTestWorkerIdentity(overrides = {}) {
+  return {
+    workerId: "core-smoke-test-worker",
+    workerFamily: "generic",
+    runtimeKind: "test_worker",
+    implementationVersion: "0.0.0-smoke",
+    capabilityVersion: "0.0.0-smoke",
+    identityAuthority: "system",
+    selectionAuthority: "system",
+    ...overrides,
+  };
+}
+
+function createSmokeTestWorkerCapabilities(overrides = {}) {
+  return {
+    roles: ["implementation"],
+    repositoryRead: false,
+    repositoryWrite: false,
+    processExecution: false,
+    shellExecution: false,
+    toolExecution: false,
+    modelReasoning: false,
+    patchGeneration: true,
+    testExecution: false,
+    boundedDiagnostics: true,
+    deterministicTestResult: true,
+    ...overrides,
+  };
+}
+
+function createSmokeWorkerPermissionFacts(gate, overrides = {}) {
+  return {
+    authority: "system",
+    permissionGateId: gate.policyGateId,
+    allowed: gate.allowed,
+    decision: gate.decision,
+    capabilitySatisfied: gate.capabilitySatisfied,
+    permissionsSatisfied: gate.permissionsSatisfied,
+    policyAuthorized: gate.policyAuthorized,
+    requiredPermissions: [],
+    ...overrides,
+  };
+}
+
+function createSmokeTestWorkerRequest(record, workerIdentity, permissionFacts, overrides = {}) {
+  return {
+    taskId: record.taskId,
+    sourceTaskRevision: record.taskStateRevision,
+    attemptId: record.attemptId,
+    attemptNumber: record.attemptNumber,
+    invocationId: record.invocationId,
+    idempotencyKey: record.idempotencyKey,
+    workItemId: record.workItemId,
+    batchId: record.batchId,
+    operationKind: "execute_task_attempt",
+    workerIdentity,
+    boundedInstructions: "Return deterministic TASK-0312 smoke evidence only.",
+    contextReferences: ["smoke://task-0312/context"],
+    workspace: {
+      authority: "system",
+      workspaceRef: "workspace:pro-performans",
+      projectRef: "project:pro-performans",
+      repositoryRef: "repo:local",
+      allowedPathRefs: ["src:bounded"],
+      repositoryWriteAllowed: false,
+    },
+    permissionFacts,
+    trace: {
+      correlationId: "smoke-worker-correlation",
+    },
+    ...overrides,
+  };
+}
+
+function createSmokeTestWorker({
+  identity = createSmokeTestWorkerIdentity(),
+  capabilities = createSmokeTestWorkerCapabilities(),
+  rawResult,
+  throwError = false,
+} = {}) {
+  const calls = [];
+
+  return {
+    calls,
+    worker: {
+      identity,
+      capabilities,
+      run(request) {
+        calls.push(JSON.parse(JSON.stringify(request)));
+
+        if (throwError) {
+          throw new Error("smoke worker failed\n    at smoke-worker:1:1");
+        }
+
+        return typeof rawResult === "function" ? rawResult(request) : rawResult;
       },
     },
   };
@@ -17658,6 +17761,647 @@ try {
     false,
     "task execution adapter conformance smoke V should keep production execution disabled even for contract-conformant adapters",
   );
+
+  const workerNoPolicyPermissions = createSmokeTestExecutionAdapterPermissions({
+    policyRequired: false,
+  });
+  const workerGateRequest = createSmokeTestExecutionAdapterRequest(
+    invokingPersisted.value.record,
+    executionAdapterIdentity,
+    {
+      permissionRequirements: workerNoPolicyPermissions,
+      credentialReference: undefined,
+    },
+  );
+  const workerPermissionGate = evaluateTaskExecutionPermissionGate({
+    request: workerGateRequest,
+    adapterIdentity: executionAdapterIdentity,
+    adapterCapabilities: createSmokeTestExecutionAdapterCapabilities(),
+    adapterPermissions: workerNoPolicyPermissions,
+    operationKind: "execute_task_attempt",
+    policyRequirement: {
+      required: false,
+      policyGateId: "smoke-worker-policy-gate",
+      authority: "system",
+    },
+    credentialReferenceRequired: false,
+  });
+  assert.equal(
+    workerPermissionGate.allowed,
+    true,
+    "task execution worker smoke setup should create an allowed system permission gate",
+  );
+
+  const genericWorkerIdentity = createSmokeTestWorkerIdentity();
+  const codexWorkerIdentity = createSmokeTestWorkerIdentity({
+    workerId: "core-smoke-test-worker-codex",
+    workerFamily: "codex",
+  });
+  const claudeWorkerIdentity = createSmokeTestWorkerIdentity({
+    workerId: "core-smoke-test-worker-claude-code",
+    workerFamily: "claude_code",
+  });
+  const genericWorkerRequest = createSmokeTestWorkerRequest(
+    invokingPersisted.value.record,
+    genericWorkerIdentity,
+    createSmokeWorkerPermissionFacts(workerPermissionGate),
+  );
+  const codexWorkerRequest = createSmokeTestWorkerRequest(
+    invokingPersisted.value.record,
+    codexWorkerIdentity,
+    createSmokeWorkerPermissionFacts(workerPermissionGate),
+  );
+  const claudeWorkerRequest = createSmokeTestWorkerRequest(
+    invokingPersisted.value.record,
+    claudeWorkerIdentity,
+    createSmokeWorkerPermissionFacts(workerPermissionGate),
+  );
+  const workerStateSnapshot = JSON.stringify(firstUpdate.value.state);
+  const workerAttemptSnapshot = JSON.stringify(invocationStartedAttempt);
+  const workerInvocationSnapshot = JSON.stringify(invokingPersisted.value.record);
+  const workerAccountingSnapshot = JSON.stringify({
+    expected: 400,
+    accounted: 20,
+    remaining: 380,
+  });
+
+  const genericWorker = createSmokeTestWorker({
+    identity: genericWorkerIdentity,
+    rawResult: (request) => ({
+      status: "returned",
+      workerId: request.workerIdentity.workerId,
+      workerFamily: request.workerIdentity.workerFamily,
+      runtimeKind: request.workerIdentity.runtimeKind,
+      invocationId: request.invocationId,
+      idempotencyKey: request.idempotencyKey,
+      taskId: request.taskId,
+      sourceTaskRevision: request.sourceTaskRevision,
+      attemptId: request.attemptId,
+      attemptNumber: request.attemptNumber,
+      workItemId: request.workItemId,
+      batchId: request.batchId,
+      invocationOk: true,
+      output: {
+        diagnostic: "generic deterministic worker evidence",
+      },
+      patchArtifactReference: "artifact:generic-worker-patch",
+      changedFileManifestReference: "artifact:generic-worker-manifest",
+      testSummaryReference: "artifact:generic-worker-tests",
+      diagnosticCode: "smoke_worker_returned",
+    }),
+  });
+  const genericWorkerConformance =
+    await evaluateTaskExecutionWorkerConformance({
+      worker: genericWorker.worker,
+      request: genericWorkerRequest,
+      invocationRecord: invokingPersisted.value.record,
+      permissionGateResult: workerPermissionGate,
+      expectedIdempotencyKey: invokingPersisted.value.record.idempotencyKey,
+      taskOrModelWorkerSelectionClaims: {
+        workerFamily: "claude_code",
+      },
+      taskOrModelCapabilityClaims: {
+        processExecution: true,
+      },
+      stateSnapshotBefore: workerStateSnapshot,
+      stateSnapshotAfter: workerStateSnapshot,
+      attemptSnapshotBefore: workerAttemptSnapshot,
+      attemptSnapshotAfter: workerAttemptSnapshot,
+      invocationSnapshotBefore: workerInvocationSnapshot,
+      invocationSnapshotAfter: workerInvocationSnapshot,
+      workAccountingSnapshotBefore: workerAccountingSnapshot,
+      workAccountingSnapshotAfter: workerAccountingSnapshot,
+    });
+  assert.equal(
+    genericWorkerConformance.testWorkerConformant,
+    true,
+    "task execution worker smoke A should accept a valid generic TEST worker",
+  );
+  assert.equal(
+    genericWorkerConformance.workerIdentity.workerFamily,
+    "generic",
+    "task execution worker smoke A should preserve generic worker family",
+  );
+  assert.ok(
+    genericWorkerConformance.issues.some(
+      (item) =>
+        item.code === "task_execution_worker_task_model_selection_claims_ignored",
+    ),
+    "task execution worker smoke E should ignore task/model worker selection claims",
+  );
+  assert.ok(
+    genericWorkerConformance.issues.some(
+      (item) =>
+        item.code === "task_execution_worker_task_model_capability_claims_ignored",
+    ),
+    "task execution worker smoke G should ignore task/model capability claims",
+  );
+  assert.equal(
+    genericWorkerConformance.capabilities.processExecution,
+    false,
+    "task execution worker smoke G should not self-elevate false capabilities",
+  );
+  assert.equal(
+    genericWorkerConformance.request.permissionFacts.allowed,
+    true,
+    "task execution worker smoke F should use system-owned worker authority facts",
+  );
+  assert.equal(
+    JSON.stringify(genericWorker.calls[0]).includes("ownershipToken"),
+    false,
+    "task execution worker smoke N should not expose invocation ownership token",
+  );
+  assert.equal(
+    JSON.stringify(genericWorker.calls[0]).includes("fake-task-0300-secret-value"),
+    false,
+    "task execution worker smoke O should not expose raw credential secret values",
+  );
+  assert.equal(
+    genericWorkerConformance.normalizedResult.safety.taskStateModified,
+    false,
+    "task execution worker smoke T should not mutate task state",
+  );
+  assert.equal(
+    genericWorkerConformance.normalizedResult.safety.workAccountingModified,
+    false,
+    "task execution worker smoke U should not mutate work accounting",
+  );
+  assert.equal(
+    TASK_EXECUTION_WORKER_RUNTIME_EXECUTION_ENABLED,
+    false,
+    "task execution worker smoke W should expose TEST-only runtime execution disabled",
+  );
+
+  const codexWorker = createSmokeTestWorker({
+    identity: codexWorkerIdentity,
+    capabilities: createSmokeTestWorkerCapabilities({
+      roles: ["planner", "implementation"],
+      repositoryRead: true,
+      modelReasoning: true,
+      patchGeneration: true,
+      testExecution: true,
+    }),
+    rawResult: (request) => ({
+      status: "returned",
+      workerId: request.workerIdentity.workerId,
+      workerFamily: request.workerIdentity.workerFamily,
+      runtimeKind: request.workerIdentity.runtimeKind,
+      invocationId: request.invocationId,
+      idempotencyKey: request.idempotencyKey,
+      taskId: request.taskId,
+      sourceTaskRevision: request.sourceTaskRevision,
+      attemptId: request.attemptId,
+      attemptNumber: request.attemptNumber,
+      workItemId: request.workItemId,
+      batchId: request.batchId,
+      invocationOk: true,
+      outputReference: "artifact:codex-worker-output",
+      patchArtifactReference: "artifact:codex-worker-patch",
+    }),
+  });
+  const codexWorkerConformance =
+    await evaluateTaskExecutionWorkerConformance({
+      worker: codexWorker.worker,
+      request: codexWorkerRequest,
+      invocationRecord: invokingPersisted.value.record,
+      permissionGateResult: workerPermissionGate,
+      expectedIdempotencyKey: invokingPersisted.value.record.idempotencyKey,
+    });
+  const repeatedCodexWorkerConformance =
+    await evaluateTaskExecutionWorkerConformance({
+      worker: codexWorker.worker,
+      request: codexWorkerRequest,
+      invocationRecord: invokingPersisted.value.record,
+      permissionGateResult: workerPermissionGate,
+      expectedIdempotencyKey: invokingPersisted.value.record.idempotencyKey,
+    });
+  assert.equal(
+    codexWorkerConformance.testWorkerConformant,
+    true,
+    "task execution worker smoke B should accept a Codex-family TEST worker",
+  );
+  assert.equal(
+    codexWorkerConformance.workerIdentity.workerFamily,
+    "codex",
+    "task execution worker smoke B should preserve Codex worker family",
+  );
+  assert.equal(
+    codexWorkerConformance.capabilities.repositoryRead,
+    true,
+    "task execution worker smoke H should represent capability true",
+  );
+  assert.deepEqual(
+    codexWorkerConformance.request.permissionFacts.requiredPermissions,
+    [],
+    "task execution worker smoke H should keep capability separate from permission grants",
+  );
+  assert.equal(
+    codexWorkerConformance.normalizedResult.safety.modelInvoked,
+    false,
+    "task execution worker smoke Y should not invoke a real Codex model",
+  );
+  assert.deepEqual(
+    repeatedCodexWorkerConformance.normalizedResult,
+    codexWorkerConformance.normalizedResult,
+    "task execution worker smoke V should produce deterministic repeated TEST results",
+  );
+
+  const claudeWorker = createSmokeTestWorker({
+    identity: claudeWorkerIdentity,
+    capabilities: createSmokeTestWorkerCapabilities({
+      roles: ["implementation", "verifier"],
+      modelReasoning: true,
+      patchGeneration: true,
+      testExecution: true,
+    }),
+    rawResult: (request) => ({
+      status: "returned",
+      workerId: request.workerIdentity.workerId,
+      workerFamily: request.workerIdentity.workerFamily,
+      runtimeKind: request.workerIdentity.runtimeKind,
+      invocationId: request.invocationId,
+      idempotencyKey: request.idempotencyKey,
+      taskId: request.taskId,
+      sourceTaskRevision: request.sourceTaskRevision,
+      attemptId: request.attemptId,
+      attemptNumber: request.attemptNumber,
+      workItemId: request.workItemId,
+      batchId: request.batchId,
+      invocationOk: true,
+      outputReference: "artifact:claude-worker-output",
+      patchArtifactReference: "artifact:claude-worker-patch",
+    }),
+  });
+  const claudeWorkerConformance =
+    await evaluateTaskExecutionWorkerConformance({
+      worker: claudeWorker.worker,
+      request: claudeWorkerRequest,
+      invocationRecord: invokingPersisted.value.record,
+      permissionGateResult: workerPermissionGate,
+    });
+  assert.equal(
+    claudeWorkerConformance.testWorkerConformant,
+    true,
+    "task execution worker smoke C should accept a Claude-Code-family TEST worker",
+  );
+  assert.equal(
+    claudeWorkerConformance.workerIdentity.workerFamily,
+    "claude_code",
+    "task execution worker smoke C should preserve Claude Code worker family",
+  );
+  assert.equal(
+    claudeWorkerConformance.normalizedResult.safety.realClaudeCodeInvoked,
+    false,
+    "task execution worker smoke Y should not invoke real Claude Code",
+  );
+
+  const unknownFamilyConformance =
+    await evaluateTaskExecutionWorkerConformance({
+      worker: createSmokeTestWorker({
+        identity: createSmokeTestWorkerIdentity({
+          workerFamily: "unknown_model_worker",
+        }),
+        rawResult: {
+          status: "returned",
+          invocationOk: true,
+        },
+      }).worker,
+      request: genericWorkerRequest,
+      invocationRecord: invokingPersisted.value.record,
+      permissionGateResult: workerPermissionGate,
+    });
+  assert.equal(
+    unknownFamilyConformance.testWorkerConformant,
+    false,
+    "task execution worker smoke D should fail closed on unknown worker family",
+  );
+  assert.ok(
+    unknownFamilyConformance.issues.some(
+      (item) => item.code === "task_execution_worker_invalid",
+    ),
+    "task execution worker smoke D should report invalid worker for unknown family",
+  );
+
+  const bindingMismatchCases = [
+    {
+      name: "task",
+      request: { ...genericWorkerRequest, taskId: "wrong-worker-task" },
+      code: "task_execution_worker_task_binding_mismatch",
+    },
+    {
+      name: "revision",
+      request: {
+        ...genericWorkerRequest,
+        sourceTaskRevision: genericWorkerRequest.sourceTaskRevision + 1,
+      },
+      code: "task_execution_worker_revision_binding_mismatch",
+    },
+    {
+      name: "attempt",
+      request: { ...genericWorkerRequest, attemptId: "wrong-worker-attempt" },
+      code: "task_execution_worker_attempt_binding_mismatch",
+    },
+    {
+      name: "invocation",
+      request: {
+        ...genericWorkerRequest,
+        invocationId: "wrong-worker-invocation",
+      },
+      code: "task_execution_worker_invocation_binding_mismatch",
+    },
+    {
+      name: "work-batch",
+      request: {
+        ...genericWorkerRequest,
+        workItemId: "wrong-worker-item",
+        batchId: "wrong-worker-batch",
+      },
+      code: "task_execution_worker_work_batch_binding_mismatch",
+    },
+  ];
+
+  for (const bindingCase of bindingMismatchCases) {
+    const mismatch = await evaluateTaskExecutionWorkerConformance({
+      worker: genericWorker.worker,
+      request: bindingCase.request,
+      invocationRecord: invokingPersisted.value.record,
+      permissionGateResult: workerPermissionGate,
+    });
+    assert.equal(
+      mismatch.workerInvoked,
+      false,
+      `task execution worker smoke ${bindingCase.name} mismatch should not invoke worker`,
+    );
+    assert.ok(
+      mismatch.issues.some((item) => item.code === bindingCase.code),
+      `task execution worker smoke should report ${bindingCase.code}`,
+    );
+  }
+
+  const deniedWorkerRequest = createSmokeTestWorkerRequest(
+    invokingPersisted.value.record,
+    genericWorkerIdentity,
+    createSmokeWorkerPermissionFacts(workerPermissionGate, {
+      allowed: false,
+      decision: "permission_missing",
+      permissionsSatisfied: false,
+    }),
+  );
+  const deniedWorkerConformance =
+    await evaluateTaskExecutionWorkerConformance({
+      worker: genericWorker.worker,
+      request: deniedWorkerRequest,
+      invocationRecord: invokingPersisted.value.record,
+      permissionGateResult: undefined,
+    });
+  assert.equal(
+    deniedWorkerConformance.workerInvoked,
+    false,
+    "task execution worker smoke I should not invoke when permission facts deny execution",
+  );
+  assert.ok(
+    deniedWorkerConformance.issues.some(
+      (item) => item.code === "task_execution_worker_permission_not_allowed",
+    ),
+    "task execution worker smoke I should report permission denial",
+  );
+
+  const hostileWorker = createSmokeTestWorker({
+    identity: genericWorkerIdentity,
+    rawResult: (request) => ({
+      status: "returned",
+      workerId: request.workerIdentity.workerId,
+      workerFamily: request.workerIdentity.workerFamily,
+      runtimeKind: request.workerIdentity.runtimeKind,
+      invocationId: request.invocationId,
+      idempotencyKey: request.idempotencyKey,
+      taskId: request.taskId,
+      sourceTaskRevision: request.sourceTaskRevision,
+      attemptId: request.attemptId,
+      attemptNumber: request.attemptNumber,
+      workItemId: request.workItemId,
+      batchId: request.batchId,
+      invocationOk: true,
+      output: {
+        allComplete: true,
+        completed: true,
+        verified: true,
+        verifierSatisfied: true,
+        approved: true,
+        safeToRetry: true,
+        retainedDiagnostic: "bounded worker diagnostic",
+        apiKey: "sk-smoke-worker-key",
+      },
+      metadata: {
+        token: "smoke-worker-token",
+        completed: true,
+      },
+    }),
+  });
+  const hostileWorkerConformance =
+    await evaluateTaskExecutionWorkerConformance({
+      worker: hostileWorker.worker,
+      request: genericWorkerRequest,
+      invocationRecord: invokingPersisted.value.record,
+      permissionGateResult: workerPermissionGate,
+    });
+  assert.equal(
+    hostileWorkerConformance.normalizedResult.output.completed,
+    undefined,
+    "task execution worker smoke P should strip hostile completion claims",
+  );
+  assert.equal(
+    hostileWorkerConformance.normalizedResult.output.verified,
+    undefined,
+    "task execution worker smoke Q should strip hostile verifier claims",
+  );
+  assert.equal(
+    hostileWorkerConformance.normalizedResult.output.safeToRetry,
+    undefined,
+    "task execution worker smoke R should strip hostile retry claims",
+  );
+  assert.equal(
+    hostileWorkerConformance.normalizedResult.safety.taskCompleted,
+    false,
+    "task execution worker smoke P should not grant completion authority",
+  );
+  assert.equal(
+    hostileWorkerConformance.normalizedResult.safety.verified,
+    false,
+    "task execution worker smoke Q should not grant verification authority",
+  );
+  assert.equal(
+    hostileWorkerConformance.normalizedResult.safety.safeToRetry,
+    false,
+    "task execution worker smoke R should not grant retry authority",
+  );
+  assert.equal(
+    JSON.stringify(hostileWorkerConformance.normalizedResult).includes("sk-smoke"),
+    false,
+    "task execution worker smoke O should strip credential-looking worker output",
+  );
+
+  const throwingWorkerConformance =
+    await evaluateTaskExecutionWorkerConformance({
+      worker: createSmokeTestWorker({
+        identity: genericWorkerIdentity,
+        throwError: true,
+      }).worker,
+      request: genericWorkerRequest,
+      invocationRecord: invokingPersisted.value.record,
+      permissionGateResult: workerPermissionGate,
+    });
+  assert.equal(
+    throwingWorkerConformance.normalizedResult.outcomeStatus,
+    "unavailable",
+    "task execution worker smoke S should sanitize worker errors",
+  );
+  assert.equal(
+    JSON.stringify(throwingWorkerConformance).includes("at smoke-worker"),
+    false,
+    "task execution worker smoke S should not expose raw worker stack text",
+  );
+
+  const mutationDetectedConformance =
+    await evaluateTaskExecutionWorkerConformance({
+      worker: genericWorker.worker,
+      request: genericWorkerRequest,
+      invocationRecord: invokingPersisted.value.record,
+      permissionGateResult: workerPermissionGate,
+      stateSnapshotBefore: workerStateSnapshot,
+      stateSnapshotAfter: JSON.stringify({ mutated: true }),
+      workAccountingSnapshotBefore: workerAccountingSnapshot,
+      workAccountingSnapshotAfter: JSON.stringify({ expected: 400, accounted: 400 }),
+    });
+  assert.equal(
+    mutationDetectedConformance.workerInvoked,
+    false,
+    "task execution worker smoke T/U should block worker invocation when authoritative snapshots changed",
+  );
+  assert.ok(
+    mutationDetectedConformance.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_worker_authoritative_state_mutation_detected",
+    ),
+    "task execution worker smoke T/U should report authoritative snapshot mutation",
+  );
+
+  const traversalWorkspaceConformance =
+    await evaluateTaskExecutionWorkerConformance({
+      worker: genericWorker.worker,
+      request: createSmokeTestWorkerRequest(
+        invokingPersisted.value.record,
+        genericWorkerIdentity,
+        createSmokeWorkerPermissionFacts(workerPermissionGate),
+        {
+          workspace: {
+            authority: "system",
+            workspaceRef: "../outside",
+            projectRef: "project:pro-performans",
+            repositoryWriteAllowed: false,
+          },
+        },
+      ),
+      invocationRecord: invokingPersisted.value.record,
+      permissionGateResult: workerPermissionGate,
+    });
+  assert.equal(
+    traversalWorkspaceConformance.workerInvoked,
+    false,
+    "task execution worker smoke workspace should reject traversal workspace refs",
+  );
+  assert.ok(
+    traversalWorkspaceConformance.issues.some(
+      (item) =>
+        item.code === "task_execution_worker_workspace_reference_invalid",
+    ),
+    "task execution worker smoke workspace should report invalid workspace authority",
+  );
+
+  const normalized400WorkerResult = normalizeTaskExecutionWorkerResult({
+    request: genericWorkerRequest,
+    rawResult: {
+      status: "returned",
+      workerId: genericWorkerIdentity.workerId,
+      workerFamily: genericWorkerIdentity.workerFamily,
+      runtimeKind: genericWorkerIdentity.runtimeKind,
+      invocationId: genericWorkerRequest.invocationId,
+      idempotencyKey: genericWorkerRequest.idempotencyKey,
+      taskId: genericWorkerRequest.taskId,
+      sourceTaskRevision: genericWorkerRequest.sourceTaskRevision,
+      attemptId: genericWorkerRequest.attemptId,
+      attemptNumber: genericWorkerRequest.attemptNumber,
+      workItemId: genericWorkerRequest.workItemId,
+      batchId: genericWorkerRequest.batchId,
+      invocationOk: true,
+      output: {
+        allComplete: true,
+        coverageEvidenceReference: "artifact:worker-400-20-evidence",
+      },
+    },
+  });
+  const workerBoundary400Coverage = verifyAgenticCoverage({
+    taskId: "smoke-worker-boundary-400-20",
+    inventory: completeInventory(400, "worker-boundary-400-20-inventory"),
+    coverage: coverageCounts({
+      expectedItemCount: 400,
+      completedItemCount: 20,
+      pendingItemCount: 380,
+    }),
+  });
+  assert.equal(
+    normalized400WorkerResult.safety.taskCompleted,
+    false,
+    "task execution worker smoke Z should not turn worker all-complete output into task completion",
+  );
+  assert.equal(
+    workerBoundary400Coverage.ok,
+    false,
+    "task execution worker smoke Z should keep canonical 400/20 coverage incomplete",
+  );
+  assert.equal(
+    workerBoundary400Coverage.itemCoverage.expectedItems,
+    400,
+    "task execution worker smoke Z should preserve expected work count",
+  );
+  assert.equal(
+    workerBoundary400Coverage.itemCoverage.completedItems,
+    20,
+    "task execution worker smoke Z should preserve accounted work count",
+  );
+  assert.equal(
+    workerBoundary400Coverage.itemCoverage.pendingItems,
+    380,
+    "task execution worker smoke Z should preserve remaining work count",
+  );
+  assert.equal(
+    normalized400WorkerResult.safety.networkCalled,
+    false,
+    "task execution worker smoke X should not call network",
+  );
+  assert.equal(
+    normalized400WorkerResult.safety.subprocessExecuted,
+    false,
+    "task execution worker smoke W should not spawn worker processes",
+  );
+  assert.equal(
+    normalized400WorkerResult.safety.realCodexInvoked,
+    false,
+    "task execution worker smoke Y should not call Codex",
+  );
+  assert.equal(
+    normalized400WorkerResult.safety.realClaudeCodeInvoked,
+    false,
+    "task execution worker smoke Y should not call Claude Code",
+  );
+  assert.equal(
+    normalized400WorkerResult.safety.cloudCalled,
+    false,
+    "task execution worker smoke X should not call cloud providers",
+  );
+
+  console.log("task execution worker boundary smoke tests passed");
 
   const gatePolicyRequirement = {
     required: true,

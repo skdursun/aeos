@@ -146,6 +146,53 @@ real-call-ready unless it carries accepted runtime evidence for idempotency,
 stable provider invocation reference, lookup/status/replay, result retrieval,
 and crash reconciliation semantics.
 
+## Generic Worker Adapter Runtime
+
+TASK-0312 adds the provider-neutral worker execution boundary that future Codex,
+Claude Code, and other local model/tool workers must implement.
+
+The worker layer sits after AEOS has already established authoritative task,
+attempt, invocation, idempotency, permission, policy, credential-reference, and
+audit context. AEOS supplies the worker identity and selection. Task or model
+output cannot choose Codex, choose Claude Code, select itself, grant a missing
+capability, approve policy, authorize retry, verify work, or complete a task.
+
+Worker identity distinguishes the future worker family (`codex`, `claude_code`,
+or `generic`) from the executable runtime kind. TASK-0312 only permits
+`test_worker`; declaring a Codex or Claude Code family is not enough to invoke a
+real Codex or Claude Code process.
+
+Worker roles are descriptive capabilities, not authority. A worker may advertise
+planner, implementation, or verifier-capable roles for future routing, but AEOS
+still owns the task graph, state mutation, verification gate, completion gate,
+and authoritative result accounting.
+
+Worker requests are bounded. They include exact task revision, attempt,
+invocation, idempotency, work-item, batch, operation, system-owned workspace
+reference, bounded instructions, context references, and permission facts. They
+do not include invocation ownership tokens, raw credentials, persistence handles,
+completion mutation functions, full AEOS state, or automatic repository dumps.
+Workspace references are system-owned metadata and reject traversal-style path
+authority.
+
+Capabilities are explicit and separate from permissions. A worker capability
+such as repository read, patch generation, model reasoning, process execution,
+shell execution, or test execution does not grant the corresponding permission
+and does not bypass the existing permission gate.
+
+Worker results are evidence only. Normalized results may carry bounded
+diagnostics, artifact references, patch references, changed-file manifests, and
+test-summary references. They cannot mutate task state, work accounting,
+invocation ownership, audit, verifier status, retry authority, approval, or
+completion. Hostile result fields such as `allComplete`, `verified`,
+`approved`, or `safeToRetry` are stripped or ignored. Worker failures are mapped
+to closed sanitized categories and do not authorize retry.
+
+TASK-0312 ships only deterministic smoke-scope TEST workers that emulate Codex
+and Claude Code families without invoking Codex CLI, Claude Code, shell,
+network, cloud providers, or repository writes. The first real local worker
+adapter remains future work and must reuse this boundary.
+
 ## Execution Input Model
 MVP execution input should be serializable and task-scoped:
 

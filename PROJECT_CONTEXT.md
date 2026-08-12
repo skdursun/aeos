@@ -130,6 +130,11 @@ condition.
   provider-specific fixture was replaced by a deterministic provider-neutral
   fixture. The generic rule remains: known idempotency-key lookup becoming
   unavailable is not `not_found` and is not safe retry authorization.
+- TASK-0312: Model-agnostic worker execution adapter runtime foundation. Added
+  the generic TEST-only worker boundary for future Codex, Claude Code, and
+  generic workers. AEOS remains authoritative for worker selection, invocation
+  binding, permission facts, task state, work accounting, verification, retry,
+  audit, and completion; worker output is bounded evidence only.
 
 ## Do Not Load By Default
 
@@ -140,11 +145,13 @@ condition.
 
 ## Next Task
 
-TASK-0312 not started: Design and implement model/worker execution adapter
-runtime foundation for Codex and Claude Code using TEST-only worker processes
-and no real model invocation. AEOS must remain authoritative for task state,
-policy, audit, invocation, accounting, verifier, retry/resume, and completion;
-worker adapters return evidence/results only.
+TASK-0313 not started: Design and implement the first concrete local Codex
+worker adapter boundary on top of the generic worker runtime, using a controlled
+local-process runtime shape with deterministic TEST transport only. The task
+must establish the safe local adapter pattern for future model workers without
+real Codex invocation, real Claude Code invocation, cloud calls, routing,
+completion authority, verifier authority, retry authority, or unrestricted
+subprocess execution.
 
 ## Current Direction
 
@@ -153,6 +160,12 @@ provider work is de-scoped from the required mainline. The next product work
 returns to the Codex-orchestrator plus Claude Code worker orchestration
 architecture through provider-neutral adapter foundations, without implementing
 real Codex or Claude Code worker execution yet.
+
+The safest next adapter milestone is the local Codex worker adapter boundary
+with real execution still disabled. It should prove how a future local model
+worker plugs into the TASK-0312 worker request/result contract, permission facts,
+workspace reference, audit references, and sanitized process-failure shape before
+any real Codex CLI process can be eligible.
 
 ## Current Plans
 
