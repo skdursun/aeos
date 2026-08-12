@@ -506,7 +506,9 @@ export async function loadTaskExecutionTrustedProductionProviderProfile(
                   ? credential.environmentVariableName
                   : "AEOS_PRODUCTION_PROVIDER_CREDENTIAL",
               credentialKind:
-                credential?.credentialKind === "api_key"
+                credential?.credentialKind === "opaque_secret"
+                  ? "opaque_secret"
+                  : credential?.credentialKind === "api_key"
                   ? "api_key"
                   : "bearer_token",
               credentialScope,

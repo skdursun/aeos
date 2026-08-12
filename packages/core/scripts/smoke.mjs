@@ -117,8 +117,8 @@ import {
   createEnvironmentReferenceCredentialProvider,
   authorizeTaskExecutionProductionDispatch,
   createControlledHttpProductionProviderDispatchTransport,
-  createBedrockBatchRecoveryConformanceSubject,
-  BEDROCK_BATCH_RECOVERY_PROFILE,
+  createDeterministicProviderRecoveryConformanceSubject,
+  DETERMINISTIC_PROVIDER_RECOVERY_PROFILE,
   dispatchTaskExecutionProductionProvider,
   evaluateTaskExecutionAdapterConformance,
   evaluateTaskExecutionProductionDispatchGate,
@@ -19625,20 +19625,20 @@ try {
         "task execution production provider conformance smoke audit should not create duplicate audit events for replay",
       );
 
-      const bedrockBatchTransport =
-        createBedrockBatchRecoveryConformanceSubject();
-      const bedrockBatchConformance =
+      const deterministicProviderTransport =
+        createDeterministicProviderRecoveryConformanceSubject();
+      const deterministicProviderConformance =
         await evaluateTaskExecutionProductionProviderConformance({
-          subject: bedrockBatchTransport.subject,
+          subject: deterministicProviderTransport.subject,
           preparedDispatch: productionPrepared.preparedDispatch,
           alternatePreparedDispatch: conformanceAlternatePreparedDispatch,
           forbiddenValues: [environmentFakeSecret],
           forbiddenOwnershipToken:
             invokingPersisted.value.record.ownership.ownershipToken,
           taskOrModelCapabilityClaims: {
-            clientRequestToken: productionPrepared.preparedDispatch.idempotencyKey,
-            jobArn:
-              "arn:aws:bedrock:us-east-1:123456789012:model-invocation-job/task-model-claim",
+            idempotencyKey: productionPrepared.preparedDispatch.idempotencyKey,
+            providerInvocationRef:
+              "task-model-claimed-provider-invocation-ref",
           },
           providerOutputCapabilityClaims: {
             completed: true,
@@ -19648,142 +19648,147 @@ try {
           },
         });
       assert.equal(
-        BEDROCK_BATCH_RECOVERY_PROFILE.realCallReady,
+        DETERMINISTIC_PROVIDER_RECOVERY_PROFILE.realCallReady,
         false,
-        "task execution Bedrock Batch recovery smoke A should keep production real-call gate closed",
+        "task execution deterministic provider recovery smoke A should keep production real-call gate closed",
       );
       assert.equal(
-        bedrockBatchConformance.contractConformant,
+        deterministicProviderConformance.contractConformant,
         true,
-        "task execution Bedrock Batch recovery smoke B should satisfy TASK-0306 with TEST-only transport",
+        "task execution deterministic provider recovery smoke B should satisfy TASK-0306 with TEST-only transport",
       );
       assert.equal(
-        bedrockBatchTransport.calls.createModelInvocationJob[0].clientRequestToken,
+        deterministicProviderTransport.calls.dispatchInvocations[0]
+          .idempotencyKey,
         productionPrepared.preparedDispatch.idempotencyKey,
-        "task execution Bedrock Batch recovery smoke C should map AEOS idempotencyKey to clientRequestToken",
+        "task execution deterministic provider recovery smoke C should pass the exact AEOS idempotency key",
       );
       assert.equal(
-        bedrockBatchTransport.calls.createModelInvocationJob[1].clientRequestToken,
+        deterministicProviderTransport.calls.dispatchInvocations[1]
+          .idempotencyKey,
         productionPrepared.preparedDispatch.idempotencyKey,
-        "task execution Bedrock Batch recovery smoke D should replay duplicate create with the same clientRequestToken",
+        "task execution deterministic provider recovery smoke D should replay duplicate dispatch with the same idempotency key",
       );
       assert.equal(
-        bedrockBatchConformance.duplicateSideEffectCount,
+        deterministicProviderConformance.duplicateSideEffectCount,
         1,
-        "task execution Bedrock Batch recovery smoke D should rely on Bedrock clientRequestToken idempotency",
+        "task execution deterministic provider recovery smoke D should rely on provider-neutral idempotency",
       );
       assert.equal(
-        bedrockBatchConformance.providerInvocationRef.startsWith(
-          "arn:aws:bedrock:us-east-1:123456789012:model-invocation-job/",
+        deterministicProviderConformance.providerInvocationRef.startsWith(
+          "deterministic-provider-invocation:",
         ),
         true,
-        "task execution Bedrock Batch recovery smoke E should treat jobArn as the provider reference",
+        "task execution deterministic provider recovery smoke E should treat provider invocation reference as evidence",
       );
       assert.equal(
-        bedrockBatchTransport.calls.listModelInvocationJobs[0].clientRequestToken,
+        deterministicProviderTransport.calls.lookupInvocations[0]
+          .idempotencyKey,
         productionPrepared.preparedDispatch.idempotencyKey,
-        "task execution Bedrock Batch recovery smoke F should recover through ListModelInvocationJobs token evidence",
+        "task execution deterministic provider recovery smoke F should recover through lookup by idempotency key evidence",
       );
       assert.equal(
-        bedrockBatchConformance.lookupProven,
+        deterministicProviderConformance.lookupProven,
         true,
-        "task execution Bedrock Batch recovery smoke G should prove exact token lookup and fail closed on mismatched refs",
+        "task execution deterministic provider recovery smoke G should prove exact lookup and fail closed on mismatched refs",
       );
       assert.deepEqual(
-        bedrockBatchTransport.calls.getModelInvocationJob
+        deterministicProviderTransport.calls.statusQueries
           .slice(0, 3)
-          .map((call) => call.jobArn),
+          .map((call) => call.providerInvocationRef),
         [
-          bedrockBatchConformance.providerInvocationRef,
-          bedrockBatchTransport.jobsByScenarioAndToken.get(
+          deterministicProviderConformance.providerInvocationRef,
+          deterministicProviderTransport.invocationsByScenarioAndKey.get(
             `failure:${productionPrepared.preparedDispatch.idempotencyKey}`,
-          ).jobArn,
-          bedrockBatchTransport.jobsByScenarioAndToken.get(
+          ).providerInvocationRef,
+          deterministicProviderTransport.invocationsByScenarioAndKey.get(
             `in_progress:${productionPrepared.preparedDispatch.idempotencyKey}`,
-          ).jobArn,
+          ).providerInvocationRef,
         ],
-        "task execution Bedrock Batch recovery smoke H should query documented jobArn status with GetModelInvocationJob",
+        "task execution deterministic provider recovery smoke H should query status by provider invocation reference",
       );
       assert.equal(
-        bedrockBatchConformance.statusQueryProven,
+        deterministicProviderConformance.statusQueryProven,
         true,
-        "task execution Bedrock Batch recovery smoke I should normalize documented Bedrock Batch job statuses",
+        "task execution deterministic provider recovery smoke I should normalize returned, failed, and in-progress states",
       );
       assert.equal(
-        bedrockBatchTransport.calls.readS3BatchOutput[0].outputS3Uri,
-        `s3://aeos-bedrock-batch-test-output/${productionPrepared.preparedDispatch.idempotencyKey}/`,
-        "task execution Bedrock Batch recovery smoke J should map durable result replay to documented S3 output",
+        deterministicProviderTransport.calls.replayReads[0].resultReference,
+        `deterministic-provider-result:${productionPrepared.preparedDispatch.idempotencyKey}`,
+        "task execution deterministic provider recovery smoke J should map durable result replay to provider-neutral result evidence",
       );
       assert.equal(
-        bedrockBatchConformance.resultReplayProven,
+        deterministicProviderConformance.resultReplayProven,
         true,
-        "task execution Bedrock Batch recovery smoke K should replay S3 output without provider side effect",
+        "task execution deterministic provider recovery smoke K should replay result output without provider side effect",
       );
       assert.equal(
-        bedrockBatchConformance.crashRecoveryProven,
+        deterministicProviderConformance.crashRecoveryProven,
         true,
-        "task execution Bedrock Batch recovery smoke L should recover crash-after-create through token lookup before status/replay",
+        "task execution deterministic provider recovery smoke L should recover crash-after-dispatch through lookup before status/replay",
       );
       assert.equal(
-        bedrockBatchConformance.blindRetryPrevented,
+        deterministicProviderConformance.blindRetryPrevented,
         true,
-        "task execution Bedrock Batch recovery smoke M should prevent blind create replay after unknown token lookup",
+        "task execution deterministic provider recovery smoke M should prevent blind dispatch replay after unknown lookup",
       );
       assert.equal(
-        JSON.stringify(bedrockBatchConformance).includes(environmentFakeSecret),
+        JSON.stringify(deterministicProviderConformance).includes(
+          environmentFakeSecret,
+        ),
         false,
-        "task execution Bedrock Batch recovery smoke N should not expose credential material",
+        "task execution deterministic provider recovery smoke N should not expose credential material",
       );
       assert.equal(
-        JSON.stringify(bedrockBatchConformance).includes(
+        JSON.stringify(deterministicProviderConformance).includes(
           invokingPersisted.value.record.ownership.ownershipToken,
         ),
         false,
-        "task execution Bedrock Batch recovery smoke O should not expose ownership authority",
+        "task execution deterministic provider recovery smoke O should not expose ownership authority",
       );
       assert.equal(
-        bedrockBatchConformance.safety.providerSuccessCompletesWork,
+        deterministicProviderConformance.safety.providerSuccessCompletesWork,
         false,
-        "task execution Bedrock Batch recovery smoke P should keep provider success as invocation evidence only",
+        "task execution deterministic provider recovery smoke P should keep provider success as invocation evidence only",
       );
       assert.equal(
-        bedrockBatchConformance.safety.providerOutputGrantsRetryAuthority,
+        deterministicProviderConformance.safety.providerOutputGrantsRetryAuthority,
         false,
-        "task execution Bedrock Batch recovery smoke Q should not let Bedrock output grant retry or completion authority",
+        "task execution deterministic provider recovery smoke Q should not let provider output grant retry or completion authority",
       );
 
       for (const [message, subjectOptions, expectedCode] of [
         [
-          "task execution Bedrock Batch recovery smoke R should fail closed when Bedrock omits clientRequestToken from list evidence",
-          { listOmitsClientRequestToken: true },
+          "task execution deterministic provider recovery smoke R should fail closed when lookup omits idempotency key evidence",
+          { lookupOmitsIdempotencyKey: true },
           "task_execution_production_provider_conformance_lookup_unproven",
         ],
         [
-          "task execution Bedrock Batch recovery smoke S should fail closed on ambiguous clientRequestToken lookup",
-          { listReturnsAmbiguousMatches: true },
+          "task execution deterministic provider recovery smoke S should fail closed on ambiguous idempotency lookup",
+          { lookupReturnsAmbiguousMatches: true },
           "task_execution_production_provider_conformance_lookup_unproven",
         ],
         [
-          "task execution Bedrock Batch recovery smoke T should fail closed when GetModelInvocationJob is unavailable",
-          { getUnavailable: true },
+          "task execution deterministic provider recovery smoke T should fail closed when status query is unavailable",
+          { statusUnavailable: true },
           "task_execution_production_provider_conformance_status_unproven",
         ],
         [
-          "task execution Bedrock Batch recovery smoke U should fail closed when S3 output evidence is unavailable",
-          { s3OutputUnavailable: true },
+          "task execution deterministic provider recovery smoke U should fail closed when replay evidence is unavailable",
+          { replayUnavailable: true },
           "task_execution_production_provider_conformance_replay_unproven",
         ],
         [
-          "task execution Bedrock Batch recovery smoke V should fail if Bedrock does not echo the AEOS idempotency key as clientRequestToken",
-          { createReturnsMismatchedToken: true },
+          "task execution deterministic provider recovery smoke V should fail if provider does not echo the AEOS idempotency key",
+          { dispatchReturnsMismatchedIdempotencyKey: true },
           "task_execution_production_provider_conformance_idempotency_mismatch",
         ],
       ]) {
-        const adversarialBedrock =
-          createBedrockBatchRecoveryConformanceSubject(subjectOptions);
-        const adversarialBedrockConformance =
+        const adversarialProvider =
+          createDeterministicProviderRecoveryConformanceSubject(subjectOptions);
+        const adversarialProviderConformance =
           await evaluateTaskExecutionProductionProviderConformance({
-            subject: adversarialBedrock.subject,
+            subject: adversarialProvider.subject,
             preparedDispatch: productionPrepared.preparedDispatch,
             alternatePreparedDispatch: conformanceAlternatePreparedDispatch,
             forbiddenValues: [environmentFakeSecret],
@@ -19791,12 +19796,12 @@ try {
               invokingPersisted.value.record.ownership.ownershipToken,
           });
         assert.equal(
-          adversarialBedrockConformance.contractConformant,
+          adversarialProviderConformance.contractConformant,
           false,
           message,
         );
         assert.ok(
-          adversarialBedrockConformance.issues.some(
+          adversarialProviderConformance.issues.some(
             (item) => item.code === expectedCode,
           ),
           `${message} with deterministic issue code`,

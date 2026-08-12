@@ -27,6 +27,9 @@ condition.
   auditable, and resumable without trusting model self-reporting.
 - Keep the agentic runner deterministic, local-first, auditable, resumable, and
   verifier-gated.
+- Keep AEOS model-agnostic and cloud-provider-independent. AEOS owns task
+  authority, state, policy, audit, invocation, accounting, verifier, and
+  completion; worker/provider output remains evidence only.
 
 ## Recent Completed Tasks
 
@@ -120,27 +123,13 @@ condition.
   API; first controlled real-call readiness remains blocked because official
   documentation did not prove idempotent create or lookup by AEOS idempotency key
   after a crash before local provider-reference persistence.
-- TASK-0310: Provider recovery strategy decision. TASK-0306 requirements remain
-  appropriate and unchanged. The shortest safe path is to switch the first
-  controlled real provider target from OpenAI Responses API to Amazon Bedrock
-  Batch Inference `CreateModelInvocationJob`, because official Amazon Bedrock
-  documentation provides an idempotent `clientRequestToken`, stable `jobArn`,
-  `ListModelInvocationJobs` summaries containing `clientRequestToken`, status
-  lookup through `GetModelInvocationJob`, and S3-backed result retrieval. Local
-  outbox/lock/one-shot-token-only recovery and OpenAI-only continuation remain
-  rejected because they do not close the provider-accepted/local-crash-before-
-  provider-reference-persistence window without blind redispatch.
-- TASK-0311: Amazon Bedrock Batch Inference recovery profile boundary.
-  Implemented a TEST-only provider-specific recovery fixture with no AWS SDK,
-  credentials, S3, network, real job, retry implementation, dispatch enablement,
-  or real provider call. The conformance slice maps AEOS `idempotencyKey` to
-  Bedrock `clientRequestToken`, `jobArn` to provider reference,
-  `ListModelInvocationJobs` token evidence to crash-window lookup,
-  `GetModelInvocationJob` status to normalized invocation evidence, and S3 batch
-  output to durable result replay. Behavioral tests fail closed on missing or
-  ambiguous token evidence, status unavailability, unavailable S3 output, and
-  token mismatch, while preserving TASK-0307/TASK-0308 permission, credential,
-  audit, invoking, one-shot dispatch, verifier, and completion boundaries.
+- TASK-0310: Provider recovery strategy decision. Historical provider-specific
+  direction was superseded; active AEOS mainline remains provider/model
+  agnostic and must not require any cloud provider.
+- TASK-0311: Provider recovery conformance safety regression. Historical
+  provider-specific fixture was replaced by a deterministic provider-neutral
+  fixture. The generic rule remains: known idempotency-key lookup becoming
+  unavailable is not `not_found` and is not safe retry authorization.
 
 ## Do Not Load By Default
 
@@ -151,7 +140,19 @@ condition.
 
 ## Next Task
 
-TASK-0312 not started.
+TASK-0312 not started: Design and implement model/worker execution adapter
+runtime foundation for Codex and Claude Code using TEST-only worker processes
+and no real model invocation. AEOS must remain authoritative for task state,
+policy, audit, invocation, accounting, verifier, retry/resume, and completion;
+worker adapters return evidence/results only.
+
+## Current Direction
+
+AEOS remains model-agnostic and cloud-provider-independent. Cloud-specific
+provider work is de-scoped from the required mainline. The next product work
+returns to the Codex-orchestrator plus Claude Code worker orchestration
+architecture through provider-neutral adapter foundations, without implementing
+real Codex or Claude Code worker execution yet.
 
 ## Current Plans
 

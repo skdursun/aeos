@@ -130,6 +130,13 @@ bounded request/response sizes, timeout, redirect failure, idempotency
 propagation, and sanitized errors. `controlled_http_test_fixture` exists for
 deterministic smoke coverage and does not make network calls.
 
+Provider recovery conformance remains provider-neutral. A deterministic TEST
+fixture proves idempotency, lookup, status, durable result replay, crash
+reconciliation, duplicate suppression, and no blind retry without introducing a
+cloud-specific runtime dependency. Known idempotency-key lookup that becomes
+unavailable fails closed; it is not treated as `not_found` and does not authorize
+redispatch.
+
 Provider result remains invocation evidence only. Hostile provider claims such
 as `completed`, `verified`, `allDone`, or `safeToRetry` are ignored. Completion,
 verifier, work accounting, retry, and reconciliation authority remain separate.
