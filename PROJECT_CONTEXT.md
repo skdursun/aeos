@@ -148,6 +148,14 @@ condition.
   executable, argv, permission, output limits, timeout, and audit intent while
   keeping real Codex, Claude Code, child-process, cloud, retry, verifier, and
   completion execution disabled.
+- TASK-0315: Claude Code worker adapter boundary using the existing generic
+  worker runtime and shared local-process authority. Added Claude Code as a
+  concrete model-agnostic local worker adapter sibling to Codex with
+  system-owned identity, trusted executable reference, argv-only prepared
+  invocation, workspace and permission binding, bounded structured result
+  normalization, hostile-output stripping, Codex/Claude parity coverage, and
+  real Codex, Claude Code, child-process, cloud, retry, verifier, completion,
+  and work accounting execution disabled.
 
 ## Do Not Load By Default
 
@@ -158,9 +166,8 @@ condition.
 
 ## Next Task
 
-TASK-0315 not started: Claude Code worker adapter boundary using the existing
-generic worker runtime and proven local-process authority, with real Claude
-execution still disabled.
+TASK-0316 not started: shared controlled REAL local worker process execution
+boundary for already-conformant Codex and Claude Code adapters.
 
 ## Current Direction
 
@@ -170,9 +177,10 @@ returns to the Codex-orchestrator plus Claude Code worker orchestration
 architecture through provider-neutral adapter foundations, without implementing
 real Codex or Claude Code worker execution yet.
 
-The safest next adapter milestone is model parity for Claude Code using the
-same generic worker runtime and proven local-process authority. Real Codex and
-Claude Code execution remain disabled until a later explicitly controlled task.
+The safest next boundary is a shared controlled REAL local worker process
+execution boundary for already-conformant Codex and Claude Code adapters. Real
+Codex and Claude Code execution remain disabled until that later explicitly
+controlled task.
 
 ## Current Plans
 

@@ -1,10 +1,10 @@
+import type { TaskExecutionAuditEvent } from "./task-execution-audit.js";
 import type {
   TaskExecutionInvocationRecord,
 } from "./task-execution-invocation-record.js";
 import {
   validateTaskExecutionInvocationRecord,
 } from "./task-execution-invocation-record.js";
-import type { TaskExecutionAuditEvent } from "./task-execution-audit.js";
 import type {
   TaskExecutionPermissionGateResult,
   TaskExecutionPermissionKind,
@@ -24,89 +24,75 @@ import type {
 import {
   evaluateTaskExecutionWorkerConformance,
   normalizeTaskExecutionWorkerResult,
-  TASK_EXECUTION_WORKER_RUNTIME_EXECUTION_ENABLED,
 } from "./task-execution-worker.js";
 import type {
   TaskExecutionLocalWorkerProcessAuthority,
+  TaskExecutionLocalWorkerProcessDecision,
   TaskExecutionLocalWorkerProcessReadiness,
 } from "./task-execution-local-worker-process.js";
 import {
   evaluateTaskExecutionLocalWorkerProcessGate,
+  TASK_EXECUTION_LOCAL_WORKER_EXTERNAL_PROCESS_ALLOWED,
+  TASK_EXECUTION_LOCAL_WORKER_PROCESS_CONTRACT_READY,
 } from "./task-execution-local-worker-process.js";
 import type { AeosError, JsonObject, JsonValue } from "./types.js";
 
-export const TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED = false;
-export const TASK_EXECUTION_CODEX_WORKER_EXTERNAL_PROCESS_ALLOWED = false;
-export const TASK_EXECUTION_CODEX_PROCESS_CONTRACT_READY = true;
-export const TASK_EXECUTION_CODEX_PROCESS_BOUNDARY =
-  "AUTHORIZED_LOCAL_CODEX_PROCESS";
+export const TASK_EXECUTION_CLAUDE_CODE_WORKER_REAL_EXECUTION_ENABLED = false;
+export const TASK_EXECUTION_CLAUDE_CODE_WORKER_EXTERNAL_PROCESS_ALLOWED =
+  TASK_EXECUTION_LOCAL_WORKER_EXTERNAL_PROCESS_ALLOWED;
+export const TASK_EXECUTION_CLAUDE_CODE_PROCESS_CONTRACT_READY =
+  TASK_EXECUTION_LOCAL_WORKER_PROCESS_CONTRACT_READY;
+export const TASK_EXECUTION_CLAUDE_CODE_PROCESS_BOUNDARY =
+  "AUTHORIZED_LOCAL_CLAUDE_CODE_PROCESS";
 
-export type TaskExecutionCodexReasoningEffort =
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high";
-
-export type TaskExecutionCodexSandboxMode = "read-only" | "workspace-write";
-
-export type TaskExecutionCodexApprovalPolicy = "never" | "on-request";
-
-export type TaskExecutionCodexProcessTerminationReason =
+export type TaskExecutionClaudeCodeProcessTerminationReason =
   | "exited"
   | "nonzero_exit"
   | "timeout"
   | "interrupted"
   | "signal";
 
-export type TaskExecutionCodexWorkerIdentity = TaskExecutionWorkerIdentity & {
-  readonly workerFamily: "codex";
-  readonly runtimeKind: "test_worker";
-};
+export type TaskExecutionClaudeCodeWorkerIdentity =
+  TaskExecutionWorkerIdentity & {
+    readonly workerFamily: "claude_code";
+    readonly runtimeKind: "test_worker";
+  };
 
-export interface TaskExecutionCodexExecutableAuthority {
+export interface TaskExecutionClaudeCodeExecutableAuthority {
   readonly authority: "system";
   readonly executableRef: string;
-  readonly executableKind: "codex_exec";
+  readonly executableKind: "claude_code";
 }
 
-export interface TaskExecutionCodexModelConfiguration {
-  readonly authority: "system";
-  readonly model: string;
-  readonly reasoningEffort: TaskExecutionCodexReasoningEffort;
-}
-
-export interface TaskExecutionCodexProcessPermission {
+export interface TaskExecutionClaudeCodeProcessPermission {
   readonly authority: "system";
   readonly permissionId: string;
   readonly requiredPermission: Extract<TaskExecutionPermissionKind, "process">;
   readonly processExecutionAllowed: boolean;
 }
 
-export interface TaskExecutionCodexWorkspaceAuthority
+export interface TaskExecutionClaudeCodeWorkspaceAuthority
   extends TaskExecutionWorkerWorkspaceReference {
   readonly workingDirectoryRef: string;
 }
 
-export interface TaskExecutionCodexWorkerConfiguration {
+export interface TaskExecutionClaudeCodeWorkerConfiguration {
   readonly authority: "system";
-  readonly identity: TaskExecutionCodexWorkerIdentity;
-  readonly executable: TaskExecutionCodexExecutableAuthority;
-  readonly model: TaskExecutionCodexModelConfiguration;
-  readonly workspace: TaskExecutionCodexWorkspaceAuthority;
-  readonly processPermission: TaskExecutionCodexProcessPermission;
+  readonly identity: TaskExecutionClaudeCodeWorkerIdentity;
+  readonly executable: TaskExecutionClaudeCodeExecutableAuthority;
+  readonly workspace: TaskExecutionClaudeCodeWorkspaceAuthority;
+  readonly processPermission: TaskExecutionClaudeCodeProcessPermission;
   readonly futureProcessCapability: boolean;
-  readonly sandboxMode: TaskExecutionCodexSandboxMode;
-  readonly approvalPolicy: TaskExecutionCodexApprovalPolicy;
   readonly timeoutMs: number;
   readonly stdoutLimitBytes: number;
   readonly stderrLimitBytes: number;
   readonly structuredResultContractRef?: string;
 }
 
-export interface TaskExecutionCodexProcessRequest {
-  readonly executable: TaskExecutionCodexExecutableAuthority;
+export interface TaskExecutionClaudeCodeProcessRequest {
+  readonly executable: TaskExecutionClaudeCodeExecutableAuthority;
   readonly argv: readonly string[];
-  readonly workingDirectory: TaskExecutionCodexWorkspaceAuthority;
+  readonly workingDirectory: TaskExecutionClaudeCodeWorkspaceAuthority;
   readonly stdin: string;
   readonly timeoutMs: number;
   readonly stdoutLimitBytes: number;
@@ -117,7 +103,7 @@ export interface TaskExecutionCodexProcessRequest {
   };
 }
 
-export interface TaskExecutionCodexPreparedInvocation {
+export interface TaskExecutionClaudeCodePreparedInvocation {
   readonly taskId: string;
   readonly sourceTaskRevision: number;
   readonly attemptId: string;
@@ -126,8 +112,8 @@ export interface TaskExecutionCodexPreparedInvocation {
   readonly idempotencyKey: string;
   readonly workItemId: string | null;
   readonly batchId: string | null;
-  readonly workerIdentity: TaskExecutionCodexWorkerIdentity;
-  readonly processRequest: TaskExecutionCodexProcessRequest;
+  readonly workerIdentity: TaskExecutionClaudeCodeWorkerIdentity;
+  readonly processRequest: TaskExecutionClaudeCodeProcessRequest;
   readonly exactWorkerSelected: boolean;
   readonly invocationAuthorityBound: boolean;
   readonly workspaceAuthorityBound: boolean;
@@ -138,9 +124,9 @@ export interface TaskExecutionCodexPreparedInvocation {
   readonly realExecutionEnabled: false;
 }
 
-export interface TaskExecutionCodexProcessResult {
+export interface TaskExecutionClaudeCodeProcessResult {
   readonly invocationRef: string;
-  readonly terminationReason: TaskExecutionCodexProcessTerminationReason;
+  readonly terminationReason: TaskExecutionClaudeCodeProcessTerminationReason;
   readonly exitCode: number | null;
   readonly signal?: string;
   readonly stdout: string;
@@ -150,12 +136,12 @@ export interface TaskExecutionCodexProcessResult {
   readonly observedAt?: string;
 }
 
-export interface TaskExecutionCodexWorkerAdapter
+export interface TaskExecutionClaudeCodeWorkerAdapter
   extends TaskExecutionWorkerAdapter {
-  readonly codexAdapterKind: "task_execution_codex_worker_adapter";
-  readonly identity: TaskExecutionCodexWorkerIdentity;
+  readonly claudeCodeAdapterKind: "task_execution_claude_code_worker_adapter";
+  readonly identity: TaskExecutionClaudeCodeWorkerIdentity;
   readonly capabilities: TaskExecutionWorkerCapabilities;
-  readonly configuration: TaskExecutionCodexWorkerConfiguration;
+  readonly configuration: TaskExecutionClaudeCodeWorkerConfiguration;
   readonly processCallCount: () => number;
   readonly actualChildProcessCount: () => 0;
   readonly actualCodexCallCount: () => 0;
@@ -163,17 +149,17 @@ export interface TaskExecutionCodexWorkerAdapter
   readonly cloudCallCount: () => 0;
 }
 
-export interface TaskExecutionCodexWorkerConformanceInput
+export interface TaskExecutionClaudeCodeWorkerConformanceInput
   extends Omit<TaskExecutionWorkerConformanceInput, "worker"> {
   readonly worker: unknown;
-  readonly configuration: TaskExecutionCodexWorkerConfiguration;
+  readonly configuration: TaskExecutionClaudeCodeWorkerConfiguration;
   readonly taskOrModelProcessClaims?: unknown;
 }
 
-export interface TaskExecutionCodexWorkerConformanceResult {
+export interface TaskExecutionClaudeCodeWorkerConformanceResult {
   readonly ok: boolean;
-  readonly codexWorkerConformant: boolean;
-  readonly preparedInvocation: TaskExecutionCodexPreparedInvocation;
+  readonly claudeCodeWorkerConformant: boolean;
+  readonly preparedInvocation: TaskExecutionClaudeCodePreparedInvocation;
   readonly workerConformance: TaskExecutionWorkerConformanceResult | null;
   readonly normalizedResult: TaskExecutionWorkerResult | null;
   readonly issues: readonly TaskExecutionWorkerIssue[];
@@ -185,73 +171,11 @@ export interface TaskExecutionCodexWorkerConformanceResult {
   readonly realExecutionEnabled: false;
 }
 
-export type TaskExecutionWorkerProcessDecision =
-  | "authorized"
-  | "blocked";
-
-export interface TaskExecutionWorkerProcessReadiness {
-  readonly taskAuthorityReady: boolean;
-  readonly attemptAuthorityReady: boolean;
-  readonly invocationAuthorityReady: boolean;
-  readonly workerAuthorityReady: boolean;
-  readonly executableAuthorityReady: boolean;
-  readonly workspaceAuthorityReady: boolean;
-  readonly argvReady: boolean;
-  readonly environmentReady: boolean;
-  readonly outputLimitsReady: boolean;
-  readonly timeoutReady: boolean;
-  readonly permissionReady: boolean;
-  readonly auditReady: boolean;
-  readonly duplicateExecutionSafetyReady: boolean;
-  readonly processContractReady: boolean;
-  readonly realCodexExecutionEnabled: false;
-  readonly externalProcessAllowed: false;
-  readonly actualCodexCalls: 0;
-  readonly actualClaudeCalls: 0;
-  readonly actualWorkerProcessesSpawned: 0;
-  readonly cloudCalls: 0;
-}
-
-export interface TaskExecutionWorkerProcessAuthority {
-  readonly boundary: typeof TASK_EXECUTION_CODEX_PROCESS_BOUNDARY;
-  readonly taskId: string;
-  readonly taskRevision: number;
-  readonly attemptId: string;
-  readonly attemptNumber: number;
-  readonly invocationId: string;
-  readonly invocationRevision: number;
-  readonly invocationLifecycle: "invoking";
-  readonly idempotencyKey: string;
-  readonly workItemId: string | null;
-  readonly batchId: string | null;
-  readonly workerId: string;
-  readonly workerFamily: "codex";
-  readonly workspaceRef: string;
-  readonly projectRef: string;
-  readonly executableRef: string;
-  readonly executableKind: "codex_exec";
-  readonly argv: readonly string[];
-  readonly requiredPermissions: readonly Extract<TaskExecutionPermissionKind, "process">[];
-  readonly permissionGateId: string;
-  readonly preProcessAuditEventId: string;
-  readonly preProcessAuditSequence: number;
-  readonly stdoutLimitBytes: number;
-  readonly stderrLimitBytes: number;
-  readonly timeoutMs: number;
-  readonly environment: {
-    readonly authority: "system";
-    readonly inheritance: "none";
-    readonly approvedVariableRefs: readonly [];
-  };
-  readonly realCodexExecutionEnabled: false;
-  readonly externalProcessAllowed: false;
-}
-
-export interface TaskExecutionWorkerProcessGateInput {
-  readonly configuration: TaskExecutionCodexWorkerConfiguration;
+export interface TaskExecutionClaudeCodeWorkerProcessGateInput {
+  readonly configuration: TaskExecutionClaudeCodeWorkerConfiguration;
   readonly request: TaskExecutionWorkerRequest;
   readonly invocationRecord: unknown;
-  readonly preparedInvocation: TaskExecutionCodexPreparedInvocation;
+  readonly preparedInvocation: TaskExecutionClaudeCodePreparedInvocation;
   readonly permissionGateResult?: TaskExecutionPermissionGateResult;
   readonly preProcessAuditEvent?: TaskExecutionAuditEvent;
   readonly expectedInvocationRevision?: number;
@@ -259,14 +183,21 @@ export interface TaskExecutionWorkerProcessGateInput {
   readonly taskOrModelEnvironmentClaims?: unknown;
 }
 
-export interface TaskExecutionWorkerProcessGateResult {
+export interface TaskExecutionClaudeCodeWorkerProcessAuthority
+  extends TaskExecutionLocalWorkerProcessAuthority {
+  readonly boundary: typeof TASK_EXECUTION_CLAUDE_CODE_PROCESS_BOUNDARY;
+  readonly workerFamily: "claude_code";
+  readonly executableKind: "claude_code";
+}
+
+export interface TaskExecutionClaudeCodeWorkerProcessGateResult {
   readonly ok: boolean;
-  readonly decision: TaskExecutionWorkerProcessDecision;
-  readonly readiness: TaskExecutionWorkerProcessReadiness;
-  readonly authority: TaskExecutionWorkerProcessAuthority | null;
+  readonly decision: TaskExecutionLocalWorkerProcessDecision;
+  readonly readiness: TaskExecutionLocalWorkerProcessReadiness;
+  readonly authority: TaskExecutionClaudeCodeWorkerProcessAuthority | null;
   readonly issues: readonly TaskExecutionWorkerIssue[];
-  readonly CodexProcessContractReady: boolean;
-  readonly RealCodexExecutionEnabled: false;
+  readonly ClaudeCodeProcessContractReady: boolean;
+  readonly RealClaudeCodeExecutionEnabled: false;
   readonly ExternalProcessAllowed: false;
   readonly ActualCodexCalls: 0;
   readonly ActualClaudeCalls: 0;
@@ -275,23 +206,26 @@ export interface TaskExecutionWorkerProcessGateResult {
 }
 
 const safeReferencePattern = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,255}$/;
-const safeModelPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const dangerousCodexArgs = new Set([
-  "--dangerously-bypass-approvals-and-sandbox",
-  "danger-full-access",
-  "--danger-full-access",
+const dangerousClaudeArgs = new Set([
+  "--dangerously-skip-permissions",
+  "bypassPermissions",
+  "--permission-mode=bypassPermissions",
 ]);
 const forbiddenArgPrefixes = [
-  "--config",
-  "-c",
-  "--mcp",
+  "--add-dir",
+  "--cwd",
   "--mcp-config",
+  "--model",
+  "--permission-mode",
   "--provider",
   "--api-key",
   "--credential",
   "--env",
 ];
-const codexAuthorityOutputKeys = new Set(["policyauthorized"]);
+const claudeAuthorityOutputKeys = new Set([
+  "ignoreaeosstate",
+  "policyauthorized",
+]);
 
 function issue(input: {
   readonly code: string;
@@ -347,7 +281,10 @@ function canonicalKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-function sanitizeCodexJsonValue(value: unknown, depth = 0): JsonValue | undefined {
+function sanitizeClaudeJsonValue(
+  value: unknown,
+  depth = 0,
+): JsonValue | undefined {
   if (depth > 8) {
     return undefined;
   }
@@ -368,7 +305,7 @@ function sanitizeCodexJsonValue(value: unknown, depth = 0): JsonValue | undefine
     const items: JsonValue[] = [];
 
     for (const item of value) {
-      const sanitized = sanitizeCodexJsonValue(item, depth + 1);
+      const sanitized = sanitizeClaudeJsonValue(item, depth + 1);
 
       if (sanitized !== undefined) {
         items.push(sanitized);
@@ -385,11 +322,11 @@ function sanitizeCodexJsonValue(value: unknown, depth = 0): JsonValue | undefine
   const sanitized: Record<string, JsonValue> = {};
 
   for (const [key, item] of Object.entries(value)) {
-    if (codexAuthorityOutputKeys.has(canonicalKey(key))) {
+    if (claudeAuthorityOutputKeys.has(canonicalKey(key))) {
       continue;
     }
 
-    const sanitizedItem = sanitizeCodexJsonValue(item, depth + 1);
+    const sanitizedItem = sanitizeClaudeJsonValue(item, depth + 1);
 
     if (sanitizedItem !== undefined) {
       sanitized[key] = sanitizedItem;
@@ -413,19 +350,15 @@ function isSafeReference(value: unknown): value is string {
   );
 }
 
-function isSafeModel(value: unknown): value is string {
-  return typeof value === "string" && safeModelPattern.test(value);
-}
-
 function isPositiveInteger(value: unknown, max: number): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= max;
 }
 
-function isCodexIdentity(
+function isClaudeCodeIdentity(
   identity: TaskExecutionWorkerIdentity,
-): identity is TaskExecutionCodexWorkerIdentity {
+): identity is TaskExecutionClaudeCodeWorkerIdentity {
   return (
-    identity.workerFamily === "codex" &&
+    identity.workerFamily === "claude_code" &&
     identity.runtimeKind === "test_worker" &&
     identity.identityAuthority === "system" &&
     identity.selectionAuthority === "system"
@@ -433,29 +366,22 @@ function isCodexIdentity(
 }
 
 function validateConfiguration(
-  configuration: TaskExecutionCodexWorkerConfiguration,
+  configuration: TaskExecutionClaudeCodeWorkerConfiguration,
 ): readonly TaskExecutionWorkerIssue[] {
   const issues: TaskExecutionWorkerIssue[] = [];
 
   if (
     configuration.authority !== "system" ||
-    !isCodexIdentity(configuration.identity) ||
+    !isClaudeCodeIdentity(configuration.identity) ||
     configuration.executable.authority !== "system" ||
-    configuration.executable.executableKind !== "codex_exec" ||
+    configuration.executable.executableKind !== "claude_code" ||
     !isSafeReference(configuration.executable.executableRef) ||
-    configuration.model.authority !== "system" ||
-    !isSafeModel(configuration.model.model) ||
-    !["minimal", "low", "medium", "high"].includes(
-      configuration.model.reasoningEffort,
-    ) ||
     configuration.processPermission.authority !== "system" ||
     configuration.processPermission.requiredPermission !== "process" ||
     !isSafeReference(configuration.processPermission.permissionId) ||
     typeof configuration.processPermission.processExecutionAllowed !==
       "boolean" ||
     typeof configuration.futureProcessCapability !== "boolean" ||
-    !["read-only", "workspace-write"].includes(configuration.sandboxMode) ||
-    !["never", "on-request"].includes(configuration.approvalPolicy) ||
     !isPositiveInteger(configuration.timeoutMs, 600000) ||
     !isPositiveInteger(configuration.stdoutLimitBytes, 65536) ||
     !isPositiveInteger(configuration.stderrLimitBytes, 32768) ||
@@ -464,9 +390,9 @@ function validateConfiguration(
   ) {
     issues.push(
       issue({
-        code: "task_execution_codex_worker_configuration_invalid",
+        code: "task_execution_claude_code_worker_configuration_invalid",
         message:
-          "Codex worker configuration must be bounded, system-owned, and TEST-only.",
+          "Claude Code worker configuration must be bounded, system-owned, and TEST-only.",
       }),
     );
   }
@@ -486,9 +412,9 @@ function validateConfiguration(
   ) {
     issues.push(
       issue({
-        code: "task_execution_codex_worker_workspace_authority_invalid",
+        code: "task_execution_claude_code_worker_workspace_authority_invalid",
         message:
-          "Codex process cwd must come from bounded system workspace authority.",
+          "Claude Code process cwd must come from bounded system workspace authority.",
         category: "permission",
       }),
     );
@@ -507,9 +433,10 @@ function taskOrModelClaimIssues(
   const serialized = JSON.stringify(claims);
   const issues: TaskExecutionWorkerIssue[] = [
     issue({
-      code: "task_execution_codex_worker_task_model_process_claims_rejected",
+      code:
+        "task_execution_claude_code_worker_task_model_process_claims_rejected",
       message:
-        "Task or model Codex process claims are rejected; executable, argv, cwd, model, and permissions are system-owned.",
+        "Task or model Claude Code process claims are rejected; executable, argv, cwd, permissions, MCP, and credentials are system-owned.",
       category: "permission",
     }),
   ];
@@ -522,21 +449,22 @@ function taskOrModelClaimIssues(
   ) {
     issues.push(
       issue({
-        code: "task_execution_codex_worker_shell_command_rejected",
+        code: "task_execution_claude_code_worker_shell_command_rejected",
         message:
-          "Codex worker process preparation rejects shell strings and interactive command automation.",
+          "Claude Code worker process preparation rejects shell strings and interactive command automation.",
         category: "permission",
       }),
     );
   }
 
-  for (const dangerous of dangerousCodexArgs) {
+  for (const dangerous of dangerousClaudeArgs) {
     if (serialized.includes(dangerous)) {
       issues.push(
         issue({
-          code: "task_execution_codex_worker_dangerous_flag_rejected",
+          code:
+            "task_execution_claude_code_worker_dangerous_flag_rejected",
           message:
-            "Codex worker process preparation rejects sandbox bypass and full-access flags.",
+            "Claude Code worker process preparation rejects permission bypass flags.",
           category: "permission",
         }),
       );
@@ -544,12 +472,17 @@ function taskOrModelClaimIssues(
     }
   }
 
-  if (/credential|api[-_]?key|token|provider|mcp|danger-full-access/i.test(serialized)) {
+  if (
+    /credential|api[-_]?key|token|provider|mcp|permission[-_]?mode|bypass|add[-_]?dir|cwd|env/i.test(
+      serialized,
+    )
+  ) {
     issues.push(
       issue({
-        code: "task_execution_codex_worker_authority_override_rejected",
+        code:
+          "task_execution_claude_code_worker_authority_override_rejected",
         message:
-          "Codex worker process preparation rejects credential, provider, MCP, and authority overrides.",
+          "Claude Code worker process preparation rejects credential, provider, MCP, workspace, environment, and authority overrides.",
         category: "permission",
       }),
     );
@@ -558,47 +491,34 @@ function taskOrModelClaimIssues(
   return issues;
 }
 
-function buildCodexArgv(
-  configuration: TaskExecutionCodexWorkerConfiguration,
-): readonly string[] {
-  const argv = [
-    "exec",
-    "--model",
-    configuration.model.model,
-    "--reasoning-effort",
-    configuration.model.reasoningEffort,
-    "--sandbox",
-    configuration.sandboxMode,
-    "--ask-for-approval",
-    configuration.approvalPolicy,
-  ];
-
-  if (configuration.structuredResultContractRef !== undefined) {
-    argv.push("--output-schema", configuration.structuredResultContractRef);
-  }
-
-  return argv;
+function buildClaudeCodeArgv(): readonly string[] {
+  return ["--print", "--output-format", "json"];
 }
 
 function argvIssues(argv: readonly string[]): readonly TaskExecutionWorkerIssue[] {
   const issues: TaskExecutionWorkerIssue[] = [];
 
-  if (argv.length > 16 || !argv.every((arg) => arg.length > 0 && arg.length <= 160)) {
+  if (argv.length > 12 || !argv.every((arg) => arg.length > 0 && arg.length <= 160)) {
     issues.push(
       issue({
-        code: "task_execution_codex_worker_argv_unbounded",
-        message: "Codex process argv must remain bounded.",
+        code: "task_execution_claude_code_worker_argv_unbounded",
+        message: "Claude Code process argv must remain bounded.",
       }),
     );
   }
 
   for (const arg of argv) {
-    if (dangerousCodexArgs.has(arg) || arg.includes("danger-full-access")) {
+    if (
+      dangerousClaudeArgs.has(arg) ||
+      arg.includes("bypassPermissions") ||
+      arg.includes("dangerously-skip-permissions")
+    ) {
       issues.push(
         issue({
-          code: "task_execution_codex_worker_dangerous_flag_rejected",
+          code:
+            "task_execution_claude_code_worker_dangerous_flag_rejected",
           message:
-            "Codex process argv cannot include sandbox bypass or full-access flags.",
+            "Claude Code process argv cannot include permission bypass flags.",
           category: "permission",
         }),
       );
@@ -611,9 +531,10 @@ function argvIssues(argv: readonly string[]): readonly TaskExecutionWorkerIssue[
     ) {
       issues.push(
         issue({
-          code: "task_execution_codex_worker_authority_override_rejected",
+          code:
+            "task_execution_claude_code_worker_authority_override_rejected",
           message:
-            "Codex process argv cannot carry config, MCP, provider, credential, or environment overrides.",
+            "Claude Code process argv cannot carry workspace, MCP, model, provider, credential, permission, or environment overrides.",
           category: "permission",
         }),
       );
@@ -622,8 +543,9 @@ function argvIssues(argv: readonly string[]): readonly TaskExecutionWorkerIssue[
     if (/\s+-c\s+|[|;&<>`$]/.test(arg)) {
       issues.push(
         issue({
-          code: "task_execution_codex_worker_shell_command_rejected",
-          message: "Codex process argv cannot represent a shell command string.",
+          code: "task_execution_claude_code_worker_shell_command_rejected",
+          message:
+            "Claude Code process argv cannot represent a shell command string.",
           category: "permission",
         }),
       );
@@ -635,7 +557,7 @@ function argvIssues(argv: readonly string[]): readonly TaskExecutionWorkerIssue[
 
 function buildInstructionPayload(request: TaskExecutionWorkerRequest): string {
   return JSON.stringify({
-    aeosCodexWorkerInstructionVersion: 1,
+    aeosClaudeCodeWorkerInstructionVersion: 1,
     taskId: request.taskId,
     sourceTaskRevision: request.sourceTaskRevision,
     attemptId: request.attemptId,
@@ -645,7 +567,6 @@ function buildInstructionPayload(request: TaskExecutionWorkerRequest): string {
     workItemId: request.workItemId ?? null,
     batchId: request.batchId ?? null,
     operationKind: request.operationKind,
-    workItem: request.workItemId ?? null,
     constraints: request.boundedInstructions,
     contextReferences: request.contextReferences,
     expectedEvidence: [
@@ -677,20 +598,20 @@ function invocationRecordMatchesRequest(input: {
   );
 }
 
-export function prepareTaskExecutionCodexWorkerInvocation(input: {
-  readonly configuration: TaskExecutionCodexWorkerConfiguration;
+export function prepareTaskExecutionClaudeCodeWorkerInvocation(input: {
+  readonly configuration: TaskExecutionClaudeCodeWorkerConfiguration;
   readonly request: TaskExecutionWorkerRequest;
   readonly invocationRecord: unknown;
   readonly taskOrModelProcessClaims?: unknown;
 }): {
-  readonly preparedInvocation: TaskExecutionCodexPreparedInvocation;
+  readonly preparedInvocation: TaskExecutionClaudeCodePreparedInvocation;
   readonly issues: readonly TaskExecutionWorkerIssue[];
 } {
   const issues: TaskExecutionWorkerIssue[] = [
     ...validateConfiguration(input.configuration),
     ...taskOrModelClaimIssues(input.taskOrModelProcessClaims),
   ];
-  const argv = buildCodexArgv(input.configuration);
+  const argv = buildClaudeCodeArgv();
   issues.push(...argvIssues(argv));
 
   const invocationValidation = validateTaskExecutionInvocationRecord(
@@ -706,9 +627,10 @@ export function prepareTaskExecutionCodexWorkerInvocation(input: {
   if (!invocationAuthorityBound) {
     issues.push(
       issue({
-        code: "task_execution_codex_worker_invocation_authority_mismatch",
+        code:
+          "task_execution_claude_code_worker_invocation_authority_mismatch",
         message:
-          "Prepared Codex invocation must bind the exact AEOS task, revision, attempt, invocation, idempotency, work item, and batch.",
+          "Prepared Claude Code invocation must bind the exact AEOS task, revision, attempt, invocation, idempotency, work item, and batch.",
         category: "conflict",
       }),
     );
@@ -716,16 +638,16 @@ export function prepareTaskExecutionCodexWorkerInvocation(input: {
 
   const exactWorkerSelected =
     input.request.workerIdentity.workerId === input.configuration.identity.workerId &&
-    input.request.workerIdentity.workerFamily === "codex" &&
-    input.configuration.identity.workerFamily === "codex" &&
+    input.request.workerIdentity.workerFamily === "claude_code" &&
+    input.configuration.identity.workerFamily === "claude_code" &&
     input.request.workerIdentity.runtimeKind === "test_worker";
 
   if (!exactWorkerSelected) {
     issues.push(
       issue({
-        code: "task_execution_codex_worker_selection_mismatch",
+        code: "task_execution_claude_code_worker_selection_mismatch",
         message:
-          "Codex adapter requires exact system-selected Codex worker identity.",
+          "Claude Code adapter requires exact system-selected Claude Code worker identity.",
         category: "permission",
       }),
     );
@@ -741,9 +663,9 @@ export function prepareTaskExecutionCodexWorkerInvocation(input: {
   if (!workspaceAuthorityBound) {
     issues.push(
       issue({
-        code: "task_execution_codex_worker_workspace_mismatch",
+        code: "task_execution_claude_code_worker_workspace_mismatch",
         message:
-          "Codex process working directory must match system-owned worker workspace authority.",
+          "Claude Code process working directory must match system-owned worker workspace authority.",
         category: "permission",
       }),
     );
@@ -752,9 +674,9 @@ export function prepareTaskExecutionCodexWorkerInvocation(input: {
   if (!input.configuration.futureProcessCapability) {
     issues.push(
       issue({
-        code: "task_execution_codex_worker_process_capability_missing",
+        code: "task_execution_claude_code_worker_process_capability_missing",
         message:
-          "Future Codex process execution requires a system-declared process execution capability.",
+          "Future Claude Code process execution requires a system-declared process execution capability.",
         category: "permission",
       }),
     );
@@ -763,9 +685,9 @@ export function prepareTaskExecutionCodexWorkerInvocation(input: {
   if (!input.configuration.processPermission.processExecutionAllowed) {
     issues.push(
       issue({
-        code: "task_execution_codex_worker_process_permission_denied",
+        code: "task_execution_claude_code_worker_process_permission_denied",
         message:
-          "Prepared Codex process requests do not grant permission to run without an explicit process permission.",
+          "Prepared Claude Code process requests do not grant permission to run without an explicit process permission.",
         category: "permission",
       }),
     );
@@ -776,13 +698,13 @@ export function prepareTaskExecutionCodexWorkerInvocation(input: {
   if (stdin.length > 8192) {
     issues.push(
       issue({
-        code: "task_execution_codex_worker_instruction_payload_unbounded",
-        message: "Codex worker instruction payload must remain bounded.",
+        code: "task_execution_claude_code_worker_instruction_payload_unbounded",
+        message: "Claude Code worker instruction payload must remain bounded.",
       }),
     );
   }
 
-  const processRequest: TaskExecutionCodexProcessRequest = {
+  const processRequest: TaskExecutionClaudeCodeProcessRequest = {
     executable: input.configuration.executable,
     argv,
     workingDirectory: input.configuration.workspace,
@@ -795,7 +717,7 @@ export function prepareTaskExecutionCodexWorkerInvocation(input: {
       variables: [],
     },
   };
-  const preparedInvocation: TaskExecutionCodexPreparedInvocation = {
+  const preparedInvocation: TaskExecutionClaudeCodePreparedInvocation = {
     taskId: input.request.taskId,
     sourceTaskRevision: input.request.sourceTaskRevision,
     attemptId: input.request.attemptId,
@@ -814,7 +736,7 @@ export function prepareTaskExecutionCodexWorkerInvocation(input: {
       input.configuration.processPermission.processExecutionAllowed,
     permissionFactsAllowed: input.request.permissionFacts.allowed,
     runnable:
-      TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED &&
+      TASK_EXECUTION_CLAUDE_CODE_WORKER_REAL_EXECUTION_ENABLED &&
       issues.every((item) => item.severity !== "error") &&
       exactWorkerSelected &&
       invocationAuthorityBound &&
@@ -822,195 +744,13 @@ export function prepareTaskExecutionCodexWorkerInvocation(input: {
       input.configuration.futureProcessCapability &&
       input.configuration.processPermission.processExecutionAllowed &&
       input.request.permissionFacts.allowed,
-    realExecutionEnabled: TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
+    realExecutionEnabled: TASK_EXECUTION_CLAUDE_CODE_WORKER_REAL_EXECUTION_ENABLED,
   };
 
   return {
     preparedInvocation,
     issues,
   };
-}
-
-function taskOrModelEnvironmentClaimIssues(
-  claims: unknown,
-): readonly TaskExecutionWorkerIssue[] {
-  if (claims === undefined) {
-    return [];
-  }
-
-  return [
-    issue({
-      code: "task_execution_worker_process_gate_task_model_env_override_rejected",
-      message:
-        "Task or model environment claims are rejected; future Codex process environment inheritance is system-owned.",
-      category: "permission",
-    }),
-  ];
-}
-
-function sameOptionalId(left: string | null | undefined, right: string | null | undefined): boolean {
-  return (left ?? null) === (right ?? null);
-}
-
-function codexPreparedInvocationMatchesAuthority(input: {
-  readonly prepared: TaskExecutionCodexPreparedInvocation;
-  readonly request: TaskExecutionWorkerRequest;
-  readonly record: TaskExecutionInvocationRecord;
-  readonly configuration: TaskExecutionCodexWorkerConfiguration;
-}): boolean {
-  const { prepared, request, record, configuration } = input;
-
-  return (
-    prepared.taskId === request.taskId &&
-    prepared.taskId === record.taskId &&
-    prepared.sourceTaskRevision === request.sourceTaskRevision &&
-    prepared.sourceTaskRevision === record.taskStateRevision &&
-    prepared.attemptId === request.attemptId &&
-    prepared.attemptId === record.attemptId &&
-    prepared.attemptNumber === request.attemptNumber &&
-    prepared.attemptNumber === record.attemptNumber &&
-    prepared.invocationId === request.invocationId &&
-    prepared.invocationId === record.invocationId &&
-    prepared.idempotencyKey === request.idempotencyKey &&
-    prepared.idempotencyKey === record.idempotencyKey &&
-    sameOptionalId(prepared.workItemId, request.workItemId) &&
-    sameOptionalId(prepared.workItemId, record.workItemId) &&
-    sameOptionalId(prepared.batchId, request.batchId) &&
-    sameOptionalId(prepared.batchId, record.batchId) &&
-    prepared.workerIdentity.workerId === configuration.identity.workerId &&
-    prepared.workerIdentity.workerId === request.workerIdentity.workerId &&
-    prepared.workerIdentity.workerFamily === "codex" &&
-    request.workerIdentity.workerFamily === "codex"
-  );
-}
-
-function codexProcessRequestMatchesConfiguration(input: {
-  readonly prepared: TaskExecutionCodexPreparedInvocation;
-  readonly configuration: TaskExecutionCodexWorkerConfiguration;
-}): boolean {
-  const request = input.prepared.processRequest;
-  const configuration = input.configuration;
-
-  return (
-    request.executable.authority === "system" &&
-    request.executable.executableKind === "codex_exec" &&
-    request.executable.executableRef === configuration.executable.executableRef &&
-    request.workingDirectory.authority === "system" &&
-    request.workingDirectory.workspaceRef === configuration.workspace.workspaceRef &&
-    request.workingDirectory.projectRef === configuration.workspace.projectRef &&
-    request.workingDirectory.workingDirectoryRef ===
-      configuration.workspace.workingDirectoryRef &&
-    request.timeoutMs === configuration.timeoutMs &&
-    request.stdoutLimitBytes === configuration.stdoutLimitBytes &&
-    request.stderrLimitBytes === configuration.stderrLimitBytes
-  );
-}
-
-function auditEventMatchesCodexProcessAuthority(input: {
-  readonly event?: TaskExecutionAuditEvent;
-  readonly prepared: TaskExecutionCodexPreparedInvocation;
-  readonly gate?: TaskExecutionPermissionGateResult;
-}): boolean {
-  const { event, prepared, gate } = input;
-
-  return (
-    event !== undefined &&
-    gate !== undefined &&
-    event.eventKind === "execution_invocation_dispatch_intent" &&
-    isPositiveInteger(event.sequence, 999999999) &&
-    typeof event.eventDigest === "string" &&
-    event.eventDigest.length > 0 &&
-    event.result.status === "ok" &&
-    event.taskId === prepared.taskId &&
-    event.taskStateRevision === prepared.sourceTaskRevision &&
-    event.attemptId === prepared.attemptId &&
-    event.invocationId === prepared.invocationId &&
-    event.binding.taskId === prepared.taskId &&
-    event.binding.taskStateRevision === prepared.sourceTaskRevision &&
-    event.binding.attemptId === prepared.attemptId &&
-    event.binding.attemptNumber === prepared.attemptNumber &&
-    event.binding.invocationId === prepared.invocationId &&
-    sameOptionalId(event.binding.workItemId, prepared.workItemId) &&
-    sameOptionalId(event.binding.batchId, prepared.batchId) &&
-    event.adapter?.adapterId === prepared.workerIdentity.workerId &&
-    event.adapter?.operation === "execute_task_attempt" &&
-    event.adapter?.idempotencyReference === prepared.idempotencyKey &&
-    event.policy?.policyGateId === gate.policyGateId &&
-    event.policy?.auditRequired === true
-  );
-}
-
-function processGateDecision(
-  issues: readonly TaskExecutionWorkerIssue[],
-): TaskExecutionWorkerProcessDecision {
-  return issues.some((item) => item.severity === "error")
-    ? "blocked"
-    : "authorized";
-}
-
-export function evaluateTaskExecutionWorkerProcessGate(
-  input: TaskExecutionWorkerProcessGateInput,
-): TaskExecutionWorkerProcessGateResult {
-  const localGate = evaluateTaskExecutionLocalWorkerProcessGate({
-    processBoundary: TASK_EXECUTION_CODEX_PROCESS_BOUNDARY,
-    expectedWorkerFamily: "codex",
-    expectedExecutableKind: "codex_exec",
-    workerFamilyLabel: "Codex",
-    workerMismatchCode: "task_execution_worker_process_gate_worker_not_codex",
-    configuration: input.configuration,
-    request: input.request,
-    invocationRecord: input.invocationRecord,
-    preparedInvocation: input.preparedInvocation,
-    permissionGateResult: input.permissionGateResult,
-    preProcessAuditEvent: input.preProcessAuditEvent,
-    expectedInvocationRevision: input.expectedInvocationRevision,
-    additionalIssues: [
-      ...validateConfiguration(input.configuration),
-      ...taskOrModelClaimIssues(input.taskOrModelProcessClaims),
-    ],
-    argvIssues: argvIssues(input.preparedInvocation.processRequest.argv),
-    taskOrModelEnvironmentClaims: input.taskOrModelEnvironmentClaims,
-  });
-  const readiness: TaskExecutionWorkerProcessReadiness = {
-    ...(localGate.readiness as TaskExecutionLocalWorkerProcessReadiness),
-    realCodexExecutionEnabled: TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
-    externalProcessAllowed: TASK_EXECUTION_CODEX_WORKER_EXTERNAL_PROCESS_ALLOWED,
-  };
-  const authority: TaskExecutionWorkerProcessAuthority | null =
-    localGate.authority === null
-      ? null
-      : {
-          ...(localGate.authority as TaskExecutionLocalWorkerProcessAuthority),
-          boundary: TASK_EXECUTION_CODEX_PROCESS_BOUNDARY,
-          workerFamily: "codex",
-          executableKind: "codex_exec",
-          realCodexExecutionEnabled:
-            TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
-          externalProcessAllowed:
-            TASK_EXECUTION_CODEX_WORKER_EXTERNAL_PROCESS_ALLOWED,
-        };
-
-  return {
-    ok: authority !== null,
-    decision: authority === null ? "blocked" : localGate.decision,
-    readiness,
-    authority,
-    issues: localGate.issues,
-    CodexProcessContractReady: localGate.ProcessContractReady,
-    RealCodexExecutionEnabled: TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
-    ExternalProcessAllowed: TASK_EXECUTION_CODEX_WORKER_EXTERNAL_PROCESS_ALLOWED,
-    ActualCodexCalls: 0,
-    ActualClaudeCalls: 0,
-    ActualWorkerProcessesSpawned: 0,
-    CloudCalls: 0,
-  };
-
-}
-
-export function authorizeTaskExecutionWorkerProcess(
-  input: TaskExecutionWorkerProcessGateInput,
-): TaskExecutionWorkerProcessGateResult {
-  return evaluateTaskExecutionWorkerProcessGate(input);
 }
 
 function boundedDiagnostic(value: string, limit: number): string | undefined {
@@ -1096,22 +836,22 @@ function structuredResultToRaw(input: {
 
   if (
     !isRecord(input.value) ||
-    input.value.aeosCodexWorkerResultVersion !== 1 ||
+    input.value.aeosClaudeCodeWorkerResultVersion !== 1 ||
     !structuredBindingsMatch({ request: input.request, value: input.value })
   ) {
     return {
       rawResult: rawFailure({
         request: input.request,
-        code: "task_execution_codex_worker_structured_result_invalid",
+        code: "task_execution_claude_code_worker_structured_result_invalid",
         category: "invalid_request",
         message:
-          "Codex process output was not a closed structured result bound to the AEOS invocation.",
+          "Claude Code process output was not a closed structured result bound to the AEOS invocation.",
       }),
       issues: [
         issue({
-          code: "task_execution_codex_worker_structured_result_invalid",
+          code: "task_execution_claude_code_worker_structured_result_invalid",
           message:
-            "Malformed or mismatched Codex structured output failed closed.",
+            "Malformed or mismatched Claude Code structured output failed closed.",
         }),
       ],
     };
@@ -1124,22 +864,23 @@ function structuredResultToRaw(input: {
     return {
       rawResult: rawFailure({
         request: input.request,
-        code: "task_execution_codex_worker_structured_output_oversized",
+        code: "task_execution_claude_code_worker_structured_output_oversized",
         category: "invalid_request",
-        message: "Codex structured output exceeded the bounded output limit.",
+        message:
+          "Claude Code structured output exceeded the bounded output limit.",
       }),
       issues: [
         issue({
-          code: "task_execution_codex_worker_structured_output_oversized",
-          message: "Oversized Codex structured output was rejected.",
+          code: "task_execution_claude_code_worker_structured_output_oversized",
+          message: "Oversized Claude Code structured output was rejected.",
         }),
       ],
     };
   }
 
   const status = input.value.status;
-  const output = sanitizeCodexJsonValue(input.value.output);
-  const metadata = sanitizeCodexJsonValue(input.value.metadata);
+  const output = sanitizeClaudeJsonValue(input.value.output);
+  const metadata = sanitizeClaudeJsonValue(input.value.metadata);
 
   if (
     status !== "returned" &&
@@ -1150,14 +891,14 @@ function structuredResultToRaw(input: {
     return {
       rawResult: rawFailure({
         request: input.request,
-        code: "task_execution_codex_worker_structured_status_invalid",
+        code: "task_execution_claude_code_worker_structured_status_invalid",
         category: "invalid_request",
-        message: "Codex structured output contained an invalid status.",
+        message: "Claude Code structured output contained an invalid status.",
       }),
       issues: [
         issue({
-          code: "task_execution_codex_worker_structured_status_invalid",
-          message: "Invalid Codex structured status failed closed.",
+          code: "task_execution_claude_code_worker_structured_status_invalid",
+          message: "Invalid Claude Code structured status failed closed.",
         }),
       ],
     };
@@ -1166,8 +907,8 @@ function structuredResultToRaw(input: {
   if (output !== undefined && !isJsonValue(output)) {
     issues.push(
       issue({
-        code: "task_execution_codex_worker_structured_output_invalid",
-        message: "Non-JSON Codex output was dropped from worker evidence.",
+        code: "task_execution_claude_code_worker_structured_output_invalid",
+        message: "Non-JSON Claude Code output was dropped from worker evidence.",
         severity: "warning",
       }),
     );
@@ -1176,8 +917,9 @@ function structuredResultToRaw(input: {
   if (metadata !== undefined && !isJsonObject(metadata)) {
     issues.push(
       issue({
-        code: "task_execution_codex_worker_structured_metadata_invalid",
-        message: "Non-object Codex metadata was dropped from worker evidence.",
+        code: "task_execution_claude_code_worker_structured_metadata_invalid",
+        message:
+          "Non-object Claude Code metadata was dropped from worker evidence.",
         severity: "warning",
       }),
     );
@@ -1245,9 +987,9 @@ function structuredResultToRaw(input: {
   };
 }
 
-export function normalizeTaskExecutionCodexProcessRawResult(input: {
+export function normalizeTaskExecutionClaudeCodeProcessRawResult(input: {
   readonly request: TaskExecutionWorkerRequest;
-  readonly processResult: TaskExecutionCodexProcessResult;
+  readonly processResult: TaskExecutionClaudeCodeProcessResult;
   readonly stdoutLimitBytes?: number;
   readonly stderrLimitBytes?: number;
 }): {
@@ -1262,10 +1004,10 @@ export function normalizeTaskExecutionCodexProcessRawResult(input: {
     return {
       rawResult: unavailableFailure({
         request: input.request,
-        code: "task_execution_codex_worker_process_timeout",
+        code: "task_execution_claude_code_worker_process_timeout",
         category: "timeout",
         message:
-          "Codex process timed out; this is evidence only and does not authorize completion or retry.",
+          "Claude Code process timed out; this is evidence only and does not authorize completion or retry.",
       }),
       issues: [],
     };
@@ -1279,10 +1021,10 @@ export function normalizeTaskExecutionCodexProcessRawResult(input: {
     return {
       rawResult: unavailableFailure({
         request: input.request,
-        code: "task_execution_codex_worker_process_interrupted",
+        code: "task_execution_claude_code_worker_process_interrupted",
         category: "unknown",
         message:
-          "Codex process was interrupted; this is evidence only and does not complete work.",
+          "Claude Code process was interrupted; this is evidence only and does not complete work.",
       }),
       issues: [],
     };
@@ -1292,15 +1034,16 @@ export function normalizeTaskExecutionCodexProcessRawResult(input: {
     return {
       rawResult: rawFailure({
         request: input.request,
-        code: "task_execution_codex_worker_stdout_oversized",
+        code: "task_execution_claude_code_worker_stdout_oversized",
         category: "invalid_request",
-        message: "Codex process stdout exceeded the configured bounded limit.",
+        message:
+          "Claude Code process stdout exceeded the configured bounded limit.",
         diagnostic,
       }),
       issues: [
         issue({
-          code: "task_execution_codex_worker_stdout_oversized",
-          message: "Oversized Codex stdout was rejected.",
+          code: "task_execution_claude_code_worker_stdout_oversized",
+          message: "Oversized Claude Code stdout was rejected.",
         }),
       ],
     };
@@ -1313,10 +1056,10 @@ export function normalizeTaskExecutionCodexProcessRawResult(input: {
     return {
       rawResult: rawFailure({
         request: input.request,
-        code: "task_execution_codex_worker_process_nonzero_exit",
+        code: "task_execution_claude_code_worker_process_nonzero_exit",
         category: "worker_error",
         message:
-          "Codex process exited nonzero; exit status is not completion authority.",
+          "Claude Code process exited nonzero; exit status is not completion authority.",
         diagnostic,
       }),
       issues: [],
@@ -1333,29 +1076,29 @@ export function normalizeTaskExecutionCodexProcessRawResult(input: {
     return {
       rawResult: rawFailure({
         request: input.request,
-        code: "task_execution_codex_worker_structured_result_malformed",
+        code: "task_execution_claude_code_worker_structured_result_malformed",
         category: "invalid_request",
         message:
-          "Codex process stdout was not valid structured JSON and failed closed.",
+          "Claude Code process stdout was not valid structured JSON and failed closed.",
         diagnostic,
       }),
       issues: [
         issue({
-          code: "task_execution_codex_worker_structured_result_malformed",
-          message: "Malformed Codex structured output failed closed.",
+          code: "task_execution_claude_code_worker_structured_result_malformed",
+          message: "Malformed Claude Code structured output failed closed.",
         }),
       ],
     };
   }
 }
 
-export function normalizeTaskExecutionCodexProcessResult(input: {
+export function normalizeTaskExecutionClaudeCodeProcessResult(input: {
   readonly request: TaskExecutionWorkerRequest;
-  readonly processResult: TaskExecutionCodexProcessResult;
+  readonly processResult: TaskExecutionClaudeCodeProcessResult;
   readonly stdoutLimitBytes?: number;
   readonly stderrLimitBytes?: number;
 }): TaskExecutionWorkerResult {
-  const normalizedRaw = normalizeTaskExecutionCodexProcessRawResult(input);
+  const normalizedRaw = normalizeTaskExecutionClaudeCodeProcessRawResult(input);
   const normalized = normalizeTaskExecutionWorkerResult({
     request: input.request,
     rawResult: normalizedRaw.rawResult,
@@ -1369,16 +1112,16 @@ export function normalizeTaskExecutionCodexProcessResult(input: {
 
 function successfulProcessResult(
   request: TaskExecutionWorkerRequest,
-): TaskExecutionCodexProcessResult {
+): TaskExecutionClaudeCodeProcessResult {
   return {
-    invocationRef: `test-codex-process:${request.invocationId}`,
+    invocationRef: `test-claude-code-process:${request.invocationId}`,
     terminationReason: "exited",
     exitCode: 0,
     timedOut: false,
     interrupted: false,
     stderr: "",
     stdout: JSON.stringify({
-      aeosCodexWorkerResultVersion: 1,
+      aeosClaudeCodeWorkerResultVersion: 1,
       status: "returned",
       workerId: request.workerIdentity.workerId,
       workerFamily: request.workerIdentity.workerFamily,
@@ -1392,23 +1135,23 @@ function successfulProcessResult(
       workItemId: request.workItemId ?? null,
       batchId: request.batchId ?? null,
       invocationOk: true,
-      outputReference: "artifact:codex-worker-output",
-      patchArtifactReference: "artifact:codex-worker-patch",
-      changedFileManifestReference: "artifact:codex-worker-changed-files",
-      testSummaryReference: "artifact:codex-worker-tests",
-      diagnosticCode: "codex_worker_test_process_returned",
+      outputReference: "artifact:claude-code-worker-output",
+      patchArtifactReference: "artifact:claude-code-worker-patch",
+      changedFileManifestReference: "artifact:claude-code-worker-changed-files",
+      testSummaryReference: "artifact:claude-code-worker-tests",
+      diagnosticCode: "claude_code_worker_test_process_returned",
     }),
   };
 }
 
-export function createTaskExecutionCodexWorkerAdapter(input: {
-  readonly configuration: TaskExecutionCodexWorkerConfiguration;
-  readonly deterministicProcessResult?: TaskExecutionCodexProcessResult;
-}): TaskExecutionCodexWorkerAdapter {
+export function createTaskExecutionClaudeCodeWorkerAdapter(input: {
+  readonly configuration: TaskExecutionClaudeCodeWorkerConfiguration;
+  readonly deterministicProcessResult?: TaskExecutionClaudeCodeProcessResult;
+}): TaskExecutionClaudeCodeWorkerAdapter {
   let processCalls = 0;
 
   return {
-    codexAdapterKind: "task_execution_codex_worker_adapter",
+    claudeCodeAdapterKind: "task_execution_claude_code_worker_adapter",
     identity: input.configuration.identity,
     capabilities: {
       roles: ["implementation"],
@@ -1431,7 +1174,7 @@ export function createTaskExecutionCodexWorkerAdapter(input: {
     cloudCallCount: () => 0,
     run: (request) => {
       processCalls += 1;
-      const normalizedRaw = normalizeTaskExecutionCodexProcessRawResult({
+      const normalizedRaw = normalizeTaskExecutionClaudeCodeProcessRawResult({
         request,
         processResult:
           input.deterministicProcessResult ?? successfulProcessResult(request),
@@ -1439,24 +1182,21 @@ export function createTaskExecutionCodexWorkerAdapter(input: {
         stderrLimitBytes: input.configuration.stderrLimitBytes,
       });
 
-      if (normalizedRaw.issues.some((item) => item.severity === "error")) {
-        return normalizedRaw.rawResult;
-      }
-
       return normalizedRaw.rawResult;
     },
   };
 }
 
-function codexAdapterFromUnknown(
+function claudeCodeAdapterFromUnknown(
   worker: unknown,
-): TaskExecutionCodexWorkerAdapter | undefined {
+): TaskExecutionClaudeCodeWorkerAdapter | undefined {
   if (!isRecord(worker)) {
     return undefined;
   }
 
   if (
-    worker.codexAdapterKind !== "task_execution_codex_worker_adapter" ||
+    worker.claudeCodeAdapterKind !==
+      "task_execution_claude_code_worker_adapter" ||
     typeof worker.processCallCount !== "function" ||
     typeof worker.actualChildProcessCount !== "function" ||
     typeof worker.actualCodexCallCount !== "function" ||
@@ -1466,14 +1206,72 @@ function codexAdapterFromUnknown(
     return undefined;
   }
 
-  return worker as unknown as TaskExecutionCodexWorkerAdapter;
+  return worker as unknown as TaskExecutionClaudeCodeWorkerAdapter;
 }
 
-export async function evaluateTaskExecutionCodexWorkerConformance(
-  input: TaskExecutionCodexWorkerConformanceInput,
-): Promise<TaskExecutionCodexWorkerConformanceResult> {
-  const adapter = codexAdapterFromUnknown(input.worker);
-  const prepared = prepareTaskExecutionCodexWorkerInvocation({
+export function evaluateTaskExecutionClaudeCodeWorkerProcessGate(
+  input: TaskExecutionClaudeCodeWorkerProcessGateInput,
+): TaskExecutionClaudeCodeWorkerProcessGateResult {
+  const localGate = evaluateTaskExecutionLocalWorkerProcessGate({
+    processBoundary: TASK_EXECUTION_CLAUDE_CODE_PROCESS_BOUNDARY,
+    expectedWorkerFamily: "claude_code",
+    expectedExecutableKind: "claude_code",
+    workerFamilyLabel: "Claude Code",
+    workerMismatchCode:
+      "task_execution_worker_process_gate_worker_not_claude_code",
+    configuration: input.configuration,
+    request: input.request,
+    invocationRecord: input.invocationRecord,
+    preparedInvocation: input.preparedInvocation,
+    permissionGateResult: input.permissionGateResult,
+    preProcessAuditEvent: input.preProcessAuditEvent,
+    expectedInvocationRevision: input.expectedInvocationRevision,
+    additionalIssues: [
+      ...validateConfiguration(input.configuration),
+      ...taskOrModelClaimIssues(input.taskOrModelProcessClaims),
+    ],
+    argvIssues: argvIssues(input.preparedInvocation.processRequest.argv),
+    taskOrModelEnvironmentClaims: input.taskOrModelEnvironmentClaims,
+  });
+  const authority: TaskExecutionClaudeCodeWorkerProcessAuthority | null =
+    localGate.authority === null
+      ? null
+      : {
+          ...localGate.authority,
+          boundary: TASK_EXECUTION_CLAUDE_CODE_PROCESS_BOUNDARY,
+          workerFamily: "claude_code",
+          executableKind: "claude_code",
+        };
+
+  return {
+    ok: authority !== null,
+    decision: authority === null ? "blocked" : localGate.decision,
+    readiness: localGate.readiness,
+    authority,
+    issues: localGate.issues,
+    ClaudeCodeProcessContractReady: localGate.ProcessContractReady,
+    RealClaudeCodeExecutionEnabled:
+      TASK_EXECUTION_CLAUDE_CODE_WORKER_REAL_EXECUTION_ENABLED,
+    ExternalProcessAllowed:
+      TASK_EXECUTION_CLAUDE_CODE_WORKER_EXTERNAL_PROCESS_ALLOWED,
+    ActualCodexCalls: 0,
+    ActualClaudeCalls: 0,
+    ActualWorkerProcessesSpawned: 0,
+    CloudCalls: 0,
+  };
+}
+
+export function authorizeTaskExecutionClaudeCodeWorkerProcess(
+  input: TaskExecutionClaudeCodeWorkerProcessGateInput,
+): TaskExecutionClaudeCodeWorkerProcessGateResult {
+  return evaluateTaskExecutionClaudeCodeWorkerProcessGate(input);
+}
+
+export async function evaluateTaskExecutionClaudeCodeWorkerConformance(
+  input: TaskExecutionClaudeCodeWorkerConformanceInput,
+): Promise<TaskExecutionClaudeCodeWorkerConformanceResult> {
+  const adapter = claudeCodeAdapterFromUnknown(input.worker);
+  const prepared = prepareTaskExecutionClaudeCodeWorkerInvocation({
     configuration: input.configuration,
     request: input.request,
     invocationRecord: input.invocationRecord,
@@ -1484,18 +1282,22 @@ export async function evaluateTaskExecutionCodexWorkerConformance(
   if (adapter === undefined) {
     preflightIssues.push(
       issue({
-        code: "task_execution_codex_worker_adapter_invalid",
+        code: "task_execution_claude_code_worker_adapter_invalid",
         message:
-          "Codex worker must be the concrete local Codex adapter boundary.",
+          "Claude Code worker must be the concrete local Claude Code adapter boundary.",
       }),
     );
   }
 
-  if (adapter !== undefined && adapter.identity.workerId !== input.configuration.identity.workerId) {
+  if (
+    adapter !== undefined &&
+    adapter.identity.workerId !== input.configuration.identity.workerId
+  ) {
     preflightIssues.push(
       issue({
-        code: "task_execution_codex_worker_adapter_configuration_mismatch",
-        message: "Codex adapter identity must match the supplied configuration.",
+        code: "task_execution_claude_code_worker_adapter_configuration_mismatch",
+        message:
+          "Claude Code adapter identity must match the supplied configuration.",
         category: "conflict",
       }),
     );
@@ -1504,7 +1306,7 @@ export async function evaluateTaskExecutionCodexWorkerConformance(
   if (preflightIssues.some((item) => item.severity === "error")) {
     return {
       ok: false,
-      codexWorkerConformant: false,
+      claudeCodeWorkerConformant: false,
       preparedInvocation: prepared.preparedInvocation,
       workerConformance: null,
       normalizedResult: null,
@@ -1514,14 +1316,15 @@ export async function evaluateTaskExecutionCodexWorkerConformance(
       actualCodexCallCount: 0,
       actualClaudeCodeCallCount: 0,
       cloudCallCount: 0,
-      realExecutionEnabled: TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
+      realExecutionEnabled:
+        TASK_EXECUTION_CLAUDE_CODE_WORKER_REAL_EXECUTION_ENABLED,
     };
   }
 
   if (adapter === undefined) {
     return {
       ok: false,
-      codexWorkerConformant: false,
+      claudeCodeWorkerConformant: false,
       preparedInvocation: prepared.preparedInvocation,
       workerConformance: null,
       normalizedResult: null,
@@ -1531,7 +1334,8 @@ export async function evaluateTaskExecutionCodexWorkerConformance(
       actualCodexCallCount: 0,
       actualClaudeCodeCallCount: 0,
       cloudCallCount: 0,
-      realExecutionEnabled: TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
+      realExecutionEnabled:
+        TASK_EXECUTION_CLAUDE_CODE_WORKER_REAL_EXECUTION_ENABLED,
     };
   }
 
@@ -1553,9 +1357,9 @@ export async function evaluateTaskExecutionCodexWorkerConformance(
     workAccountingSnapshotAfter: input.workAccountingSnapshotAfter,
   });
   const issues = [...preflightIssues, ...workerConformance.issues];
-  const codexWorkerConformant =
+  const claudeCodeWorkerConformant =
     workerConformance.testWorkerConformant &&
-    workerConformance.workerIdentity?.workerFamily === "codex" &&
+    workerConformance.workerIdentity?.workerFamily === "claude_code" &&
     workerConformance.workerInvoked &&
     adapter.actualChildProcessCount() === 0 &&
     adapter.actualCodexCallCount() === 0 &&
@@ -1563,8 +1367,10 @@ export async function evaluateTaskExecutionCodexWorkerConformance(
     adapter.cloudCallCount() === 0;
 
   return {
-    ok: codexWorkerConformant && issues.every((item) => item.severity !== "error"),
-    codexWorkerConformant,
+    ok:
+      claudeCodeWorkerConformant &&
+      issues.every((item) => item.severity !== "error"),
+    claudeCodeWorkerConformant,
     preparedInvocation: prepared.preparedInvocation,
     workerConformance,
     normalizedResult: workerConformance.normalizedResult,
@@ -1574,6 +1380,7 @@ export async function evaluateTaskExecutionCodexWorkerConformance(
     actualCodexCallCount: adapter.actualCodexCallCount(),
     actualClaudeCodeCallCount: adapter.actualClaudeCodeCallCount(),
     cloudCallCount: adapter.cloudCallCount(),
-    realExecutionEnabled: TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
+    realExecutionEnabled:
+      TASK_EXECUTION_CLAUDE_CODE_WORKER_REAL_EXECUTION_ENABLED,
   };
 }
