@@ -4,6 +4,7 @@ import {
   mkdir,
   readdir,
   readFile,
+  realpath,
   rm,
   stat,
   symlink,
@@ -129,6 +130,7 @@ import {
   evaluateTaskExecutionClaudeCodeWorkerProcessGate,
   evaluateTaskExecutionCodexWorkerConformance,
   evaluateTaskExecutionWorkerProcessGate,
+  executeTaskExecutionLocalWorkerProcess,
   evaluateTaskExecutionWorkerConformance,
   evaluateTaskExecutionProductionDispatchGate,
   evaluateTaskExecutionProductionCredentialProviderConfiguration,
@@ -19375,6 +19377,555 @@ try {
     hostileCodexProcess.safety.workCompleted,
     false,
     "task execution codex worker smoke Z should not convert worker evidence into work completion",
+  );
+
+  const localProcessRuntimeStateRoot = await mkdtemp(
+    join(tmpdir(), "aeos-local-worker-process-runtime-state-"),
+  );
+  const localProcessRuntimeWorkspace = await realpath(
+    await mkdtemp(join(tmpdir(), "aeos-local-worker-process-runtime-cwd-")),
+  );
+  const fixtureScriptPath = join(
+    localProcessRuntimeWorkspace,
+    "aeos-local-worker-fixture.mjs",
+  );
+  await writeNodeFile(
+    fixtureScriptPath,
+    [
+      "const mode = process.argv[2];",
+      "const write = (stream, value) => stream.write(value);",
+      "const payload = (extra = {}) => ({",
+      "  aeosCodexWorkerResultVersion: 1,",
+      "  status: 'returned',",
+      "  workerId: process.env.FIXTURE_WORKER_ID,",
+      "  workerFamily: 'codex',",
+      "  runtimeKind: 'test_worker',",
+      "  invocationId: process.env.FIXTURE_INVOCATION_ID,",
+      "  idempotencyKey: process.env.FIXTURE_IDEMPOTENCY_REF,",
+      "  taskId: process.env.FIXTURE_TASK_ID,",
+      "  sourceTaskRevision: Number(process.env.FIXTURE_TASK_REVISION),",
+      "  attemptId: process.env.FIXTURE_ATTEMPT_ID,",
+      "  attemptNumber: Number(process.env.FIXTURE_ATTEMPT_NUMBER),",
+      "  workItemId: process.env.FIXTURE_WORK_ITEM_ID || null,",
+      "  batchId: process.env.FIXTURE_BATCH_ID || null,",
+      "  invocationOk: true,",
+      "  output: {",
+      "    retainedDiagnostic: 'bounded fixture evidence',",
+      "    completed: true,",
+      "    verified: true,",
+      "    approved: true,",
+      "    safeToRetry: true,",
+      "    allDone: true,",
+      "    taskCompleted: true,",
+      "    policyAuthorized: true,",
+      "    switchWorkerTo: 'claude_code',",
+      "    shellLiteral: '$AEOS_SHOULD_NOT_EXPAND',",
+      "    cwd: process.cwd(),",
+      "    inheritedSecretPresent: process.env.AEOS_LOCAL_PROCESS_SECRET ? true : false",
+      "  },",
+      "  ...extra",
+      "});",
+      "if (mode === 'success') { write(process.stderr, '\\u001b[31mfixture stderr\\u001b[0m\\n'); write(process.stdout, JSON.stringify(payload())); }",
+      "else if (mode === 'nonzero') { write(process.stderr, 'nonzero fixture stderr'); process.exit(7); }",
+      "else if (mode === 'timeout') { setTimeout(() => write(process.stdout, 'late'), 1000); }",
+      "else if (mode === 'malformed') { write(process.stdout, 'all complete verified approved'); }",
+      "else if (mode === 'oversized-stdout') { write(process.stdout, 'x'.repeat(4096)); }",
+      "else if (mode === 'oversized-stderr') { write(process.stderr, 'e'.repeat(4096)); }",
+      "else { write(process.stderr, 'unknown fixture mode'); process.exit(9); }",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const makeLocalProcessRuntimeFixture = async ({
+    attemptNumber,
+    mode,
+    stdoutLimitBytes = 8192,
+    stderrLimitBytes = 2048,
+    timeoutMs = 1000,
+    executablePath = process.execPath,
+    requestOverrides = {},
+    configurationOverrides = {},
+  }) => {
+    const preparedAttempt = prepareTaskExecutionAttempt({
+      state: firstUpdate.value.state,
+      expectedRevision: 2,
+      workItemId: "work-a",
+      batchId: "batch-a",
+      attemptNumber,
+      createdAt: attemptCreatedAt,
+    });
+    assert.equal(preparedAttempt.ok, true);
+    const startedAttempt = transitionTaskExecutionAttempt({
+      attempt: preparedAttempt.value.attempt,
+      intent: { kind: "start" },
+      occurredAt: "2026-08-08T01:05:00.000Z",
+    });
+    assert.equal(startedAttempt.ok, true);
+    const reservation = await reserveTaskExecutionInvocation({
+      projectRoot: localProcessRuntimeStateRoot,
+      state: firstUpdate.value.state,
+      attempt: startedAttempt.value.attempt,
+      dependencyKind: "test_noop",
+      expectedRevision: 2,
+      latestAttemptNumberForContext: attemptNumber,
+      ownerId: `smoke-local-process-owner-${attemptNumber}`,
+      ownershipToken: `smoke-local-process-token-${attemptNumber}`,
+    });
+    assert.equal(reservation.ok, true);
+    const entered = await updateTaskExecutionInvocation({
+      projectRoot: localProcessRuntimeStateRoot,
+      taskId: reservation.value.record.taskId,
+      invocationId: reservation.value.record.invocationId,
+      ownershipToken: reservation.value.record.ownership.ownershipToken,
+      expectedLifecycle: "reserved",
+      intent: {
+        kind: "enter_invocation",
+        occurredAt: "2026-08-08T01:05:00.100Z",
+      },
+    });
+    assert.equal(entered.ok, true);
+    const processPermissions = createSmokeTestExecutionAdapterPermissions({
+      policyRequired: false,
+      processPermission: true,
+    });
+    const processAdapterRequest = createSmokeTestExecutionAdapterRequest(
+      entered.value.record,
+      executionAdapterIdentity,
+      {
+        permissionRequirements: processPermissions,
+        credentialReference: undefined,
+      },
+    );
+    const permissionGate = evaluateTaskExecutionPermissionGate({
+      request: processAdapterRequest,
+      adapterIdentity: executionAdapterIdentity,
+      adapterCapabilities: createSmokeTestExecutionAdapterCapabilities({
+        supportsProcessExecution: true,
+      }),
+      adapterPermissions: processPermissions,
+      operationKind: "execute_task_attempt",
+      policyRequirement: {
+        required: false,
+        policyGateId: `smoke-local-process-policy-${attemptNumber}`,
+        authority: "system",
+      },
+      credentialReferenceRequired: false,
+      auditRequired: true,
+    });
+    assert.equal(permissionGate.allowed, true);
+    const request = createSmokeTestWorkerRequest(
+      entered.value.record,
+      codexWorkerIdentity,
+      createSmokeWorkerPermissionFacts(permissionGate, {
+        requiredPermissions: ["process"],
+      }),
+      requestOverrides,
+    );
+    const configuration = createSmokeCodexConfiguration({
+      timeoutMs,
+      stdoutLimitBytes,
+      stderrLimitBytes,
+      ...configurationOverrides,
+    });
+    const prepared = prepareTaskExecutionCodexWorkerInvocation({
+      configuration,
+      request,
+      invocationRecord: entered.value.record,
+    });
+    assert.equal(prepared.issues.some((item) => item.severity === "error"), false);
+    const auditDraft = createTaskExecutionInvocationDispatchIntentAuditEvent({
+      record: entered.value.record,
+      adapterId: codexWorkerIdentity.workerId,
+      operation: "execute_task_attempt",
+      policyGateId: permissionGate.policyGateId,
+      policyAuthorized: permissionGate.policyAuthorized,
+      auditRequired: true,
+      occurredAt: "2026-08-08T01:05:00.200Z",
+    });
+    assert.equal(auditDraft.ok, true);
+    const auditAppend = await appendTaskExecutionAuditEvent({
+      projectRoot: localProcessRuntimeStateRoot,
+      taskId: auditDraft.value.taskId,
+      event: auditDraft.value,
+      forbiddenValues: ["owner-token", "sk-codex-smoke"],
+    });
+    assert.equal(auditAppend.ok, true);
+    const gate = evaluateTaskExecutionWorkerProcessGate({
+      configuration,
+      request,
+      invocationRecord: entered.value.record,
+      preparedInvocation: prepared.preparedInvocation,
+      permissionGateResult: permissionGate,
+      preProcessAuditEvent: auditAppend.value.event,
+      expectedInvocationRevision: entered.value.record.revision,
+    });
+    assert.equal(gate.ok, true, JSON.stringify(gate.issues));
+    const runtimeInput = {
+      projectRoot: localProcessRuntimeStateRoot,
+      authority: {
+        ...gate.authority,
+        argv: [fixtureScriptPath, mode],
+      },
+      invocationRecord: entered.value.record,
+      preProcessAuditEvent: auditAppend.value.event,
+      executable: {
+        authority: "system",
+        executableRef: gate.authority.executableRef,
+        executableKind: gate.authority.executableKind,
+        executablePath,
+        executionMode: "benign_test_fixture",
+      },
+      workspace: {
+        authority: "system",
+        workspaceRef: gate.authority.workspaceRef,
+        projectRef: gate.authority.projectRef,
+        absolutePath: localProcessRuntimeWorkspace,
+        repositoryWriteAllowed: false,
+      },
+      environment: {
+        authority: "system",
+        inheritance: "none",
+        variables: [
+          { name: "FIXTURE_WORKER_ID", value: request.workerIdentity.workerId },
+          { name: "FIXTURE_INVOCATION_ID", value: request.invocationId },
+          { name: "FIXTURE_IDEMPOTENCY_REF", value: request.idempotencyKey },
+          { name: "FIXTURE_TASK_ID", value: request.taskId },
+          {
+            name: "FIXTURE_TASK_REVISION",
+            value: String(request.sourceTaskRevision),
+          },
+          { name: "FIXTURE_ATTEMPT_ID", value: request.attemptId },
+          {
+            name: "FIXTURE_ATTEMPT_NUMBER",
+            value: String(request.attemptNumber),
+          },
+          { name: "FIXTURE_WORK_ITEM_ID", value: request.workItemId ?? "" },
+          { name: "FIXTURE_BATCH_ID", value: request.batchId ?? "" },
+        ],
+      },
+      stdin: prepared.preparedInvocation.processRequest.stdin,
+      occurredAt: "2026-08-08T01:05:00.300Z",
+      forbiddenValues: ["smoke-local-process-token", "sk-codex-smoke"],
+    };
+
+    return { request, entered, gate, runtimeInput };
+  };
+
+  const successRuntimeFixture = await makeLocalProcessRuntimeFixture({
+    attemptNumber: 3161,
+    mode: "success",
+  });
+  const successRuntime = await withTemporaryEnvironmentValue(
+    "AEOS_LOCAL_PROCESS_SECRET",
+    "must-not-inherit",
+    async () =>
+      await executeTaskExecutionLocalWorkerProcess(
+        successRuntimeFixture.runtimeInput,
+      ),
+  );
+  assert.equal(
+    successRuntime.status,
+    "process_returned",
+    `task execution local worker process runtime smoke A should run bounded successful benign child: ${JSON.stringify(successRuntime.issues)}`,
+  );
+  assert.equal(
+    successRuntime.actualWorkerProcessesSpawned,
+    1,
+    "task execution local worker process runtime smoke A should record one actual benign child process",
+  );
+  assert.equal(
+    successRuntime.safety.shellExecuted,
+    false,
+    "task execution local worker process runtime smoke K should launch with shell disabled",
+  );
+  assert.equal(
+    successRuntime.processResult.stderr.includes("\u001b"),
+    false,
+    "task execution local worker process runtime smoke H should sanitize terminal escapes from stderr",
+  );
+  const successRuntimeNormalized = normalizeTaskExecutionCodexProcessResult({
+    request: successRuntimeFixture.request,
+    processResult: successRuntime.processResult,
+    stdoutLimitBytes: successRuntimeFixture.gate.authority.stdoutLimitBytes,
+    stderrLimitBytes: successRuntimeFixture.gate.authority.stderrLimitBytes,
+  });
+  assert.equal(
+    successRuntimeNormalized.ok,
+    true,
+    JSON.stringify(successRuntimeNormalized.issues),
+  );
+  assert.equal(
+    successRuntimeNormalized.output.inheritedSecretPresent,
+    false,
+    "task execution local worker process runtime smoke J should isolate parent environment",
+  );
+  assert.equal(
+    successRuntimeNormalized.output.cwd,
+    localProcessRuntimeWorkspace,
+    "task execution local worker process runtime smoke I should run with exact authorized cwd",
+  );
+  assert.equal(
+    successRuntimeNormalized.output.completed,
+    undefined,
+    "task execution local worker process runtime smoke H should keep hostile completion claims non-authoritative",
+  );
+  assert.equal(
+    successRuntimeNormalized.output.policyAuthorized,
+    undefined,
+    "task execution local worker process runtime smoke H should strip hostile policy claims",
+  );
+  assert.equal(
+    successRuntimeNormalized.output.switchWorkerTo,
+    undefined,
+    "task execution local worker process runtime smoke H should strip hostile worker-switch claims",
+  );
+  assert.equal(
+    successRuntimeNormalized.safety.taskCompleted,
+    false,
+    "task execution local worker process runtime smoke H should not grant completion authority",
+  );
+  assert.equal(
+    successRuntimeNormalized.safety.verified,
+    false,
+    "task execution local worker process runtime smoke H should not grant verifier authority",
+  );
+  assert.equal(
+    successRuntimeNormalized.safety.safeToRetry,
+    false,
+    "task execution local worker process runtime smoke H should not grant retry authority",
+  );
+  assert.equal(
+    successRuntimeNormalized.output.shellLiteral,
+    "$AEOS_SHOULD_NOT_EXPAND",
+    "task execution local worker process runtime smoke K should not shell-expand argv or output",
+  );
+
+  const replayRuntime = await executeTaskExecutionLocalWorkerProcess(
+    successRuntimeFixture.runtimeInput,
+  );
+  assert.equal(
+    replayRuntime.status,
+    "launch_blocked",
+    "task execution local worker process runtime smoke L should block duplicate/replayed authority",
+  );
+  assert.equal(
+    replayRuntime.actualWorkerProcessesSpawned,
+    0,
+    "task execution local worker process runtime smoke L should not spawn a second child",
+  );
+
+  const staleRuntimeFixture = await makeLocalProcessRuntimeFixture({
+    attemptNumber: 3162,
+    mode: "success",
+  });
+  const staleRuntime = await executeTaskExecutionLocalWorkerProcess({
+    ...staleRuntimeFixture.runtimeInput,
+    authority: {
+      ...staleRuntimeFixture.runtimeInput.authority,
+      invocationRevision:
+        staleRuntimeFixture.runtimeInput.authority.invocationRevision + 1,
+    },
+  });
+  assert.equal(
+    staleRuntime.status,
+    "launch_blocked",
+    "task execution local worker process runtime smoke M should block stale invocation revision",
+  );
+  assert.equal(staleRuntime.actualWorkerProcessesSpawned, 0);
+
+  const unknownRuntimeFixture = await makeLocalProcessRuntimeFixture({
+    attemptNumber: 3163,
+    mode: "success",
+  });
+  const unknownMark = await updateTaskExecutionInvocation({
+    projectRoot: localProcessRuntimeStateRoot,
+    taskId: unknownRuntimeFixture.entered.value.record.taskId,
+    invocationId: unknownRuntimeFixture.entered.value.record.invocationId,
+    ownershipToken:
+      unknownRuntimeFixture.entered.value.record.ownership.ownershipToken,
+    expectedLifecycle: "invoking",
+    expectedRevision: unknownRuntimeFixture.entered.value.record.revision,
+    intent: {
+      kind: "mark_outcome_unknown",
+      occurredAt: "2026-08-08T01:05:01.000Z",
+    },
+  });
+  assert.equal(unknownMark.ok, true);
+  const unknownRelaunch = await executeTaskExecutionLocalWorkerProcess(
+    unknownRuntimeFixture.runtimeInput,
+  );
+  assert.equal(
+    unknownRelaunch.status,
+    "launch_blocked",
+    "task execution local worker process runtime smoke N should block outcome_unknown relaunch",
+  );
+  assert.equal(unknownRelaunch.actualWorkerProcessesSpawned, 0);
+
+  const nonzeroRuntimeFixture = await makeLocalProcessRuntimeFixture({
+    attemptNumber: 3164,
+    mode: "nonzero",
+  });
+  const nonzeroRuntime = await executeTaskExecutionLocalWorkerProcess(
+    nonzeroRuntimeFixture.runtimeInput,
+  );
+  assert.equal(
+    nonzeroRuntime.status,
+    "process_failed",
+    "task execution local worker process runtime smoke B should represent nonzero exit",
+  );
+  assert.equal(nonzeroRuntime.actualWorkerProcessesSpawned, 1);
+
+  const timeoutRuntimeFixture = await makeLocalProcessRuntimeFixture({
+    attemptNumber: 3165,
+    mode: "timeout",
+    timeoutMs: 50,
+  });
+  const timeoutRuntime = await executeTaskExecutionLocalWorkerProcess(
+    timeoutRuntimeFixture.runtimeInput,
+  );
+  assert.equal(
+    timeoutRuntime.status,
+    "process_timeout",
+    "task execution local worker process runtime smoke C should terminate timed-out child",
+  );
+  assert.equal(timeoutRuntime.processResult.timedOut, true);
+
+  const malformedRuntimeFixture = await makeLocalProcessRuntimeFixture({
+    attemptNumber: 3166,
+    mode: "malformed",
+  });
+  const malformedRuntime = await executeTaskExecutionLocalWorkerProcess(
+    malformedRuntimeFixture.runtimeInput,
+  );
+  const malformedRuntimeNormalized = normalizeTaskExecutionCodexProcessResult({
+    request: malformedRuntimeFixture.request,
+    processResult: malformedRuntime.processResult,
+  });
+  assert.equal(
+    malformedRuntimeNormalized.ok,
+    false,
+    "task execution local worker process runtime smoke D should fail closed on malformed structured output",
+  );
+
+  const oversizedStdoutRuntimeFixture = await makeLocalProcessRuntimeFixture({
+    attemptNumber: 3167,
+    mode: "oversized-stdout",
+    stdoutLimitBytes: 128,
+  });
+  const oversizedStdoutRuntime = await executeTaskExecutionLocalWorkerProcess(
+    oversizedStdoutRuntimeFixture.runtimeInput,
+  );
+  assert.equal(
+    oversizedStdoutRuntime.status,
+    "process_output_oversized",
+    "task execution local worker process runtime smoke E should terminate oversized stdout",
+  );
+  assert.equal(oversizedStdoutRuntime.processResult.stdoutTruncated, true);
+
+  const oversizedStderrRuntimeFixture = await makeLocalProcessRuntimeFixture({
+    attemptNumber: 3168,
+    mode: "oversized-stderr",
+    stderrLimitBytes: 128,
+  });
+  const oversizedStderrRuntime = await executeTaskExecutionLocalWorkerProcess(
+    oversizedStderrRuntimeFixture.runtimeInput,
+  );
+  assert.equal(
+    oversizedStderrRuntime.status,
+    "process_output_oversized",
+    "task execution local worker process runtime smoke F should terminate oversized stderr",
+  );
+  assert.equal(oversizedStderrRuntime.processResult.stderrTruncated, true);
+
+  const spawnFailureRuntimeFixture = await makeLocalProcessRuntimeFixture({
+    attemptNumber: 3169,
+    mode: "success",
+    executablePath: join(localProcessRuntimeWorkspace, "missing-node"),
+  });
+  const spawnFailureRuntime = await executeTaskExecutionLocalWorkerProcess(
+    spawnFailureRuntimeFixture.runtimeInput,
+  );
+  assert.equal(
+    spawnFailureRuntime.status,
+    "process_spawn_failed",
+    "task execution local worker process runtime smoke G should represent spawn failure without retry authority",
+  );
+  assert.equal(spawnFailureRuntime.processResult.spawned, false);
+
+  const cwdMismatchRuntimeFixture = await makeLocalProcessRuntimeFixture({
+    attemptNumber: 3170,
+    mode: "success",
+  });
+  const cwdMismatchRuntime = await executeTaskExecutionLocalWorkerProcess({
+    ...cwdMismatchRuntimeFixture.runtimeInput,
+    workspace: {
+      ...cwdMismatchRuntimeFixture.runtimeInput.workspace,
+      absolutePath: tmpdir(),
+    },
+  });
+  assert.equal(
+    cwdMismatchRuntime.status,
+    "launch_blocked",
+    "task execution local worker process runtime smoke I should block cwd authority mismatch",
+  );
+  assert.equal(cwdMismatchRuntime.actualWorkerProcessesSpawned, 0);
+
+  const envRejectedRuntimeFixture = await makeLocalProcessRuntimeFixture({
+    attemptNumber: 3171,
+    mode: "success",
+  });
+  const envRejectedRuntime = await executeTaskExecutionLocalWorkerProcess({
+    ...envRejectedRuntimeFixture.runtimeInput,
+    environment: {
+      authority: "system",
+      inheritance: "none",
+      variables: [{ name: "ANTHROPIC_API_KEY", value: "sk-nope" }],
+    },
+  });
+  assert.equal(
+    envRejectedRuntime.status,
+    "launch_blocked",
+    "task execution local worker process runtime smoke J should reject secret-shaped environment",
+  );
+  assert.equal(envRejectedRuntime.actualWorkerProcessesSpawned, 0);
+
+  const localRuntime400Coverage = verifyAgenticCoverage({
+    taskId: "smoke-local-process-runtime-boundary-400-20",
+    inventory: completeInventory(
+      400,
+      "local-process-runtime-boundary-400-20-inventory",
+    ),
+    coverage: coverageCounts({
+      expectedItemCount: 400,
+      completedItemCount: 20,
+      pendingItemCount: 380,
+    }),
+  });
+  assert.equal(localRuntime400Coverage.itemCoverage.expectedItems, 400);
+  assert.equal(localRuntime400Coverage.itemCoverage.completedItems, 20);
+  assert.equal(localRuntime400Coverage.itemCoverage.pendingItems, 380);
+  assert.equal(localRuntime400Coverage.ok, false);
+  assert.equal(successRuntime.safety.taskCompleted, false);
+  assert.equal(successRuntime.safety.verifierRun, false);
+  assert.equal(successRuntime.safety.completionGateSatisfied, false);
+  assert.equal(successRuntime.actualCodexCalls, 0);
+  assert.equal(successRuntime.actualClaudeCalls, 0);
+  assert.equal(successRuntime.cloudCalls, 0);
+  assert.equal(
+    [
+      successRuntime,
+      nonzeroRuntime,
+      timeoutRuntime,
+      malformedRuntime,
+      oversizedStdoutRuntime,
+      oversizedStderrRuntime,
+      spawnFailureRuntime,
+    ].reduce(
+      (count, item) => count + item.actualWorkerProcessesSpawned,
+      0,
+    ) > 0,
+    true,
+    "task execution local worker process runtime smoke should spawn actual benign fixture children",
   );
 
   const createSmokeClaudeCodeConfiguration = (overrides = {}) => ({

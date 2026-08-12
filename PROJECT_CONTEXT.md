@@ -156,6 +156,13 @@ condition.
   normalization, hostile-output stripping, Codex/Claude parity coverage, and
   real Codex, Claude Code, child-process, cloud, retry, verifier, completion,
   and work accounting execution disabled.
+- TASK-0316: Shared controlled local worker process runtime. Added one shared
+  bounded local-process runtime beneath the Codex and Claude Code adapter
+  process gates, durable one-shot launch consumption through invocation
+  persistence, conservative workspace/environment/output/timeout handling, and
+  deterministic benign child-process smoke coverage while keeping real Codex,
+  real Claude Code, cloud, retry, verifier, completion, and work accounting
+  authority disabled.
 
 ## Do Not Load By Default
 
@@ -166,8 +173,9 @@ condition.
 
 ## Next Task
 
-TASK-0316 not started: shared controlled REAL local worker process execution
-boundary for already-conformant Codex and Claude Code adapters.
+TASK-0317 not started: first explicitly controlled real local Claude Code
+worker canary boundary, with automated real Claude calls disabled and no
+completion authority.
 
 ## Current Direction
 
@@ -177,10 +185,9 @@ returns to the Codex-orchestrator plus Claude Code worker orchestration
 architecture through provider-neutral adapter foundations, without implementing
 real Codex or Claude Code worker execution yet.
 
-The safest next boundary is a shared controlled REAL local worker process
-execution boundary for already-conformant Codex and Claude Code adapters. Real
-Codex and Claude Code execution remain disabled until that later explicitly
-controlled task.
+The safest next boundary is the first explicitly controlled real local Claude
+Code worker canary boundary. Automated real Claude calls remain disabled, and
+worker output remains evidence only with no completion authority.
 
 ## Current Plans
 

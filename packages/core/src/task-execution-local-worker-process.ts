@@ -1,10 +1,17 @@
 import type { TaskExecutionAuditEvent } from "./task-execution-audit.js";
+import {
+  createTaskExecutionInvocationFailedAuditEvent,
+  createTaskExecutionInvocationOutcomeUnknownAuditEvent,
+  createTaskExecutionInvocationReturnedAuditEvent,
+} from "./task-execution-audit.js";
+import { appendTaskExecutionAuditEvent } from "./task-execution-audit-persistence.js";
 import type {
   TaskExecutionInvocationRecord,
 } from "./task-execution-invocation-record.js";
 import {
   validateTaskExecutionInvocationRecord,
 } from "./task-execution-invocation-record.js";
+import { updateTaskExecutionInvocation } from "./task-execution-invocation-persistence.js";
 import type {
   TaskExecutionPermissionGateResult,
   TaskExecutionPermissionKind,
@@ -16,7 +23,16 @@ import type {
   TaskExecutionWorkerRequest,
   TaskExecutionWorkerWorkspaceReference,
 } from "./task-execution-worker.js";
-import type { AeosError } from "./types.js";
+import type { AeosError, JsonObject, JsonValue } from "./types.js";
+
+// @ts-expect-error Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
+import { spawn } from "node:child_process";
+// @ts-expect-error Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
+import { Buffer } from "node:buffer";
+// @ts-expect-error Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
+import { realpath } from "node:fs/promises";
+// @ts-expect-error Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
+import { isAbsolute } from "node:path";
 
 export const TASK_EXECUTION_LOCAL_WORKER_PROCESS_CONTRACT_READY = true;
 export const TASK_EXECUTION_LOCAL_WORKER_EXTERNAL_PROCESS_ALLOWED = false;
@@ -191,7 +207,121 @@ export interface TaskExecutionLocalWorkerProcessGateResult {
   readonly CloudCalls: 0;
 }
 
+export type TaskExecutionLocalWorkerProcessTerminationReason =
+  | "exited"
+  | "nonzero_exit"
+  | "timeout"
+  | "signal"
+  | "spawn_failure"
+  | "output_limit_exceeded"
+  | "unknown";
+
+export type TaskExecutionLocalWorkerProcessRuntimeStatus =
+  | "launch_blocked"
+  | "launch_reserved"
+  | "process_returned"
+  | "process_failed"
+  | "process_timeout"
+  | "process_signal"
+  | "process_spawn_failed"
+  | "process_output_oversized"
+  | "process_outcome_unknown"
+  | "outcome_persistence_failed";
+
+export interface TaskExecutionLocalWorkerRuntimeExecutableBinding {
+  readonly authority: "system";
+  readonly executableRef: string;
+  readonly executableKind: TaskExecutionLocalWorkerExecutableKind;
+  readonly executablePath: string;
+  readonly executionMode: "benign_test_fixture";
+}
+
+export interface TaskExecutionLocalWorkerRuntimeWorkspaceBinding {
+  readonly authority: "system";
+  readonly workspaceRef: string;
+  readonly projectRef: string;
+  readonly absolutePath: string;
+  readonly repositoryWriteAllowed: false;
+}
+
+export interface TaskExecutionLocalWorkerRuntimeEnvironmentPolicy {
+  readonly authority: "system";
+  readonly inheritance: "none";
+  readonly variables: readonly {
+    readonly name: string;
+    readonly value: string;
+  }[];
+}
+
+export interface TaskExecutionLocalWorkerProcessEvidence {
+  readonly invocationRef: string;
+  readonly terminationReason: TaskExecutionLocalWorkerProcessTerminationReason;
+  readonly exitCode: number | null;
+  readonly signal?: string;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly stdoutBytes: number;
+  readonly stderrBytes: number;
+  readonly stdoutTruncated: boolean;
+  readonly stderrTruncated: boolean;
+  readonly timedOut: boolean;
+  readonly interrupted: boolean;
+  readonly spawned: boolean;
+  readonly observedAt: string;
+}
+
+export interface ExecuteTaskExecutionLocalWorkerProcessInput {
+  readonly projectRoot: string;
+  readonly authority: TaskExecutionLocalWorkerProcessAuthority;
+  readonly invocationRecord: unknown;
+  readonly preProcessAuditEvent: TaskExecutionAuditEvent;
+  readonly executable: TaskExecutionLocalWorkerRuntimeExecutableBinding;
+  readonly workspace: TaskExecutionLocalWorkerRuntimeWorkspaceBinding;
+  readonly environment?: TaskExecutionLocalWorkerRuntimeEnvironmentPolicy;
+  readonly stdin: string;
+  readonly occurredAt?: string;
+  readonly forbiddenValues?: readonly string[];
+}
+
+export interface TaskExecutionLocalWorkerProcessRuntimeResult {
+  readonly ok: boolean;
+  readonly status: TaskExecutionLocalWorkerProcessRuntimeStatus;
+  readonly launchReservationPersisted: boolean;
+  readonly oneShotAuthorityConsumed: boolean;
+  readonly processSpawned: boolean;
+  readonly actualWorkerProcessesSpawned: 0 | 1;
+  readonly actualCodexCalls: 0;
+  readonly actualClaudeCalls: 0;
+  readonly cloudCalls: 0;
+  readonly invocationLifecycle: string | null;
+  readonly invocationRevision: number | null;
+  readonly processResult: TaskExecutionLocalWorkerProcessEvidence | null;
+  readonly reconciliationRequired: boolean;
+  readonly postDispatchAuditWritten: boolean;
+  readonly postDispatchAuditIncomplete: boolean;
+  readonly issues: readonly TaskExecutionWorkerIssue[];
+  readonly safety: {
+    readonly processEvidenceOnly: true;
+    readonly shellExecuted: false;
+    readonly parentEnvironmentInherited: false;
+    readonly taskEnvironmentAccepted: false;
+    readonly repositoryWritten: false;
+    readonly retryAttempted: false;
+    readonly blindRelaunchAllowed: false;
+    readonly workAccountingModified: false;
+    readonly taskCompleted: false;
+    readonly verifierRun: false;
+    readonly completionGateSatisfied: false;
+    readonly rawWorkerOutputAuthoritative: false;
+    readonly realCodexInvoked: false;
+    readonly realClaudeCodeInvoked: false;
+    readonly cloudCalled: false;
+  };
+}
+
 const safeReferencePattern = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,255}$/;
+const safeEnvNamePattern = /^[A-Z_][A-Z0-9_]{0,63}$/;
+const maxEnvironmentVariables = 16;
 
 function issue(input: {
   readonly code: string;
@@ -722,4 +852,771 @@ export function evaluateTaskExecutionLocalWorkerProcessGate(
     ActualWorkerProcessesSpawned: 0,
     CloudCalls: 0,
   };
+}
+
+function runtimeResult(input: {
+  readonly ok: boolean;
+  readonly status: TaskExecutionLocalWorkerProcessRuntimeStatus;
+  readonly launchReservationPersisted?: boolean;
+  readonly oneShotAuthorityConsumed?: boolean;
+  readonly processSpawned?: boolean;
+  readonly actualWorkerProcessesSpawned?: 0 | 1;
+  readonly invocationLifecycle?: string | null;
+  readonly invocationRevision?: number | null;
+  readonly processResult?: TaskExecutionLocalWorkerProcessEvidence | null;
+  readonly reconciliationRequired?: boolean;
+  readonly postDispatchAuditWritten?: boolean;
+  readonly postDispatchAuditIncomplete?: boolean;
+  readonly issues: readonly TaskExecutionWorkerIssue[];
+}): TaskExecutionLocalWorkerProcessRuntimeResult {
+  return {
+    ok: input.ok,
+    status: input.status,
+    launchReservationPersisted: input.launchReservationPersisted ?? false,
+    oneShotAuthorityConsumed: input.oneShotAuthorityConsumed ?? false,
+    processSpawned: input.processSpawned ?? false,
+    actualWorkerProcessesSpawned: input.actualWorkerProcessesSpawned ?? 0,
+    actualCodexCalls: 0,
+    actualClaudeCalls: 0,
+    cloudCalls: 0,
+    invocationLifecycle: input.invocationLifecycle ?? null,
+    invocationRevision: input.invocationRevision ?? null,
+    processResult: input.processResult ?? null,
+    reconciliationRequired: input.reconciliationRequired ?? false,
+    postDispatchAuditWritten: input.postDispatchAuditWritten ?? false,
+    postDispatchAuditIncomplete: input.postDispatchAuditIncomplete ?? false,
+    issues: input.issues,
+    safety: {
+      processEvidenceOnly: true,
+      shellExecuted: false,
+      parentEnvironmentInherited: false,
+      taskEnvironmentAccepted: false,
+      repositoryWritten: false,
+      retryAttempted: false,
+      blindRelaunchAllowed: false,
+      workAccountingModified: false,
+      taskCompleted: false,
+      verifierRun: false,
+      completionGateSatisfied: false,
+      rawWorkerOutputAuthoritative: false,
+      realCodexInvoked: false,
+      realClaudeCodeInvoked: false,
+      cloudCalled: false,
+    },
+  };
+}
+
+function authorityMatchesRecord(input: {
+  readonly authority: TaskExecutionLocalWorkerProcessAuthority;
+  readonly record: TaskExecutionInvocationRecord;
+}): boolean {
+  const { authority, record } = input;
+
+  return (
+    authority.taskId === record.taskId &&
+    authority.taskRevision === record.taskStateRevision &&
+    authority.attemptId === record.attemptId &&
+    authority.attemptNumber === record.attemptNumber &&
+    authority.invocationId === record.invocationId &&
+    authority.invocationRevision === record.revision &&
+    authority.invocationLifecycle === record.lifecycle &&
+    authority.idempotencyKey === record.idempotencyKey &&
+    sameOptionalId(authority.workItemId, record.workItemId) &&
+    sameOptionalId(authority.batchId, record.batchId)
+  );
+}
+
+function auditMatchesLaunchAuthority(input: {
+  readonly authority: TaskExecutionLocalWorkerProcessAuthority;
+  readonly event: TaskExecutionAuditEvent;
+}): boolean {
+  const { authority, event } = input;
+
+  return (
+    event.auditEventId === authority.preProcessAuditEventId &&
+    event.sequence === authority.preProcessAuditSequence &&
+    event.eventKind === "execution_invocation_dispatch_intent" &&
+    event.result.status === "ok" &&
+    event.taskId === authority.taskId &&
+    event.taskStateRevision === authority.taskRevision &&
+    event.attemptId === authority.attemptId &&
+    event.invocationId === authority.invocationId &&
+    event.binding.taskId === authority.taskId &&
+    event.binding.taskStateRevision === authority.taskRevision &&
+    event.binding.attemptId === authority.attemptId &&
+    event.binding.attemptNumber === authority.attemptNumber &&
+    event.binding.invocationId === authority.invocationId &&
+    sameOptionalId(event.binding.workItemId, authority.workItemId) &&
+    sameOptionalId(event.binding.batchId, authority.batchId) &&
+    event.adapter?.adapterId === authority.workerId &&
+    event.adapter?.operation === "execute_task_attempt" &&
+    event.adapter?.idempotencyReference === authority.idempotencyKey &&
+    event.policy?.policyGateId === authority.permissionGateId &&
+    event.policy?.auditRequired === true
+  );
+}
+
+function executableBindingReady(input: {
+  readonly authority: TaskExecutionLocalWorkerProcessAuthority;
+  readonly executable: TaskExecutionLocalWorkerRuntimeExecutableBinding;
+}): boolean {
+  return (
+    input.executable.authority === "system" &&
+    input.executable.executionMode === "benign_test_fixture" &&
+    input.executable.executableRef === input.authority.executableRef &&
+    input.executable.executableKind === input.authority.executableKind &&
+    isAbsolute(input.executable.executablePath) &&
+    !input.executable.executablePath.includes("\0")
+  );
+}
+
+async function workspaceBindingReady(input: {
+  readonly authority: TaskExecutionLocalWorkerProcessAuthority;
+  readonly workspace: TaskExecutionLocalWorkerRuntimeWorkspaceBinding;
+}): Promise<boolean> {
+  if (
+    input.workspace.authority !== "system" ||
+    input.workspace.workspaceRef !== input.authority.workspaceRef ||
+    input.workspace.projectRef !== input.authority.projectRef ||
+    input.workspace.repositoryWriteAllowed !== false ||
+    !isAbsolute(input.workspace.absolutePath) ||
+    input.workspace.absolutePath.includes("\0")
+  ) {
+    return false;
+  }
+
+  const resolved = await realpath(input.workspace.absolutePath).catch(
+    () => undefined,
+  );
+
+  return resolved === input.workspace.absolutePath;
+}
+
+function environmentPolicyReady(
+  environment?: TaskExecutionLocalWorkerRuntimeEnvironmentPolicy,
+): boolean {
+  if (environment === undefined) {
+    return true;
+  }
+
+  if (
+    environment.authority !== "system" ||
+    environment.inheritance !== "none" ||
+    environment.variables.length > maxEnvironmentVariables
+  ) {
+    return false;
+  }
+
+  return environment.variables.every(
+    (item) =>
+      safeEnvNamePattern.test(item.name) &&
+      item.value.length <= 256 &&
+      !/TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL/i.test(item.name),
+  );
+}
+
+function environmentFromPolicy(
+  environment?: TaskExecutionLocalWorkerRuntimeEnvironmentPolicy,
+): Record<string, string> {
+  return Object.fromEntries(
+    (environment?.variables ?? []).map((item) => [item.name, item.value]),
+  );
+}
+
+function sanitizeOutput(value: string): string {
+  return value
+    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  let current = "";
+
+  for (const char of value) {
+    const next = `${current}${char}`;
+
+    if (Buffer.byteLength(next, "utf8") > maxBytes) {
+      return current;
+    }
+
+    current = next;
+  }
+
+  return current;
+}
+
+function appendChunk(input: {
+  readonly current: string;
+  readonly chunk: unknown;
+  readonly maxBytes: number;
+}): {
+  readonly value: string;
+  readonly bytes: number;
+  readonly oversized: boolean;
+} {
+  const chunk = input.chunk;
+  const chunkText = sanitizeOutput(
+    typeof chunk === "string"
+      ? chunk
+      : Buffer.isBuffer(chunk)
+        ? (chunk as { toString: (encoding: string) => string }).toString("utf8")
+        : String(chunk),
+  );
+  const next = `${input.current}${chunkText}`;
+  const bytes = Buffer.byteLength(next, "utf8");
+
+  if (bytes <= input.maxBytes) {
+    return { value: next, bytes, oversized: false };
+  }
+
+  return {
+    value: truncateUtf8(next, input.maxBytes),
+    bytes,
+    oversized: true,
+  };
+}
+
+function spawnStatusFromEvidence(
+  evidence: TaskExecutionLocalWorkerProcessEvidence,
+): TaskExecutionLocalWorkerProcessRuntimeStatus {
+  if (evidence.terminationReason === "spawn_failure") {
+    return "process_spawn_failed";
+  }
+
+  if (evidence.terminationReason === "output_limit_exceeded") {
+    return "process_output_oversized";
+  }
+
+  if (evidence.terminationReason === "timeout") {
+    return "process_timeout";
+  }
+
+  if (evidence.terminationReason === "signal") {
+    return "process_signal";
+  }
+
+  if (
+    evidence.terminationReason === "exited" &&
+    evidence.exitCode === 0
+  ) {
+    return "process_returned";
+  }
+
+  if (evidence.terminationReason === "unknown") {
+    return "process_outcome_unknown";
+  }
+
+  return "process_failed";
+}
+
+function failureCategoryFromEvidence(
+  evidence: TaskExecutionLocalWorkerProcessEvidence,
+): "execution_failure" | "unknown" {
+  if (evidence.terminationReason === "timeout") {
+    return "execution_failure";
+  }
+
+  if (evidence.terminationReason === "nonzero_exit") {
+    return "execution_failure";
+  }
+
+  return evidence.terminationReason === "output_limit_exceeded"
+    ? "execution_failure"
+    : "unknown";
+}
+
+function diagnosticFromEvidence(
+  evidence: TaskExecutionLocalWorkerProcessEvidence,
+): string {
+  return truncateUtf8(
+    [
+      `termination=${evidence.terminationReason}`,
+      `exitCode=${evidence.exitCode ?? "null"}`,
+      evidence.signal === undefined ? undefined : `signal=${evidence.signal}`,
+      evidence.stderr.length === 0 ? undefined : `stderr=${evidence.stderr}`,
+    ]
+      .filter((item): item is string => item !== undefined)
+      .join("; "),
+    2048,
+  );
+}
+
+async function executeBoundedChildProcess(input: {
+  readonly authority: TaskExecutionLocalWorkerProcessAuthority;
+  readonly executable: TaskExecutionLocalWorkerRuntimeExecutableBinding;
+  readonly workspace: TaskExecutionLocalWorkerRuntimeWorkspaceBinding;
+  readonly environment?: TaskExecutionLocalWorkerRuntimeEnvironmentPolicy;
+  readonly stdin: string;
+  readonly observedAt: string;
+}): Promise<TaskExecutionLocalWorkerProcessEvidence> {
+  return await new Promise((resolveProcess) => {
+    let stdout = "";
+    let stderr = "";
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let stdoutOversized = false;
+    let stderrOversized = false;
+    let timedOut = false;
+    let spawned = false;
+    let resolved = false;
+
+    const finish = (
+      evidence: Omit<
+        TaskExecutionLocalWorkerProcessEvidence,
+        "invocationRef" | "stdout" | "stderr" | "stdoutBytes" | "stderrBytes" | "stdoutTruncated" | "stderrTruncated" | "timedOut" | "spawned" | "observedAt"
+      >,
+    ) => {
+      if (resolved) {
+        return;
+      }
+
+      resolved = true;
+      resolveProcess({
+        invocationRef: `local-worker-process:${input.authority.invocationId}`,
+        ...evidence,
+        stdout,
+        stderr,
+        stdoutBytes,
+        stderrBytes,
+        stdoutTruncated: stdoutOversized,
+        stderrTruncated: stderrOversized,
+        timedOut,
+        spawned,
+        observedAt: input.observedAt,
+      });
+    };
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    let killHandle: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      const child = spawn(input.executable.executablePath, input.authority.argv, {
+        cwd: input.workspace.absolutePath,
+        env: environmentFromPolicy(input.environment),
+        shell: false,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      const terminateForLimit = () => {
+        child.kill("SIGTERM");
+        killHandle = setTimeout(() => {
+          child.kill("SIGKILL");
+        }, 50);
+      };
+
+      child.once("spawn", () => {
+        spawned = true;
+      });
+
+      child.stdout?.on("data", (chunk: unknown) => {
+        const appended = appendChunk({
+          current: stdout,
+          chunk,
+          maxBytes: input.authority.stdoutLimitBytes,
+        });
+        stdout = appended.value;
+        stdoutBytes = appended.bytes;
+
+        if (appended.oversized && !stdoutOversized) {
+          stdoutOversized = true;
+          terminateForLimit();
+        }
+      });
+
+      child.stderr?.on("data", (chunk: unknown) => {
+        const appended = appendChunk({
+          current: stderr,
+          chunk,
+          maxBytes: input.authority.stderrLimitBytes,
+        });
+        stderr = appended.value;
+        stderrBytes = appended.bytes;
+
+        if (appended.oversized && !stderrOversized) {
+          stderrOversized = true;
+          terminateForLimit();
+        }
+      });
+
+      child.once("error", () => {
+        if (timeoutHandle !== undefined) {
+          clearTimeout(timeoutHandle);
+        }
+        if (killHandle !== undefined) {
+          clearTimeout(killHandle);
+        }
+
+        finish({
+          terminationReason: "spawn_failure",
+          exitCode: null,
+          interrupted: false,
+        });
+      });
+
+      child.once("close", (exitCode: number | null, signal: string | null) => {
+        if (timeoutHandle !== undefined) {
+          clearTimeout(timeoutHandle);
+        }
+        if (killHandle !== undefined) {
+          clearTimeout(killHandle);
+        }
+
+        if (stdoutOversized || stderrOversized) {
+          finish({
+            terminationReason: "output_limit_exceeded",
+            exitCode,
+            signal: signal ?? undefined,
+            interrupted: true,
+          });
+          return;
+        }
+
+        if (timedOut) {
+          finish({
+            terminationReason: "timeout",
+            exitCode,
+            signal: signal ?? undefined,
+            interrupted: true,
+          });
+          return;
+        }
+
+        if (signal !== null) {
+          finish({
+            terminationReason: "signal",
+            exitCode,
+            signal,
+            interrupted: true,
+          });
+          return;
+        }
+
+        finish({
+          terminationReason: exitCode === 0 ? "exited" : "nonzero_exit",
+          exitCode,
+          interrupted: false,
+        });
+      });
+
+      child.stdin?.end(input.stdin, "utf8");
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+        killHandle = setTimeout(() => {
+          child.kill("SIGKILL");
+        }, 50);
+      }, input.authority.timeoutMs);
+    } catch {
+      finish({
+        terminationReason: "spawn_failure",
+        exitCode: null,
+        interrupted: false,
+      });
+    }
+  });
+}
+
+async function appendRuntimeOutcomeAudit(input: {
+  readonly projectRoot: string;
+  readonly record: TaskExecutionInvocationRecord;
+  readonly forbiddenValues: readonly string[];
+}): Promise<boolean> {
+  const event =
+    input.record.lifecycle === "returned"
+      ? createTaskExecutionInvocationReturnedAuditEvent({ record: input.record })
+      : input.record.lifecycle === "failed"
+        ? createTaskExecutionInvocationFailedAuditEvent({ record: input.record })
+        : createTaskExecutionInvocationOutcomeUnknownAuditEvent({
+            record: input.record,
+          });
+
+  if (!event.ok) {
+    return false;
+  }
+
+  const append = await appendTaskExecutionAuditEvent({
+    projectRoot: input.projectRoot,
+    taskId: input.record.taskId,
+    event: event.value,
+    forbiddenValues: input.forbiddenValues,
+  });
+
+  return append.ok;
+}
+
+function processEvidenceMetadata(
+  evidence: TaskExecutionLocalWorkerProcessEvidence,
+): JsonObject {
+  return {
+    invocationRef: evidence.invocationRef,
+    terminationReason: evidence.terminationReason,
+    exitCode: evidence.exitCode,
+    signal: evidence.signal ?? null,
+    stdoutBytes: evidence.stdoutBytes,
+    stderrBytes: evidence.stderrBytes,
+    stdoutTruncated: evidence.stdoutTruncated,
+    stderrTruncated: evidence.stderrTruncated,
+    timedOut: evidence.timedOut,
+    interrupted: evidence.interrupted,
+    spawned: evidence.spawned,
+  };
+}
+
+function sanitizedFailureDiagnostic(
+  evidence: TaskExecutionLocalWorkerProcessEvidence,
+  forbiddenValues: readonly string[],
+): string {
+  const diagnostic = diagnosticFromEvidence(evidence);
+
+  return forbiddenValues.reduce(
+    (current, forbidden) =>
+      forbidden.length === 0 ? current : current.split(forbidden).join("[redacted]"),
+    diagnostic,
+  );
+}
+
+export async function executeTaskExecutionLocalWorkerProcess(
+  input: ExecuteTaskExecutionLocalWorkerProcessInput,
+): Promise<TaskExecutionLocalWorkerProcessRuntimeResult> {
+  const issues: TaskExecutionWorkerIssue[] = [];
+  const invocationResult = validateTaskExecutionInvocationRecord(
+    input.invocationRecord,
+  );
+  const now = input.occurredAt ?? new Date().toISOString();
+
+  if (!invocationResult.ok) {
+    issues.push(
+      issue({
+        code: invocationResult.error.code,
+        message:
+          "Local worker process runtime requires a valid authoritative invocation record.",
+        category: invocationResult.error.category,
+      }),
+    );
+  }
+
+  const invocation = invocationResult.ok ? invocationResult.value : undefined;
+
+  if (
+    invocation === undefined ||
+    !authorityMatchesRecord({ authority: input.authority, record: invocation })
+  ) {
+    issues.push(
+      issue({
+        code: "task_execution_local_worker_runtime_authority_mismatch",
+        message:
+          "Local worker process runtime requires exact task, revision, attempt, invocation, idempotency, and work binding authority before launch.",
+        category: "conflict",
+      }),
+    );
+  }
+
+  if (
+    !auditMatchesLaunchAuthority({
+      authority: input.authority,
+      event: input.preProcessAuditEvent,
+    })
+  ) {
+    issues.push(
+      issue({
+        code: "task_execution_local_worker_runtime_pre_process_audit_missing",
+        message:
+          "Local worker process runtime requires the exact durable pre-process dispatch audit event before launch.",
+        category: "validation",
+      }),
+    );
+  }
+
+  if (!executableBindingReady(input)) {
+    issues.push(
+      issue({
+        code: "task_execution_local_worker_runtime_executable_mismatch",
+        message:
+          "Local worker process runtime requires a matching system-owned trusted executable binding.",
+        category: "permission",
+      }),
+    );
+  }
+
+  if (!(await workspaceBindingReady(input))) {
+    issues.push(
+      issue({
+        code: "task_execution_local_worker_runtime_workspace_mismatch",
+        message:
+          "Local worker process runtime requires the cwd to exactly match system-owned workspace authority.",
+        category: "permission",
+      }),
+    );
+  }
+
+  if (!environmentPolicyReady(input.environment)) {
+    issues.push(
+      issue({
+        code: "task_execution_local_worker_runtime_environment_rejected",
+        message:
+          "Local worker process runtime rejects parent environment inheritance, secret-shaped variables, and task-controlled env maps.",
+        category: "permission",
+      }),
+    );
+  }
+
+  if (issues.some((item) => item.severity === "error") || invocation === undefined) {
+    return runtimeResult({
+      ok: false,
+      status: "launch_blocked",
+      invocationLifecycle: invocation?.lifecycle ?? null,
+      invocationRevision: invocation?.revision ?? null,
+      issues,
+    });
+  }
+
+  const reservation = await updateTaskExecutionInvocation({
+    projectRoot: input.projectRoot,
+    taskId: invocation.taskId,
+    invocationId: invocation.invocationId,
+    ownershipToken: invocation.ownership.ownershipToken,
+    expectedLifecycle: "invoking",
+    expectedRevision: input.authority.invocationRevision,
+    intent: {
+      kind: "mark_outcome_unknown",
+      occurredAt: now,
+      issue: {
+        code: "task_execution_local_worker_process_launched_outcome_pending",
+        message:
+          "Local worker process launch authority was consumed before spawn; if AEOS stops before result persistence, reconciliation is required and blind relaunch is forbidden.",
+        severity: "error",
+        category: "unknown",
+      },
+    },
+  });
+
+  if (!reservation.ok) {
+    return runtimeResult({
+      ok: false,
+      status: "launch_blocked",
+      invocationLifecycle: invocation.lifecycle,
+      invocationRevision: invocation.revision,
+      issues: [
+        ...issues,
+        issue({
+          code: reservation.error.code,
+          message:
+            "Local worker process launch reservation could not be durably consumed; no child process was spawned.",
+          category: reservation.error.category,
+        }),
+      ],
+    });
+  }
+
+  const evidence = await executeBoundedChildProcess({
+    authority: input.authority,
+    executable: input.executable,
+    workspace: input.workspace,
+    environment: input.environment,
+    stdin: input.stdin,
+    observedAt: now,
+  });
+  const status = spawnStatusFromEvidence(evidence);
+  const processSucceeded =
+    evidence.terminationReason === "exited" && evidence.exitCode === 0;
+  const updateResult = await updateTaskExecutionInvocation({
+    projectRoot: input.projectRoot,
+    taskId: invocation.taskId,
+    invocationId: invocation.invocationId,
+    ownershipToken: invocation.ownership.ownershipToken,
+    expectedLifecycle: "outcome_unknown",
+    expectedRevision: reservation.value.record.revision,
+    intent: processSucceeded
+      ? {
+          kind: "record_returned",
+          result: {
+            invocationOk: true,
+            diagnosticCode:
+              "task_execution_local_worker_process_returned_evidence",
+            message:
+              "Local worker process exited zero; stdout/stderr remain bounded non-authoritative worker evidence.",
+            metadata: processEvidenceMetadata(evidence),
+            returnedAt: evidence.observedAt,
+          },
+        }
+      : {
+          kind: "record_failed",
+          failure: {
+            code:
+              evidence.terminationReason === "spawn_failure"
+                ? "task_execution_local_worker_process_spawn_failed"
+                : evidence.terminationReason === "output_limit_exceeded"
+                  ? "task_execution_local_worker_process_output_oversized"
+                  : evidence.terminationReason === "timeout"
+                    ? "task_execution_local_worker_process_timeout"
+                    : evidence.terminationReason === "signal"
+                      ? "task_execution_local_worker_process_signal"
+                      : "task_execution_local_worker_process_failed",
+            category: failureCategoryFromEvidence(evidence),
+            diagnostic: sanitizedFailureDiagnostic(
+              evidence,
+              input.forbiddenValues ?? [],
+            ),
+            retryable: false,
+            failedAt: evidence.observedAt,
+          },
+        },
+  });
+
+  if (!updateResult.ok) {
+    return runtimeResult({
+      ok: false,
+      status: "outcome_persistence_failed",
+      launchReservationPersisted: true,
+      oneShotAuthorityConsumed: true,
+      processSpawned: evidence.spawned,
+      actualWorkerProcessesSpawned: evidence.spawned ? 1 : 0,
+      invocationLifecycle: reservation.value.record.lifecycle,
+      invocationRevision: reservation.value.record.revision,
+      processResult: evidence,
+      reconciliationRequired: true,
+      issues: [
+        ...issues,
+        issue({
+          code: updateResult.error.code,
+          message:
+            "Local worker process finished after the launch boundary, but AEOS could not persist the outcome; reconciliation is required and no relaunch was attempted.",
+          category: updateResult.error.category,
+        }),
+      ],
+    });
+  }
+
+  const auditWritten = await appendRuntimeOutcomeAudit({
+    projectRoot: input.projectRoot,
+    record: updateResult.value.record,
+    forbiddenValues: input.forbiddenValues ?? [],
+  });
+
+  return runtimeResult({
+    ok: processSucceeded && auditWritten,
+    status,
+    launchReservationPersisted: true,
+    oneShotAuthorityConsumed: true,
+    processSpawned: evidence.spawned,
+    actualWorkerProcessesSpawned: evidence.spawned ? 1 : 0,
+    invocationLifecycle: updateResult.value.record.lifecycle,
+    invocationRevision: updateResult.value.record.revision,
+    processResult: evidence,
+    reconciliationRequired: !auditWritten,
+    postDispatchAuditWritten: auditWritten,
+    postDispatchAuditIncomplete: !auditWritten,
+    issues: auditWritten
+      ? issues
+      : [
+          ...issues,
+          issue({
+            code: "task_execution_local_worker_process_post_audit_incomplete",
+            message:
+              "Local worker process outcome was persisted, but post-dispatch audit append failed; AEOS did not relaunch the process.",
+            category: "unknown",
+          }),
+        ],
+  });
 }

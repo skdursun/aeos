@@ -56,7 +56,10 @@ export type TaskExecutionCodexProcessTerminationReason =
   | "nonzero_exit"
   | "timeout"
   | "interrupted"
-  | "signal";
+  | "signal"
+  | "spawn_failure"
+  | "output_limit_exceeded"
+  | "unknown";
 
 export type TaskExecutionCodexWorkerIdentity = TaskExecutionWorkerIdentity & {
   readonly workerFamily: "codex";
@@ -1274,12 +1277,19 @@ export function normalizeTaskExecutionCodexProcessRawResult(input: {
   if (
     input.processResult.interrupted ||
     input.processResult.terminationReason === "interrupted" ||
-    input.processResult.terminationReason === "signal"
+    input.processResult.terminationReason === "signal" ||
+    input.processResult.terminationReason === "spawn_failure" ||
+    input.processResult.terminationReason === "unknown"
   ) {
     return {
       rawResult: unavailableFailure({
         request: input.request,
-        code: "task_execution_codex_worker_process_interrupted",
+        code:
+          input.processResult.terminationReason === "spawn_failure"
+            ? "task_execution_codex_worker_process_spawn_failed"
+            : input.processResult.terminationReason === "unknown"
+              ? "task_execution_codex_worker_process_outcome_unknown"
+              : "task_execution_codex_worker_process_interrupted",
         category: "unknown",
         message:
           "Codex process was interrupted; this is evidence only and does not complete work.",
@@ -1301,6 +1311,27 @@ export function normalizeTaskExecutionCodexProcessRawResult(input: {
         issue({
           code: "task_execution_codex_worker_stdout_oversized",
           message: "Oversized Codex stdout was rejected.",
+        }),
+      ],
+    };
+  }
+
+  if (
+    input.processResult.stderr.length > stderrLimitBytes ||
+    input.processResult.terminationReason === "output_limit_exceeded"
+  ) {
+    return {
+      rawResult: rawFailure({
+        request: input.request,
+        code: "task_execution_codex_worker_stderr_oversized",
+        category: "invalid_request",
+        message: "Codex process stderr exceeded the configured bounded limit.",
+        diagnostic,
+      }),
+      issues: [
+        issue({
+          code: "task_execution_codex_worker_stderr_oversized",
+          message: "Oversized Codex stderr was rejected.",
         }),
       ],
     };
