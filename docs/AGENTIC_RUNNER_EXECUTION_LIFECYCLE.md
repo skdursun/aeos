@@ -193,6 +193,41 @@ and Claude Code families without invoking Codex CLI, Claude Code, shell,
 network, cloud providers, or repository writes. The first real local worker
 adapter remains future work and must reuse this boundary.
 
+## Local Codex Worker Adapter Boundary
+
+TASK-0313 adds the first concrete local worker adapter: Codex on top of the
+generic TASK-0312 worker runtime. The Codex adapter is not a separate execution
+system; AEOS still owns worker selection, task state, invocation binding,
+permission facts, policy, audit, retry, verification, work accounting, and
+completion.
+
+The future Codex execution surface is non-interactive `codex exec` represented
+as a system-owned executable reference plus bounded argv. TASK-0313 does not
+run `codex exec`, does not automate the interactive Codex TUI, does not use
+terminal scraping, AppleScript, shell strings, pipes, redirection, arbitrary
+environment expansion, cloud providers, or unrestricted subprocess execution.
+
+Codex executable, workspace, model, reasoning effort, sandbox mode, approval
+policy, timeout, and process permission are trusted orchestration
+configuration. Task prose and model output cannot provide an executable path,
+command string, cwd, arbitrary flags, config overrides, MCP replacement,
+provider override, credential override, full-access mode, or sandbox bypass.
+The prepared process request remains non-runnable while real Codex execution is
+disabled.
+
+Codex process output is normalized through a closed structured result boundary.
+Exit code `0` is not success authority, and worker claims such as completion,
+verification, approval, policy authorization, retry, or worker switching remain
+evidence only. Malformed, oversized, nonzero, timed out, or interrupted process
+results fail closed into bounded diagnostics without authorizing retry or
+completion. Changed-file manifests, patch references, test-summary references,
+and final structured results are worker evidence; AEOS must verify actual
+workspace changes independently.
+
+Claude Code remains the next compatible local adapter target. Claude-specific
+CLI arguments belong in a future Claude adapter, while the generic worker
+runtime stays model-agnostic.
+
 ## Execution Input Model
 MVP execution input should be serializable and task-scoped:
 

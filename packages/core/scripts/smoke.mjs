@@ -120,7 +120,9 @@ import {
   createDeterministicProviderRecoveryConformanceSubject,
   DETERMINISTIC_PROVIDER_RECOVERY_PROFILE,
   dispatchTaskExecutionProductionProvider,
+  createTaskExecutionCodexWorkerAdapter,
   evaluateTaskExecutionAdapterConformance,
+  evaluateTaskExecutionCodexWorkerConformance,
   evaluateTaskExecutionWorkerConformance,
   evaluateTaskExecutionProductionDispatchGate,
   evaluateTaskExecutionProductionCredentialProviderConfiguration,
@@ -132,8 +134,11 @@ import {
   sanitizeTaskExecutionCredentialResult,
   sanitizeTaskExecutionPolicyApprovalRecord,
   normalizeTaskExecutionAdapterResult,
+  normalizeTaskExecutionCodexProcessResult,
   normalizeTaskExecutionWorkerResult,
+  prepareTaskExecutionCodexWorkerInvocation,
   TASK_EXECUTION_PRODUCTION_DISPATCH_BOUNDARY,
+  TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
   TASK_EXECUTION_WORKER_RUNTIME_EXECUTION_ENABLED,
   deriveTaskExecutionInvocationIdentity,
   deriveTaskExecutionInvocationIdentityForAttempt,
@@ -18399,6 +18404,552 @@ try {
     normalized400WorkerResult.safety.cloudCalled,
     false,
     "task execution worker smoke X should not call cloud providers",
+  );
+
+  const createSmokeCodexConfiguration = (overrides = {}) => ({
+    authority: "system",
+    identity: codexWorkerIdentity,
+    executable: {
+      authority: "system",
+      executableRef: "system:trusted-codex-exec-test",
+      executableKind: "codex_exec",
+    },
+    model: {
+      authority: "system",
+      model: "gpt-5",
+      reasoningEffort: "medium",
+    },
+    workspace: {
+      ...codexWorkerRequest.workspace,
+      workingDirectoryRef: codexWorkerRequest.workspace.workspaceRef,
+    },
+    processPermission: {
+      authority: "system",
+      permissionId: "permission:codex-process-test",
+      requiredPermission: "process",
+      processExecutionAllowed: true,
+    },
+    futureProcessCapability: true,
+    sandboxMode: "workspace-write",
+    approvalPolicy: "never",
+    timeoutMs: 30000,
+    stdoutLimitBytes: 8192,
+    stderrLimitBytes: 2048,
+    structuredResultContractRef: "contract:aeos-codex-worker-result-v1",
+    ...overrides,
+  });
+  const createCodexStructuredStdout = (request, overrides = {}) =>
+    JSON.stringify({
+      aeosCodexWorkerResultVersion: 1,
+      status: "returned",
+      workerId: request.workerIdentity.workerId,
+      workerFamily: request.workerIdentity.workerFamily,
+      runtimeKind: request.workerIdentity.runtimeKind,
+      invocationId: request.invocationId,
+      idempotencyKey: request.idempotencyKey,
+      taskId: request.taskId,
+      sourceTaskRevision: request.sourceTaskRevision,
+      attemptId: request.attemptId,
+      attemptNumber: request.attemptNumber,
+      workItemId: request.workItemId ?? null,
+      batchId: request.batchId ?? null,
+      invocationOk: true,
+      outputReference: "artifact:codex-smoke-output",
+      patchArtifactReference: "artifact:codex-smoke-patch",
+      changedFileManifestReference: "artifact:codex-smoke-manifest",
+      testSummaryReference: "artifact:codex-smoke-tests",
+      ...overrides,
+    });
+  const createCodexProcessResult = (request, overrides = {}) => ({
+    invocationRef: `test-codex-process:${request.invocationId}`,
+    terminationReason: "exited",
+    exitCode: 0,
+    timedOut: false,
+    interrupted: false,
+    stdout: createCodexStructuredStdout(request),
+    stderr: "",
+    ...overrides,
+  });
+  const smokeCodexConfiguration = createSmokeCodexConfiguration();
+  const smokeCodexAdapter = createTaskExecutionCodexWorkerAdapter({
+    configuration: smokeCodexConfiguration,
+  });
+  const smokeCodexPrepared = prepareTaskExecutionCodexWorkerInvocation({
+    configuration: smokeCodexConfiguration,
+    request: codexWorkerRequest,
+    invocationRecord: invokingPersisted.value.record,
+  });
+  assert.equal(
+    smokeCodexPrepared.issues.some((item) => item.severity === "error"),
+    false,
+    "task execution codex worker smoke A should accept valid system-owned Codex adapter config",
+  );
+  assert.equal(
+    smokeCodexPrepared.preparedInvocation.realExecutionEnabled,
+    false,
+    "task execution codex worker smoke A should keep real Codex execution disabled",
+  );
+  assert.equal(
+    smokeCodexPrepared.preparedInvocation.runnable,
+    false,
+    "task execution codex worker smoke A should prepare but not run a real Codex process",
+  );
+  const smokeCodexConformance =
+    await evaluateTaskExecutionCodexWorkerConformance({
+      worker: smokeCodexAdapter,
+      configuration: smokeCodexConfiguration,
+      request: codexWorkerRequest,
+      invocationRecord: invokingPersisted.value.record,
+      permissionGateResult: workerPermissionGate,
+      expectedIdempotencyKey: invokingPersisted.value.record.idempotencyKey,
+    });
+  assert.equal(
+    smokeCodexConformance.codexWorkerConformant,
+    true,
+    "task execution codex worker smoke A should conform through the generic worker runtime",
+  );
+  assert.equal(
+    smokeCodexConformance.workerConformance.testWorkerConformant,
+    true,
+    "task execution codex worker smoke A should reuse TASK-0312 worker conformance",
+  );
+  assert.equal(
+    smokeCodexConformance.processCallCount,
+    1,
+    "task execution codex worker smoke X should count one deterministic simulated process call",
+  );
+
+  const nonSystemCodexPrepared = prepareTaskExecutionCodexWorkerInvocation({
+    configuration: createSmokeCodexConfiguration({
+      identity: {
+        ...codexWorkerIdentity,
+        identityAuthority: "task",
+      },
+    }),
+    request: codexWorkerRequest,
+    invocationRecord: invokingPersisted.value.record,
+  });
+  assert.ok(
+    nonSystemCodexPrepared.issues.some(
+      (item) =>
+        item.code === "task_execution_codex_worker_configuration_invalid",
+    ),
+    "task execution codex worker smoke B should block non-system worker identity",
+  );
+
+  const wrongFamilyCodexPrepared = prepareTaskExecutionCodexWorkerInvocation({
+    configuration: createSmokeCodexConfiguration({
+      identity: claudeWorkerIdentity,
+    }),
+    request: codexWorkerRequest,
+    invocationRecord: invokingPersisted.value.record,
+  });
+  assert.ok(
+    wrongFamilyCodexPrepared.issues.some(
+      (item) =>
+        item.code === "task_execution_codex_worker_configuration_invalid" ||
+        item.code === "task_execution_codex_worker_selection_mismatch",
+    ),
+    "task execution codex worker smoke C should block wrong worker family",
+  );
+
+  const executableOverridePrepared = prepareTaskExecutionCodexWorkerInvocation({
+    configuration: smokeCodexConfiguration,
+    request: codexWorkerRequest,
+    invocationRecord: invokingPersisted.value.record,
+    taskOrModelProcessClaims: {
+      executable: "/tmp/task-selected-codex",
+    },
+  });
+  assert.equal(
+    executableOverridePrepared.preparedInvocation.processRequest.executable
+      .executableRef,
+    "system:trusted-codex-exec-test",
+    "task execution codex worker smoke D should ignore task/model executable override",
+  );
+  assert.ok(
+    executableOverridePrepared.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_codex_worker_task_model_process_claims_rejected",
+    ),
+    "task execution codex worker smoke D should reject executable override claims",
+  );
+
+  const shellCommandPrepared = prepareTaskExecutionCodexWorkerInvocation({
+    configuration: smokeCodexConfiguration,
+    request: codexWorkerRequest,
+    invocationRecord: invokingPersisted.value.record,
+    taskOrModelProcessClaims: {
+      command: "/bin/sh -c 'codex exec'",
+    },
+  });
+  assert.ok(
+    shellCommandPrepared.issues.some(
+      (item) =>
+        item.code === "task_execution_codex_worker_shell_command_rejected",
+    ),
+    "task execution codex worker smoke E should reject arbitrary shell command strings",
+  );
+  assert.equal(
+    smokeCodexPrepared.preparedInvocation.processRequest.argv.length <= 16,
+    true,
+    "task execution codex worker smoke F should keep argv bounded",
+  );
+  assert.equal(
+    smokeCodexPrepared.preparedInvocation.processRequest.argv.some((arg) =>
+      /[|;&<>`$]/.test(arg),
+    ),
+    false,
+    "task execution codex worker smoke F should not create shell argv",
+  );
+
+  const dangerousFlagPrepared = prepareTaskExecutionCodexWorkerInvocation({
+    configuration: smokeCodexConfiguration,
+    request: codexWorkerRequest,
+    invocationRecord: invokingPersisted.value.record,
+    taskOrModelProcessClaims: {
+      args: ["--dangerously-bypass-approvals-and-sandbox", "danger-full-access"],
+    },
+  });
+  assert.ok(
+    dangerousFlagPrepared.issues.some(
+      (item) =>
+        item.code === "task_execution_codex_worker_dangerous_flag_rejected",
+    ),
+    "task execution codex worker smoke G should reject dangerous full-access and bypass flags",
+  );
+
+  const workspaceMismatchPrepared = prepareTaskExecutionCodexWorkerInvocation({
+    configuration: createSmokeCodexConfiguration({
+      workspace: {
+        ...smokeCodexConfiguration.workspace,
+        workspaceRef: "workspace:other-project",
+        workingDirectoryRef: "workspace:other-project",
+      },
+    }),
+    request: codexWorkerRequest,
+    invocationRecord: invokingPersisted.value.record,
+  });
+  assert.ok(
+    workspaceMismatchPrepared.issues.some(
+      (item) => item.code === "task_execution_codex_worker_workspace_mismatch",
+    ),
+    "task execution codex worker smoke H should block workspace mismatch",
+  );
+
+  for (const bindingCase of [
+    {
+      name: "task",
+      request: { ...codexWorkerRequest, taskId: "wrong-codex-task" },
+    },
+    {
+      name: "revision",
+      request: {
+        ...codexWorkerRequest,
+        sourceTaskRevision: codexWorkerRequest.sourceTaskRevision + 1,
+      },
+    },
+    {
+      name: "attempt",
+      request: { ...codexWorkerRequest, attemptId: "wrong-codex-attempt" },
+    },
+    {
+      name: "invocation",
+      request: {
+        ...codexWorkerRequest,
+        invocationId: "wrong-codex-invocation",
+        idempotencyKey: "wrong-codex-idempotency",
+      },
+    },
+    {
+      name: "work-batch",
+      request: {
+        ...codexWorkerRequest,
+        workItemId: "wrong-codex-work",
+        batchId: "wrong-codex-batch",
+      },
+    },
+  ]) {
+    const bindingPrepared = prepareTaskExecutionCodexWorkerInvocation({
+      configuration: smokeCodexConfiguration,
+      request: bindingCase.request,
+      invocationRecord: invokingPersisted.value.record,
+    });
+    assert.ok(
+      bindingPrepared.issues.some(
+        (item) =>
+          item.code ===
+          "task_execution_codex_worker_invocation_authority_mismatch",
+      ),
+      `task execution codex worker smoke ${bindingCase.name} binding should fail exact invocation binding`,
+    );
+  }
+
+  assert.equal(
+    smokeCodexConfiguration.futureProcessCapability,
+    true,
+    "task execution codex worker smoke M should represent future process capability",
+  );
+  assert.equal(
+    smokeCodexConfiguration.processPermission.processExecutionAllowed,
+    true,
+    "task execution codex worker smoke M should represent separate process permission",
+  );
+  assert.equal(
+    smokeCodexAdapter.capabilities.processExecution,
+    false,
+    "task execution codex worker smoke M should not turn capability representation into current process permission",
+  );
+
+  const deniedCodexConfiguration = createSmokeCodexConfiguration({
+    processPermission: {
+      ...smokeCodexConfiguration.processPermission,
+      processExecutionAllowed: false,
+    },
+  });
+  const deniedCodexAdapter = createTaskExecutionCodexWorkerAdapter({
+    configuration: deniedCodexConfiguration,
+  });
+  const deniedCodexConformance =
+    await evaluateTaskExecutionCodexWorkerConformance({
+      worker: deniedCodexAdapter,
+      configuration: deniedCodexConfiguration,
+      request: codexWorkerRequest,
+      invocationRecord: invokingPersisted.value.record,
+      permissionGateResult: workerPermissionGate,
+    });
+  assert.equal(
+    deniedCodexConformance.workerConformance,
+    null,
+    "task execution codex worker smoke N should not invoke generic runtime when process permission is denied",
+  );
+  assert.equal(
+    deniedCodexConformance.preparedInvocation.runnable,
+    false,
+    "task execution codex worker smoke N should mark process permission denied as not runnable",
+  );
+  assert.equal(
+    deniedCodexConformance.processCallCount,
+    0,
+    "task execution codex worker smoke N should not simulate a process call when denied",
+  );
+
+  const successfulCodexProcess = normalizeTaskExecutionCodexProcessResult({
+    request: codexWorkerRequest,
+    processResult: createCodexProcessResult(codexWorkerRequest),
+    stdoutLimitBytes: smokeCodexConfiguration.stdoutLimitBytes,
+    stderrLimitBytes: smokeCodexConfiguration.stderrLimitBytes,
+  });
+  assert.equal(
+    successfulCodexProcess.outcomeStatus,
+    "returned",
+    "task execution codex worker smoke O should normalize successful TEST process output",
+  );
+  assert.equal(
+    successfulCodexProcess.ok,
+    true,
+    "task execution codex worker smoke O should require structured invocationOk for success",
+  );
+
+  const nonzeroCodexProcess = normalizeTaskExecutionCodexProcessResult({
+    request: codexWorkerRequest,
+    processResult: createCodexProcessResult(codexWorkerRequest, {
+      terminationReason: "nonzero_exit",
+      exitCode: 2,
+      stdout: "",
+      stderr: "bounded nonzero diagnostic",
+    }),
+  });
+  assert.equal(
+    nonzeroCodexProcess.outcomeStatus,
+    "failed",
+    "task execution codex worker smoke P should normalize nonzero exit as failed evidence",
+  );
+
+  const timeoutCodexProcess = normalizeTaskExecutionCodexProcessResult({
+    request: codexWorkerRequest,
+    processResult: createCodexProcessResult(codexWorkerRequest, {
+      terminationReason: "timeout",
+      exitCode: null,
+      timedOut: true,
+      stdout: "",
+    }),
+  });
+  assert.equal(
+    timeoutCodexProcess.outcomeStatus,
+    "unavailable",
+    "task execution codex worker smoke Q should normalize timeout as unavailable evidence",
+  );
+  assert.equal(
+    timeoutCodexProcess.failure.category,
+    "timeout",
+    "task execution codex worker smoke Q should preserve timeout failure category",
+  );
+
+  const interruptedCodexProcess = normalizeTaskExecutionCodexProcessResult({
+    request: codexWorkerRequest,
+    processResult: createCodexProcessResult(codexWorkerRequest, {
+      terminationReason: "interrupted",
+      exitCode: null,
+      interrupted: true,
+      stdout: "",
+    }),
+  });
+  assert.equal(
+    interruptedCodexProcess.outcomeStatus,
+    "unavailable",
+    "task execution codex worker smoke R should normalize interruption as unavailable evidence",
+  );
+
+  const malformedCodexProcess = normalizeTaskExecutionCodexProcessResult({
+    request: codexWorkerRequest,
+    processResult: createCodexProcessResult(codexWorkerRequest, {
+      stdout: "done",
+    }),
+  });
+  assert.equal(
+    malformedCodexProcess.ok,
+    false,
+    "task execution codex worker smoke S should fail closed on malformed structured output",
+  );
+  assert.ok(
+    malformedCodexProcess.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_codex_worker_structured_result_malformed",
+    ),
+    "task execution codex worker smoke S should report malformed structured output",
+  );
+
+  const oversizedCodexProcess = normalizeTaskExecutionCodexProcessResult({
+    request: codexWorkerRequest,
+    processResult: createCodexProcessResult(codexWorkerRequest, {
+      stdout: createCodexStructuredStdout(codexWorkerRequest, {
+        output: {
+          diagnostic: "x".repeat(256),
+        },
+      }),
+    }),
+    stdoutLimitBytes: 128,
+  });
+  assert.equal(
+    oversizedCodexProcess.ok,
+    false,
+    "task execution codex worker smoke T should reject oversized process output",
+  );
+  assert.ok(
+    oversizedCodexProcess.issues.some(
+      (item) => item.code === "task_execution_codex_worker_stdout_oversized",
+    ),
+    "task execution codex worker smoke T should report oversized process output",
+  );
+
+  const hostileCodexProcess = normalizeTaskExecutionCodexProcessResult({
+    request: codexWorkerRequest,
+    processResult: createCodexProcessResult(codexWorkerRequest, {
+      stdout: createCodexStructuredStdout(codexWorkerRequest, {
+        output: {
+          completed: true,
+          verified: true,
+          approved: true,
+          safeToRetry: true,
+          allDone: true,
+          taskCompleted: true,
+          policyAuthorized: true,
+          switchWorkerTo: "claude_code",
+          runAgain: true,
+          ownershipToken: "owner-token",
+          apiKey: "sk-codex-smoke",
+          retainedDiagnostic: "bounded codex evidence",
+        },
+      }),
+    }),
+  });
+  assert.equal(
+    hostileCodexProcess.output.completed,
+    undefined,
+    "task execution codex worker smoke W should strip hostile completion claims",
+  );
+  assert.equal(
+    hostileCodexProcess.output.policyAuthorized,
+    undefined,
+    "task execution codex worker smoke W should strip hostile policy authority claims",
+  );
+  assert.equal(
+    hostileCodexProcess.output.switchWorkerTo,
+    undefined,
+    "task execution codex worker smoke W should strip hostile worker-switch claims",
+  );
+  assert.equal(
+    hostileCodexProcess.output.runAgain,
+    undefined,
+    "task execution codex worker smoke W should strip hostile retry-run claims",
+  );
+  assert.equal(
+    hostileCodexProcess.output.retainedDiagnostic,
+    "bounded codex evidence",
+    "task execution codex worker smoke W should retain bounded evidence",
+  );
+  assert.equal(
+    JSON.stringify(hostileCodexProcess).includes("ownershipToken"),
+    false,
+    "task execution codex worker smoke U should not expose ownership tokens",
+  );
+  assert.equal(
+    JSON.stringify(hostileCodexProcess).includes("sk-codex-smoke"),
+    false,
+    "task execution codex worker smoke V should not expose credentials",
+  );
+  assert.equal(
+    hostileCodexProcess.safety.taskCompleted,
+    false,
+    "task execution codex worker smoke W should not grant completion authority",
+  );
+  assert.equal(
+    hostileCodexProcess.safety.verified,
+    false,
+    "task execution codex worker smoke W should not grant verifier authority",
+  );
+  assert.equal(
+    hostileCodexProcess.safety.safeToRetry,
+    false,
+    "task execution codex worker smoke W should not grant retry authority",
+  );
+  assert.equal(
+    smokeCodexConformance.actualChildProcessCount,
+    0,
+    "task execution codex worker smoke X should spawn zero OS child processes",
+  );
+  assert.equal(
+    smokeCodexConformance.actualCodexCallCount,
+    0,
+    "task execution codex worker smoke Y should make zero real Codex calls",
+  );
+  assert.equal(
+    smokeCodexConformance.actualClaudeCodeCallCount,
+    0,
+    "task execution codex worker smoke Y should make zero real Claude calls",
+  );
+  assert.equal(
+    smokeCodexConformance.cloudCallCount,
+    0,
+    "task execution codex worker smoke X should make zero cloud calls",
+  );
+  assert.equal(
+    TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
+    false,
+    "task execution codex worker smoke Y should keep real Codex execution disabled",
+  );
+  assert.equal(
+    workerBoundary400Coverage.ok,
+    false,
+    "task execution codex worker smoke Z should keep canonical 400/20 incomplete through Codex boundary",
+  );
+  assert.equal(
+    hostileCodexProcess.safety.workCompleted,
+    false,
+    "task execution codex worker smoke Z should not convert worker evidence into work completion",
   );
 
   console.log("task execution worker boundary smoke tests passed");

@@ -1,0 +1,1293 @@
+import type {
+  TaskExecutionInvocationRecord,
+} from "./task-execution-invocation-record.js";
+import {
+  validateTaskExecutionInvocationRecord,
+} from "./task-execution-invocation-record.js";
+import type { TaskExecutionPermissionKind } from "./task-execution-permission-gate.js";
+import type {
+  TaskExecutionWorkerAdapter,
+  TaskExecutionWorkerCapabilities,
+  TaskExecutionWorkerConformanceInput,
+  TaskExecutionWorkerConformanceResult,
+  TaskExecutionWorkerIdentity,
+  TaskExecutionWorkerIssue,
+  TaskExecutionWorkerRawResult,
+  TaskExecutionWorkerRequest,
+  TaskExecutionWorkerResult,
+  TaskExecutionWorkerWorkspaceReference,
+} from "./task-execution-worker.js";
+import {
+  evaluateTaskExecutionWorkerConformance,
+  normalizeTaskExecutionWorkerResult,
+  TASK_EXECUTION_WORKER_RUNTIME_EXECUTION_ENABLED,
+} from "./task-execution-worker.js";
+import type { AeosError, JsonObject, JsonValue } from "./types.js";
+
+export const TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED = false;
+
+export type TaskExecutionCodexReasoningEffort =
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high";
+
+export type TaskExecutionCodexSandboxMode = "read-only" | "workspace-write";
+
+export type TaskExecutionCodexApprovalPolicy = "never" | "on-request";
+
+export type TaskExecutionCodexProcessTerminationReason =
+  | "exited"
+  | "nonzero_exit"
+  | "timeout"
+  | "interrupted"
+  | "signal";
+
+export type TaskExecutionCodexWorkerIdentity = TaskExecutionWorkerIdentity & {
+  readonly workerFamily: "codex";
+  readonly runtimeKind: "test_worker";
+};
+
+export interface TaskExecutionCodexExecutableAuthority {
+  readonly authority: "system";
+  readonly executableRef: string;
+  readonly executableKind: "codex_exec";
+}
+
+export interface TaskExecutionCodexModelConfiguration {
+  readonly authority: "system";
+  readonly model: string;
+  readonly reasoningEffort: TaskExecutionCodexReasoningEffort;
+}
+
+export interface TaskExecutionCodexProcessPermission {
+  readonly authority: "system";
+  readonly permissionId: string;
+  readonly requiredPermission: Extract<TaskExecutionPermissionKind, "process">;
+  readonly processExecutionAllowed: boolean;
+}
+
+export interface TaskExecutionCodexWorkspaceAuthority
+  extends TaskExecutionWorkerWorkspaceReference {
+  readonly workingDirectoryRef: string;
+}
+
+export interface TaskExecutionCodexWorkerConfiguration {
+  readonly authority: "system";
+  readonly identity: TaskExecutionCodexWorkerIdentity;
+  readonly executable: TaskExecutionCodexExecutableAuthority;
+  readonly model: TaskExecutionCodexModelConfiguration;
+  readonly workspace: TaskExecutionCodexWorkspaceAuthority;
+  readonly processPermission: TaskExecutionCodexProcessPermission;
+  readonly futureProcessCapability: boolean;
+  readonly sandboxMode: TaskExecutionCodexSandboxMode;
+  readonly approvalPolicy: TaskExecutionCodexApprovalPolicy;
+  readonly timeoutMs: number;
+  readonly stdoutLimitBytes: number;
+  readonly stderrLimitBytes: number;
+  readonly structuredResultContractRef?: string;
+}
+
+export interface TaskExecutionCodexProcessRequest {
+  readonly executable: TaskExecutionCodexExecutableAuthority;
+  readonly argv: readonly string[];
+  readonly workingDirectory: TaskExecutionCodexWorkspaceAuthority;
+  readonly stdin: string;
+  readonly timeoutMs: number;
+  readonly stdoutLimitBytes: number;
+  readonly stderrLimitBytes: number;
+  readonly environment: {
+    readonly authority: "system";
+    readonly variables: readonly [];
+  };
+}
+
+export interface TaskExecutionCodexPreparedInvocation {
+  readonly taskId: string;
+  readonly sourceTaskRevision: number;
+  readonly attemptId: string;
+  readonly attemptNumber: number;
+  readonly invocationId: string;
+  readonly idempotencyKey: string;
+  readonly workItemId: string | null;
+  readonly batchId: string | null;
+  readonly workerIdentity: TaskExecutionCodexWorkerIdentity;
+  readonly processRequest: TaskExecutionCodexProcessRequest;
+  readonly exactWorkerSelected: boolean;
+  readonly invocationAuthorityBound: boolean;
+  readonly workspaceAuthorityBound: boolean;
+  readonly futureProcessCapabilityDeclared: boolean;
+  readonly processPermissionAllowed: boolean;
+  readonly permissionFactsAllowed: boolean;
+  readonly runnable: boolean;
+  readonly realExecutionEnabled: false;
+}
+
+export interface TaskExecutionCodexProcessResult {
+  readonly invocationRef: string;
+  readonly terminationReason: TaskExecutionCodexProcessTerminationReason;
+  readonly exitCode: number | null;
+  readonly signal?: string;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly timedOut: boolean;
+  readonly interrupted: boolean;
+  readonly observedAt?: string;
+}
+
+export interface TaskExecutionCodexWorkerAdapter
+  extends TaskExecutionWorkerAdapter {
+  readonly codexAdapterKind: "task_execution_codex_worker_adapter";
+  readonly identity: TaskExecutionCodexWorkerIdentity;
+  readonly capabilities: TaskExecutionWorkerCapabilities;
+  readonly configuration: TaskExecutionCodexWorkerConfiguration;
+  readonly processCallCount: () => number;
+  readonly actualChildProcessCount: () => 0;
+  readonly actualCodexCallCount: () => 0;
+  readonly actualClaudeCodeCallCount: () => 0;
+  readonly cloudCallCount: () => 0;
+}
+
+export interface TaskExecutionCodexWorkerConformanceInput
+  extends Omit<TaskExecutionWorkerConformanceInput, "worker"> {
+  readonly worker: unknown;
+  readonly configuration: TaskExecutionCodexWorkerConfiguration;
+  readonly taskOrModelProcessClaims?: unknown;
+}
+
+export interface TaskExecutionCodexWorkerConformanceResult {
+  readonly ok: boolean;
+  readonly codexWorkerConformant: boolean;
+  readonly preparedInvocation: TaskExecutionCodexPreparedInvocation;
+  readonly workerConformance: TaskExecutionWorkerConformanceResult | null;
+  readonly normalizedResult: TaskExecutionWorkerResult | null;
+  readonly issues: readonly TaskExecutionWorkerIssue[];
+  readonly processCallCount: number;
+  readonly actualChildProcessCount: 0;
+  readonly actualCodexCallCount: 0;
+  readonly actualClaudeCodeCallCount: 0;
+  readonly cloudCallCount: 0;
+  readonly realExecutionEnabled: false;
+}
+
+const safeReferencePattern = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,255}$/;
+const safeModelPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const dangerousCodexArgs = new Set([
+  "--dangerously-bypass-approvals-and-sandbox",
+  "danger-full-access",
+  "--danger-full-access",
+]);
+const forbiddenArgPrefixes = [
+  "--config",
+  "-c",
+  "--mcp",
+  "--mcp-config",
+  "--provider",
+  "--api-key",
+  "--credential",
+  "--env",
+];
+const codexAuthorityOutputKeys = new Set(["policyauthorized"]);
+
+function issue(input: {
+  readonly code: string;
+  readonly message: string;
+  readonly severity?: "info" | "warning" | "error";
+  readonly category?: AeosError["category"];
+}): TaskExecutionWorkerIssue {
+  return {
+    code: input.code,
+    message: input.message,
+    severity: input.severity ?? "error",
+    category: input.category ?? "validation",
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isJsonValue(value: unknown, depth = 0): value is JsonValue {
+  if (depth > 8) {
+    return false;
+  }
+
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return true;
+  }
+
+  if (typeof value === "number") {
+    return Number.isFinite(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.every((item) => isJsonValue(item, depth + 1));
+  }
+
+  if (isRecord(value)) {
+    return Object.values(value).every((item) => isJsonValue(item, depth + 1));
+  }
+
+  return false;
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return isRecord(value) && isJsonValue(value);
+}
+
+function canonicalKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function sanitizeCodexJsonValue(value: unknown, depth = 0): JsonValue | undefined {
+  if (depth > 8) {
+    return undefined;
+  }
+
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : undefined;
+  }
+
+  if (Array.isArray(value)) {
+    const items: JsonValue[] = [];
+
+    for (const item of value) {
+      const sanitized = sanitizeCodexJsonValue(item, depth + 1);
+
+      if (sanitized !== undefined) {
+        items.push(sanitized);
+      }
+    }
+
+    return items;
+  }
+
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const sanitized: Record<string, JsonValue> = {};
+
+  for (const [key, item] of Object.entries(value)) {
+    if (codexAuthorityOutputKeys.has(canonicalKey(key))) {
+      continue;
+    }
+
+    const sanitizedItem = sanitizeCodexJsonValue(item, depth + 1);
+
+    if (sanitizedItem !== undefined) {
+      sanitized[key] = sanitizedItem;
+    }
+  }
+
+  return sanitized;
+}
+
+function isSafeReference(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value === value.trim() &&
+    safeReferencePattern.test(value) &&
+    value !== "." &&
+    value !== ".." &&
+    !value.includes("../") &&
+    !value.includes("..\\") &&
+    !value.startsWith("/") &&
+    !/^[A-Za-z]:[\\/]/.test(value)
+  );
+}
+
+function isSafeModel(value: unknown): value is string {
+  return typeof value === "string" && safeModelPattern.test(value);
+}
+
+function isPositiveInteger(value: unknown, max: number): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= max;
+}
+
+function isCodexIdentity(
+  identity: TaskExecutionWorkerIdentity,
+): identity is TaskExecutionCodexWorkerIdentity {
+  return (
+    identity.workerFamily === "codex" &&
+    identity.runtimeKind === "test_worker" &&
+    identity.identityAuthority === "system" &&
+    identity.selectionAuthority === "system"
+  );
+}
+
+function validateConfiguration(
+  configuration: TaskExecutionCodexWorkerConfiguration,
+): readonly TaskExecutionWorkerIssue[] {
+  const issues: TaskExecutionWorkerIssue[] = [];
+
+  if (
+    configuration.authority !== "system" ||
+    !isCodexIdentity(configuration.identity) ||
+    configuration.executable.authority !== "system" ||
+    configuration.executable.executableKind !== "codex_exec" ||
+    !isSafeReference(configuration.executable.executableRef) ||
+    configuration.model.authority !== "system" ||
+    !isSafeModel(configuration.model.model) ||
+    !["minimal", "low", "medium", "high"].includes(
+      configuration.model.reasoningEffort,
+    ) ||
+    configuration.processPermission.authority !== "system" ||
+    configuration.processPermission.requiredPermission !== "process" ||
+    !isSafeReference(configuration.processPermission.permissionId) ||
+    typeof configuration.processPermission.processExecutionAllowed !==
+      "boolean" ||
+    typeof configuration.futureProcessCapability !== "boolean" ||
+    !["read-only", "workspace-write"].includes(configuration.sandboxMode) ||
+    !["never", "on-request"].includes(configuration.approvalPolicy) ||
+    !isPositiveInteger(configuration.timeoutMs, 600000) ||
+    !isPositiveInteger(configuration.stdoutLimitBytes, 65536) ||
+    !isPositiveInteger(configuration.stderrLimitBytes, 32768) ||
+    (configuration.structuredResultContractRef !== undefined &&
+      !isSafeReference(configuration.structuredResultContractRef))
+  ) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_worker_configuration_invalid",
+        message:
+          "Codex worker configuration must be bounded, system-owned, and TEST-only.",
+      }),
+    );
+  }
+
+  if (
+    configuration.workspace.authority !== "system" ||
+    configuration.workspace.repositoryWriteAllowed !== false ||
+    !isSafeReference(configuration.workspace.workspaceRef) ||
+    !isSafeReference(configuration.workspace.projectRef) ||
+    !isSafeReference(configuration.workspace.workingDirectoryRef) ||
+    (configuration.workspace.repositoryRef !== undefined &&
+      !isSafeReference(configuration.workspace.repositoryRef)) ||
+    (configuration.workspace.allowedPathRefs !== undefined &&
+      !configuration.workspace.allowedPathRefs.every((item) =>
+        isSafeReference(item),
+      ))
+  ) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_worker_workspace_authority_invalid",
+        message:
+          "Codex process cwd must come from bounded system workspace authority.",
+        category: "permission",
+      }),
+    );
+  }
+
+  return issues;
+}
+
+function taskOrModelClaimIssues(
+  claims: unknown,
+): readonly TaskExecutionWorkerIssue[] {
+  if (claims === undefined) {
+    return [];
+  }
+
+  const serialized = JSON.stringify(claims);
+  const issues: TaskExecutionWorkerIssue[] = [
+    issue({
+      code: "task_execution_codex_worker_task_model_process_claims_rejected",
+      message:
+        "Task or model Codex process claims are rejected; executable, argv, cwd, model, and permissions are system-owned.",
+      category: "permission",
+    }),
+  ];
+
+  if (
+    /(^|[^A-Za-z0-9_])(?:\/bin\/sh|bash|zsh|sh)\s+-c/i.test(serialized) ||
+    /(?:^|[^A-Za-z0-9_])(?:command|shell|stringCommand)(?:[^A-Za-z0-9_]|$)/i.test(
+      serialized,
+    )
+  ) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_worker_shell_command_rejected",
+        message:
+          "Codex worker process preparation rejects shell strings and interactive command automation.",
+        category: "permission",
+      }),
+    );
+  }
+
+  for (const dangerous of dangerousCodexArgs) {
+    if (serialized.includes(dangerous)) {
+      issues.push(
+        issue({
+          code: "task_execution_codex_worker_dangerous_flag_rejected",
+          message:
+            "Codex worker process preparation rejects sandbox bypass and full-access flags.",
+          category: "permission",
+        }),
+      );
+      break;
+    }
+  }
+
+  if (/credential|api[-_]?key|token|provider|mcp|danger-full-access/i.test(serialized)) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_worker_authority_override_rejected",
+        message:
+          "Codex worker process preparation rejects credential, provider, MCP, and authority overrides.",
+        category: "permission",
+      }),
+    );
+  }
+
+  return issues;
+}
+
+function buildCodexArgv(
+  configuration: TaskExecutionCodexWorkerConfiguration,
+): readonly string[] {
+  const argv = [
+    "exec",
+    "--model",
+    configuration.model.model,
+    "--reasoning-effort",
+    configuration.model.reasoningEffort,
+    "--sandbox",
+    configuration.sandboxMode,
+    "--ask-for-approval",
+    configuration.approvalPolicy,
+  ];
+
+  if (configuration.structuredResultContractRef !== undefined) {
+    argv.push("--output-schema", configuration.structuredResultContractRef);
+  }
+
+  return argv;
+}
+
+function argvIssues(argv: readonly string[]): readonly TaskExecutionWorkerIssue[] {
+  const issues: TaskExecutionWorkerIssue[] = [];
+
+  if (argv.length > 16 || !argv.every((arg) => arg.length > 0 && arg.length <= 160)) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_worker_argv_unbounded",
+        message: "Codex process argv must remain bounded.",
+      }),
+    );
+  }
+
+  for (const arg of argv) {
+    if (dangerousCodexArgs.has(arg) || arg.includes("danger-full-access")) {
+      issues.push(
+        issue({
+          code: "task_execution_codex_worker_dangerous_flag_rejected",
+          message:
+            "Codex process argv cannot include sandbox bypass or full-access flags.",
+          category: "permission",
+        }),
+      );
+    }
+
+    if (
+      forbiddenArgPrefixes.some(
+        (prefix) => arg === prefix || arg.startsWith(`${prefix}=`),
+      )
+    ) {
+      issues.push(
+        issue({
+          code: "task_execution_codex_worker_authority_override_rejected",
+          message:
+            "Codex process argv cannot carry config, MCP, provider, credential, or environment overrides.",
+          category: "permission",
+        }),
+      );
+    }
+
+    if (/\s+-c\s+|[|;&<>`$]/.test(arg)) {
+      issues.push(
+        issue({
+          code: "task_execution_codex_worker_shell_command_rejected",
+          message: "Codex process argv cannot represent a shell command string.",
+          category: "permission",
+        }),
+      );
+    }
+  }
+
+  return issues;
+}
+
+function buildInstructionPayload(request: TaskExecutionWorkerRequest): string {
+  return JSON.stringify({
+    aeosCodexWorkerInstructionVersion: 1,
+    taskId: request.taskId,
+    sourceTaskRevision: request.sourceTaskRevision,
+    attemptId: request.attemptId,
+    attemptNumber: request.attemptNumber,
+    invocationId: request.invocationId,
+    idempotencyKey: request.idempotencyKey,
+    workItemId: request.workItemId ?? null,
+    batchId: request.batchId ?? null,
+    operationKind: request.operationKind,
+    workItem: request.workItemId ?? null,
+    constraints: request.boundedInstructions,
+    contextReferences: request.contextReferences,
+    expectedEvidence: [
+      "structured-result",
+      "bounded-diagnostics",
+      "changed-file-manifest-reference",
+      "patch-artifact-reference",
+      "test-summary-reference",
+    ],
+  });
+}
+
+function invocationRecordMatchesRequest(input: {
+  readonly request: TaskExecutionWorkerRequest;
+  readonly record: TaskExecutionInvocationRecord;
+}): boolean {
+  const { request, record } = input;
+
+  return (
+    record.taskId === request.taskId &&
+    record.taskStateRevision === request.sourceTaskRevision &&
+    record.attemptId === request.attemptId &&
+    record.attemptNumber === request.attemptNumber &&
+    record.invocationId === request.invocationId &&
+    record.idempotencyKey === request.idempotencyKey &&
+    (record.workItemId ?? null) === (request.workItemId ?? null) &&
+    (record.batchId ?? null) === (request.batchId ?? null) &&
+    record.lifecycle === "invoking"
+  );
+}
+
+export function prepareTaskExecutionCodexWorkerInvocation(input: {
+  readonly configuration: TaskExecutionCodexWorkerConfiguration;
+  readonly request: TaskExecutionWorkerRequest;
+  readonly invocationRecord: unknown;
+  readonly taskOrModelProcessClaims?: unknown;
+}): {
+  readonly preparedInvocation: TaskExecutionCodexPreparedInvocation;
+  readonly issues: readonly TaskExecutionWorkerIssue[];
+} {
+  const issues: TaskExecutionWorkerIssue[] = [
+    ...validateConfiguration(input.configuration),
+    ...taskOrModelClaimIssues(input.taskOrModelProcessClaims),
+  ];
+  const argv = buildCodexArgv(input.configuration);
+  issues.push(...argvIssues(argv));
+
+  const invocationValidation = validateTaskExecutionInvocationRecord(
+    input.invocationRecord,
+  );
+  const invocationAuthorityBound =
+    invocationValidation.ok &&
+    invocationRecordMatchesRequest({
+      request: input.request,
+      record: invocationValidation.value,
+    });
+
+  if (!invocationAuthorityBound) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_worker_invocation_authority_mismatch",
+        message:
+          "Prepared Codex invocation must bind the exact AEOS task, revision, attempt, invocation, idempotency, work item, and batch.",
+        category: "conflict",
+      }),
+    );
+  }
+
+  const exactWorkerSelected =
+    input.request.workerIdentity.workerId === input.configuration.identity.workerId &&
+    input.request.workerIdentity.workerFamily === "codex" &&
+    input.configuration.identity.workerFamily === "codex" &&
+    input.request.workerIdentity.runtimeKind === "test_worker";
+
+  if (!exactWorkerSelected) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_worker_selection_mismatch",
+        message:
+          "Codex adapter requires exact system-selected Codex worker identity.",
+        category: "permission",
+      }),
+    );
+  }
+
+  const workspaceAuthorityBound =
+    input.request.workspace.authority === "system" &&
+    input.request.workspace.workspaceRef === input.configuration.workspace.workspaceRef &&
+    input.request.workspace.projectRef === input.configuration.workspace.projectRef &&
+    input.configuration.workspace.workingDirectoryRef ===
+      input.request.workspace.workspaceRef;
+
+  if (!workspaceAuthorityBound) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_worker_workspace_mismatch",
+        message:
+          "Codex process working directory must match system-owned worker workspace authority.",
+        category: "permission",
+      }),
+    );
+  }
+
+  if (!input.configuration.futureProcessCapability) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_worker_process_capability_missing",
+        message:
+          "Future Codex process execution requires a system-declared process execution capability.",
+        category: "permission",
+      }),
+    );
+  }
+
+  if (!input.configuration.processPermission.processExecutionAllowed) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_worker_process_permission_denied",
+        message:
+          "Prepared Codex process requests do not grant permission to run without an explicit process permission.",
+        category: "permission",
+      }),
+    );
+  }
+
+  const stdin = buildInstructionPayload(input.request);
+
+  if (stdin.length > 8192) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_worker_instruction_payload_unbounded",
+        message: "Codex worker instruction payload must remain bounded.",
+      }),
+    );
+  }
+
+  const processRequest: TaskExecutionCodexProcessRequest = {
+    executable: input.configuration.executable,
+    argv,
+    workingDirectory: input.configuration.workspace,
+    stdin,
+    timeoutMs: input.configuration.timeoutMs,
+    stdoutLimitBytes: input.configuration.stdoutLimitBytes,
+    stderrLimitBytes: input.configuration.stderrLimitBytes,
+    environment: {
+      authority: "system",
+      variables: [],
+    },
+  };
+  const preparedInvocation: TaskExecutionCodexPreparedInvocation = {
+    taskId: input.request.taskId,
+    sourceTaskRevision: input.request.sourceTaskRevision,
+    attemptId: input.request.attemptId,
+    attemptNumber: input.request.attemptNumber,
+    invocationId: input.request.invocationId,
+    idempotencyKey: input.request.idempotencyKey,
+    workItemId: input.request.workItemId ?? null,
+    batchId: input.request.batchId ?? null,
+    workerIdentity: input.configuration.identity,
+    processRequest,
+    exactWorkerSelected,
+    invocationAuthorityBound,
+    workspaceAuthorityBound,
+    futureProcessCapabilityDeclared: input.configuration.futureProcessCapability,
+    processPermissionAllowed:
+      input.configuration.processPermission.processExecutionAllowed,
+    permissionFactsAllowed: input.request.permissionFacts.allowed,
+    runnable:
+      TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED &&
+      issues.every((item) => item.severity !== "error") &&
+      exactWorkerSelected &&
+      invocationAuthorityBound &&
+      workspaceAuthorityBound &&
+      input.configuration.futureProcessCapability &&
+      input.configuration.processPermission.processExecutionAllowed &&
+      input.request.permissionFacts.allowed,
+    realExecutionEnabled: TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
+  };
+
+  return {
+    preparedInvocation,
+    issues,
+  };
+}
+
+function boundedDiagnostic(value: string, limit: number): string | undefined {
+  const trimmed = value.trim();
+
+  if (trimmed.length === 0 || trimmed.length > limit || /(\n\s*at\s+|stack)/i.test(trimmed)) {
+    return undefined;
+  }
+
+  return trimmed;
+}
+
+function rawFailure(input: {
+  readonly request: TaskExecutionWorkerRequest;
+  readonly code: string;
+  readonly category: TaskExecutionWorkerRawResult["failureCategory"];
+  readonly message: string;
+  readonly diagnostic?: string;
+}): TaskExecutionWorkerRawResult {
+  return {
+    status: "failed",
+    workerId: input.request.workerIdentity.workerId,
+    workerFamily: input.request.workerIdentity.workerFamily,
+    runtimeKind: input.request.workerIdentity.runtimeKind,
+    invocationId: input.request.invocationId,
+    idempotencyKey: input.request.idempotencyKey,
+    taskId: input.request.taskId,
+    sourceTaskRevision: input.request.sourceTaskRevision,
+    attemptId: input.request.attemptId,
+    attemptNumber: input.request.attemptNumber,
+    workItemId: input.request.workItemId,
+    batchId: input.request.batchId,
+    failureCode: input.code,
+    failureCategory: input.category,
+    message: input.message,
+    diagnostic: input.diagnostic,
+  };
+}
+
+function unavailableFailure(input: {
+  readonly request: TaskExecutionWorkerRequest;
+  readonly code: string;
+  readonly category: TaskExecutionWorkerRawResult["failureCategory"];
+  readonly message: string;
+}): TaskExecutionWorkerRawResult {
+  return {
+    ...rawFailure(input),
+    status: "unavailable",
+  };
+}
+
+function structuredBindingsMatch(input: {
+  readonly request: TaskExecutionWorkerRequest;
+  readonly value: Record<string, unknown>;
+}): boolean {
+  const request = input.request;
+  const value = input.value;
+
+  return (
+    value.workerId === request.workerIdentity.workerId &&
+    value.workerFamily === request.workerIdentity.workerFamily &&
+    value.runtimeKind === request.workerIdentity.runtimeKind &&
+    value.invocationId === request.invocationId &&
+    value.idempotencyKey === request.idempotencyKey &&
+    value.taskId === request.taskId &&
+    value.sourceTaskRevision === request.sourceTaskRevision &&
+    value.attemptId === request.attemptId &&
+    value.attemptNumber === request.attemptNumber &&
+    (value.workItemId ?? null) === (request.workItemId ?? null) &&
+    (value.batchId ?? null) === (request.batchId ?? null)
+  );
+}
+
+function structuredResultToRaw(input: {
+  readonly request: TaskExecutionWorkerRequest;
+  readonly value: unknown;
+  readonly stdoutLimitBytes: number;
+}): {
+  readonly rawResult: TaskExecutionWorkerRawResult;
+  readonly issues: readonly TaskExecutionWorkerIssue[];
+} {
+  const issues: TaskExecutionWorkerIssue[] = [];
+
+  if (
+    !isRecord(input.value) ||
+    input.value.aeosCodexWorkerResultVersion !== 1 ||
+    !structuredBindingsMatch({ request: input.request, value: input.value })
+  ) {
+    return {
+      rawResult: rawFailure({
+        request: input.request,
+        code: "task_execution_codex_worker_structured_result_invalid",
+        category: "invalid_request",
+        message:
+          "Codex process output was not a closed structured result bound to the AEOS invocation.",
+      }),
+      issues: [
+        issue({
+          code: "task_execution_codex_worker_structured_result_invalid",
+          message:
+            "Malformed or mismatched Codex structured output failed closed.",
+        }),
+      ],
+    };
+  }
+
+  if (
+    input.value.output !== undefined &&
+    JSON.stringify(input.value.output).length > input.stdoutLimitBytes
+  ) {
+    return {
+      rawResult: rawFailure({
+        request: input.request,
+        code: "task_execution_codex_worker_structured_output_oversized",
+        category: "invalid_request",
+        message: "Codex structured output exceeded the bounded output limit.",
+      }),
+      issues: [
+        issue({
+          code: "task_execution_codex_worker_structured_output_oversized",
+          message: "Oversized Codex structured output was rejected.",
+        }),
+      ],
+    };
+  }
+
+  const status = input.value.status;
+  const output = sanitizeCodexJsonValue(input.value.output);
+  const metadata = sanitizeCodexJsonValue(input.value.metadata);
+
+  if (
+    status !== "returned" &&
+    status !== "failed" &&
+    status !== "in_progress" &&
+    status !== "unavailable"
+  ) {
+    return {
+      rawResult: rawFailure({
+        request: input.request,
+        code: "task_execution_codex_worker_structured_status_invalid",
+        category: "invalid_request",
+        message: "Codex structured output contained an invalid status.",
+      }),
+      issues: [
+        issue({
+          code: "task_execution_codex_worker_structured_status_invalid",
+          message: "Invalid Codex structured status failed closed.",
+        }),
+      ],
+    };
+  }
+
+  if (output !== undefined && !isJsonValue(output)) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_worker_structured_output_invalid",
+        message: "Non-JSON Codex output was dropped from worker evidence.",
+        severity: "warning",
+      }),
+    );
+  }
+
+  if (metadata !== undefined && !isJsonObject(metadata)) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_worker_structured_metadata_invalid",
+        message: "Non-object Codex metadata was dropped from worker evidence.",
+        severity: "warning",
+      }),
+    );
+  }
+
+  return {
+    rawResult: {
+      status,
+      workerId: input.request.workerIdentity.workerId,
+      workerFamily: input.request.workerIdentity.workerFamily,
+      runtimeKind: input.request.workerIdentity.runtimeKind,
+      invocationId: input.request.invocationId,
+      idempotencyKey: input.request.idempotencyKey,
+      taskId: input.request.taskId,
+      sourceTaskRevision: input.request.sourceTaskRevision,
+      attemptId: input.request.attemptId,
+      attemptNumber: input.request.attemptNumber,
+      workItemId: input.request.workItemId,
+      batchId: input.request.batchId,
+      invocationOk:
+        typeof input.value.invocationOk === "boolean"
+          ? input.value.invocationOk
+          : undefined,
+      output: isJsonValue(output) ? output : undefined,
+      outputReference:
+        typeof input.value.outputReference === "string"
+          ? input.value.outputReference
+          : undefined,
+      patchArtifactReference:
+        typeof input.value.patchArtifactReference === "string"
+          ? input.value.patchArtifactReference
+          : undefined,
+      changedFileManifestReference:
+        typeof input.value.changedFileManifestReference === "string"
+          ? input.value.changedFileManifestReference
+          : undefined,
+      testSummaryReference:
+        typeof input.value.testSummaryReference === "string"
+          ? input.value.testSummaryReference
+          : undefined,
+      diagnosticCode:
+        typeof input.value.diagnosticCode === "string"
+          ? input.value.diagnosticCode
+          : undefined,
+      message:
+        typeof input.value.message === "string" ? input.value.message : undefined,
+      metadata: isJsonObject(metadata) ? metadata : undefined,
+      failure: isRecord(input.value.failure)
+        ? (input.value.failure as unknown as TaskExecutionWorkerRawResult["failure"])
+        : undefined,
+      failureCode:
+        typeof input.value.failureCode === "string"
+          ? input.value.failureCode
+          : undefined,
+      failureCategory:
+        typeof input.value.failureCategory === "string"
+          ? (input.value.failureCategory as TaskExecutionWorkerRawResult["failureCategory"])
+          : undefined,
+      diagnostic:
+        typeof input.value.diagnostic === "string"
+          ? input.value.diagnostic
+          : undefined,
+    },
+    issues,
+  };
+}
+
+export function normalizeTaskExecutionCodexProcessRawResult(input: {
+  readonly request: TaskExecutionWorkerRequest;
+  readonly processResult: TaskExecutionCodexProcessResult;
+  readonly stdoutLimitBytes?: number;
+  readonly stderrLimitBytes?: number;
+}): {
+  readonly rawResult: TaskExecutionWorkerRawResult;
+  readonly issues: readonly TaskExecutionWorkerIssue[];
+} {
+  const stdoutLimitBytes = input.stdoutLimitBytes ?? 8192;
+  const stderrLimitBytes = input.stderrLimitBytes ?? 2048;
+  const diagnostic = boundedDiagnostic(input.processResult.stderr, stderrLimitBytes);
+
+  if (input.processResult.timedOut || input.processResult.terminationReason === "timeout") {
+    return {
+      rawResult: unavailableFailure({
+        request: input.request,
+        code: "task_execution_codex_worker_process_timeout",
+        category: "timeout",
+        message:
+          "Codex process timed out; this is evidence only and does not authorize completion or retry.",
+      }),
+      issues: [],
+    };
+  }
+
+  if (
+    input.processResult.interrupted ||
+    input.processResult.terminationReason === "interrupted" ||
+    input.processResult.terminationReason === "signal"
+  ) {
+    return {
+      rawResult: unavailableFailure({
+        request: input.request,
+        code: "task_execution_codex_worker_process_interrupted",
+        category: "unknown",
+        message:
+          "Codex process was interrupted; this is evidence only and does not complete work.",
+      }),
+      issues: [],
+    };
+  }
+
+  if (input.processResult.stdout.length > stdoutLimitBytes) {
+    return {
+      rawResult: rawFailure({
+        request: input.request,
+        code: "task_execution_codex_worker_stdout_oversized",
+        category: "invalid_request",
+        message: "Codex process stdout exceeded the configured bounded limit.",
+        diagnostic,
+      }),
+      issues: [
+        issue({
+          code: "task_execution_codex_worker_stdout_oversized",
+          message: "Oversized Codex stdout was rejected.",
+        }),
+      ],
+    };
+  }
+
+  if (
+    input.processResult.exitCode !== 0 ||
+    input.processResult.terminationReason === "nonzero_exit"
+  ) {
+    return {
+      rawResult: rawFailure({
+        request: input.request,
+        code: "task_execution_codex_worker_process_nonzero_exit",
+        category: "worker_error",
+        message:
+          "Codex process exited nonzero; exit status is not completion authority.",
+        diagnostic,
+      }),
+      issues: [],
+    };
+  }
+
+  try {
+    return structuredResultToRaw({
+      request: input.request,
+      value: JSON.parse(input.processResult.stdout) as unknown,
+      stdoutLimitBytes,
+    });
+  } catch {
+    return {
+      rawResult: rawFailure({
+        request: input.request,
+        code: "task_execution_codex_worker_structured_result_malformed",
+        category: "invalid_request",
+        message:
+          "Codex process stdout was not valid structured JSON and failed closed.",
+        diagnostic,
+      }),
+      issues: [
+        issue({
+          code: "task_execution_codex_worker_structured_result_malformed",
+          message: "Malformed Codex structured output failed closed.",
+        }),
+      ],
+    };
+  }
+}
+
+export function normalizeTaskExecutionCodexProcessResult(input: {
+  readonly request: TaskExecutionWorkerRequest;
+  readonly processResult: TaskExecutionCodexProcessResult;
+  readonly stdoutLimitBytes?: number;
+  readonly stderrLimitBytes?: number;
+}): TaskExecutionWorkerResult {
+  const normalizedRaw = normalizeTaskExecutionCodexProcessRawResult(input);
+  const normalized = normalizeTaskExecutionWorkerResult({
+    request: input.request,
+    rawResult: normalizedRaw.rawResult,
+  });
+
+  return {
+    ...normalized,
+    issues: [...normalized.issues, ...normalizedRaw.issues],
+  };
+}
+
+function successfulProcessResult(
+  request: TaskExecutionWorkerRequest,
+): TaskExecutionCodexProcessResult {
+  return {
+    invocationRef: `test-codex-process:${request.invocationId}`,
+    terminationReason: "exited",
+    exitCode: 0,
+    timedOut: false,
+    interrupted: false,
+    stderr: "",
+    stdout: JSON.stringify({
+      aeosCodexWorkerResultVersion: 1,
+      status: "returned",
+      workerId: request.workerIdentity.workerId,
+      workerFamily: request.workerIdentity.workerFamily,
+      runtimeKind: request.workerIdentity.runtimeKind,
+      invocationId: request.invocationId,
+      idempotencyKey: request.idempotencyKey,
+      taskId: request.taskId,
+      sourceTaskRevision: request.sourceTaskRevision,
+      attemptId: request.attemptId,
+      attemptNumber: request.attemptNumber,
+      workItemId: request.workItemId ?? null,
+      batchId: request.batchId ?? null,
+      invocationOk: true,
+      outputReference: "artifact:codex-worker-output",
+      patchArtifactReference: "artifact:codex-worker-patch",
+      changedFileManifestReference: "artifact:codex-worker-changed-files",
+      testSummaryReference: "artifact:codex-worker-tests",
+      diagnosticCode: "codex_worker_test_process_returned",
+    }),
+  };
+}
+
+export function createTaskExecutionCodexWorkerAdapter(input: {
+  readonly configuration: TaskExecutionCodexWorkerConfiguration;
+  readonly deterministicProcessResult?: TaskExecutionCodexProcessResult;
+}): TaskExecutionCodexWorkerAdapter {
+  let processCalls = 0;
+
+  return {
+    codexAdapterKind: "task_execution_codex_worker_adapter",
+    identity: input.configuration.identity,
+    capabilities: {
+      roles: ["implementation"],
+      repositoryRead: true,
+      repositoryWrite: false,
+      processExecution: false,
+      shellExecution: false,
+      toolExecution: false,
+      modelReasoning: true,
+      patchGeneration: true,
+      testExecution: true,
+      boundedDiagnostics: true,
+      deterministicTestResult: true,
+    },
+    configuration: input.configuration,
+    processCallCount: () => processCalls,
+    actualChildProcessCount: () => 0,
+    actualCodexCallCount: () => 0,
+    actualClaudeCodeCallCount: () => 0,
+    cloudCallCount: () => 0,
+    run: (request) => {
+      processCalls += 1;
+      const normalizedRaw = normalizeTaskExecutionCodexProcessRawResult({
+        request,
+        processResult:
+          input.deterministicProcessResult ?? successfulProcessResult(request),
+        stdoutLimitBytes: input.configuration.stdoutLimitBytes,
+        stderrLimitBytes: input.configuration.stderrLimitBytes,
+      });
+
+      if (normalizedRaw.issues.some((item) => item.severity === "error")) {
+        return normalizedRaw.rawResult;
+      }
+
+      return normalizedRaw.rawResult;
+    },
+  };
+}
+
+function codexAdapterFromUnknown(
+  worker: unknown,
+): TaskExecutionCodexWorkerAdapter | undefined {
+  if (!isRecord(worker)) {
+    return undefined;
+  }
+
+  if (
+    worker.codexAdapterKind !== "task_execution_codex_worker_adapter" ||
+    typeof worker.processCallCount !== "function" ||
+    typeof worker.actualChildProcessCount !== "function" ||
+    typeof worker.actualCodexCallCount !== "function" ||
+    typeof worker.actualClaudeCodeCallCount !== "function" ||
+    typeof worker.cloudCallCount !== "function"
+  ) {
+    return undefined;
+  }
+
+  return worker as unknown as TaskExecutionCodexWorkerAdapter;
+}
+
+export async function evaluateTaskExecutionCodexWorkerConformance(
+  input: TaskExecutionCodexWorkerConformanceInput,
+): Promise<TaskExecutionCodexWorkerConformanceResult> {
+  const adapter = codexAdapterFromUnknown(input.worker);
+  const prepared = prepareTaskExecutionCodexWorkerInvocation({
+    configuration: input.configuration,
+    request: input.request,
+    invocationRecord: input.invocationRecord,
+    taskOrModelProcessClaims: input.taskOrModelProcessClaims,
+  });
+  const preflightIssues = [...prepared.issues];
+
+  if (adapter === undefined) {
+    preflightIssues.push(
+      issue({
+        code: "task_execution_codex_worker_adapter_invalid",
+        message:
+          "Codex worker must be the concrete local Codex adapter boundary.",
+      }),
+    );
+  }
+
+  if (adapter !== undefined && adapter.identity.workerId !== input.configuration.identity.workerId) {
+    preflightIssues.push(
+      issue({
+        code: "task_execution_codex_worker_adapter_configuration_mismatch",
+        message: "Codex adapter identity must match the supplied configuration.",
+        category: "conflict",
+      }),
+    );
+  }
+
+  if (preflightIssues.some((item) => item.severity === "error")) {
+    return {
+      ok: false,
+      codexWorkerConformant: false,
+      preparedInvocation: prepared.preparedInvocation,
+      workerConformance: null,
+      normalizedResult: null,
+      issues: preflightIssues,
+      processCallCount: adapter?.processCallCount() ?? 0,
+      actualChildProcessCount: 0,
+      actualCodexCallCount: 0,
+      actualClaudeCodeCallCount: 0,
+      cloudCallCount: 0,
+      realExecutionEnabled: TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
+    };
+  }
+
+  if (adapter === undefined) {
+    return {
+      ok: false,
+      codexWorkerConformant: false,
+      preparedInvocation: prepared.preparedInvocation,
+      workerConformance: null,
+      normalizedResult: null,
+      issues: preflightIssues,
+      processCallCount: 0,
+      actualChildProcessCount: 0,
+      actualCodexCallCount: 0,
+      actualClaudeCodeCallCount: 0,
+      cloudCallCount: 0,
+      realExecutionEnabled: TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
+    };
+  }
+
+  const workerConformance = await evaluateTaskExecutionWorkerConformance({
+    worker: adapter,
+    request: input.request,
+    invocationRecord: input.invocationRecord,
+    permissionGateResult: input.permissionGateResult,
+    expectedIdempotencyKey: input.expectedIdempotencyKey,
+    taskOrModelWorkerSelectionClaims: input.taskOrModelWorkerSelectionClaims,
+    taskOrModelCapabilityClaims: input.taskOrModelCapabilityClaims,
+    stateSnapshotBefore: input.stateSnapshotBefore,
+    stateSnapshotAfter: input.stateSnapshotAfter,
+    attemptSnapshotBefore: input.attemptSnapshotBefore,
+    attemptSnapshotAfter: input.attemptSnapshotAfter,
+    invocationSnapshotBefore: input.invocationSnapshotBefore,
+    invocationSnapshotAfter: input.invocationSnapshotAfter,
+    workAccountingSnapshotBefore: input.workAccountingSnapshotBefore,
+    workAccountingSnapshotAfter: input.workAccountingSnapshotAfter,
+  });
+  const issues = [...preflightIssues, ...workerConformance.issues];
+  const codexWorkerConformant =
+    workerConformance.testWorkerConformant &&
+    workerConformance.workerIdentity?.workerFamily === "codex" &&
+    workerConformance.workerInvoked &&
+    adapter.actualChildProcessCount() === 0 &&
+    adapter.actualCodexCallCount() === 0 &&
+    adapter.actualClaudeCodeCallCount() === 0 &&
+    adapter.cloudCallCount() === 0;
+
+  return {
+    ok: codexWorkerConformant && issues.every((item) => item.severity !== "error"),
+    codexWorkerConformant,
+    preparedInvocation: prepared.preparedInvocation,
+    workerConformance,
+    normalizedResult: workerConformance.normalizedResult,
+    issues,
+    processCallCount: adapter.processCallCount(),
+    actualChildProcessCount: adapter.actualChildProcessCount(),
+    actualCodexCallCount: adapter.actualCodexCallCount(),
+    actualClaudeCodeCallCount: adapter.actualClaudeCodeCallCount(),
+    cloudCallCount: adapter.cloudCallCount(),
+    realExecutionEnabled: TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
+  };
+}

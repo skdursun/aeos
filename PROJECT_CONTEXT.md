@@ -135,6 +135,13 @@ condition.
   generic workers. AEOS remains authoritative for worker selection, invocation
   binding, permission facts, task state, work accounting, verification, retry,
   audit, and completion; worker output is bounded evidence only.
+- TASK-0313: First concrete local Codex worker adapter boundary. Added a
+  Codex-family adapter on top of the generic TASK-0312 worker runtime with a
+  bounded future `codex exec` argv process request, system-owned executable,
+  workspace, model, sandbox, approval, timeout, and process permission
+  authority, deterministic TEST process normalization only, and real Codex,
+  Claude Code, child-process, cloud, retry, verifier, and completion execution
+  disabled.
 
 ## Do Not Load By Default
 
@@ -145,13 +152,12 @@ condition.
 
 ## Next Task
 
-TASK-0313 not started: Design and implement the first concrete local Codex
-worker adapter boundary on top of the generic worker runtime, using a controlled
-local-process runtime shape with deterministic TEST transport only. The task
-must establish the safe local adapter pattern for future model workers without
-real Codex invocation, real Claude Code invocation, cloud calls, routing,
-completion authority, verifier authority, retry authority, or unrestricted
-subprocess execution.
+TASK-0314 not started: Design the first controlled real local Codex worker
+execution boundary readiness gate, without enabling automated real Codex
+execution yet. The next step should decide the exact operator-controlled
+permission, executable resolution, workspace verification, process spawn,
+timeout, output capture, and post-run filesystem evidence checks required
+before `codex exec` can be eligible.
 
 ## Current Direction
 
@@ -161,11 +167,12 @@ returns to the Codex-orchestrator plus Claude Code worker orchestration
 architecture through provider-neutral adapter foundations, without implementing
 real Codex or Claude Code worker execution yet.
 
-The safest next adapter milestone is the local Codex worker adapter boundary
-with real execution still disabled. It should prove how a future local model
-worker plugs into the TASK-0312 worker request/result contract, permission facts,
-workspace reference, audit references, and sanitized process-failure shape before
-any real Codex CLI process can be eligible.
+The safest next adapter milestone is a readiness gate for controlled real local
+Codex execution. TASK-0313 proved the adapter shape with deterministic TEST
+transport only; TASK-0314 should keep real execution disabled while specifying
+the remaining spawn, permission, workspace, audit, output capture, and
+filesystem verification requirements for a future operator-controlled
+`codex exec` run.
 
 ## Current Plans
 

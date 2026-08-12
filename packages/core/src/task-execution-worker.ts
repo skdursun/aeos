@@ -285,6 +285,8 @@ const forbiddenAuthorityKeys = new Set<string>([
   "verifiersatisfied",
   "safetoretry",
   "retryable",
+  "runagain",
+  "switchworkerto",
   "ownershiptoken",
 ]);
 
