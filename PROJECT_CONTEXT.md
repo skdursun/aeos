@@ -183,6 +183,14 @@ condition.
   completion claims remain non-authoritative, shell/package/git authority
   remains disabled, primary workspace apply remains closed, and TASK-0318 made
   zero real Claude, Codex, or cloud calls.
+- TASK-0319: First controlled real Claude Code isolated WRITE canary with
+  durable mutation evidence. The fresh real canary mutated only
+  `canary/claude-write-canary.txt`, AEOS persisted and read-back verified
+  invocation-bound mutation evidence plus a bounded mutation artifact,
+  PrimaryApplyInputDurable is true for the fresh invocation, the primary
+  repository remained untouched, shell execution and primary apply remained
+  disabled, and worker evidence remains non-authoritative for verifier,
+  completion, retry, approval, and task-completion authority.
 
 ## Do Not Load By Default
 
@@ -193,8 +201,9 @@ condition.
 
 ## Next Task
 
-TASK-0319: First explicitly controlled real Claude Code WRITE canary inside an
-isolated mutation workspace, with primary workspace apply still disabled.
+TASK-0320: Verified isolated-mutation artifact to primary-workspace apply
+authority using deterministic TEST repositories only. Real primary-repository
+apply remains disabled until the apply authority is behaviorally proven.
 
 ## Current Direction
 
@@ -204,13 +213,13 @@ returns to the Codex-orchestrator plus Claude Code worker orchestration
 architecture through provider-neutral adapter foundations, without implementing
 real Codex or Claude Code worker execution yet.
 
-TASK-0318 is complete: write-capable worker mutation is now proven only inside
-system-owned isolated TEST workspaces with authoritative filesystem evidence.
-The primary workspace remains authoritative and unchanged by worker mutation;
-automatic patch apply remains disabled. Real Claude/Codex write workers remain
-disabled until an explicit isolated-workspace canary task, and worker output
-remains evidence only unless future AEOS verifier/completion authority
-explicitly grants it.
+TASK-0319 is complete: the fresh real Claude Code write canary produced
+durable, immutable, invocation-bound mutation evidence and a bounded mutation
+artifact sufficient as future apply input. The primary workspace remains
+authoritative and unchanged by worker mutation; shell execution and automatic
+primary apply remain disabled. TASK-0320 is ready to design deterministic
+TEST-only isolated mutation apply authority, with real primary-repository apply
+still closed until that authority is behaviorally proven.
 
 ## Current Plans
 

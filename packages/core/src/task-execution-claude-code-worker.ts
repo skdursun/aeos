@@ -46,6 +46,8 @@ export const TASK_EXECUTION_CLAUDE_CODE_PROCESS_BOUNDARY =
   "AUTHORIZED_LOCAL_CLAUDE_CODE_PROCESS";
 export const TASK_EXECUTION_CLAUDE_CODE_READ_ONLY_CANARY_PROFILE_READY = true;
 export const TASK_EXECUTION_CLAUDE_CODE_READ_ONLY_CANARY_EXECUTED = false;
+export const TASK_EXECUTION_CLAUDE_CODE_WRITE_CANARY_PROFILE_READY = true;
+export const TASK_EXECUTION_CLAUDE_CODE_WRITE_CANARY_EXECUTED = false;
 
 export type TaskExecutionClaudeCodeProcessTerminationReason =
   | "exited"
@@ -93,6 +95,7 @@ export interface TaskExecutionClaudeCodeWorkerConfiguration {
   readonly stderrLimitBytes: number;
   readonly structuredResultContractRef?: string;
   readonly readOnlyCanaryProfile?: TaskExecutionClaudeCodeReadOnlyCanaryProfile;
+  readonly writeCanaryProfile?: TaskExecutionClaudeCodeWriteCanaryProfile;
 }
 
 export interface TaskExecutionClaudeCodeReadOnlyCanaryProfile {
@@ -108,6 +111,23 @@ export interface TaskExecutionClaudeCodeReadOnlyCanaryProfile {
   readonly structuredOutput: "json_schema";
 }
 
+export interface TaskExecutionClaudeCodeWriteCanaryProfile {
+  readonly authority: "system";
+  readonly profileId: "claude_code_write_canary_v1";
+  readonly enabled: true;
+  readonly permissionMode: "acceptEdits";
+  readonly toolSet: readonly ["Read", "Edit"];
+  readonly hostCustomizationIsolation: "safe_mode";
+  readonly strictMcpConfig: true;
+  readonly sessionPersistence: false;
+  readonly repositoryWriteAllowed: false;
+  readonly primaryWorkspaceMutationAllowed: false;
+  readonly automaticPatchApplyAllowed: false;
+  readonly shellAllowed: false;
+  readonly structuredOutput: "json_schema";
+  readonly allowedMutationPath: "canary/claude-write-canary.txt";
+}
+
 export interface TaskExecutionClaudeCodeProcessRequest {
   readonly executable: TaskExecutionClaudeCodeExecutableAuthority;
   readonly argv: readonly string[];
@@ -118,7 +138,10 @@ export interface TaskExecutionClaudeCodeProcessRequest {
   readonly stderrLimitBytes: number;
   readonly environment: {
     readonly authority: "system";
-    readonly inheritance?: "none" | "system_claude_code_read_only_canary";
+    readonly inheritance?:
+      | "none"
+      | "system_claude_code_read_only_canary"
+      | "system_claude_code_write_canary";
     readonly variables: readonly [];
   };
 }
@@ -143,6 +166,7 @@ export interface TaskExecutionClaudeCodePreparedInvocation {
   readonly runnable: boolean;
   readonly realExecutionEnabled: false;
   readonly readOnlyCanaryProfileReady: boolean;
+  readonly writeCanaryProfileReady: boolean;
 }
 
 export interface TaskExecutionClaudeCodeProcessResult {
@@ -265,6 +289,76 @@ const claudeCodeReadOnlyCanarySchema = JSON.stringify({
         "observedOperation",
         "summary",
         "evidence",
+      ],
+    },
+    diagnosticCode: { type: "string" },
+    message: { type: "string" },
+    metadata: {
+      type: "object",
+      additionalProperties: true,
+    },
+  },
+  required: [
+    "aeosClaudeCodeWorkerResultVersion",
+    "status",
+    "workerId",
+    "workerFamily",
+    "runtimeKind",
+    "invocationId",
+    "idempotencyKey",
+    "taskId",
+    "sourceTaskRevision",
+    "attemptId",
+    "attemptNumber",
+    "workItemId",
+    "batchId",
+    "invocationOk",
+    "output",
+    "diagnosticCode",
+  ],
+});
+const claudeCodeWriteCanarySchema = JSON.stringify({
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    aeosClaudeCodeWorkerResultVersion: { const: 1 },
+    status: { enum: ["returned", "failed", "in_progress", "unavailable"] },
+    workerId: { type: "string" },
+    workerFamily: { const: "claude_code" },
+    runtimeKind: { const: "test_worker" },
+    invocationId: { type: "string" },
+    idempotencyKey: { type: "string" },
+    taskId: { type: "string" },
+    sourceTaskRevision: { type: "number" },
+    attemptId: { type: "string" },
+    attemptNumber: { type: "number" },
+    workItemId: { type: ["string", "null"] },
+    batchId: { type: ["string", "null"] },
+    invocationOk: { type: "boolean" },
+    output: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        workerFamily: { const: "claude_code" },
+        observedTaskId: { type: "string" },
+        observedOperation: { const: "execute_task_attempt" },
+        summary: { type: "string" },
+        success: { type: "boolean" },
+        changedFiles: {
+          type: "array",
+          items: { const: "canary/claude-write-canary.txt" },
+          maxItems: 1,
+        },
+        shellExecuted: { const: false },
+      },
+      required: [
+        "workerFamily",
+        "observedTaskId",
+        "observedOperation",
+        "summary",
+        "success",
+        "changedFiles",
+        "shellExecuted",
       ],
     },
     diagnosticCode: { type: "string" },
@@ -474,7 +568,11 @@ function validateConfiguration(
     (configuration.structuredResultContractRef !== undefined &&
       !isSafeReference(configuration.structuredResultContractRef)) ||
     (configuration.readOnlyCanaryProfile !== undefined &&
-      !readOnlyCanaryProfileReady(configuration.readOnlyCanaryProfile))
+      !readOnlyCanaryProfileReady(configuration.readOnlyCanaryProfile)) ||
+    (configuration.writeCanaryProfile !== undefined &&
+      !writeCanaryProfileReady(configuration.writeCanaryProfile)) ||
+    (configuration.readOnlyCanaryProfile !== undefined &&
+      configuration.writeCanaryProfile !== undefined)
   ) {
     issues.push(
       issue({
@@ -495,7 +593,9 @@ function validateConfiguration(
       !isSafeReference(configuration.workspace.repositoryRef)) ||
     (configuration.workspace.allowedPathRefs !== undefined &&
       !configuration.workspace.allowedPathRefs.every((item) =>
-        isSafeReference(item),
+        configuration.writeCanaryProfile !== undefined
+          ? item === "canary/claude-write-canary.txt"
+          : isSafeReference(item),
       ))
   ) {
     issues.push(
@@ -527,6 +627,30 @@ function readOnlyCanaryProfileReady(
     profile.sessionPersistence === false &&
     profile.repositoryWriteAllowed === false &&
     profile.structuredOutput === "json_schema"
+  );
+}
+
+function writeCanaryProfileReady(
+  profile: TaskExecutionClaudeCodeWriteCanaryProfile,
+): boolean {
+  return (
+    profile.authority === "system" &&
+    profile.profileId === "claude_code_write_canary_v1" &&
+    profile.enabled === true &&
+    profile.permissionMode === "acceptEdits" &&
+    Array.isArray(profile.toolSet) &&
+    profile.toolSet.length === 2 &&
+    profile.toolSet[0] === "Read" &&
+    profile.toolSet[1] === "Edit" &&
+    profile.hostCustomizationIsolation === "safe_mode" &&
+    profile.strictMcpConfig === true &&
+    profile.sessionPersistence === false &&
+    profile.repositoryWriteAllowed === false &&
+    profile.primaryWorkspaceMutationAllowed === false &&
+    profile.automaticPatchApplyAllowed === false &&
+    profile.shellAllowed === false &&
+    profile.structuredOutput === "json_schema" &&
+    profile.allowedMutationPath === "canary/claude-write-canary.txt"
   );
 }
 
@@ -622,6 +746,27 @@ function buildClaudeCodeArgv(
     ];
   }
 
+  if (configuration.writeCanaryProfile !== undefined) {
+    return [
+      "--safe-mode",
+      "--strict-mcp-config",
+      "--disable-slash-commands",
+      "--no-chrome",
+      "--no-session-persistence",
+      "--permission-mode",
+      "acceptEdits",
+      "--tools",
+      "Read,Edit",
+      "--disallowedTools",
+      "Bash,Write,NotebookEdit,WebFetch,WebSearch,mcp__*",
+      "--print",
+      "--output-format",
+      "json",
+      "--json-schema",
+      claudeCodeWriteCanarySchema,
+    ];
+  }
+
   return ["--print", "--output-format", "json"];
 }
 
@@ -657,16 +802,19 @@ function argvIssues(argv: readonly string[]): readonly TaskExecutionWorkerIssue[
     }
 
     if (
-      (arg === "--permission-mode" && argv[index + 1] !== "plan") ||
+      (arg === "--permission-mode" &&
+        argv[index + 1] !== "plan" &&
+        argv[index + 1] !== "acceptEdits") ||
       (arg.startsWith("--permission-mode=") &&
-        arg !== "--permission-mode=plan")
+        arg !== "--permission-mode=plan" &&
+        arg !== "--permission-mode=acceptEdits")
     ) {
       issues.push(
         issue({
           code:
             "task_execution_claude_code_worker_permission_mode_rejected",
           message:
-            "Claude Code process argv can only use the system-owned read-only canary plan permission mode.",
+            "Claude Code process argv can only use the system-owned canary permission modes.",
           category: "permission",
         }),
       );
@@ -703,7 +851,65 @@ function argvIssues(argv: readonly string[]): readonly TaskExecutionWorkerIssue[
   return issues;
 }
 
-function buildInstructionPayload(request: TaskExecutionWorkerRequest): string {
+function buildInstructionPayload(input: {
+  readonly request: TaskExecutionWorkerRequest;
+  readonly configuration: TaskExecutionClaudeCodeWorkerConfiguration;
+}): string {
+  const { request } = input;
+
+  if (
+    request.workerIdentity.workerFamily === "claude_code" &&
+    input.configuration.writeCanaryProfile !== undefined
+  ) {
+    return JSON.stringify({
+      aeosClaudeCodeWriteCanaryInstructionVersion: 1,
+      instruction:
+        "You are executing one AEOS isolated write canary. Your cwd is the isolated mutation workspace, not the primary repository. Use only Read and Edit. Do not use Bash, shell, git, package managers, network, browser, MCP, agents, or unrelated tools. Mutate exactly one existing file: canary/claude-write-canary.txt. Replace the exact complete file content BEFORE_CANARY with exactly AFTER_CANARY and no trailing newline or extra text. Do not create, delete, rename, or modify any other path. Return only the required structured result. Your self-report is diagnostic only; AEOS will independently verify the filesystem.",
+      requiredResult: {
+        aeosClaudeCodeWorkerResultVersion: 1,
+        status: "returned",
+        workerId: request.workerIdentity.workerId,
+        workerFamily: request.workerIdentity.workerFamily,
+        runtimeKind: request.workerIdentity.runtimeKind,
+        invocationId: request.invocationId,
+        idempotencyKey: request.idempotencyKey,
+        taskId: request.taskId,
+        sourceTaskRevision: request.sourceTaskRevision,
+        attemptId: request.attemptId,
+        attemptNumber: request.attemptNumber,
+        workItemId: request.workItemId ?? null,
+        batchId: request.batchId ?? null,
+        invocationOk: true,
+        output: {
+          workerFamily: "claude_code",
+          observedTaskId: request.taskId,
+          observedOperation: request.operationKind,
+          summary:
+            "Claude Code write canary attempted the exact isolated canary file mutation.",
+          success: true,
+          changedFiles: ["canary/claude-write-canary.txt"],
+          shellExecuted: false,
+        },
+        diagnosticCode: "claude_code_write_canary_returned",
+      },
+      boundedContext: {
+        taskId: request.taskId,
+        sourceTaskRevision: request.sourceTaskRevision,
+        attemptId: request.attemptId,
+        attemptNumber: request.attemptNumber,
+        invocationId: request.invocationId,
+        idempotencyKey: request.idempotencyKey,
+        operationKind: request.operationKind,
+        allowedMutationPath: "canary/claude-write-canary.txt",
+        expectedBeforeContent: "BEFORE_CANARY",
+        expectedAfterContent: "AFTER_CANARY",
+        primaryWorkspaceMutationAllowed: false,
+        automaticPatchApplyAllowed: false,
+        shellAllowed: false,
+      },
+    });
+  }
+
   if (request.workerIdentity.workerFamily === "claude_code") {
     return JSON.stringify({
       aeosClaudeCodeReadOnlyCanaryInstructionVersion: 1,
@@ -814,6 +1020,10 @@ export function prepareTaskExecutionClaudeCodeWorkerInvocation(input: {
     input.configuration.readOnlyCanaryProfile === undefined
       ? false
       : readOnlyCanaryProfileReady(input.configuration.readOnlyCanaryProfile);
+  const writeCanaryProfileReadyValue =
+    input.configuration.writeCanaryProfile === undefined
+      ? false
+      : writeCanaryProfileReady(input.configuration.writeCanaryProfile);
 
   const invocationValidation = validateTaskExecutionInvocationRecord(
     input.invocationRecord,
@@ -894,7 +1104,10 @@ export function prepareTaskExecutionClaudeCodeWorkerInvocation(input: {
     );
   }
 
-  const stdin = buildInstructionPayload(input.request);
+  const stdin = buildInstructionPayload({
+    request: input.request,
+    configuration: input.configuration,
+  });
 
   if (stdin.length > 8192) {
     issues.push(
@@ -917,7 +1130,9 @@ export function prepareTaskExecutionClaudeCodeWorkerInvocation(input: {
       authority: "system",
       inheritance: readOnlyCanaryProfileReadyValue
         ? "system_claude_code_read_only_canary"
-        : "none",
+        : writeCanaryProfileReadyValue
+          ? "system_claude_code_write_canary"
+          : "none",
       variables: [],
     },
   };
@@ -950,6 +1165,7 @@ export function prepareTaskExecutionClaudeCodeWorkerInvocation(input: {
       input.request.permissionFacts.allowed,
     realExecutionEnabled: TASK_EXECUTION_CLAUDE_CODE_WORKER_REAL_EXECUTION_ENABLED,
     readOnlyCanaryProfileReady: readOnlyCanaryProfileReadyValue,
+    writeCanaryProfileReady: writeCanaryProfileReadyValue,
   };
 
   return {

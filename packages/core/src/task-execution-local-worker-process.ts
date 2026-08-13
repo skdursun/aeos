@@ -238,7 +238,8 @@ export interface TaskExecutionLocalWorkerRuntimeExecutableBinding {
   readonly executablePath: string;
   readonly executionMode:
     | "benign_test_fixture"
-    | "real_claude_code_read_only_canary";
+    | "real_claude_code_read_only_canary"
+    | "real_claude_code_write_canary";
 }
 
 export interface TaskExecutionLocalWorkerRuntimeWorkspaceBinding {
@@ -260,7 +261,8 @@ export interface TaskExecutionLocalWorkerRuntimeEnvironmentPolicy {
 
 export type TaskExecutionLocalWorkerRuntimeEnvironmentInheritance =
   | "none"
-  | "system_claude_code_read_only_canary";
+  | "system_claude_code_read_only_canary"
+  | "system_claude_code_write_canary";
 
 export interface TaskExecutionLocalWorkerProcessEvidence {
   readonly invocationRef: string;
@@ -642,6 +644,9 @@ export function evaluateTaskExecutionLocalWorkerProcessGate(
     (preparedEnvironmentInheritance === "none" ||
       (preparedEnvironmentInheritance ===
         "system_claude_code_read_only_canary" &&
+        input.expectedWorkerFamily === "claude_code") ||
+      (preparedEnvironmentInheritance ===
+        "system_claude_code_write_canary" &&
         input.expectedWorkerFamily === "claude_code"));
   const outputLimitsReady =
     isPositiveInteger(
@@ -850,7 +855,8 @@ export function evaluateTaskExecutionLocalWorkerProcessGate(
             inheritance: preparedEnvironmentInheritance,
             approvedVariableRefs:
               preparedEnvironmentInheritance ===
-              "system_claude_code_read_only_canary"
+                "system_claude_code_read_only_canary" ||
+              preparedEnvironmentInheritance === "system_claude_code_write_canary"
                 ? [...claudeCodeReadOnlyCanaryInheritedEnvNames]
                 : [],
           },
@@ -1009,6 +1015,33 @@ function executableBindingReady(input: {
       input.authority.argv[permissionModeIndex + 1] === "plan" &&
       !input.authority.argv.some((arg) =>
         /dangerously-skip-permissions|bypassPermissions/i.test(arg),
+      )) ||
+    (input.executable.executionMode === "real_claude_code_write_canary" &&
+      input.authority.workerFamily === "claude_code" &&
+      input.authority.executableKind === "claude_code" &&
+      input.authority.environment.inheritance ===
+        "system_claude_code_write_canary" &&
+      input.authority.argv.includes("--safe-mode") &&
+      input.authority.argv.includes("--strict-mcp-config") &&
+      input.authority.argv.includes("--no-session-persistence") &&
+      input.authority.argv.includes("--json-schema") &&
+      input.authority.argv.includes("--tools") &&
+      toolsIndex >= 0 &&
+      input.authority.argv[toolsIndex + 1] === "Read,Edit" &&
+      input.authority.argv.includes("--permission-mode") &&
+      permissionModeIndex >= 0 &&
+      input.authority.argv[permissionModeIndex + 1] === "acceptEdits" &&
+      input.authority.argv.includes("--disallowedTools") &&
+      input.authority.argv.some(
+        (arg) =>
+          arg.includes("Bash") &&
+          arg.includes("Write") &&
+          arg.includes("WebFetch") &&
+          arg.includes("WebSearch") &&
+          arg.includes("mcp__*"),
+      ) &&
+      !input.authority.argv.some((arg) =>
+        /dangerously-skip-permissions|bypassPermissions/i.test(arg),
       ));
 
   return (
@@ -1053,7 +1086,8 @@ function environmentPolicyReady(
   if (
     environment.authority !== "system" ||
     (environment.inheritance !== "none" &&
-      environment.inheritance !== "system_claude_code_read_only_canary") ||
+      environment.inheritance !== "system_claude_code_read_only_canary" &&
+      environment.inheritance !== "system_claude_code_write_canary") ||
     environment.variables.length > maxEnvironmentVariables
   ) {
     return false;
@@ -1074,7 +1108,10 @@ function environmentFromPolicy(
     (environment?.variables ?? []).map((item) => [item.name, item.value]),
   );
 
-  if (environment?.inheritance !== "system_claude_code_read_only_canary") {
+  if (
+    environment?.inheritance !== "system_claude_code_read_only_canary" &&
+    environment?.inheritance !== "system_claude_code_write_canary"
+  ) {
     return variables;
   }
 

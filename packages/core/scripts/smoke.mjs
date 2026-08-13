@@ -122,14 +122,18 @@ import {
   DETERMINISTIC_PROVIDER_RECOVERY_PROFILE,
   dispatchTaskExecutionProductionProvider,
   cleanupTaskExecutionIsolatedMutationWorkspace,
+  captureTaskExecutionMutationWorkspaceBaseline,
   createTaskExecutionIsolatedMutationWorkspace,
   createTaskExecutionClaudeCodeWorkerAdapter,
   createTaskExecutionCodexWorkerAdapter,
+  loadTaskExecutionMutationArtifact,
+  loadTaskExecutionMutationEvidence,
   authorizeTaskExecutionClaudeCodeWorkerProcess,
   authorizeTaskExecutionWorkerProcess,
   evaluateTaskExecutionAdapterConformance,
   evaluateTaskExecutionClaudeCodeWorkerConformance,
   evaluateTaskExecutionClaudeCodeWorkerProcessGate,
+  evaluateTaskExecutionClaudeWriteCanaryMutationEvidence,
   evaluateTaskExecutionCodexWorkerConformance,
   evaluateTaskExecutionWorkerProcessGate,
   executeTaskExecutionIsolatedTestMutation,
@@ -149,12 +153,25 @@ import {
   normalizeTaskExecutionCodexProcessResult,
   normalizeTaskExecutionWorkerResult,
   prepareTaskExecutionClaudeCodeWorkerInvocation,
+  prepareTaskExecutionClaudeWriteCanaryMutationWorkspace,
+  persistTaskExecutionMutationEvidence,
   prepareTaskExecutionCodexWorkerInvocation,
   runTaskExecutionClaudeCodeAuthPreflight,
+  verifyTaskExecutionMutationEvidenceForAuthority,
   TASK_EXECUTION_CLAUDE_CODE_PROCESS_CONTRACT_READY,
   TASK_EXECUTION_CLAUDE_CODE_AUTH_PREFLIGHT_READY,
   TASK_EXECUTION_CLAUDE_CODE_READ_ONLY_CANARY_EXECUTED,
   TASK_EXECUTION_CLAUDE_CODE_READ_ONLY_CANARY_PROFILE_READY,
+  TASK_EXECUTION_CLAUDE_CODE_WRITE_CANARY_EXECUTED,
+  TASK_EXECUTION_CLAUDE_CODE_WRITE_CANARY_PROFILE_READY,
+  TASK_EXECUTION_CLAUDE_WRITE_CANARY_AFTER_CONTENT,
+  TASK_EXECUTION_CLAUDE_WRITE_CANARY_BEFORE_CONTENT,
+  TASK_EXECUTION_CLAUDE_WRITE_CANARY_RELATIVE_PATH,
+  TASK_EXECUTION_DURABLE_MUTATION_ARTIFACT_READY,
+  TASK_EXECUTION_DURABLE_MUTATION_ARTIFACT_REQUIRED,
+  TASK_EXECUTION_DURABLE_MUTATION_EVIDENCE_READY,
+  TASK_EXECUTION_HISTORICAL_CLAUDE_WRITE_CANARY_APPLY_ELIGIBLE,
+  TASK_EXECUTION_PRIMARY_APPLY_INPUT_DURABLE,
   TASK_EXECUTION_CLAUDE_CODE_WORKER_EXTERNAL_PROCESS_ALLOWED,
   TASK_EXECUTION_CLAUDE_CODE_WORKER_REAL_EXECUTION_ENABLED,
   TASK_EXECUTION_CODEX_PROCESS_CONTRACT_READY,
@@ -164,6 +181,8 @@ import {
   TASK_EXECUTION_MUTATION_WORKSPACE_PRIMARY_APPLY_ENABLED,
   TASK_EXECUTION_MUTATION_WORKSPACE_REAL_CLAUDE_CALLS,
   TASK_EXECUTION_MUTATION_WORKSPACE_REAL_CODEX_CALLS,
+  TASK_EXECUTION_REAL_CLAUDE_WRITE_CANARY_EXECUTED,
+  TASK_EXECUTION_REAL_CLAUDE_WRITE_CANARY_READY,
   TASK_EXECUTION_CODEX_WORKER_EXTERNAL_PROCESS_ALLOWED,
   TASK_EXECUTION_PRODUCTION_DISPATCH_BOUNDARY,
   TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
@@ -20066,6 +20085,671 @@ try {
     `task execution mutation workspace smoke should accept Claude-family worker authority: ${JSON.stringify(claudeMutationWorkspace.issues)}`,
   );
   assert.equal(claudeMutationWorkspace.authority.workerFamily, "claude_code");
+  assert.equal(TASK_EXECUTION_REAL_CLAUDE_WRITE_CANARY_READY, true);
+  assert.equal(TASK_EXECUTION_REAL_CLAUDE_WRITE_CANARY_EXECUTED, false);
+
+  const prepareClaudeWriteCanaryWorkspace = async (suffix, overrides = {}) => {
+    const result =
+      await prepareTaskExecutionClaudeWriteCanaryMutationWorkspace({
+        taskId: "TASK-0319",
+        taskRevision: 31,
+        attemptId: `attempt-write-canary-${suffix}`,
+        attemptNumber: 3190 + suffix,
+        invocationId: `invocation-write-canary-${suffix}`,
+        invocationRevision: 1,
+        idempotencyKey: `idem-write-canary-${suffix}`,
+        workerIdentity: claudeWorkerIdentity,
+        sourceProjectRef: "project-pro-performans",
+        sourceWorkspaceRef: "primary-workspace",
+        sourceWorkspaceRoot: mutationPrimaryRoot,
+        ...overrides,
+      });
+
+    if (result.authority !== null) {
+      mutationAuthorities.push(result.authority);
+    }
+
+    return result;
+  };
+
+  const writeCanaryWorkspace = await prepareClaudeWriteCanaryWorkspace(1);
+  assert.equal(
+    writeCanaryWorkspace.ok,
+    true,
+    `task execution Claude write canary smoke A should prepare isolated canary workspace: ${JSON.stringify(writeCanaryWorkspace.issues)}`,
+  );
+  assert.equal(
+    await readFile(
+      join(
+        writeCanaryWorkspace.authority.isolatedWorkspaceRoot,
+        TASK_EXECUTION_CLAUDE_WRITE_CANARY_RELATIVE_PATH,
+      ),
+      "utf8",
+    ),
+    TASK_EXECUTION_CLAUDE_WRITE_CANARY_BEFORE_CONTENT,
+    "task execution Claude write canary smoke A should system-create BEFORE_CANARY sacrificial file",
+  );
+  assert.deepEqual(
+    writeCanaryWorkspace.authority.mutationScope.allowedPathRefs,
+    [TASK_EXECUTION_CLAUDE_WRITE_CANARY_RELATIVE_PATH],
+    "task execution Claude write canary smoke A should bind exactly one allowed path",
+  );
+  assert.deepEqual(
+    writeCanaryWorkspace.authority.mutationScope.allowedOperations,
+    ["update_existing_file"],
+    "task execution Claude write canary smoke A should authorize update only",
+  );
+  const writeCanaryBaseline =
+    await captureTaskExecutionMutationWorkspaceBaseline({
+      authority: writeCanaryWorkspace.authority,
+    });
+  await writeNodeFile(
+    join(
+      writeCanaryWorkspace.authority.isolatedWorkspaceRoot,
+      TASK_EXECUTION_CLAUDE_WRITE_CANARY_RELATIVE_PATH,
+    ),
+    TASK_EXECUTION_CLAUDE_WRITE_CANARY_AFTER_CONTENT,
+    "utf8",
+  );
+  const writeCanaryEvidence =
+    await evaluateTaskExecutionClaudeWriteCanaryMutationEvidence({
+      authority: writeCanaryWorkspace.authority,
+      baseline: writeCanaryBaseline,
+      workerDeclaredChangedFiles: ["fake/worker-manifest.ts"],
+      workerCompletionClaims: { completed: true, verified: true },
+    });
+  assert.equal(
+    writeCanaryEvidence.ok,
+    true,
+    `task execution Claude write canary smoke A should verify exact one-file isolated mutation: ${JSON.stringify(writeCanaryEvidence.issues)}`,
+  );
+  assert.equal(writeCanaryEvidence.beforeContentVerified, true);
+  assert.equal(writeCanaryEvidence.afterContentVerified, true);
+  assert.equal(writeCanaryEvidence.exactResultVerified, true);
+  assert.deepEqual(writeCanaryEvidence.evidence.actualChangedPaths, [
+    TASK_EXECUTION_CLAUDE_WRITE_CANARY_RELATIVE_PATH,
+  ]);
+  assert.equal(writeCanaryEvidence.evidence.workerSelfReportAuthoritative, false);
+  assert.equal(writeCanaryEvidence.completionAuthorityGranted, false);
+  assert.equal(writeCanaryEvidence.safety.shellExecuted, false);
+  assert.equal(writeCanaryEvidence.primaryWorkspaceModified, false);
+  assert.equal(writeCanaryEvidence.primaryWorkspaceApplyEnabled, false);
+  assert.equal(writeCanaryEvidence.automaticPatchApplyEnabled, false);
+  assert.equal(writeCanaryEvidence.ActualClaudeModelCalls, 0);
+  assert.equal(writeCanaryEvidence.ActualCodexModelCalls, 0);
+  assert.equal(writeCanaryEvidence.CloudCalls, 0);
+  assert.equal(TASK_EXECUTION_DURABLE_MUTATION_EVIDENCE_READY, true);
+  assert.equal(TASK_EXECUTION_DURABLE_MUTATION_ARTIFACT_REQUIRED, true);
+  assert.equal(TASK_EXECUTION_DURABLE_MUTATION_ARTIFACT_READY, true);
+  assert.equal(TASK_EXECUTION_PRIMARY_APPLY_INPUT_DURABLE, true);
+  assert.equal(
+    TASK_EXECUTION_HISTORICAL_CLAUDE_WRITE_CANARY_APPLY_ELIGIBLE,
+    false,
+    "task execution durable mutation evidence smoke should not make historical canaries apply eligible",
+  );
+
+  const mutationEvidencePersistenceRoot = await mkdtemp(
+    join(tmpdir(), "aeos-mutation-evidence-"),
+  );
+  const writeCanaryPersistence =
+    await persistTaskExecutionMutationEvidence({
+      projectRoot: mutationEvidencePersistenceRoot,
+      authority: writeCanaryWorkspace.authority,
+      baseline: writeCanaryBaseline,
+      evaluation: writeCanaryEvidence,
+      invocationRevision: 4,
+      invocationLifecycle: "returned",
+      persistArtifact: true,
+      forbiddenValues: ["ownership-token-secret"],
+    });
+  assert.equal(
+    writeCanaryPersistence.ok,
+    true,
+    `task execution durable mutation evidence smoke A should persist verified mutation evidence and artifact: ${JSON.stringify(writeCanaryPersistence.issues)}`,
+  );
+  assert.equal(writeCanaryPersistence.status, "persisted_and_verified");
+  assert.equal(writeCanaryPersistence.readBackVerified, true);
+  assert.equal(writeCanaryPersistence.artifactReadBackVerified, true);
+  assert.equal(writeCanaryPersistence.primaryApplyInputDurable, true);
+  assert.equal(writeCanaryPersistence.immutable, true);
+  assert.equal(writeCanaryPersistence.evidenceRecord.schemaVersion, 1);
+  assert.equal(writeCanaryPersistence.evidenceRecord.taskId, "TASK-0319");
+  assert.equal(writeCanaryPersistence.evidenceRecord.taskRevision, 31);
+  assert.equal(
+    writeCanaryPersistence.evidenceRecord.attemptId,
+    "attempt-write-canary-1",
+  );
+  assert.equal(
+    writeCanaryPersistence.evidenceRecord.invocationId,
+    "invocation-write-canary-1",
+  );
+  assert.equal(writeCanaryPersistence.evidenceRecord.invocationRevision, 4);
+  assert.equal(
+    writeCanaryPersistence.evidenceRecord.mutationAuthorityInvocationRevision,
+    1,
+  );
+  assert.equal(
+    writeCanaryPersistence.evidenceRecord.idempotencyReference,
+    "idem-write-canary-1",
+  );
+  assert.equal(
+    writeCanaryPersistence.evidenceRecord.workerId,
+    claudeWorkerIdentity.workerId,
+  );
+  assert.equal(
+    writeCanaryPersistence.evidenceRecord.workerFamily,
+    "claude_code",
+  );
+  assert.equal(
+    writeCanaryPersistence.evidenceRecord.sourceWorkspaceRef,
+    "primary-workspace",
+  );
+  assert.equal(
+    writeCanaryPersistence.evidenceRecord.isolatedWorkspaceRef,
+    writeCanaryWorkspace.authority.isolatedWorkspaceRef,
+  );
+  assert.equal(
+    writeCanaryPersistence.evidenceRecord.mutationScopeId,
+    "claude-write-canary-v1",
+  );
+  assert.equal(
+    writeCanaryPersistence.evidenceRecord.baselineCapturedAt,
+    writeCanaryBaseline.capturedAt,
+  );
+  assert.deepEqual(writeCanaryPersistence.evidenceRecord.actualChangedPaths, [
+    TASK_EXECUTION_CLAUDE_WRITE_CANARY_RELATIVE_PATH,
+  ]);
+  assert.equal(writeCanaryPersistence.evidenceRecord.totalChangedFiles, 1);
+  assert.equal(
+    writeCanaryPersistence.evidenceRecord.totalChangedBytes,
+    TASK_EXECUTION_CLAUDE_WRITE_CANARY_AFTER_CONTENT.length,
+  );
+  assert.equal(writeCanaryPersistence.evidenceRecord.scopeCompliant, true);
+  assert.deepEqual(writeCanaryPersistence.evidenceRecord.unexpectedMutations, []);
+  assert.deepEqual(
+    writeCanaryPersistence.evidenceRecord.protectedPathViolations,
+    [],
+  );
+  assert.equal(writeCanaryPersistence.evidenceRecord.exactResultVerified, true);
+  assert.equal(writeCanaryPersistence.evidenceRecord.verificationStatus, "verified");
+  assert.deepEqual(
+    writeCanaryPersistence.evidenceRecord.workerDeclaredChangedFiles,
+    ["fake/worker-manifest.ts"],
+  );
+  assert.equal(
+    writeCanaryPersistence.evidenceRecord.workerSelfReportAuthoritative,
+    false,
+  );
+  assert.equal(
+    writeCanaryPersistence.evidenceRecord.completionAuthorityGranted,
+    false,
+  );
+  assert.equal(writeCanaryPersistence.evidenceRecord.verifierRun, false);
+  assert.equal(writeCanaryPersistence.evidenceRecord.retryAuthorized, false);
+  assert.equal(writeCanaryPersistence.evidenceRecord.fileContentsLogged, false);
+  assert.equal(writeCanaryPersistence.artifactRecord.schemaVersion, 1);
+  assert.equal(
+    writeCanaryPersistence.artifactRecord.evidenceDigest,
+    writeCanaryPersistence.evidenceRecord.evidenceDigest,
+  );
+  assert.deepEqual(
+    writeCanaryPersistence.artifactRecord.files.map((file) => file.relativePath),
+    [TASK_EXECUTION_CLAUDE_WRITE_CANARY_RELATIVE_PATH],
+  );
+  assert.equal(
+    writeCanaryPersistence.artifactRecord.files[0].afterContent,
+    TASK_EXECUTION_CLAUDE_WRITE_CANARY_AFTER_CONTENT,
+  );
+  assert.equal(
+    writeCanaryPersistence.artifactRecord.files[0].afterDigest,
+    writeCanaryPersistence.evidenceRecord.changedFiles[0].afterDigest,
+  );
+  assert.equal(
+    writeCanaryPersistence.artifactRecord.totalBytes <=
+      writeCanaryWorkspace.authority.mutationScope.maxTotalChangedBytes,
+    true,
+    "task execution durable mutation artifact smoke should stay byte bounded",
+  );
+  assert.equal(
+    writeCanaryPersistence.artifactRecord.primaryApplyPerformed,
+    false,
+  );
+
+  const loadedWriteCanaryEvidence =
+    await loadTaskExecutionMutationEvidence({
+      projectRoot: mutationEvidencePersistenceRoot,
+      taskId: "TASK-0319",
+      invocationId: "invocation-write-canary-1",
+    });
+  assert.equal(loadedWriteCanaryEvidence.ok, true);
+  assert.equal(loadedWriteCanaryEvidence.verified, true);
+  assert.equal(
+    loadedWriteCanaryEvidence.record.evidenceDigest,
+    writeCanaryPersistence.evidenceRecord.evidenceDigest,
+  );
+  const loadedWriteCanaryArtifact =
+    await loadTaskExecutionMutationArtifact({
+      projectRoot: mutationEvidencePersistenceRoot,
+      taskId: "TASK-0319",
+      invocationId: "invocation-write-canary-1",
+    });
+  assert.equal(loadedWriteCanaryArtifact.ok, true);
+  assert.equal(loadedWriteCanaryArtifact.verified, true);
+  assert.equal(
+    loadedWriteCanaryArtifact.record.artifactDigest,
+    writeCanaryPersistence.artifactRecord.artifactDigest,
+  );
+  const evidenceMtimeBefore = (
+    await stat(writeCanaryPersistence.evidencePath)
+  ).mtimeMs;
+  const artifactMtimeBefore = (
+    await stat(writeCanaryPersistence.artifactPath)
+  ).mtimeMs;
+  await loadTaskExecutionMutationEvidence({
+    projectRoot: mutationEvidencePersistenceRoot,
+    taskId: "TASK-0319",
+    invocationId: "invocation-write-canary-1",
+  });
+  await loadTaskExecutionMutationArtifact({
+    projectRoot: mutationEvidencePersistenceRoot,
+    taskId: "TASK-0319",
+    invocationId: "invocation-write-canary-1",
+  });
+  assert.equal(
+    (await stat(writeCanaryPersistence.evidencePath)).mtimeMs,
+    evidenceMtimeBefore,
+    "task execution durable mutation evidence smoke should make repeated reads no-write",
+  );
+  assert.equal(
+    (await stat(writeCanaryPersistence.artifactPath)).mtimeMs,
+    artifactMtimeBefore,
+    "task execution durable mutation artifact smoke should make repeated reads no-write",
+  );
+
+  const authorityVerification =
+    await verifyTaskExecutionMutationEvidenceForAuthority({
+      projectRoot: mutationEvidencePersistenceRoot,
+      authority: writeCanaryWorkspace.authority,
+    });
+  assert.equal(
+    authorityVerification.ok,
+    true,
+    `task execution durable mutation evidence smoke should verify authority binding: ${JSON.stringify(authorityVerification.issues)}`,
+  );
+  assert.equal(authorityVerification.authorityBound, true);
+  assert.equal(authorityVerification.artifactBound, true);
+  assert.equal(authorityVerification.primaryApplyInputDurable, true);
+
+  const duplicateWriteCanaryPersistence =
+    await persistTaskExecutionMutationEvidence({
+      projectRoot: mutationEvidencePersistenceRoot,
+      authority: writeCanaryWorkspace.authority,
+      baseline: writeCanaryBaseline,
+      evaluation: writeCanaryEvidence,
+      invocationRevision: 4,
+      invocationLifecycle: "returned",
+      occurredAt: "2030-01-01T00:00:00.000Z",
+      persistArtifact: true,
+    });
+  assert.equal(
+    duplicateWriteCanaryPersistence.ok,
+    false,
+    "task execution durable mutation evidence smoke should block immutable overwrite/conflicting evidence",
+  );
+  assert.equal(duplicateWriteCanaryPersistence.primaryApplyInputDurable, false);
+  assert.ok(
+    duplicateWriteCanaryPersistence.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_mutation_evidence_immutable_record_exists",
+    ),
+  );
+  assert.equal(duplicateWriteCanaryPersistence.ActualClaudeModelCalls, 0);
+  assert.equal(duplicateWriteCanaryPersistence.ActualCodexModelCalls, 0);
+  assert.equal(duplicateWriteCanaryPersistence.CloudCalls, 0);
+
+  const corruptEvidenceRoot = await mkdtemp(
+    join(tmpdir(), "aeos-mutation-evidence-corrupt-"),
+  );
+  await mkdir(
+    join(
+      corruptEvidenceRoot,
+      ".aeos/state/mutation-evidence/TASK-CORRUPT",
+    ),
+    { recursive: true },
+  );
+  await writeNodeFile(
+    join(
+      corruptEvidenceRoot,
+      ".aeos/state/mutation-evidence/TASK-CORRUPT/invocation-corrupt.json",
+    ),
+    "{",
+    "utf8",
+  );
+  const corruptEvidenceLoad = await loadTaskExecutionMutationEvidence({
+    projectRoot: corruptEvidenceRoot,
+    taskId: "TASK-CORRUPT",
+    invocationId: "invocation-corrupt",
+  });
+  assert.equal(
+    corruptEvidenceLoad.ok,
+    false,
+    "task execution durable mutation evidence smoke should fail closed on corrupt records",
+  );
+
+  const mismatchEvidenceRoot = await mkdtemp(
+    join(tmpdir(), "aeos-mutation-evidence-mismatch-"),
+  );
+  await mkdir(
+    join(
+      mismatchEvidenceRoot,
+      ".aeos/state/mutation-evidence/TASK-WRONG",
+    ),
+    { recursive: true },
+  );
+  await writeNodeFile(
+    join(
+      mismatchEvidenceRoot,
+      ".aeos/state/mutation-evidence/TASK-WRONG/invocation-write-canary-1.json",
+    ),
+    JSON.stringify(writeCanaryPersistence.evidenceRecord, null, 2),
+    "utf8",
+  );
+  const mismatchEvidenceLoad = await loadTaskExecutionMutationEvidence({
+    projectRoot: mismatchEvidenceRoot,
+    taskId: "TASK-WRONG",
+    invocationId: "invocation-write-canary-1",
+  });
+  assert.equal(
+    mismatchEvidenceLoad.ok,
+    false,
+    "task execution durable mutation evidence smoke should block task/invocation mismatches",
+  );
+
+  const scopeMismatchVerification =
+    await verifyTaskExecutionMutationEvidenceForAuthority({
+      projectRoot: mutationEvidencePersistenceRoot,
+      authority: {
+        ...writeCanaryWorkspace.authority,
+        mutationScope: {
+          ...writeCanaryWorkspace.authority.mutationScope,
+          scopeId: "claude-write-canary-v2",
+        },
+      },
+    });
+  assert.equal(
+    scopeMismatchVerification.ok,
+    false,
+    "task execution durable mutation evidence smoke should block scope mismatch",
+  );
+  assert.equal(scopeMismatchVerification.authorityBound, false);
+
+  const symlinkEvidenceRoot = await mkdtemp(
+    join(tmpdir(), "aeos-mutation-evidence-symlink-"),
+  );
+  await mkdir(
+    join(symlinkEvidenceRoot, ".aeos/state/mutation-evidence/TASK-0319"),
+    { recursive: true },
+  );
+  await symlink(
+    writeCanaryPersistence.evidencePath,
+    join(
+      symlinkEvidenceRoot,
+      ".aeos/state/mutation-evidence/TASK-0319/invocation-write-canary-1.json",
+    ),
+  );
+  const symlinkEvidenceLoad = await loadTaskExecutionMutationEvidence({
+    projectRoot: symlinkEvidenceRoot,
+    taskId: "TASK-0319",
+    invocationId: "invocation-write-canary-1",
+  });
+  assert.equal(
+    symlinkEvidenceLoad.ok,
+    false,
+    "task execution durable mutation evidence smoke should block symlink evidence roots/records",
+  );
+
+  const corruptArtifactRoot = await mkdtemp(
+    join(tmpdir(), "aeos-mutation-artifact-corrupt-"),
+  );
+  await mkdir(
+    join(corruptArtifactRoot, ".aeos/state/mutation-artifacts/TASK-0319"),
+    { recursive: true },
+  );
+  await writeNodeFile(
+    join(
+      corruptArtifactRoot,
+      ".aeos/state/mutation-artifacts/TASK-0319/invocation-write-canary-1.json",
+    ),
+    JSON.stringify(
+      {
+        ...writeCanaryPersistence.artifactRecord,
+        files: [
+          {
+            ...writeCanaryPersistence.artifactRecord.files[0],
+            afterContent: "tampered",
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  const corruptArtifactLoad = await loadTaskExecutionMutationArtifact({
+    projectRoot: corruptArtifactRoot,
+    taskId: "TASK-0319",
+    invocationId: "invocation-write-canary-1",
+  });
+  assert.equal(
+    corruptArtifactLoad.ok,
+    false,
+    "task execution durable mutation artifact smoke should block corrupt artifact content/digest disagreement",
+  );
+  assert.equal(
+    JSON.stringify({
+      evidence: writeCanaryPersistence.evidenceRecord,
+      artifact: writeCanaryPersistence.artifactRecord,
+    }).includes("ownership-token-secret"),
+    false,
+    "task execution durable mutation evidence smoke should not persist ownership-token values",
+  );
+  assert.equal(
+    /ownershipToken|Authorization|Bearer|PASSWORD|SECRET|TOKEN/i.test(
+      JSON.stringify({
+        evidence: writeCanaryPersistence.evidenceRecord,
+        artifact: writeCanaryPersistence.artifactRecord,
+      }),
+    ),
+    false,
+    "task execution durable mutation evidence smoke should not persist secret-shaped keys or values",
+  );
+
+  const tempIndependentWorkspace = await prepareClaudeWriteCanaryWorkspace(7);
+  const tempIndependentBaseline =
+    await captureTaskExecutionMutationWorkspaceBaseline({
+      authority: tempIndependentWorkspace.authority,
+    });
+  await writeNodeFile(
+    join(
+      tempIndependentWorkspace.authority.isolatedWorkspaceRoot,
+      TASK_EXECUTION_CLAUDE_WRITE_CANARY_RELATIVE_PATH,
+    ),
+    TASK_EXECUTION_CLAUDE_WRITE_CANARY_AFTER_CONTENT,
+    "utf8",
+  );
+  const tempIndependentEvidence =
+    await evaluateTaskExecutionClaudeWriteCanaryMutationEvidence({
+      authority: tempIndependentWorkspace.authority,
+      baseline: tempIndependentBaseline,
+    });
+  const tempIndependentRoot = await mkdtemp(
+    join(tmpdir(), "aeos-mutation-evidence-independent-"),
+  );
+  const tempIndependentPersistence =
+    await persistTaskExecutionMutationEvidence({
+      projectRoot: tempIndependentRoot,
+      authority: tempIndependentWorkspace.authority,
+      baseline: tempIndependentBaseline,
+      evaluation: tempIndependentEvidence,
+      invocationRevision: 4,
+      invocationLifecycle: "returned",
+      persistArtifact: true,
+    });
+  assert.equal(tempIndependentPersistence.ok, true);
+  const tempIndependentCleanup =
+    await cleanupTaskExecutionIsolatedMutationWorkspace(
+      tempIndependentWorkspace.authority,
+    );
+  assert.equal(tempIndependentCleanup.ok, true);
+  const tempIndependentAuthorityIndex = mutationAuthorities.indexOf(
+    tempIndependentWorkspace.authority,
+  );
+  if (tempIndependentAuthorityIndex !== -1) {
+    mutationAuthorities.splice(tempIndependentAuthorityIndex, 1);
+  }
+  const tempIndependentEvidenceLoad =
+    await loadTaskExecutionMutationEvidence({
+      projectRoot: tempIndependentRoot,
+      taskId: tempIndependentWorkspace.authority.taskId,
+      invocationId: tempIndependentWorkspace.authority.invocationId,
+    });
+  const tempIndependentArtifactLoad =
+    await loadTaskExecutionMutationArtifact({
+      projectRoot: tempIndependentRoot,
+      taskId: tempIndependentWorkspace.authority.taskId,
+      invocationId: tempIndependentWorkspace.authority.invocationId,
+    });
+  assert.equal(
+    tempIndependentEvidenceLoad.ok && tempIndependentArtifactLoad.ok,
+    true,
+    "task execution durable mutation evidence smoke should survive isolated temp workspace cleanup",
+  );
+
+  const writeCanaryExtraWorkspace = await prepareClaudeWriteCanaryWorkspace(2);
+  const writeCanaryExtraBaseline =
+    await captureTaskExecutionMutationWorkspaceBaseline({
+      authority: writeCanaryExtraWorkspace.authority,
+    });
+  await writeNodeFile(
+    join(
+      writeCanaryExtraWorkspace.authority.isolatedWorkspaceRoot,
+      TASK_EXECUTION_CLAUDE_WRITE_CANARY_RELATIVE_PATH,
+    ),
+    TASK_EXECUTION_CLAUDE_WRITE_CANARY_AFTER_CONTENT,
+    "utf8",
+  );
+  await writeNodeFile(
+    join(writeCanaryExtraWorkspace.authority.isolatedWorkspaceRoot, "canary/extra.txt"),
+    "extra",
+    "utf8",
+  );
+  const writeCanaryExtraEvidence =
+    await evaluateTaskExecutionClaudeWriteCanaryMutationEvidence({
+      authority: writeCanaryExtraWorkspace.authority,
+      baseline: writeCanaryExtraBaseline,
+    });
+  assert.equal(
+    writeCanaryExtraEvidence.ok,
+    false,
+    "task execution Claude write canary smoke B should fail whole result on a second changed file",
+  );
+  assert.deepEqual(writeCanaryExtraEvidence.evidence.unexpectedMutations, [
+    "canary/extra.txt",
+  ]);
+
+  const writeCanaryNoChangeWorkspace = await prepareClaudeWriteCanaryWorkspace(3);
+  const writeCanaryNoChangeBaseline =
+    await captureTaskExecutionMutationWorkspaceBaseline({
+      authority: writeCanaryNoChangeWorkspace.authority,
+    });
+  const writeCanaryNoChangeEvidence =
+    await evaluateTaskExecutionClaudeWriteCanaryMutationEvidence({
+      authority: writeCanaryNoChangeWorkspace.authority,
+      baseline: writeCanaryNoChangeBaseline,
+      workerCompletionClaims: { success: true },
+    });
+  assert.equal(
+    writeCanaryNoChangeEvidence.ok,
+    false,
+    "task execution Claude write canary smoke J should fail when worker claims success without filesystem change",
+  );
+
+  const writeCanaryWrongContentWorkspace =
+    await prepareClaudeWriteCanaryWorkspace(4);
+  const writeCanaryWrongContentBaseline =
+    await captureTaskExecutionMutationWorkspaceBaseline({
+      authority: writeCanaryWrongContentWorkspace.authority,
+    });
+  await writeNodeFile(
+    join(
+      writeCanaryWrongContentWorkspace.authority.isolatedWorkspaceRoot,
+      TASK_EXECUTION_CLAUDE_WRITE_CANARY_RELATIVE_PATH,
+    ),
+    `${TASK_EXECUTION_CLAUDE_WRITE_CANARY_AFTER_CONTENT}\n`,
+    "utf8",
+  );
+  const writeCanaryWrongContentEvidence =
+    await evaluateTaskExecutionClaudeWriteCanaryMutationEvidence({
+      authority: writeCanaryWrongContentWorkspace.authority,
+      baseline: writeCanaryWrongContentBaseline,
+    });
+  assert.equal(
+    writeCanaryWrongContentEvidence.ok,
+    false,
+    "task execution Claude write canary smoke K should reject wrong resulting content",
+  );
+
+  const writeCanaryDeleteWorkspace = await prepareClaudeWriteCanaryWorkspace(5);
+  const writeCanaryDeleteBaseline =
+    await captureTaskExecutionMutationWorkspaceBaseline({
+      authority: writeCanaryDeleteWorkspace.authority,
+    });
+  await rm(
+    join(
+      writeCanaryDeleteWorkspace.authority.isolatedWorkspaceRoot,
+      TASK_EXECUTION_CLAUDE_WRITE_CANARY_RELATIVE_PATH,
+    ),
+    { force: true },
+  );
+  const writeCanaryDeleteEvidence =
+    await evaluateTaskExecutionClaudeWriteCanaryMutationEvidence({
+      authority: writeCanaryDeleteWorkspace.authority,
+      baseline: writeCanaryDeleteBaseline,
+    });
+  assert.equal(
+    writeCanaryDeleteEvidence.ok,
+    false,
+    "task execution Claude write canary smoke D should reject delete evidence",
+  );
+
+  const writeCanaryProtectedWorkspace =
+    await prepareClaudeWriteCanaryWorkspace(6);
+  const writeCanaryProtectedBaseline =
+    await captureTaskExecutionMutationWorkspaceBaseline({
+      authority: writeCanaryProtectedWorkspace.authority,
+    });
+  await mkdir(join(writeCanaryProtectedWorkspace.authority.isolatedWorkspaceRoot, ".git"), {
+    recursive: true,
+  });
+  await writeNodeFile(
+    join(writeCanaryProtectedWorkspace.authority.isolatedWorkspaceRoot, ".git/config"),
+    "protected",
+    "utf8",
+  );
+  const writeCanaryProtectedEvidence =
+    await evaluateTaskExecutionClaudeWriteCanaryMutationEvidence({
+      authority: writeCanaryProtectedWorkspace.authority,
+      baseline: writeCanaryProtectedBaseline,
+    });
+  assert.equal(
+    writeCanaryProtectedEvidence.ok,
+    false,
+    "task execution Claude write canary smoke G should reject protected-path mutation evidence",
+  );
+  assert.deepEqual(writeCanaryProtectedEvidence.evidence.protectedPathViolations, [
+    ".git/config",
+  ]);
 
   const arbitraryWorkspacePathRejected = await createMutationWorkspace({
     taskOrModelWorkspacePathClaims: {
@@ -20827,6 +21511,98 @@ try {
     "system_claude_code_read_only_canary",
     "task execution claude code worker canary smoke should use narrow system-owned Claude env inheritance",
   );
+  assert.equal(TASK_EXECUTION_CLAUDE_CODE_WRITE_CANARY_PROFILE_READY, true);
+  assert.equal(TASK_EXECUTION_CLAUDE_CODE_WRITE_CANARY_EXECUTED, false);
+  const claudeWriteCanaryRequest = createSmokeTestWorkerRequest(
+    invokingPersisted.value.record,
+    claudeWorkerIdentity,
+    createSmokeWorkerPermissionFacts(codexProcessPermissionGate, {
+      requiredPermissions: ["process"],
+    }),
+    {
+      boundedInstructions:
+        "Fixture Claude write canary request; mutate only canary/claude-write-canary.txt.",
+      contextReferences: [TASK_EXECUTION_CLAUDE_WRITE_CANARY_RELATIVE_PATH],
+      workspace: {
+        authority: "system",
+        workspaceRef: "workspace:claude-write-canary",
+        projectRef: "project:pro-performans",
+        repositoryRef: "repository:isolated-claude-write-canary",
+        allowedPathRefs: [TASK_EXECUTION_CLAUDE_WRITE_CANARY_RELATIVE_PATH],
+        repositoryWriteAllowed: false,
+      },
+    },
+  );
+  const smokeClaudeCodeWriteCanaryConfiguration =
+    createSmokeClaudeCodeConfiguration({
+      workspace: {
+        authority: "system",
+        workspaceRef: "workspace:claude-write-canary",
+        projectRef: "project:pro-performans",
+        repositoryRef: "repository:isolated-claude-write-canary",
+        allowedPathRefs: [TASK_EXECUTION_CLAUDE_WRITE_CANARY_RELATIVE_PATH],
+        repositoryWriteAllowed: false,
+        workingDirectoryRef: "workspace:claude-write-canary",
+      },
+      writeCanaryProfile: {
+        authority: "system",
+        profileId: "claude_code_write_canary_v1",
+        enabled: true,
+        permissionMode: "acceptEdits",
+        toolSet: ["Read", "Edit"],
+        hostCustomizationIsolation: "safe_mode",
+        strictMcpConfig: true,
+        sessionPersistence: false,
+        repositoryWriteAllowed: false,
+        primaryWorkspaceMutationAllowed: false,
+        automaticPatchApplyAllowed: false,
+        shellAllowed: false,
+        structuredOutput: "json_schema",
+        allowedMutationPath: TASK_EXECUTION_CLAUDE_WRITE_CANARY_RELATIVE_PATH,
+      },
+    });
+  const smokeClaudeCodeWriteCanaryPrepared =
+    prepareTaskExecutionClaudeCodeWorkerInvocation({
+      configuration: smokeClaudeCodeWriteCanaryConfiguration,
+      request: claudeWriteCanaryRequest,
+      invocationRecord: invokingPersisted.value.record,
+    });
+  assert.equal(
+    smokeClaudeCodeWriteCanaryPrepared.issues.some(
+      (item) => item.severity === "error",
+    ),
+    false,
+    `task execution claude code write canary smoke should prepare bounded profile: ${JSON.stringify(smokeClaudeCodeWriteCanaryPrepared.issues)}`,
+  );
+  assert.equal(
+    smokeClaudeCodeWriteCanaryPrepared.preparedInvocation.writeCanaryProfileReady,
+    true,
+    "task execution claude code write canary smoke should mark profile ready",
+  );
+  assert.deepEqual(
+    smokeClaudeCodeWriteCanaryPrepared.preparedInvocation.processRequest.argv.slice(
+      smokeClaudeCodeWriteCanaryPrepared.preparedInvocation.processRequest.argv.indexOf(
+        "--tools",
+      ),
+      smokeClaudeCodeWriteCanaryPrepared.preparedInvocation.processRequest.argv.indexOf(
+        "--tools",
+      ) + 2,
+    ),
+    ["--tools", "Read,Edit"],
+    "task execution claude code write canary smoke N should allow only Read and Edit tools",
+  );
+  assert.ok(
+    smokeClaudeCodeWriteCanaryPrepared.preparedInvocation.processRequest.argv.some(
+      (arg) => arg.includes("Bash") && arg.includes("Write") && arg.includes("mcp__*"),
+    ),
+    "task execution claude code write canary smoke N should keep shell, broad write, and MCP disallowed",
+  );
+  assert.equal(
+    smokeClaudeCodeWriteCanaryPrepared.preparedInvocation.processRequest.environment
+      .inheritance,
+    "system_claude_code_write_canary",
+    "task execution claude code write canary smoke should use narrow write-canary environment inheritance",
+  );
   const smokeClaudeCodeConformance =
     await evaluateTaskExecutionClaudeCodeWorkerConformance({
       worker: smokeClaudeCodeAdapter,
@@ -20901,6 +21677,34 @@ try {
       preProcessAuditEvent: claudeCodeProcessAuditAppend.value.event,
       expectedInvocationRevision: invokingPersisted.value.record.revision,
     });
+  const claudeCodeWriteCanaryAuditDraft =
+    createTaskExecutionInvocationDispatchIntentAuditEvent({
+      record: invokingPersisted.value.record,
+      adapterId: claudeWorkerIdentity.workerId,
+      operation: "execute_task_attempt",
+      policyGateId: codexProcessPermissionGate.policyGateId,
+      policyAuthorized: codexProcessPermissionGate.policyAuthorized,
+      auditRequired: true,
+      occurredAt: "2026-08-08T01:04:17.000Z",
+    });
+  assert.equal(claudeCodeWriteCanaryAuditDraft.ok, true);
+  const claudeCodeWriteCanaryAuditAppend = await appendTaskExecutionAuditEvent({
+    projectRoot: claudeCodeProcessAuditRoot,
+    taskId: claudeCodeWriteCanaryAuditDraft.value.taskId,
+    event: claudeCodeWriteCanaryAuditDraft.value,
+    forbiddenValues: ["owner-token", "sk-claude-code-smoke"],
+  });
+  assert.equal(claudeCodeWriteCanaryAuditAppend.ok, true);
+  const claudeCodeWriteCanaryProcessGate =
+    evaluateTaskExecutionClaudeCodeWorkerProcessGate({
+      configuration: smokeClaudeCodeWriteCanaryConfiguration,
+      request: claudeWriteCanaryRequest,
+      invocationRecord: invokingPersisted.value.record,
+      preparedInvocation: smokeClaudeCodeWriteCanaryPrepared.preparedInvocation,
+      permissionGateResult: codexProcessPermissionGate,
+      preProcessAuditEvent: claudeCodeWriteCanaryAuditAppend.value.event,
+      expectedInvocationRevision: invokingPersisted.value.record.revision,
+    });
   assert.equal(
     claudeCodeCanaryProcessGate.ok,
     true,
@@ -20910,6 +21714,78 @@ try {
     claudeCodeCanaryProcessGate.authority.environment.inheritance,
     "system_claude_code_read_only_canary",
     "task execution claude code worker canary smoke should bind the narrow environment authority",
+  );
+  assert.equal(
+    claudeCodeWriteCanaryProcessGate.ok,
+    true,
+    `task execution claude code write canary smoke should pass the shared process gate: ${JSON.stringify(claudeCodeWriteCanaryProcessGate.issues)}`,
+  );
+  assert.equal(
+    claudeCodeWriteCanaryProcessGate.authority.environment.inheritance,
+    "system_claude_code_write_canary",
+    "task execution claude code write canary smoke should bind write-canary environment authority",
+  );
+  assert.equal(
+    claudeCodeWriteCanaryProcessGate.authority.argv.includes("Read,Edit"),
+    true,
+    "task execution claude code write canary smoke should bind Read,Edit argv authority",
+  );
+  const claudeCodeWriteCanaryPermissionDeniedGate =
+    evaluateTaskExecutionClaudeCodeWorkerProcessGate({
+      configuration: {
+        ...smokeClaudeCodeWriteCanaryConfiguration,
+        processPermission: {
+          ...smokeClaudeCodeWriteCanaryConfiguration.processPermission,
+          processExecutionAllowed: false,
+        },
+      },
+      request: claudeWriteCanaryRequest,
+      invocationRecord: invokingPersisted.value.record,
+      preparedInvocation: {
+        ...smokeClaudeCodeWriteCanaryPrepared.preparedInvocation,
+        processPermissionAllowed: false,
+      },
+      permissionGateResult: codexProcessPermissionGate,
+      preProcessAuditEvent: claudeCodeWriteCanaryAuditAppend.value.event,
+      expectedInvocationRevision: invokingPersisted.value.record.revision,
+    });
+  assert.equal(
+    claudeCodeWriteCanaryPermissionDeniedGate.ok,
+    false,
+    "task execution claude code write canary smoke O should block launch when process permission is denied",
+  );
+  assert.ok(
+    claudeCodeWriteCanaryPermissionDeniedGate.issues.some(
+      (item) =>
+        item.code === "task_execution_worker_process_gate_permission_denied",
+    ),
+  );
+  const claudeCodeWriteCanaryWorkspaceMismatchGate =
+    evaluateTaskExecutionClaudeCodeWorkerProcessGate({
+      configuration: smokeClaudeCodeWriteCanaryConfiguration,
+      request: {
+        ...claudeWriteCanaryRequest,
+        workspace: {
+          ...claudeWriteCanaryRequest.workspace,
+          workspaceRef: "workspace:wrong-write-canary",
+        },
+      },
+      invocationRecord: invokingPersisted.value.record,
+      preparedInvocation: smokeClaudeCodeWriteCanaryPrepared.preparedInvocation,
+      permissionGateResult: codexProcessPermissionGate,
+      preProcessAuditEvent: claudeCodeWriteCanaryAuditAppend.value.event,
+      expectedInvocationRevision: invokingPersisted.value.record.revision,
+    });
+  assert.equal(
+    claudeCodeWriteCanaryWorkspaceMismatchGate.ok,
+    false,
+    "task execution claude code write canary smoke Q should block workspace mismatch",
+  );
+  assert.ok(
+    claudeCodeWriteCanaryWorkspaceMismatchGate.issues.some(
+      (item) =>
+        item.code === "task_execution_worker_process_gate_process_request_mismatch",
+    ),
   );
   assert.equal(
     claudeCodeProcessGate.ok,

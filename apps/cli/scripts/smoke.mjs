@@ -8222,6 +8222,44 @@ try {
     "task_execution_claude_canary_authority_override_forbidden",
     claudeCanaryAuthorityOverrideJson,
   );
+  const claudeWriteCanaryAuthorityOverrideJson = runCliFrom(dispatchEligible.rootPath, [
+    "task",
+    "execution",
+    "claude-write-canary",
+    dispatchEligible.taskId,
+    "--invocation-id",
+    dispatchEligible.invocation.invocationId,
+    "--expected-revision",
+    "1",
+    "--expected-invocation-revision",
+    "1",
+    "--json",
+    "--workspace",
+    "/tmp/task-chosen-workspace",
+  ]);
+  expectNonzero(
+    "task execution claude write canary authority override exited zero",
+    claudeWriteCanaryAuthorityOverrideJson,
+  );
+  const parsedClaudeWriteCanaryAuthorityOverrideJson = parseJsonOnlyStdout(
+    "task execution claude write canary authority override output was not valid JSON only",
+    claudeWriteCanaryAuthorityOverrideJson,
+  );
+  if (
+    parsedClaudeWriteCanaryAuthorityOverrideJson.ok !== false ||
+    parsedClaudeWriteCanaryAuthorityOverrideJson.error?.code !==
+      "task_execution_claude_canary_authority_override_forbidden" ||
+    parsedClaudeWriteCanaryAuthorityOverrideJson.safety?.automatedRealClaudeCall !== false ||
+    parsedClaudeWriteCanaryAuthorityOverrideJson.safety?.realCodexModelCall !== false ||
+    parsedClaudeWriteCanaryAuthorityOverrideJson.safety?.shellExecuted !== false ||
+    parsedClaudeWriteCanaryAuthorityOverrideJson.safety?.primaryApplyEnabled !== false ||
+    parsedClaudeWriteCanaryAuthorityOverrideJson.safety?.automaticPatchApply !== false
+  ) {
+    fail(
+      "task execution claude write canary authority override did not fail closed safely",
+      claudeWriteCanaryAuthorityOverrideJson,
+    );
+  }
   const repeatedEligibleDispatchJson = runCliFrom(dispatchEligible.rootPath, [
     "task",
     "execution",
