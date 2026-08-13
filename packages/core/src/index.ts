@@ -80,15 +80,23 @@ export * from "./task-execution-local-worker-process.js";
 export * from "./task-execution-worker-mutation-workspace.js";
 export {
   cleanupTaskExecutionTestPrimaryWorkspace,
+  createTaskExecutionRealPrimaryApplyCanaryWorkspaceAuthority,
   createTaskExecutionTestPrimaryWorkspace,
   evaluateTaskExecutionMutationApply,
+  executeTaskExecutionPrimaryApplyCanary,
+  executeTaskExecutionPrimaryApplyCanarySmokeOnly,
   executeTaskExecutionTestMutationApply,
   loadTaskExecutionMutationApplyRecord,
+  prepareTaskExecutionPrimaryApplyCanary,
   prepareTaskExecutionMutationApply,
+  TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT,
+  TASK_EXECUTION_PRIMARY_APPLY_CANARY_EXECUTED,
+  TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
   TASK_EXECUTION_MUTATION_APPLY_AUTOMATIC_PATCH_APPLY_ENABLED,
   TASK_EXECUTION_MUTATION_APPLY_MAX_FILE_BYTES,
   TASK_EXECUTION_MUTATION_APPLY_SCHEMA_VERSION,
   TASK_EXECUTION_PRIMARY_APPLY_CANARY_READY,
+  TASK_EXECUTION_PRIMARY_APPLY_CANARY_TASK_ID,
   TASK_EXECUTION_REAL_PRIMARY_WORKSPACE_APPLY_ENABLED,
   TASK_EXECUTION_TEST_MUTATION_APPLY_RUNTIME_READY,
 } from "./task-execution-worker-mutation-apply.js";

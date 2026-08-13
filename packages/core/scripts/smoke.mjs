@@ -132,6 +132,7 @@ import {
   createTaskExecutionClaudeCodeWorkerAdapter,
   createTaskExecutionCodexWorkerAdapter,
   cleanupTaskExecutionTestPrimaryWorkspace,
+  createTaskExecutionRealPrimaryApplyCanaryWorkspaceAuthority,
   loadTaskExecutionMutationArtifact,
   loadTaskExecutionMutationApplyRecord,
   loadTaskExecutionMutationEvidence,
@@ -145,6 +146,7 @@ import {
   evaluateTaskExecutionCodexWorkerConformance,
   evaluateTaskExecutionWorkerProcessGate,
   executeTaskExecutionIsolatedTestMutation,
+  executeTaskExecutionPrimaryApplyCanarySmokeOnly,
   executeTaskExecutionTestMutationApply,
   executeTaskExecutionLocalWorkerProcess,
   evaluateTaskExecutionWorkerConformance,
@@ -163,6 +165,7 @@ import {
   normalizeTaskExecutionWorkerResult,
   prepareTaskExecutionClaudeCodeWorkerInvocation,
   prepareTaskExecutionClaudeWriteCanaryMutationWorkspace,
+  prepareTaskExecutionPrimaryApplyCanary,
   prepareTaskExecutionMutationApply,
   persistTaskExecutionMutationEvidence,
   prepareTaskExecutionCodexWorkerInvocation,
@@ -192,7 +195,11 @@ import {
   TASK_EXECUTION_MUTATION_WORKSPACE_REAL_CLAUDE_CALLS,
   TASK_EXECUTION_MUTATION_WORKSPACE_REAL_CODEX_CALLS,
   TASK_EXECUTION_MUTATION_APPLY_AUTOMATIC_PATCH_APPLY_ENABLED,
+  TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT,
+  TASK_EXECUTION_PRIMARY_APPLY_CANARY_EXECUTED,
   TASK_EXECUTION_PRIMARY_APPLY_CANARY_READY,
+  TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
+  TASK_EXECUTION_PRIMARY_APPLY_CANARY_TASK_ID,
   TASK_EXECUTION_REAL_PRIMARY_WORKSPACE_APPLY_ENABLED,
   TASK_EXECUTION_REAL_CLAUDE_WRITE_CANARY_EXECUTED,
   TASK_EXECUTION_REAL_CLAUDE_WRITE_CANARY_READY,
@@ -21199,6 +21206,8 @@ try {
   };
   const makeApplyFixture = async ({
     suffix,
+    taskId = "TASK-0320",
+    taskRevision = 32,
     operation = "update_existing_file",
     relativePath = `packages/core/src/apply-${suffix}.ts`,
     beforeContent = `export const value_${suffix.replace(/[^A-Za-z0-9]/g, "_")} = "before";\n`,
@@ -21219,8 +21228,8 @@ try {
 
     mutationAttempt += 1;
     const workspace = await createTaskExecutionIsolatedMutationWorkspace({
-      taskId: "TASK-0320",
-      taskRevision: 32,
+      taskId,
+      taskRevision,
       attemptId: `attempt-apply-${suffix}`,
       attemptNumber: mutationAttempt,
       invocationId: `invocation-apply-${suffix}`,
@@ -21290,16 +21299,19 @@ try {
       `task execution mutation apply fixture ${suffix} should persist durable evidence and artifact: ${JSON.stringify(persistence.issues)}`,
     );
 
+    const missingTargetParent = dirname(relativePath).split(sep).join("/");
     const initialFiles = [
       ...primaryExtraFiles,
       ...(primaryHasTarget
         ? [{ relativePath, content: primaryInitialContent }]
-        : [
-            {
-              relativePath: `${dirname(relativePath).split(sep).join("/")}/.keep`,
-              content: "keep\n",
-            },
-          ]),
+        : missingTargetParent === "."
+          ? []
+          : [
+              {
+                relativePath: `${missingTargetParent}/.keep`,
+                content: "keep\n",
+              },
+            ]),
     ];
     const primary = await createTaskExecutionTestPrimaryWorkspace({
       projectRef: `project-apply-${suffix}`,
@@ -21336,10 +21348,338 @@ try {
   assert.equal(TASK_EXECUTION_TEST_MUTATION_APPLY_RUNTIME_READY, true);
   assert.equal(TASK_EXECUTION_REAL_PRIMARY_WORKSPACE_APPLY_ENABLED, false);
   assert.equal(TASK_EXECUTION_MUTATION_APPLY_AUTOMATIC_PATCH_APPLY_ENABLED, false);
-  assert.equal(TASK_EXECUTION_PRIMARY_APPLY_CANARY_READY, false);
+  assert.equal(TASK_EXECUTION_PRIMARY_APPLY_CANARY_READY, true);
+  assert.equal(TASK_EXECUTION_PRIMARY_APPLY_CANARY_EXECUTED, false);
+
+  const canaryFixture = await makeApplyFixture({
+    suffix: "primary-canary-valid",
+    taskId: TASK_EXECUTION_PRIMARY_APPLY_CANARY_TASK_ID,
+    taskRevision: 321,
+    operation: "create_file",
+    relativePath: TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
+    afterContent: TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT,
+    primaryHasTarget: false,
+  });
+  const canaryPrepared = await prepareTaskExecutionPrimaryApplyCanary(
+    applyInputFor(canaryFixture),
+  );
+  assert.equal(
+    canaryPrepared.status,
+    "prepared",
+    `primary apply canary smoke A should accept exact canary path: ${JSON.stringify(canaryPrepared.issues)}`,
+  );
+  assert.equal(canaryPrepared.reservationPersisted, true);
+  assert.equal(canaryPrepared.applied, false);
+  assert.equal(canaryPrepared.RealPrimaryWorkspaceApplyEnabled, false);
+  assert.equal(canaryPrepared.AutomaticPatchApply, false);
+  const canaryApplied = await executeTaskExecutionPrimaryApplyCanarySmokeOnly({
+    projectRoot: canaryFixture.stateRoot,
+    taskId: canaryPrepared.authority.taskId,
+    applyId: canaryPrepared.authority.applyId,
+    expectedTaskRevision: canaryPrepared.authority.taskRevision,
+    primaryWorkspaceAuthority: canaryFixture.primary.authority,
+  });
+  assert.equal(
+    canaryApplied.status,
+    "applied",
+    `primary apply canary smoke O should create exact file in TEST project root: ${JSON.stringify(canaryApplied.issues)}`,
+  );
+  assert.equal(canaryApplied.applied, true);
+  assert.equal(canaryApplied.afterDigestVerified, true);
+  assert.equal(
+    await readFile(
+      join(
+        canaryFixture.primary.authority.primaryWorkspaceRoot,
+        TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
+      ),
+      "utf8",
+    ),
+    TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT,
+  );
+  const canaryRecord = await loadTaskExecutionMutationApplyRecord({
+    projectRoot: canaryFixture.stateRoot,
+    taskId: canaryPrepared.authority.taskId,
+    applyId: canaryPrepared.authority.applyId,
+  });
+  assert.equal(canaryRecord.ok, true);
+  assert.equal(canaryRecord.record.lifecycle, "applied");
+  assert.equal(canaryRecord.record.outcome.lifecycle, "applied");
+  assert.equal(
+    canaryApplied.currentPrimaryDigest,
+    canaryPrepared.authority.afterDigest,
+    "primary apply canary smoke P should verify afterDigest",
+  );
+  assert.equal(canaryApplied.CompletionAuthorityGranted, false);
+  assert.equal(canaryApplied.VerifierSatisfied, false);
+  assert.equal(canaryApplied.ActualClaudeModelCalls, 0);
+  assert.equal(canaryApplied.ActualCodexModelCalls, 0);
+  assert.equal(canaryApplied.CloudCalls, 0);
+
+  const duplicateCanaryMtimeBefore = (
+    await stat(
+      join(
+        canaryFixture.primary.authority.primaryWorkspaceRoot,
+        TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
+      ),
+    )
+  ).mtimeMs;
+  const duplicateCanary = await executeTaskExecutionPrimaryApplyCanarySmokeOnly({
+    projectRoot: canaryFixture.stateRoot,
+    taskId: canaryPrepared.authority.taskId,
+    applyId: canaryPrepared.authority.applyId,
+    expectedTaskRevision: canaryPrepared.authority.taskRevision,
+    primaryWorkspaceAuthority: canaryFixture.primary.authority,
+  });
+  assert.equal(duplicateCanary.status, "applied");
+  assert.equal(duplicateCanary.applied, false);
+  assert.equal(
+    (
+      await stat(
+        join(
+          canaryFixture.primary.authority.primaryWorkspaceRoot,
+          TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
+        ),
+      )
+    ).mtimeMs,
+    duplicateCanaryMtimeBefore,
+    "primary apply canary smoke M should not mutate again on duplicate applied replay",
+  );
+
+  const wrongPathCanaryFixture = await makeApplyFixture({
+    suffix: "primary-canary-wrong-path",
+    taskId: TASK_EXECUTION_PRIMARY_APPLY_CANARY_TASK_ID,
+    taskRevision: 321,
+    operation: "create_file",
+    relativePath: "not-the-canary.txt",
+    afterContent: TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT,
+    primaryHasTarget: false,
+  });
+  const wrongPathCanary = await prepareTaskExecutionPrimaryApplyCanary(
+    applyInputFor(wrongPathCanaryFixture),
+  );
+  assert.equal(wrongPathCanary.status, "blocked");
+  assert.ok(
+    wrongPathCanary.issues.some(
+      (item) => item.code === "task_execution_primary_apply_canary_path_mismatch",
+    ),
+    "primary apply canary smoke B should block any different path",
+  );
+
+  const productPathCanaryFixture = await makeApplyFixture({
+    suffix: "primary-canary-product-path",
+    taskId: TASK_EXECUTION_PRIMARY_APPLY_CANARY_TASK_ID,
+    taskRevision: 321,
+    operation: "create_file",
+    relativePath: "packages/core/src/product-canary.ts",
+    afterContent: TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT,
+    primaryHasTarget: false,
+  });
+  const productPathCanary = await prepareTaskExecutionPrimaryApplyCanary(
+    applyInputFor(productPathCanaryFixture),
+  );
+  assert.equal(productPathCanary.status, "blocked");
+  assert.ok(
+    productPathCanary.issues.some(
+      (item) =>
+        item.code === "task_execution_primary_apply_canary_path_mismatch" ||
+        item.code === "task_execution_primary_apply_canary_product_path_rejected",
+    ),
+    "primary apply canary smoke E should block product paths",
+  );
+
+  const protectedPathSourceRoot = await mkdtemp(
+    join(tmpdir(), "aeos-primary-canary-protected-source-"),
+  );
+  const protectedPathCanary = await createTaskExecutionIsolatedMutationWorkspace({
+    taskId: TASK_EXECUTION_PRIMARY_APPLY_CANARY_TASK_ID,
+    taskRevision: 321,
+    attemptId: "attempt-primary-canary-protected",
+    attemptNumber: 9991,
+    invocationId: "invocation-primary-canary-protected",
+    invocationRevision: 1,
+    idempotencyKey: "idem-primary-canary-protected",
+    workerIdentity: claudeWorkerIdentity,
+    sourceProjectRef: "project-pro-performans",
+    sourceWorkspaceRef: "primary-workspace",
+    sourceWorkspaceRoot: protectedPathSourceRoot,
+    mutationScope: {
+      authority: "system",
+      scopeId: "primary-canary-protected-scope",
+      allowedPathRefs: [".codex/canary.txt"],
+      allowedOperations: ["create_file"],
+      maxChangedFiles: 1,
+      maxTotalChangedBytes: 4096,
+      repositoryWritePermission: true,
+      deleteAllowed: false,
+    },
+  });
+  assert.equal(protectedPathCanary.ok, false);
+  assert.ok(
+    protectedPathCanary.issues.some(
+      (item) =>
+        item.code === "task_execution_mutation_scope_protected_path",
+    ),
+    "primary apply canary smoke F should block protected paths",
+  );
+
+  const existingCanaryFixture = await makeApplyFixture({
+    suffix: "primary-canary-exists",
+    taskId: TASK_EXECUTION_PRIMARY_APPLY_CANARY_TASK_ID,
+    taskRevision: 321,
+    operation: "create_file",
+    relativePath: TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
+    afterContent: TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT,
+    primaryHasTarget: true,
+    primaryInitialContent: "already exists\n",
+  });
+  const existingCanary = await prepareTaskExecutionPrimaryApplyCanary(
+    applyInputFor(existingCanaryFixture),
+  );
+  assert.equal(existingCanary.status, "blocked");
+  assert.ok(
+    existingCanary.issues.some(
+      (item) => item.code === "task_execution_mutation_apply_create_target_exists",
+    ),
+    "primary apply canary smoke C should block existing canary target",
+  );
+
+  const wrongContentCanaryFixture = await makeApplyFixture({
+    suffix: "primary-canary-wrong-content",
+    taskId: TASK_EXECUTION_PRIMARY_APPLY_CANARY_TASK_ID,
+    taskRevision: 321,
+    operation: "create_file",
+    relativePath: TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
+    afterContent: "WRONG_CANARY_CONTENT",
+    primaryHasTarget: false,
+  });
+  const wrongContentCanary = await prepareTaskExecutionPrimaryApplyCanary(
+    applyInputFor(wrongContentCanaryFixture),
+  );
+  assert.equal(wrongContentCanary.status, "blocked");
+  assert.ok(
+    wrongContentCanary.issues.some(
+      (item) =>
+        item.code === "task_execution_primary_apply_canary_content_mismatch",
+    ),
+    "primary apply canary smoke K should block wrong content/digest",
+  );
+
+  const updateCanaryFixture = await makeApplyFixture({
+    suffix: "primary-canary-update",
+    taskId: TASK_EXECUTION_PRIMARY_APPLY_CANARY_TASK_ID,
+    taskRevision: 321,
+    operation: "update_existing_file",
+    relativePath: TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
+    beforeContent: "before canary\n",
+    afterContent: TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT,
+    primaryHasTarget: true,
+    primaryInitialContent: "before canary\n",
+  });
+  const updateCanary = await prepareTaskExecutionPrimaryApplyCanary(
+    applyInputFor(updateCanaryFixture),
+  );
+  assert.equal(updateCanary.status, "blocked");
+  assert.ok(
+    updateCanary.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_primary_apply_canary_create_only_required",
+    ),
+    "primary apply canary smoke J should block non-create artifacts",
+  );
+
+  const arbitraryRoot = await mkdtemp(join(tmpdir(), "aeos-canary-wrong-root-"));
+  const wrongRootCanary = await prepareTaskExecutionPrimaryApplyCanary(
+    applyInputFor(canaryFixture, {
+      primaryWorkspaceAuthority: {
+        authority: "system",
+        workspaceKind: "real_primary_apply_canary",
+        systemCreated: false,
+        workspaceRef: "workspace:pro-performans-primary",
+        projectRef: "project:pro-performans",
+        primaryWorkspaceRoot: arbitraryRoot,
+        realPrimaryApplyEnabled: false,
+        automaticPatchApplyEnabled: false,
+      },
+    }),
+  );
+  assert.equal(wrongRootCanary.status, "blocked");
+  assert.ok(
+    wrongRootCanary.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_mutation_apply_primary_workspace_unauthorized",
+    ),
+    "primary apply canary smoke D should block arbitrary primary roots",
+  );
+
+  const symlinkCanaryFixture = await makeApplyFixture({
+    suffix: "primary-canary-symlink",
+    taskId: TASK_EXECUTION_PRIMARY_APPLY_CANARY_TASK_ID,
+    taskRevision: 321,
+    operation: "create_file",
+    relativePath: TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
+    afterContent: TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT,
+    primaryHasTarget: false,
+  });
+  const symlinkCanaryOutside = join(
+    tmpdir(),
+    `aeos-primary-canary-outside-${Date.now()}`,
+  );
+  await writeNodeFile(symlinkCanaryOutside, "outside", "utf8");
+  await symlink(
+    symlinkCanaryOutside,
+    join(
+      symlinkCanaryFixture.primary.authority.primaryWorkspaceRoot,
+      TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
+    ),
+  );
+  const symlinkCanary = await prepareTaskExecutionPrimaryApplyCanary(
+    applyInputFor(symlinkCanaryFixture),
+  );
+  assert.equal(symlinkCanary.status, "blocked");
+  assert.ok(
+    symlinkCanary.issues.some(
+      (item) =>
+        item.code === "task_execution_mutation_apply_target_escape" ||
+        item.code === "task_execution_mutation_apply_target_unsafe" ||
+        item.code === "task_execution_mutation_apply_create_target_exists",
+    ),
+    "primary apply canary smoke G should block symlink targets",
+  );
+  assert.equal(await readFile(symlinkCanaryOutside, "utf8"), "outside");
+
+  const missingReservationCanary =
+    await executeTaskExecutionPrimaryApplyCanarySmokeOnly({
+      projectRoot: canaryFixture.stateRoot,
+      taskId: TASK_EXECUTION_PRIMARY_APPLY_CANARY_TASK_ID,
+      applyId: "apply:missing-primary-canary",
+      expectedTaskRevision: 321,
+      primaryWorkspaceAuthority: canaryFixture.primary.authority,
+    });
+  assert.equal(missingReservationCanary.status, "blocked");
+  assert.equal(missingReservationCanary.applied, false);
+  assert.equal(
+    await readFile(
+      join(
+        canaryFixture.primary.authority.primaryWorkspaceRoot,
+        TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
+      ),
+      "utf8",
+    ),
+    TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT,
+    "primary apply canary smoke L should not mutate without a durable reservation",
+  );
+
+  const realAuthority = await createTaskExecutionRealPrimaryApplyCanaryWorkspaceAuthority();
+  assert.equal(realAuthority.RealPrimaryWorkspaceApplyEnabled, false);
+  assert.equal(realAuthority.AutomaticPatchApply, false);
+  assert.equal(realAuthority.ActualClaudeModelCalls, 0);
+  assert.equal(realAuthority.ActualCodexModelCalls, 0);
+  assert.equal(realAuthority.CloudCalls, 0);
 
   const validApplyFixture = await makeApplyFixture({ suffix: "valid" });
-  const validApplyEvidenceLoad = await loadTaskExecutionMutationEvidence({
+    const validApplyEvidenceLoad = await loadTaskExecutionMutationEvidence({
     projectRoot: validApplyFixture.stateRoot,
     taskId: "TASK-0320",
     invocationId: "invocation-apply-valid",

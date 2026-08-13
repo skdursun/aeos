@@ -14,17 +14,22 @@ import { AEOS_TASK_EXECUTION_AUDIT_SCHEMA_VERSION } from "./task-execution-audit
 import type { AeosError } from "./types.js";
 
 // @ts-ignore Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
+import { execFile } from "node:child_process";
+// @ts-ignore Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
 import { Buffer } from "node:buffer";
 // @ts-ignore Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
 import { createHash } from "node:crypto";
 // @ts-ignore Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
 import * as fsPromises from "node:fs/promises";
 // @ts-ignore Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 // @ts-ignore Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
+// @ts-ignore Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
+import { promisify } from "node:util";
 
 const {
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -41,9 +46,17 @@ export const TASK_EXECUTION_TEST_MUTATION_APPLY_RUNTIME_READY = true;
 export const TASK_EXECUTION_REAL_PRIMARY_WORKSPACE_APPLY_ENABLED = false;
 export const TASK_EXECUTION_MUTATION_APPLY_AUTOMATIC_PATCH_APPLY_ENABLED =
   false;
-export const TASK_EXECUTION_PRIMARY_APPLY_CANARY_READY = false;
+export const TASK_EXECUTION_PRIMARY_APPLY_CANARY_READY = true;
+export const TASK_EXECUTION_PRIMARY_APPLY_CANARY_EXECUTED = false;
+export const TASK_EXECUTION_PRIMARY_APPLY_CANARY_TASK_ID = "TASK-0321";
+export const TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH =
+  "TASK-0321-primary-apply.canary.txt";
+export const TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT =
+  "AEOS_PRIMARY_APPLY_CANARY_V1";
 export const TASK_EXECUTION_MUTATION_APPLY_SCHEMA_VERSION = 1;
 export const TASK_EXECUTION_MUTATION_APPLY_MAX_FILE_BYTES = 1024 * 1024;
+
+const execFileAsync = promisify(execFile);
 
 export type TaskExecutionMutationApplyLifecycle =
   | "prepared"
@@ -67,6 +80,21 @@ export interface TaskExecutionTestPrimaryWorkspaceAuthority {
   readonly realPrimaryApplyEnabled: false;
   readonly automaticPatchApplyEnabled: false;
 }
+
+export interface TaskExecutionRealPrimaryApplyCanaryWorkspaceAuthority {
+  readonly authority: "system";
+  readonly workspaceKind: "real_primary_apply_canary";
+  readonly systemCreated: false;
+  readonly workspaceRef: "workspace:pro-performans-primary";
+  readonly projectRef: "project:pro-performans";
+  readonly primaryWorkspaceRoot: string;
+  readonly realPrimaryApplyEnabled: false;
+  readonly automaticPatchApplyEnabled: false;
+}
+
+export type TaskExecutionPrimaryWorkspaceAuthority =
+  | TaskExecutionTestPrimaryWorkspaceAuthority
+  | TaskExecutionRealPrimaryApplyCanaryWorkspaceAuthority;
 
 export interface CreateTaskExecutionTestPrimaryWorkspaceInput {
   readonly projectRef: string;
@@ -199,9 +227,10 @@ export interface TaskExecutionMutationApplyRecord {
 export interface TaskExecutionMutationApplyInput {
   readonly projectRoot: string;
   readonly mutationAuthority: TaskExecutionIsolatedMutationWorkspaceAuthority;
-  readonly primaryWorkspaceAuthority: TaskExecutionTestPrimaryWorkspaceAuthority;
+  readonly primaryWorkspaceAuthority: TaskExecutionPrimaryWorkspaceAuthority;
   readonly occurredAt?: string;
   readonly taskModelWorkerOrOperatorPathClaims?: unknown;
+  readonly applyBoundary?: "general_test_primary" | "primary_apply_canary";
 }
 
 export interface TaskExecutionMutationApplyDecision {
@@ -233,6 +262,19 @@ export interface TaskExecutionMutationApplyResult
   readonly applyingPersisted: boolean;
   readonly afterDigestVerified: boolean;
   readonly auditFacts: readonly TaskExecutionMutationApplyAuditFact[];
+}
+
+export interface TaskExecutionPrimaryApplyCanaryExecuteInput {
+  readonly projectRoot: string;
+  readonly taskId: string;
+  readonly applyId: string;
+  readonly expectedTaskRevision?: number;
+  readonly occurredAt?: string;
+}
+
+export interface TaskExecutionPrimaryApplyCanarySmokeInput
+  extends TaskExecutionPrimaryApplyCanaryExecuteInput {
+  readonly primaryWorkspaceAuthority: TaskExecutionPrimaryWorkspaceAuthority;
 }
 
 type TestFaultInjection =
@@ -342,6 +384,14 @@ function digestContent(content: string | Uint8Array): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
+function primaryApplyCanaryDigest(): string {
+  return digestContent(TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT);
+}
+
+function primaryApplyCanaryBytes(): number {
+  return Buffer.byteLength(TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT, "utf8");
+}
+
 function jsonContent(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
@@ -364,6 +414,10 @@ async function safeRealpath(path: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+async function trustedRealPrimaryRoot(): Promise<string | null> {
+  return safeRealpath(join(homedir(), "Desktop", "pro-performans"));
 }
 
 async function fsyncDirectory(path: string): Promise<void> {
@@ -527,7 +581,7 @@ function deriveApplyId(input: {
   readonly evidence: TaskExecutionMutationEvidenceRecord;
   readonly artifact: TaskExecutionMutationArtifactRecord;
   readonly file: TaskExecutionMutationArtifactFile;
-  readonly primary: TaskExecutionTestPrimaryWorkspaceAuthority;
+  readonly primary: TaskExecutionPrimaryWorkspaceAuthority;
 }): string {
   return `apply:${digestJson({
     taskId: input.evidence.taskId,
@@ -562,7 +616,7 @@ function buildApplyAuthority(input: {
   readonly evidence: TaskExecutionMutationEvidenceRecord;
   readonly artifact: TaskExecutionMutationArtifactRecord;
   readonly file: TaskExecutionMutationArtifactFile;
-  readonly primary: TaskExecutionTestPrimaryWorkspaceAuthority;
+  readonly primary: TaskExecutionPrimaryWorkspaceAuthority;
 }): TaskExecutionMutationApplyAuthority {
   const applyId = deriveApplyId(input);
 
@@ -888,29 +942,43 @@ export async function loadTaskExecutionMutationApplyRecord(input: {
 }
 
 async function validatePrimaryWorkspaceAuthority(
-  primary: TaskExecutionTestPrimaryWorkspaceAuthority,
+  primary: TaskExecutionPrimaryWorkspaceAuthority,
 ): Promise<readonly TaskExecutionWorkerIssue[]> {
   const issues: TaskExecutionWorkerIssue[] = [];
   const tempRoot = await realpath(tmpdir());
   const primaryRoot = await safeRealpath(primary.primaryWorkspaceRoot);
 
-  if (
+  const commonInvalid =
     primary.authority !== "system" ||
-    primary.workspaceKind !== "deterministic_test_primary" ||
-    primary.systemCreated !== true ||
     !isSafeRef(primary.workspaceRef) ||
     !isSafeRef(primary.projectRef) ||
     primary.realPrimaryApplyEnabled !== false ||
     primary.automaticPatchApplyEnabled !== false ||
-    primaryRoot === null ||
-    !isInsideOrEqual(tempRoot, primaryRoot) ||
-    !primaryRoot.includes(`${sep}aeos-test-primary-apply-`)
-  ) {
+    primaryRoot === null;
+
+  const testPrimaryAllowed =
+    !commonInvalid &&
+    primary.workspaceKind === "deterministic_test_primary" &&
+    primary.systemCreated === true &&
+    isInsideOrEqual(tempRoot, primaryRoot) &&
+    primaryRoot.includes(`${sep}aeos-test-primary-apply-`);
+
+  const trustedRoot = await trustedRealPrimaryRoot();
+  const realCanaryAllowed =
+    !commonInvalid &&
+    primary.workspaceKind === "real_primary_apply_canary" &&
+    primary.systemCreated === false &&
+    primary.workspaceRef === "workspace:pro-performans-primary" &&
+    primary.projectRef === "project:pro-performans" &&
+    trustedRoot !== null &&
+    primaryRoot === trustedRoot;
+
+  if (!testPrimaryAllowed && !realCanaryAllowed) {
     issues.push(
       issue({
         code: "task_execution_mutation_apply_primary_workspace_unauthorized",
         message:
-          "Primary apply authority can execute only against AEOS-created deterministic TEST primary workspaces.",
+          "Primary apply authority can execute only against AEOS-created deterministic TEST primary workspaces or the exact system-owned real primary canary root.",
         category: "permission",
       }),
     );
@@ -920,7 +988,7 @@ async function validatePrimaryWorkspaceAuthority(
 }
 
 async function validateTargetPath(input: {
-  readonly primary: TaskExecutionTestPrimaryWorkspaceAuthority;
+  readonly primary: TaskExecutionPrimaryWorkspaceAuthority;
   readonly file: TaskExecutionMutationArtifactFile;
 }): Promise<
   | {
@@ -1070,6 +1138,93 @@ async function validateTargetPath(input: {
     targetPath,
     currentDigest: current.digest,
   };
+}
+
+function validatePrimaryApplyCanaryArtifact(input: {
+  readonly primary: TaskExecutionPrimaryWorkspaceAuthority;
+  readonly artifact: TaskExecutionMutationArtifactRecord;
+  readonly file: TaskExecutionMutationArtifactFile;
+}): readonly TaskExecutionWorkerIssue[] {
+  const issues: TaskExecutionWorkerIssue[] = [];
+  const afterDigest = primaryApplyCanaryDigest();
+  const afterBytes = primaryApplyCanaryBytes();
+
+  if (
+    input.file.relativePath !== TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH
+  ) {
+    issues.push(
+      issue({
+        code: "task_execution_primary_apply_canary_path_mismatch",
+        message:
+          "Primary apply canary accepts only the exact system-owned sacrificial canary path.",
+        category: "permission",
+      }),
+    );
+  }
+
+  if (
+    input.file.relativePath.startsWith("packages/") ||
+    input.file.relativePath.startsWith("apps/") ||
+    input.file.relativePath.startsWith("docs/") ||
+    pathMatchesProtected(input.file.relativePath)
+  ) {
+    issues.push(
+      issue({
+        code: "task_execution_primary_apply_canary_product_path_rejected",
+        message:
+          "Primary apply canary cannot target product source, documentation, or protected state paths.",
+        category: "permission",
+      }),
+    );
+  }
+
+  if (
+    input.file.operation !== "created" ||
+    input.file.beforeDigest !== null ||
+    input.file.beforeBytes !== 0
+  ) {
+    issues.push(
+      issue({
+        code: "task_execution_primary_apply_canary_create_only_required",
+        message:
+          "Primary apply canary requires one create-file artifact with nonexistent before state.",
+        category: "permission",
+      }),
+    );
+  }
+
+  if (
+    input.file.afterContent !== TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT ||
+    input.file.afterDigest !== afterDigest ||
+    input.file.afterBytes !== afterBytes ||
+    input.artifact.totalBytes !== afterBytes ||
+    input.artifact.maxTotalBytes < afterBytes
+  ) {
+    issues.push(
+      issue({
+        code: "task_execution_primary_apply_canary_content_mismatch",
+        message:
+          "Primary apply canary content, digest, and byte bounds must match the system-owned canary representation.",
+        category: "validation",
+      }),
+    );
+  }
+
+  if (
+    input.primary.realPrimaryApplyEnabled !== false ||
+    input.primary.automaticPatchApplyEnabled !== false
+  ) {
+    issues.push(
+      issue({
+        code: "task_execution_primary_apply_canary_general_apply_enabled",
+        message:
+          "Primary apply canary cannot enable general real primary apply or automatic patch apply.",
+        category: "permission",
+      }),
+    );
+  }
+
+  return issues;
 }
 
 function validateArtifactBinding(input: {
@@ -1248,6 +1403,15 @@ async function evaluateInternal(
     file,
     primary: input.primaryWorkspaceAuthority,
   });
+  if (input.applyBoundary === "primary_apply_canary") {
+    issues.push(
+      ...validatePrimaryApplyCanaryArtifact({
+        primary: input.primaryWorkspaceAuthority,
+        artifact,
+        file,
+      }),
+    );
+  }
   const target = await validateTargetPath({
     primary: input.primaryWorkspaceAuthority,
     file,
@@ -1583,8 +1747,18 @@ async function atomicApplyFile(input: {
     await handle.close();
   }
 
-  await rename(tempPath, input.targetPath);
-  await fsyncDirectory(targetParent);
+  try {
+    if (input.file.operation === "created") {
+      await link(tempPath, input.targetPath);
+      await unlink(tempPath).catch(() => undefined);
+    } else {
+      await rename(tempPath, input.targetPath);
+    }
+    await fsyncDirectory(targetParent);
+  } catch (error) {
+    await unlink(tempPath).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function executePrepared(
@@ -1934,6 +2108,667 @@ export async function executeTaskExecutionTestMutationApplyFaultInjectionSmokeOn
   fault: TestFaultInjection,
 ): Promise<TaskExecutionMutationApplyResult> {
   return executePrepared(input, fault);
+}
+
+export async function createTaskExecutionRealPrimaryApplyCanaryWorkspaceAuthority(): Promise<{
+  readonly ok: boolean;
+  readonly authority: TaskExecutionRealPrimaryApplyCanaryWorkspaceAuthority | null;
+  readonly issues: readonly TaskExecutionWorkerIssue[];
+  readonly RealPrimaryWorkspaceApplyEnabled: false;
+  readonly AutomaticPatchApply: false;
+  readonly ActualCodexModelCalls: 0;
+  readonly ActualClaudeModelCalls: 0;
+  readonly CloudCalls: 0;
+}> {
+  const root = await trustedRealPrimaryRoot();
+  if (root === null) {
+    return {
+      ok: false,
+      authority: null,
+      issues: storageIssue({
+        code: "task_execution_primary_apply_canary_real_root_missing",
+        message:
+          "System-owned real primary apply canary root is missing or cannot be canonicalized.",
+        category: "not_found",
+      }),
+      RealPrimaryWorkspaceApplyEnabled: false,
+      AutomaticPatchApply: false,
+      ActualCodexModelCalls: 0,
+      ActualClaudeModelCalls: 0,
+      CloudCalls: 0,
+    };
+  }
+
+  const authority: TaskExecutionRealPrimaryApplyCanaryWorkspaceAuthority = {
+    authority: "system",
+    workspaceKind: "real_primary_apply_canary",
+    systemCreated: false,
+    workspaceRef: "workspace:pro-performans-primary",
+    projectRef: "project:pro-performans",
+    primaryWorkspaceRoot: root,
+    realPrimaryApplyEnabled: false,
+    automaticPatchApplyEnabled: false,
+  };
+  const issues = await validatePrimaryWorkspaceAuthority(authority);
+
+  return {
+    ok: issues.every((item) => item.severity !== "error"),
+    authority,
+    issues,
+    RealPrimaryWorkspaceApplyEnabled: false,
+    AutomaticPatchApply: false,
+    ActualCodexModelCalls: 0,
+    ActualClaudeModelCalls: 0,
+    CloudCalls: 0,
+  };
+}
+
+export async function prepareTaskExecutionPrimaryApplyCanary(
+  input: Omit<TaskExecutionMutationApplyInput, "applyBoundary">,
+): Promise<TaskExecutionMutationApplyResult> {
+  return prepareTaskExecutionMutationApply({
+    ...input,
+    applyBoundary: "primary_apply_canary",
+  });
+}
+
+async function validatePreparedCanaryAuthority(input: {
+  readonly authority: TaskExecutionMutationApplyAuthority;
+  readonly evidence: TaskExecutionMutationEvidenceRecord;
+  readonly artifact: TaskExecutionMutationArtifactRecord;
+  readonly file: TaskExecutionMutationArtifactFile | null;
+}): Promise<readonly TaskExecutionWorkerIssue[]> {
+  const issues: TaskExecutionWorkerIssue[] = [];
+  const file = input.file;
+
+  if (
+    input.evidence.evidenceRef !== input.authority.evidenceRef ||
+    input.evidence.evidenceDigest !== input.authority.evidenceDigest ||
+    input.evidence.artifactRef !== input.authority.artifactRef ||
+    input.artifact.artifactRef !== input.authority.artifactRef ||
+    input.artifact.artifactDigest !== input.authority.artifactDigest ||
+    input.artifact.evidenceRef !== input.authority.evidenceRef ||
+    input.artifact.evidenceDigest !== input.authority.evidenceDigest ||
+    input.artifact.primaryApplyPerformed !== false ||
+    input.evidence.primaryWorkspaceApplyEnabled !== false ||
+    input.evidence.automaticPatchApplyEnabled !== false ||
+    input.evidence.completionAuthorityGranted !== false ||
+    input.evidence.verifierRun !== false ||
+    input.evidence.retryAuthorized !== false
+  ) {
+    issues.push(
+      issue({
+        code: "task_execution_primary_apply_canary_authority_mismatch",
+        message:
+          "Prepared primary apply canary intent must bind exactly to durable evidence and artifact authority.",
+        category: "conflict",
+      }),
+    );
+  }
+
+  if (
+    file === null ||
+    file.relativePath !== input.authority.changedRelativePath ||
+    file.operation !== input.authority.operation ||
+    file.beforeDigest !== input.authority.beforeDigest ||
+    file.afterDigest !== input.authority.afterDigest ||
+    digestContent(file.afterContent) !== input.authority.artifactContentDigest ||
+    file.afterBytes !== input.authority.artifactBytes ||
+    input.artifact.totalBytes !== input.authority.artifactTotalBytes
+  ) {
+    issues.push(
+      issue({
+        code: "task_execution_primary_apply_canary_file_authority_mismatch",
+        message:
+          "Prepared primary apply canary file must match the immutable apply authority path, operation, bytes, and digests.",
+        category: "conflict",
+      }),
+    );
+  }
+
+  return issues;
+}
+
+async function loadPreparedPrimaryApplyCanaryDecision(input: {
+  readonly projectRoot: string;
+  readonly taskId: string;
+  readonly applyId: string;
+  readonly primaryWorkspaceAuthority: TaskExecutionPrimaryWorkspaceAuthority;
+  readonly expectedTaskRevision?: number;
+}): Promise<TaskExecutionMutationApplyDecision> {
+  const loadedApply = await loadTaskExecutionMutationApplyRecord({
+    projectRoot: input.projectRoot,
+    taskId: input.taskId,
+    applyId: input.applyId,
+  });
+  const record = loadedApply.record;
+  const intent = record?.intent ?? null;
+
+  if (!loadedApply.ok || record === null || intent === null) {
+    return baseDecision({
+      ok: false,
+      status: "blocked",
+      authority: null,
+      evidence: null,
+      artifact: null,
+      file: null,
+      currentPrimaryDigest: null,
+      targetPath: null,
+      applyRecord: record,
+      issues:
+        loadedApply.issues.length > 0
+          ? loadedApply.issues
+          : storageIssue({
+              code: "task_execution_primary_apply_canary_prepared_missing",
+              message:
+                "Primary apply canary execution requires an existing durable prepared apply intent.",
+              category: "not_found",
+            }),
+    });
+  }
+
+  const authority = intent.authority;
+  const issues: TaskExecutionWorkerIssue[] = [...loadedApply.issues];
+
+  if (
+    authority.taskId !== input.taskId ||
+    authority.applyId !== input.applyId ||
+    (input.expectedTaskRevision !== undefined &&
+      authority.taskRevision !== input.expectedTaskRevision)
+  ) {
+    issues.push(
+      issue({
+        code: "task_execution_primary_apply_canary_expected_authority_mismatch",
+        message:
+          "Primary apply canary task, revision, and apply id must match the durable prepared intent.",
+        category: "conflict",
+      }),
+    );
+  }
+
+  issues.push(
+    ...(await validatePrimaryWorkspaceAuthority(input.primaryWorkspaceAuthority)),
+  );
+
+  const evidenceLoad = await loadTaskExecutionMutationEvidence({
+    projectRoot: input.projectRoot,
+    taskId: authority.taskId,
+    invocationId: authority.invocationId,
+  });
+  const artifactLoad = await loadTaskExecutionMutationArtifact({
+    projectRoot: input.projectRoot,
+    taskId: authority.taskId,
+    invocationId: authority.invocationId,
+  });
+  issues.push(...evidenceLoad.issues, ...artifactLoad.issues);
+
+  const evidence = evidenceLoad.record;
+  const artifact = artifactLoad.record;
+  if (!evidenceLoad.ok || !artifactLoad.ok || evidence === null || artifact === null) {
+    return baseDecision({
+      ok: false,
+      status: "blocked",
+      authority,
+      evidence,
+      artifact,
+      file: null,
+      currentPrimaryDigest: null,
+      targetPath: null,
+      applyRecord: record,
+      issues,
+    });
+  }
+
+  issues.push(...validateArtifactBinding({ evidence, artifact }));
+  const file = artifact.files[0] ?? null;
+  issues.push(
+    ...(await validatePreparedCanaryAuthority({
+      authority,
+      evidence,
+      artifact,
+      file,
+    })),
+  );
+
+  if (file !== null) {
+    issues.push(
+      ...validatePrimaryApplyCanaryArtifact({
+        primary: input.primaryWorkspaceAuthority,
+        artifact,
+        file,
+      }),
+    );
+  }
+
+  const target =
+    file === null
+      ? {
+          ok: false as const,
+          targetPath: null,
+          currentDigest: null,
+          issues: [],
+        }
+      : await validateTargetPath({
+          primary: input.primaryWorkspaceAuthority,
+          file,
+        });
+  if (!target.ok) {
+    issues.push(...target.issues);
+  }
+
+  if (record.lifecycle === "applied") {
+    return baseDecision({
+      ok: true,
+      status: "applied",
+      authority,
+      evidence,
+      artifact,
+      file,
+      currentPrimaryDigest: target.currentDigest,
+      targetPath: target.targetPath,
+      applyRecord: record,
+      issues,
+    });
+  }
+
+  if (record.lifecycle === "applying" || record.lifecycle === "outcome_unknown") {
+    return baseDecision({
+      ok: false,
+      status: record.lifecycle,
+      authority,
+      evidence,
+      artifact,
+      file,
+      currentPrimaryDigest: target.currentDigest,
+      targetPath: target.targetPath,
+      applyRecord: record,
+      issues,
+    });
+  }
+
+  return baseDecision({
+    ok: target.ok && issues.every((item) => item.severity !== "error"),
+    status:
+      target.ok && issues.every((item) => item.severity !== "error")
+        ? "prepared"
+        : "blocked",
+    authority,
+    evidence,
+    artifact,
+    file,
+    currentPrimaryDigest: target.currentDigest,
+    targetPath: target.targetPath,
+    applyRecord: record,
+    issues,
+  });
+}
+
+function parseGitStatusPaths(output: string): readonly string[] {
+  return output
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0)
+    .map((line) => line.slice(3).replace(/^"|"$/g, ""))
+    .map((line) => {
+      const renameIndex = line.lastIndexOf(" -> ");
+      return renameIndex === -1 ? line : line.slice(renameIndex + 4);
+    });
+}
+
+async function validateRealPrimaryCanaryWorktreePreflight(input: {
+  readonly primary: TaskExecutionPrimaryWorkspaceAuthority;
+  readonly targetPath: string;
+}): Promise<readonly TaskExecutionWorkerIssue[]> {
+  if (input.primary.workspaceKind !== "real_primary_apply_canary") {
+    return [];
+  }
+
+  const issues: TaskExecutionWorkerIssue[] = [];
+  const root = await safeRealpath(input.primary.primaryWorkspaceRoot);
+  const trustedRoot = await trustedRealPrimaryRoot();
+  if (root === null || trustedRoot === null || root !== trustedRoot) {
+    return storageIssue({
+      code: "task_execution_primary_apply_canary_real_root_mismatch",
+      message:
+        "Real primary apply canary preflight requires the exact trusted primary repository root.",
+      category: "permission",
+    });
+  }
+
+  const target = await currentFileDigest(input.targetPath);
+  if (target.kind !== "missing") {
+    issues.push(
+      issue({
+        code: "task_execution_primary_apply_canary_target_exists",
+        message:
+          "Real primary apply canary target must still be absent immediately before apply.",
+        category: "conflict",
+      }),
+    );
+  }
+
+  try {
+    const result = await execFileAsync(
+      "git",
+      ["status", "--porcelain=v1", "--untracked-files=all"],
+      {
+        cwd: root,
+        maxBuffer: 1024 * 1024,
+        shell: false,
+      },
+    );
+    const statusPaths = parseGitStatusPaths(String(result.stdout));
+    const unexpected = statusPaths.filter(
+      (pathRef) =>
+        pathRef !== ".codex/config.toml" &&
+        !pathRef.startsWith(".aeos/"),
+    );
+    if (unexpected.length > 0) {
+      issues.push(
+        issue({
+          code: "task_execution_primary_apply_canary_worktree_dirty",
+          message:
+            "Real primary apply canary blocks unexpected product-source or unapproved worktree dirt before mutation.",
+          category: "conflict",
+        }),
+      );
+    }
+  } catch {
+    issues.push(
+      issue({
+        code: "task_execution_primary_apply_canary_git_preflight_failed",
+        message:
+          "Real primary apply canary could not verify repository dirt with Git source truth.",
+        category: "unknown",
+      }),
+    );
+  }
+
+  return issues;
+}
+
+async function executePreparedPrimaryApplyCanaryDecision(input: {
+  readonly projectRoot: string;
+  readonly decision: TaskExecutionMutationApplyDecision;
+  readonly primaryWorkspaceAuthority: TaskExecutionPrimaryWorkspaceAuthority;
+  readonly occurredAt?: string;
+}): Promise<TaskExecutionMutationApplyResult> {
+  const authority = input.decision.authority;
+  if (
+    authority === null ||
+    input.decision.file === null ||
+    input.decision.targetPath === null ||
+    input.decision.status !== "prepared"
+  ) {
+    return baseResult({
+      decision: input.decision,
+      applied: false,
+      reservationPersisted: input.decision.applyRecord?.intent !== null,
+      applyingPersisted: input.decision.applyRecord?.applying !== null,
+      afterDigestVerified: false,
+    });
+  }
+
+  const preflightIssues = await validateRealPrimaryCanaryWorktreePreflight({
+    primary: input.primaryWorkspaceAuthority,
+    targetPath: input.decision.targetPath,
+  });
+  if (preflightIssues.some((item) => item.severity === "error")) {
+    return baseResult({
+      decision: {
+        ...input.decision,
+        ok: false,
+        status: "blocked",
+        issues: [...input.decision.issues, ...preflightIssues],
+      },
+      applied: false,
+      reservationPersisted: true,
+      applyingPersisted: false,
+      afterDigestVerified: false,
+    });
+  }
+
+  const storage = await ensureApplyStorage({
+    projectRoot: input.projectRoot,
+    taskId: authority.taskId,
+    applyId: authority.applyId,
+    create: true,
+  });
+  if (!storage.ok) {
+    return baseResult({
+      decision: {
+        ...input.decision,
+        ok: false,
+        status: "blocked",
+        issues: [...input.decision.issues, ...storage.issues],
+      },
+      applied: false,
+      reservationPersisted: true,
+      applyingPersisted: false,
+      afterDigestVerified: false,
+    });
+  }
+
+  const applyingIssues = await writeImmutableJson({
+    path: storage.applyingPath,
+    root: storage.root,
+    value: makeApplyingRecord({
+      authority,
+      occurredAt: input.occurredAt ?? new Date().toISOString(),
+    }),
+  });
+  if (applyingIssues.some((item) => item.severity === "error")) {
+    return baseResult({
+      decision: {
+        ...input.decision,
+        ok: false,
+        status: "outcome_unknown",
+        issues: [...input.decision.issues, ...applyingIssues],
+      },
+      applied: false,
+      reservationPersisted: true,
+      applyingPersisted: false,
+      afterDigestVerified: false,
+    });
+  }
+
+  await atomicApplyFile({
+    targetPath: input.decision.targetPath,
+    file: input.decision.file,
+  });
+
+  const after = await currentFileDigest(input.decision.targetPath);
+  const afterDigestVerified =
+    after.kind === "file" && after.digest === authority.afterDigest;
+  const outcomeIssues = afterDigestVerified
+    ? input.decision.issues
+    : [
+        ...input.decision.issues,
+        issue({
+          code: "task_execution_primary_apply_canary_after_digest_mismatch",
+          message:
+            "Primary apply canary target afterDigest did not match the durable canary artifact after atomic create.",
+          category: "conflict",
+        }),
+      ];
+  const lifecycle = afterDigestVerified ? "applied" : "outcome_unknown";
+  const persistedOutcomeIssues = await persistOutcome({
+    projectRoot: input.projectRoot,
+    authority,
+    lifecycle,
+    resultDigest: after.digest,
+    issues: outcomeIssues,
+    occurredAt: input.occurredAt ?? new Date().toISOString(),
+  });
+  const loaded = await loadTaskExecutionMutationApplyRecord({
+    projectRoot: input.projectRoot,
+    taskId: authority.taskId,
+    applyId: authority.applyId,
+  });
+
+  return baseResult({
+    decision: {
+      ...input.decision,
+      ok:
+        lifecycle === "applied" &&
+        persistedOutcomeIssues.every((item) => item.severity !== "error"),
+      status: lifecycle,
+      currentPrimaryDigest: after.digest,
+      applyRecord: loaded.record,
+      issues: [...outcomeIssues, ...persistedOutcomeIssues, ...loaded.issues],
+    },
+    applied: lifecycle === "applied",
+    reservationPersisted: true,
+    applyingPersisted: true,
+    afterDigestVerified,
+    auditFacts: [
+      applyAuditFact({
+        authority,
+        factKind:
+          lifecycle === "applied"
+            ? "mutation_apply_outcome"
+            : "mutation_apply_conflict",
+        resultReference: lifecycle,
+      }),
+    ],
+  });
+}
+
+async function executeTaskExecutionPrimaryApplyCanaryWithAuthority(
+  input: TaskExecutionPrimaryApplyCanarySmokeInput,
+): Promise<TaskExecutionMutationApplyResult> {
+  const decision = await loadPreparedPrimaryApplyCanaryDecision(input);
+  const authority = decision.authority;
+
+  if (
+    authority !== null &&
+    (decision.status === "applying" || decision.status === "outcome_unknown") &&
+    decision.targetPath !== null
+  ) {
+    const current = await currentFileDigest(decision.targetPath);
+    const recoveredAfter =
+      current.kind === "file" && current.digest === authority.afterDigest;
+    const beforeUnchanged =
+      current.digest === authority.beforeDigest ||
+      (current.kind === "missing" && authority.beforeDigest === null);
+    const recoveryIssues = recoveredAfter
+      ? decision.issues
+      : [
+          ...decision.issues,
+          issue({
+            code: beforeUnchanged
+              ? "task_execution_primary_apply_canary_replay_retry_blocked"
+              : "task_execution_primary_apply_canary_unexpected_target_digest",
+            message:
+              "Existing ambiguous primary apply canary lifecycle must not blindly rewrite; recovery is allowed only when target already equals afterDigest.",
+            category: "conflict",
+          }),
+        ];
+    const lifecycle = recoveredAfter ? "applied" : "outcome_unknown";
+    const outcomeIssues = await persistOutcome({
+      projectRoot: input.projectRoot,
+      authority,
+      lifecycle,
+      resultDigest: current.digest,
+      issues: recoveryIssues,
+      occurredAt: input.occurredAt ?? new Date().toISOString(),
+    });
+    const loaded = await loadTaskExecutionMutationApplyRecord({
+      projectRoot: input.projectRoot,
+      taskId: authority.taskId,
+      applyId: authority.applyId,
+    });
+    return baseResult({
+      decision: {
+        ...decision,
+        ok: recoveredAfter,
+        status: lifecycle,
+        currentPrimaryDigest: current.digest,
+        applyRecord: loaded.record,
+        issues: [...recoveryIssues, ...outcomeIssues, ...loaded.issues],
+      },
+      applied: false,
+      reservationPersisted: decision.applyRecord?.intent !== null,
+      applyingPersisted: decision.applyRecord?.applying !== null,
+      afterDigestVerified: recoveredAfter,
+      auditFacts:
+        authority === null
+          ? []
+          : [
+              applyAuditFact({
+                authority,
+                factKind: recoveredAfter
+                  ? "mutation_apply_outcome"
+                  : "mutation_apply_conflict",
+                resultReference: lifecycle,
+              }),
+            ],
+    });
+  }
+
+  if (decision.status === "applied") {
+    return baseResult({
+      decision,
+      applied: false,
+      reservationPersisted: true,
+      applyingPersisted: decision.applyRecord?.applying !== null,
+      afterDigestVerified: decision.currentPrimaryDigest === authority?.afterDigest,
+      auditFacts:
+        authority === null
+          ? []
+          : [
+              applyAuditFact({
+                authority,
+                factKind: "mutation_apply_outcome",
+                resultReference: "applied_replay",
+              }),
+            ],
+    });
+  }
+
+  return executePreparedPrimaryApplyCanaryDecision({
+    projectRoot: input.projectRoot,
+    decision,
+    primaryWorkspaceAuthority: input.primaryWorkspaceAuthority,
+    occurredAt: input.occurredAt,
+  });
+}
+
+export async function executeTaskExecutionPrimaryApplyCanarySmokeOnly(
+  input: TaskExecutionPrimaryApplyCanarySmokeInput,
+): Promise<TaskExecutionMutationApplyResult> {
+  return executeTaskExecutionPrimaryApplyCanaryWithAuthority(input);
+}
+
+export async function executeTaskExecutionPrimaryApplyCanary(
+  input: TaskExecutionPrimaryApplyCanaryExecuteInput,
+): Promise<TaskExecutionMutationApplyResult> {
+  const primary = await createTaskExecutionRealPrimaryApplyCanaryWorkspaceAuthority();
+  if (!primary.ok || primary.authority === null) {
+    return baseResult({
+      decision: baseDecision({
+        ok: false,
+        status: "blocked",
+        authority: null,
+        evidence: null,
+        artifact: null,
+        file: null,
+        currentPrimaryDigest: null,
+        targetPath: null,
+        applyRecord: null,
+        issues: primary.issues,
+      }),
+      applied: false,
+      reservationPersisted: false,
+      applyingPersisted: false,
+      afterDigestVerified: false,
+    });
+  }
+
+  return executeTaskExecutionPrimaryApplyCanaryWithAuthority({
+    ...input,
+    primaryWorkspaceAuthority: primary.authority,
+  });
 }
 
 export async function cleanupTaskExecutionTestPrimaryWorkspace(

@@ -11606,6 +11606,48 @@ try {
   ) {
     fail("invalid task --json output did not match expected failure", invalidTaskJson);
   }
+
+  const primaryApplyCanaryPathOverride = runCli([
+    "task",
+    "execution",
+    "primary-apply-canary",
+    "TASK-0321",
+    "--apply-id",
+    "apply:test",
+    "--expected-revision",
+    "321",
+    "--path",
+    "packages/core/src/forbidden.ts",
+    "--json",
+  ]);
+  expectNonzero(
+    "primary apply canary path override exited zero",
+    primaryApplyCanaryPathOverride,
+  );
+  const parsedPrimaryApplyCanaryPathOverride = parseJsonOnlyStdout(
+    "primary apply canary path override output was not valid JSON only",
+    primaryApplyCanaryPathOverride,
+  );
+  if (
+    parsedPrimaryApplyCanaryPathOverride.ok !== false ||
+    parsedPrimaryApplyCanaryPathOverride.status !== "invalid_arguments" ||
+    parsedPrimaryApplyCanaryPathOverride.safety.generalPrimaryApplyEnabled !==
+      false ||
+    parsedPrimaryApplyCanaryPathOverride.safety.automaticPatchApply !== false ||
+    parsedPrimaryApplyCanaryPathOverride.safety.realPrimaryApplyCanaryExecuted !==
+      false
+  ) {
+    fail(
+      "primary apply canary path override did not fail closed",
+      primaryApplyCanaryPathOverride,
+    );
+  }
+  expectIssueCode(
+    "primary apply canary path override did not report forbidden authority override",
+    parsedPrimaryApplyCanaryPathOverride.issues,
+    "task_execution_primary_apply_canary_authority_override_forbidden",
+    primaryApplyCanaryPathOverride,
+  );
 } finally {
   for (const path of createdMemoryPaths) {
     if (existsSync(path)) {

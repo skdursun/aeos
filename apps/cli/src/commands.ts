@@ -10,6 +10,7 @@ import {
   evaluateTaskExecutionClaudeWriteCanaryMutationEvidence,
   evaluateTaskStateTransition,
   evaluateTaskExecutionInvocationReconciliation,
+  executeTaskExecutionPrimaryApplyCanary,
   createTaskExecutionPolicyApprovalRecord,
   createTaskExecutionInvocationDispatchIntentAuditEvent,
   authorizeTaskExecutionProductionDispatch,
@@ -52,7 +53,12 @@ import {
   TASK_EXECUTION_CLAUDE_WRITE_CANARY_AFTER_CONTENT,
   TASK_EXECUTION_CLAUDE_WRITE_CANARY_BEFORE_CONTENT,
   TASK_EXECUTION_CLAUDE_WRITE_CANARY_RELATIVE_PATH,
+  TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT,
+  TASK_EXECUTION_PRIMARY_APPLY_CANARY_EXECUTED,
+  TASK_EXECUTION_PRIMARY_APPLY_CANARY_READY,
+  TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
   TASK_EXECUTION_PRODUCTION_DISPATCH_BOUNDARY,
+  TASK_EXECUTION_REAL_PRIMARY_WORKSPACE_APPLY_ENABLED,
 } from "@aeos/core";
 import type {
   AgenticRunnerDryRunInput,
@@ -163,6 +169,8 @@ Commands:
   task execution claude-canary <task-id> --invocation-id <invocation-id> --expected-revision <number> --expected-invocation-revision <number> --json
   task execution claude-write-canary <task-id> --invocation-id <invocation-id> --expected-revision <number> --expected-invocation-revision <number>
   task execution claude-write-canary <task-id> --invocation-id <invocation-id> --expected-revision <number> --expected-invocation-revision <number> --json
+  task execution primary-apply-canary <task-id> --apply-id <apply-id> --expected-revision <number>
+  task execution primary-apply-canary <task-id> --apply-id <apply-id> --expected-revision <number> --json
   task status <task-id>
   task status <task-id> --json
   task resume --preview <task-id>
@@ -5109,6 +5117,149 @@ function parseTaskExecutionClaudeCanaryArgs(args: readonly string[]): {
   };
 }
 
+function parseTaskExecutionPrimaryApplyCanaryArgs(args: readonly string[]): {
+  readonly json: boolean;
+  readonly taskId?: string;
+  readonly applyId?: string;
+  readonly expectedRevision?: string;
+  readonly error?: AeosError;
+} {
+  let json = args.includes("--json");
+  let taskId: string | undefined;
+  let applyId: string | undefined;
+  let expectedRevision: string | undefined;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+
+    if (arg === "--apply-id") {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        return {
+          json,
+          taskId,
+          applyId,
+          expectedRevision,
+          error: createTaskStateCliError({
+            code: "task_execution_primary_apply_canary_apply_id_required",
+            message:
+              "Primary apply canary requires --apply-id <prepared-apply-id>.",
+          }),
+        };
+      }
+      if (applyId !== undefined) {
+        return {
+          json,
+          taskId,
+          applyId,
+          expectedRevision,
+          error: createTaskStateCliError({
+            code: "task_execution_primary_apply_canary_duplicate_apply_id",
+            message: "Primary apply canary accepts one apply id.",
+          }),
+        };
+      }
+      applyId = value;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--expected-revision") {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        return {
+          json,
+          taskId,
+          applyId,
+          expectedRevision,
+          error: createTaskStateCliError({
+            code:
+              "task_execution_primary_apply_canary_expected_revision_required",
+            message:
+              "Primary apply canary requires --expected-revision <number>.",
+          }),
+        };
+      }
+      expectedRevision = value;
+      index += 1;
+      continue;
+    }
+
+    if (
+      [
+        "--enable-primary-apply",
+        "--automatic-patch-apply",
+        "--artifact-file",
+        "--content",
+        "--cwd",
+        "--root",
+        "--path",
+        "--file",
+        "--workdir",
+        "--workspace",
+        "--force",
+        "--bypass",
+        "--dangerous",
+        "--delete",
+        "--retry",
+        "--completed",
+        "--model",
+        "--claude",
+        "--codex",
+      ].includes(arg)
+    ) {
+      return {
+        json,
+        taskId,
+        applyId,
+        expectedRevision,
+        error: createTaskStateCliError({
+          code:
+            "task_execution_primary_apply_canary_authority_override_forbidden",
+          message:
+            "Primary apply canary does not accept arbitrary root, path, content, artifact, force, retry, model, completion, or general primary-apply authority.",
+          category: "permission",
+        }),
+      };
+    }
+
+    if (arg.startsWith("--")) {
+      return {
+        json,
+        taskId,
+        applyId,
+        expectedRevision,
+        error: createTaskStateCliError({
+          code: "task_execution_primary_apply_canary_unknown_option",
+          message: "Unknown primary apply canary option.",
+        }),
+      };
+    }
+
+    if (taskId !== undefined) {
+      return {
+        json,
+        taskId,
+        applyId,
+        expectedRevision,
+        error: createTaskStateCliError({
+          code: "task_execution_primary_apply_canary_duplicate_task_id",
+          message: "Primary apply canary accepts one task id.",
+        }),
+      };
+    }
+
+    taskId = arg;
+  }
+
+  return { json, taskId, applyId, expectedRevision };
+}
+
 function parseExpectedDispatchRevision(value: string | undefined):
   | { readonly ok: true; readonly value: number }
   | { readonly ok: false; readonly error: AeosError } {
@@ -6670,6 +6821,245 @@ async function handleTaskExecutionClaudeWriteCanary(
 
   writeOrPrint(output);
   setExitCode(verified ? 0 : 1);
+}
+
+async function handleTaskExecutionPrimaryApplyCanary(
+  args: readonly string[],
+): Promise<void> {
+  const parsedArgs = parseTaskExecutionPrimaryApplyCanaryArgs(args);
+
+  const writeOrPrint = (output: {
+    readonly ok: boolean;
+    readonly status: string;
+    readonly taskId: string;
+    readonly applyId: string | null;
+    readonly canaryPath: string;
+    readonly expectedContent: string;
+    readonly applied: boolean;
+    readonly lifecycle: string | null;
+    readonly applyRevision: string | null;
+    readonly evidenceRef: string | null;
+    readonly artifactRef: string | null;
+    readonly safety: {
+      readonly realPrimaryApplyCanaryReady: boolean;
+      readonly realPrimaryApplyCanaryExecuted: boolean;
+      readonly generalPrimaryApplyEnabled: boolean;
+      readonly automaticPatchApply: false;
+      readonly completionAuthority: false;
+      readonly verifierRun: false;
+      readonly actualClaudeModelCalls: 0;
+      readonly actualCodexModelCalls: 0;
+      readonly cloudCalls: 0;
+      readonly shellExecuted: false;
+    };
+    readonly issues: readonly TaskStateCliIssue[];
+  }): void => {
+    if (parsedArgs.json) {
+      writeJsonLine(output);
+      return;
+    }
+
+    if (output.ok) {
+      console.log(`Primary apply canary ${output.status}`);
+      console.log(`Task: ${output.taskId}`);
+      console.log(`Apply: ${output.applyId ?? "(none)"}`);
+      console.log(`Path: ${output.canaryPath}`);
+      console.log(`Applied: ${output.applied ? "yes" : "no"}`);
+      return;
+    }
+
+    console.error(`Error: primary apply canary ${output.status}.`);
+    for (const issue of output.issues) {
+      console.error(`${issue.code}: ${issue.message}`);
+    }
+  };
+
+  if (parsedArgs.error !== undefined) {
+    writeOrPrint({
+      ok: false,
+      status: "invalid_arguments",
+      taskId: parsedArgs.taskId ?? "",
+      applyId: parsedArgs.applyId ?? null,
+      canaryPath: TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
+      expectedContent: TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT,
+      applied: false,
+      lifecycle: null,
+      applyRevision: null,
+      evidenceRef: null,
+      artifactRef: null,
+      safety: {
+        realPrimaryApplyCanaryReady: TASK_EXECUTION_PRIMARY_APPLY_CANARY_READY,
+        realPrimaryApplyCanaryExecuted: TASK_EXECUTION_PRIMARY_APPLY_CANARY_EXECUTED,
+        generalPrimaryApplyEnabled:
+          TASK_EXECUTION_REAL_PRIMARY_WORKSPACE_APPLY_ENABLED,
+        automaticPatchApply: false,
+        completionAuthority: false,
+        verifierRun: false,
+        actualClaudeModelCalls: 0,
+        actualCodexModelCalls: 0,
+        cloudCalls: 0,
+        shellExecuted: false,
+      },
+      issues: [createTaskStateCliIssueFromError(parsedArgs.error)],
+    });
+    setExitCode(1);
+    return;
+  }
+
+  if (parsedArgs.taskId === undefined || parsedArgs.taskId.trim().length === 0) {
+    writeOrPrint({
+      ok: false,
+      status: "invalid_arguments",
+      taskId: "",
+      applyId: parsedArgs.applyId ?? null,
+      canaryPath: TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
+      expectedContent: TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT,
+      applied: false,
+      lifecycle: null,
+      applyRevision: null,
+      evidenceRef: null,
+      artifactRef: null,
+      safety: {
+        realPrimaryApplyCanaryReady: TASK_EXECUTION_PRIMARY_APPLY_CANARY_READY,
+        realPrimaryApplyCanaryExecuted: TASK_EXECUTION_PRIMARY_APPLY_CANARY_EXECUTED,
+        generalPrimaryApplyEnabled:
+          TASK_EXECUTION_REAL_PRIMARY_WORKSPACE_APPLY_ENABLED,
+        automaticPatchApply: false,
+        completionAuthority: false,
+        verifierRun: false,
+        actualClaudeModelCalls: 0,
+        actualCodexModelCalls: 0,
+        cloudCalls: 0,
+        shellExecuted: false,
+      },
+      issues: [
+        createTaskStateCliIssue({
+          code: "task_execution_primary_apply_canary_task_id_required",
+          message: "Primary apply canary requires a task id.",
+        }),
+      ],
+    });
+    setExitCode(1);
+    return;
+  }
+
+  if (parsedArgs.applyId === undefined || parsedArgs.applyId.trim().length === 0) {
+    writeOrPrint({
+      ok: false,
+      status: "invalid_arguments",
+      taskId: parsedArgs.taskId,
+      applyId: null,
+      canaryPath: TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
+      expectedContent: TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT,
+      applied: false,
+      lifecycle: null,
+      applyRevision: null,
+      evidenceRef: null,
+      artifactRef: null,
+      safety: {
+        realPrimaryApplyCanaryReady: TASK_EXECUTION_PRIMARY_APPLY_CANARY_READY,
+        realPrimaryApplyCanaryExecuted: TASK_EXECUTION_PRIMARY_APPLY_CANARY_EXECUTED,
+        generalPrimaryApplyEnabled:
+          TASK_EXECUTION_REAL_PRIMARY_WORKSPACE_APPLY_ENABLED,
+        automaticPatchApply: false,
+        completionAuthority: false,
+        verifierRun: false,
+        actualClaudeModelCalls: 0,
+        actualCodexModelCalls: 0,
+        cloudCalls: 0,
+        shellExecuted: false,
+      },
+      issues: [
+        createTaskStateCliIssue({
+          code: "task_execution_primary_apply_canary_apply_id_required",
+          message: "Primary apply canary requires --apply-id <prepared-apply-id>.",
+        }),
+      ],
+    });
+    setExitCode(1);
+    return;
+  }
+
+  const expectedRevision = parseExpectedDispatchRevision(
+    parsedArgs.expectedRevision,
+  );
+  if (!expectedRevision.ok) {
+    writeOrPrint({
+      ok: false,
+      status: "invalid_arguments",
+      taskId: parsedArgs.taskId,
+      applyId: parsedArgs.applyId,
+      canaryPath: TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
+      expectedContent: TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT,
+      applied: false,
+      lifecycle: null,
+      applyRevision: null,
+      evidenceRef: null,
+      artifactRef: null,
+      safety: {
+        realPrimaryApplyCanaryReady: TASK_EXECUTION_PRIMARY_APPLY_CANARY_READY,
+        realPrimaryApplyCanaryExecuted: TASK_EXECUTION_PRIMARY_APPLY_CANARY_EXECUTED,
+        generalPrimaryApplyEnabled:
+          TASK_EXECUTION_REAL_PRIMARY_WORKSPACE_APPLY_ENABLED,
+        automaticPatchApply: false,
+        completionAuthority: false,
+        verifierRun: false,
+        actualClaudeModelCalls: 0,
+        actualCodexModelCalls: 0,
+        cloudCalls: 0,
+        shellExecuted: false,
+      },
+      issues: [createTaskStateCliIssueFromError(expectedRevision.error)],
+    });
+    setExitCode(1);
+    return;
+  }
+
+  const result = await executeTaskExecutionPrimaryApplyCanary({
+    projectRoot: getCwd(),
+    taskId: parsedArgs.taskId,
+    applyId: parsedArgs.applyId,
+    expectedTaskRevision: expectedRevision.value,
+  });
+  const ok = result.status === "applied" && result.afterDigestVerified;
+  writeOrPrint({
+    ok,
+    status: result.status,
+    taskId: parsedArgs.taskId,
+    applyId: parsedArgs.applyId,
+    canaryPath: TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
+    expectedContent: TASK_EXECUTION_PRIMARY_APPLY_CANARY_CONTENT,
+    applied: result.applied,
+    lifecycle: result.applyRecord?.lifecycle ?? null,
+    applyRevision: result.applyRecord?.outcome?.recordDigest ??
+      result.applyRecord?.applying?.recordDigest ??
+      result.applyRecord?.intent?.recordDigest ??
+      null,
+    evidenceRef: result.authority?.evidenceRef ?? null,
+    artifactRef: result.authority?.artifactRef ?? null,
+    safety: {
+      realPrimaryApplyCanaryReady: TASK_EXECUTION_PRIMARY_APPLY_CANARY_READY,
+      realPrimaryApplyCanaryExecuted: result.applied,
+      generalPrimaryApplyEnabled:
+        TASK_EXECUTION_REAL_PRIMARY_WORKSPACE_APPLY_ENABLED,
+      automaticPatchApply: result.AutomaticPatchApply,
+      completionAuthority: result.CompletionAuthorityGranted,
+      verifierRun: result.VerifierSatisfied,
+      actualClaudeModelCalls: result.ActualClaudeModelCalls,
+      actualCodexModelCalls: result.ActualCodexModelCalls,
+      cloudCalls: result.CloudCalls,
+      shellExecuted: false,
+    },
+    issues: result.issues.map((item) =>
+      createTaskStateCliIssue({
+        code: item.code,
+        message: item.message,
+        severity: item.severity,
+        category: item.category,
+      }),
+    ),
+  });
+  setExitCode(ok ? 0 : 1);
 }
 
 async function handleTaskExecutionDispatch(args: readonly string[]): Promise<void> {
@@ -10648,7 +11038,8 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
     args[0] !== "policy" &&
     args[0] !== "dispatch" &&
     args[0] !== "claude-canary" &&
-    args[0] !== "claude-write-canary"
+    args[0] !== "claude-write-canary" &&
+    args[0] !== "primary-apply-canary"
   ) {
     const json = args.includes("--json");
     const error = createTaskStateCliError({
@@ -10700,6 +11091,9 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
       console.error(
         "Usage: aeos task execution claude-write-canary <task-id> --invocation-id <invocation-id> --expected-revision <number> --expected-invocation-revision <number> [--json]",
       );
+      console.error(
+        "Usage: aeos task execution primary-apply-canary <task-id> --apply-id <apply-id> --expected-revision <number> [--json]",
+      );
     }
 
     setExitCode(1);
@@ -10733,6 +11127,11 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
 
   if (args[0] === "claude-write-canary") {
     await handleTaskExecutionClaudeWriteCanary(args.slice(1));
+    return;
+  }
+
+  if (args[0] === "primary-apply-canary") {
+    await handleTaskExecutionPrimaryApplyCanary(args.slice(1));
     return;
   }
 

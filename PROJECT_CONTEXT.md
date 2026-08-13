@@ -210,9 +210,10 @@ condition.
 
 ## Next Task
 
-TASK-0321: First explicitly controlled REAL primary-workspace apply canary using
-a sacrificial system-owned file/artifact, with no model invocation and no
-automatic general patch application.
+TASK-0321: Execute exactly one operator-controlled REAL primary-workspace apply
+canary using the prepared sacrificial system-owned file/artifact, then review
+the durable result and Git status delta. Do not route, complete, or clean up
+before that review.
 
 ## Current Direction
 
@@ -230,6 +231,15 @@ patch apply, verifier/completion authority, retry authority, model invocation,
 worker invocation, and cloud calls remain closed. TASK-0321 is ready to design
 the first controlled REAL primary-workspace canary against a sacrificial
 system-owned file/artifact only.
+
+TASK-0321 implementation is ready but not fully complete: AEOS now has a
+dedicated real primary apply canary boundary for one system-owned sacrificial
+create artifact, with general real primary apply and automatic patch apply
+still disabled. The durable TASK-0321 canary evidence/artifact/apply intent is
+prepared in AEOS state, but the real primary canary has not been executed or
+reviewed. Next action is to execute exactly one operator-controlled real primary
+apply canary and inspect the durable result plus Git status delta before any
+cleanup or routing.
 
 ## Current Plans
 
