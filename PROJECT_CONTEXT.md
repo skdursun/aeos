@@ -174,6 +174,15 @@ condition.
   the controlled worker process boundary. Repository writes remained disabled,
   shell execution remained disabled, and worker output remained evidence only
   with no verifier, completion, work-accounting, or task-completion authority.
+- TASK-0318: Isolated write-capable local worker workspace authority.
+  Implemented a generic Codex/Claude-compatible mutation workspace boundary
+  using system-created temporary isolated workspaces, bounded mutation scope,
+  protected path rejection, symlink/traversal/absolute-path blocking,
+  pre/post filesystem evidence, one-shot test mutation consumption, and
+  deterministic TEST-only writes. Worker self-reported changed files and
+  completion claims remain non-authoritative, shell/package/git authority
+  remains disabled, primary workspace apply remains closed, and TASK-0318 made
+  zero real Claude, Codex, or cloud calls.
 
 ## Do Not Load By Default
 
@@ -184,9 +193,8 @@ condition.
 
 ## Next Task
 
-TASK-0318: Controlled write-capable Claude Code worker boundary with tightly
-bounded workspace mutation authority, automated real Claude calls disabled, and
-no unrestricted shell execution.
+TASK-0319: First explicitly controlled real Claude Code WRITE canary inside an
+isolated mutation workspace, with primary workspace apply still disabled.
 
 ## Current Direction
 
@@ -196,12 +204,13 @@ returns to the Codex-orchestrator plus Claude Code worker orchestration
 architecture through provider-neutral adapter foundations, without implementing
 real Codex or Claude Code worker execution yet.
 
-TASK-0317 is complete: the first explicitly controlled real local read-only
-Claude Code worker canary returned successfully. The next product task is the
-TASK-0318 controlled write-capable Claude Code worker boundary. Automated real
-Claude calls remain disabled by default, cloud/provider work remains de-scoped,
-shell execution must not become unrestricted, and worker output remains evidence
-only unless future AEOS verifier/completion authority explicitly grants it.
+TASK-0318 is complete: write-capable worker mutation is now proven only inside
+system-owned isolated TEST workspaces with authoritative filesystem evidence.
+The primary workspace remains authoritative and unchanged by worker mutation;
+automatic patch apply remains disabled. Real Claude/Codex write workers remain
+disabled until an explicit isolated-workspace canary task, and worker output
+remains evidence only unless future AEOS verifier/completion authority
+explicitly grants it.
 
 ## Current Plans
 

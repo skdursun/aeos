@@ -121,6 +121,8 @@ import {
   createDeterministicProviderRecoveryConformanceSubject,
   DETERMINISTIC_PROVIDER_RECOVERY_PROFILE,
   dispatchTaskExecutionProductionProvider,
+  cleanupTaskExecutionIsolatedMutationWorkspace,
+  createTaskExecutionIsolatedMutationWorkspace,
   createTaskExecutionClaudeCodeWorkerAdapter,
   createTaskExecutionCodexWorkerAdapter,
   authorizeTaskExecutionClaudeCodeWorkerProcess,
@@ -130,6 +132,7 @@ import {
   evaluateTaskExecutionClaudeCodeWorkerProcessGate,
   evaluateTaskExecutionCodexWorkerConformance,
   evaluateTaskExecutionWorkerProcessGate,
+  executeTaskExecutionIsolatedTestMutation,
   executeTaskExecutionLocalWorkerProcess,
   evaluateTaskExecutionWorkerConformance,
   evaluateTaskExecutionProductionDispatchGate,
@@ -155,6 +158,12 @@ import {
   TASK_EXECUTION_CLAUDE_CODE_WORKER_EXTERNAL_PROCESS_ALLOWED,
   TASK_EXECUTION_CLAUDE_CODE_WORKER_REAL_EXECUTION_ENABLED,
   TASK_EXECUTION_CODEX_PROCESS_CONTRACT_READY,
+  TASK_EXECUTION_MUTATION_WORKSPACE_AUTHORITY_READY,
+  TASK_EXECUTION_MUTATION_WORKSPACE_AUTOMATIC_PATCH_APPLY_ENABLED,
+  TASK_EXECUTION_MUTATION_WORKSPACE_CLOUD_CALLS,
+  TASK_EXECUTION_MUTATION_WORKSPACE_PRIMARY_APPLY_ENABLED,
+  TASK_EXECUTION_MUTATION_WORKSPACE_REAL_CLAUDE_CALLS,
+  TASK_EXECUTION_MUTATION_WORKSPACE_REAL_CODEX_CALLS,
   TASK_EXECUTION_CODEX_WORKER_EXTERNAL_PROCESS_ALLOWED,
   TASK_EXECUTION_PRODUCTION_DISPATCH_BOUNDARY,
   TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
@@ -19931,6 +19940,528 @@ try {
     true,
     "task execution local worker process runtime smoke should spawn actual benign fixture children",
   );
+
+  const mutationPrimaryRoot = await mkdtemp(
+    join(tmpdir(), "aeos-mutation-primary-"),
+  );
+  await mkdir(join(mutationPrimaryRoot, "packages/core/src"), {
+    recursive: true,
+  });
+  const mutationAllowedPath = "packages/core/src/allowed.ts";
+  const mutationAllowedPathTwo = "packages/core/src/allowed-two.ts";
+  const mutationNewPath = "packages/core/src/new-file.ts";
+  const mutationUnexpectedPath = "packages/core/src/unexpected.ts";
+  await writeNodeFile(
+    join(mutationPrimaryRoot, mutationAllowedPath),
+    "export const value = 'primary';\n",
+    "utf8",
+  );
+  await writeNodeFile(
+    join(mutationPrimaryRoot, mutationAllowedPathTwo),
+    "export const second = 'primary';\n",
+    "utf8",
+  );
+  const primaryAllowedBefore = await readFile(
+    join(mutationPrimaryRoot, mutationAllowedPath),
+    "utf8",
+  );
+  const primarySecondBefore = await readFile(
+    join(mutationPrimaryRoot, mutationAllowedPathTwo),
+    "utf8",
+  );
+  const mutationAuthorities = [];
+  let mutationAttempt = 3180;
+  const createMutationScope = (overrides = {}) => ({
+    authority: "system",
+    scopeId: `scope-${mutationAttempt}`,
+    allowedPathRefs: [mutationAllowedPath],
+    allowedOperations: ["update_existing_file", "create_file"],
+    maxChangedFiles: 2,
+    maxTotalChangedBytes: 4096,
+    repositoryWritePermission: true,
+    deleteAllowed: false,
+    ...overrides,
+  });
+  const createMutationWorkspace = async (overrides = {}) => {
+    mutationAttempt += 1;
+    const result = await createTaskExecutionIsolatedMutationWorkspace({
+      taskId: "TASK-0318",
+      taskRevision: 31,
+      attemptId: `attempt-${mutationAttempt}`,
+      attemptNumber: mutationAttempt,
+      invocationId: `invocation-${mutationAttempt}`,
+      invocationRevision: 1,
+      idempotencyKey: `idem-${mutationAttempt}`,
+      workerIdentity: overrides.workerIdentity ?? codexWorkerIdentity,
+      sourceProjectRef: "project-pro-performans",
+      sourceWorkspaceRef: "primary-workspace",
+      sourceWorkspaceRoot: overrides.sourceWorkspaceRoot ?? mutationPrimaryRoot,
+      mutationScope: overrides.mutationScope ?? createMutationScope(),
+      taskOrModelWorkspacePathClaims: overrides.taskOrModelWorkspacePathClaims,
+    });
+
+    if (result.authority !== null) {
+      mutationAuthorities.push(result.authority);
+    }
+
+    return result;
+  };
+
+  assert.equal(
+    TASK_EXECUTION_MUTATION_WORKSPACE_AUTHORITY_READY,
+    true,
+    "task execution mutation workspace smoke should expose isolated write authority readiness",
+  );
+  assert.equal(TASK_EXECUTION_MUTATION_WORKSPACE_PRIMARY_APPLY_ENABLED, false);
+  assert.equal(
+    TASK_EXECUTION_MUTATION_WORKSPACE_AUTOMATIC_PATCH_APPLY_ENABLED,
+    false,
+  );
+  assert.equal(TASK_EXECUTION_MUTATION_WORKSPACE_REAL_CODEX_CALLS, 0);
+  assert.equal(TASK_EXECUTION_MUTATION_WORKSPACE_REAL_CLAUDE_CALLS, 0);
+  assert.equal(TASK_EXECUTION_MUTATION_WORKSPACE_CLOUD_CALLS, 0);
+
+  const createdMutationWorkspace = await createMutationWorkspace();
+  assert.equal(
+    createdMutationWorkspace.ok,
+    true,
+    `task execution mutation workspace smoke A should create a system-owned isolated workspace: ${JSON.stringify(createdMutationWorkspace.issues)}`,
+  );
+  assert.notEqual(
+    await realpath(createdMutationWorkspace.authority.isolatedWorkspaceRoot),
+    await realpath(mutationPrimaryRoot),
+    "task execution mutation workspace smoke A should keep isolated workspace separate from source workspace",
+  );
+  assert.equal(
+    createdMutationWorkspace.authority.primaryWorkspaceMutationEnabled,
+    false,
+    "task execution mutation workspace smoke A should keep primary workspace mutation disabled",
+  );
+  assert.deepEqual(
+    createdMutationWorkspace.auditFacts.map((fact) => fact.factKind),
+    ["mutation_workspace_created", "mutation_authority_granted"],
+    "task execution mutation workspace smoke audit should record workspace creation and authority grant facts",
+  );
+  assert.equal(
+    createdMutationWorkspace.auditFacts.every(
+      (fact) =>
+        fact.fileContentsLogged === false &&
+        fact.authorizesMutation === false &&
+        fact.authorizesPrimaryApply === false,
+    ),
+    true,
+    "task execution mutation workspace smoke audit should not log contents or authorize mutation/apply",
+  );
+  assert.equal(
+    createdMutationWorkspace.authority.workerFamily,
+    "codex",
+    "task execution mutation workspace smoke should be generic and accept Codex-family worker authority",
+  );
+  const claudeMutationWorkspace = await createMutationWorkspace({
+    workerIdentity: claudeWorkerIdentity,
+  });
+  assert.equal(
+    claudeMutationWorkspace.ok,
+    true,
+    `task execution mutation workspace smoke should accept Claude-family worker authority: ${JSON.stringify(claudeMutationWorkspace.issues)}`,
+  );
+  assert.equal(claudeMutationWorkspace.authority.workerFamily, "claude_code");
+
+  const arbitraryWorkspacePathRejected = await createMutationWorkspace({
+    taskOrModelWorkspacePathClaims: {
+      cwd: mutationPrimaryRoot,
+      workspace: "/tmp/task-chosen-path",
+    },
+  });
+  assert.equal(
+    arbitraryWorkspacePathRejected.ok,
+    false,
+    "task execution mutation workspace smoke B should reject arbitrary task/model workspace path claims",
+  );
+
+  const primaryWritableAttempt = await executeTaskExecutionIsolatedTestMutation({
+    authority: {
+      ...createdMutationWorkspace.authority,
+      isolatedWorkspaceRoot: mutationPrimaryRoot,
+      systemWorkspaceRoot: mutationPrimaryRoot,
+      oneShotMutationKey: "tampered-primary-write-key",
+    },
+    operations: [
+      {
+        kind: "update_existing_file",
+        relativePath: mutationAllowedPath,
+        content: "export const value = 'tampered';\n",
+      },
+    ],
+  });
+  assert.equal(
+    primaryWritableAttempt.status,
+    "launch_blocked",
+    "task execution mutation workspace smoke C should reject primary workspace as a direct writable worker root",
+  );
+  assert.equal(primaryWritableAttempt.testWorkerInvoked, false);
+
+  const allowedUpdateWorkspace = await createMutationWorkspace();
+  const allowedUpdate = await executeTaskExecutionIsolatedTestMutation({
+    authority: allowedUpdateWorkspace.authority,
+    operations: [
+      {
+        kind: "update_existing_file",
+        relativePath: mutationAllowedPath,
+        content: "export const value = 'isolated update';\n",
+      },
+    ],
+    workerDeclaredChangedFiles: ["totally/fake.ts"],
+  });
+  assert.equal(
+    allowedUpdate.ok,
+    true,
+    `task execution mutation workspace smoke D should allow existing-file mutation inside isolated scope: ${JSON.stringify(allowedUpdate.issues)}`,
+  );
+  assert.deepEqual(allowedUpdate.evidence.actualChangedPaths, [
+    mutationAllowedPath,
+  ]);
+  assert.equal(
+    allowedUpdate.evidence.changedFiles[0].beforeDigest ===
+      allowedUpdate.evidence.changedFiles[0].afterDigest,
+    false,
+    "task execution mutation workspace smoke Q should derive actual digest changes from filesystem evidence",
+  );
+  assert.deepEqual(allowedUpdate.evidence.workerDeclaredChangedFiles, [
+    "totally/fake.ts",
+  ]);
+  assert.equal(
+    allowedUpdate.evidence.workerSelfReportAuthoritative,
+    false,
+    "task execution mutation workspace smoke P should ignore worker-declared fake changed files as authority",
+  );
+  assert.equal(allowedUpdate.safety.shellExecuted, false);
+  assert.equal(allowedUpdate.safety.packageInstallationAllowed, false);
+  assert.equal(allowedUpdate.safety.gitCommitAllowed, false);
+  assert.deepEqual(
+    allowedUpdate.auditFacts.map((fact) => fact.factKind),
+    ["test_worker_mutation_intent", "actual_mutation_evidence"],
+    "task execution mutation workspace smoke audit should record worker intent and actual evidence reference",
+  );
+  assert.equal(
+    allowedUpdate.auditFacts.every(
+      (fact) =>
+        fact.fileContentsLogged === false &&
+        fact.authorizesMutation === false &&
+        fact.authorizesPrimaryApply === false,
+    ),
+    true,
+    "task execution mutation workspace smoke audit evidence facts should remain non-authorizing",
+  );
+  assert.equal(allowedUpdate.ActualClaudeModelCalls, 0);
+  assert.equal(allowedUpdate.ActualCodexModelCalls, 0);
+  assert.equal(allowedUpdate.CloudCalls, 0);
+
+  const duplicateAllowedUpdate =
+    await executeTaskExecutionIsolatedTestMutation({
+      authority: allowedUpdateWorkspace.authority,
+      operations: [
+        {
+          kind: "update_existing_file",
+          relativePath: mutationAllowedPath,
+          content: "export const value = 'duplicate';\n",
+        },
+      ],
+    });
+  assert.equal(
+    duplicateAllowedUpdate.status,
+    "launch_blocked",
+    "task execution mutation workspace smoke V should block duplicate one-shot mutation launch",
+  );
+  assert.equal(duplicateAllowedUpdate.testWorkerInvoked, false);
+
+  const allowedCreateWorkspace = await createMutationWorkspace({
+    mutationScope: createMutationScope({
+      allowedPathRefs: [mutationNewPath],
+      allowedOperations: ["create_file"],
+    }),
+  });
+  const allowedCreate = await executeTaskExecutionIsolatedTestMutation({
+    authority: allowedCreateWorkspace.authority,
+    operations: [
+      {
+        kind: "create_file",
+        relativePath: mutationNewPath,
+        content: "export const created = true;\n",
+      },
+    ],
+  });
+  assert.equal(
+    allowedCreate.ok,
+    true,
+    `task execution mutation workspace smoke E should allow scoped new file creation: ${JSON.stringify(allowedCreate.issues)}`,
+  );
+
+  const unauthorizedMutationWorkspace = await createMutationWorkspace();
+  const unauthorizedMutation = await executeTaskExecutionIsolatedTestMutation({
+    authority: unauthorizedMutationWorkspace.authority,
+    operations: [
+      {
+        kind: "fixture_direct_write",
+        relativePath: mutationUnexpectedPath,
+        content: "export const unexpected = true;\n",
+      },
+    ],
+  });
+  assert.equal(
+    unauthorizedMutation.ok,
+    false,
+    "task execution mutation workspace smoke F should reject evidence with unauthorized mutation",
+  );
+  assert.deepEqual(unauthorizedMutation.evidence.unexpectedMutations, [
+    mutationUnexpectedPath,
+  ]);
+
+  const traversalWorkspace = await createMutationWorkspace();
+  const traversalMutation = await executeTaskExecutionIsolatedTestMutation({
+    authority: traversalWorkspace.authority,
+    operations: [
+      {
+        kind: "update_existing_file",
+        relativePath: "../escape.ts",
+        content: "escape",
+      },
+    ],
+  });
+  assert.ok(
+    traversalMutation.issues.some(
+      (item) =>
+        item.code === "task_execution_mutation_operation_path_invalid",
+    ),
+    "task execution mutation workspace smoke G should block traversal mutation paths",
+  );
+
+  const absoluteWorkspace = await createMutationWorkspace();
+  const absoluteMutation = await executeTaskExecutionIsolatedTestMutation({
+    authority: absoluteWorkspace.authority,
+    operations: [
+      {
+        kind: "update_existing_file",
+        relativePath: join(tmpdir(), "absolute.ts"),
+        content: "absolute",
+      },
+    ],
+  });
+  assert.ok(
+    absoluteMutation.issues.some(
+      (item) =>
+        item.code === "task_execution_mutation_operation_path_invalid",
+    ),
+    "task execution mutation workspace smoke H should block absolute mutation paths",
+  );
+
+  const symlinkWorkspace = await createMutationWorkspace({
+    mutationScope: createMutationScope({
+      allowedPathRefs: ["packages/core/src/link.ts"],
+    }),
+  });
+  const symlinkOutside = join(tmpdir(), `aeos-symlink-outside-${Date.now()}`);
+  await writeNodeFile(symlinkOutside, "outside", "utf8");
+  await mkdir(
+    join(
+      symlinkWorkspace.authority.isolatedWorkspaceRoot,
+      "packages/core/src",
+    ),
+    { recursive: true },
+  );
+  await symlink(
+    symlinkOutside,
+    join(
+      symlinkWorkspace.authority.isolatedWorkspaceRoot,
+      "packages/core/src/link.ts",
+    ),
+  );
+  const symlinkMutation = await executeTaskExecutionIsolatedTestMutation({
+    authority: symlinkWorkspace.authority,
+    operations: [
+      {
+        kind: "update_existing_file",
+        relativePath: "packages/core/src/link.ts",
+        content: "inside",
+      },
+    ],
+  });
+  assert.ok(
+    symlinkMutation.issues.some(
+      (item) =>
+        item.code === "task_execution_mutation_operation_symlink_rejected",
+    ),
+    "task execution mutation workspace smoke I should block symlink escape writes",
+  );
+  assert.equal(await readFile(symlinkOutside, "utf8"), "outside");
+  await rm(symlinkOutside, { force: true });
+
+  for (const protectedPathRef of [
+    ".git/config",
+    ".aeos/state.json",
+    ".codex/config.toml",
+    "AGENTS.md",
+    "PROJECT_CONTEXT.md",
+  ]) {
+    const protectedScopeRejected = await createMutationWorkspace({
+      mutationScope: createMutationScope({
+        allowedPathRefs: [protectedPathRef],
+      }),
+    });
+    assert.equal(
+      protectedScopeRejected.ok,
+      false,
+      `task execution mutation workspace smoke J-M should reject protected scope ${protectedPathRef}`,
+    );
+    assert.ok(
+      protectedScopeRejected.issues.some(
+        (item) =>
+          item.code === "task_execution_mutation_scope_protected_path",
+      ),
+    );
+  }
+
+  const maxFileWorkspace = await createMutationWorkspace({
+    mutationScope: createMutationScope({
+      allowedPathRefs: [mutationAllowedPath, mutationAllowedPathTwo],
+      maxChangedFiles: 1,
+    }),
+  });
+  const maxFileMutation = await executeTaskExecutionIsolatedTestMutation({
+    authority: maxFileWorkspace.authority,
+    operations: [
+      {
+        kind: "update_existing_file",
+        relativePath: mutationAllowedPath,
+        content: "export const value = 'one';\n",
+      },
+      {
+        kind: "update_existing_file",
+        relativePath: mutationAllowedPathTwo,
+        content: "export const second = 'two';\n",
+      },
+    ],
+  });
+  assert.equal(
+    maxFileMutation.evidence.maxFilesExceeded,
+    true,
+    "task execution mutation workspace smoke N should enforce max changed file count",
+  );
+  assert.equal(maxFileMutation.ok, false);
+
+  const maxByteWorkspace = await createMutationWorkspace({
+    mutationScope: createMutationScope({
+      maxTotalChangedBytes: 3,
+    }),
+  });
+  const maxByteMutation = await executeTaskExecutionIsolatedTestMutation({
+    authority: maxByteWorkspace.authority,
+    operations: [
+      {
+        kind: "update_existing_file",
+        relativePath: mutationAllowedPath,
+        content: "1234",
+      },
+    ],
+  });
+  assert.equal(
+    maxByteMutation.evidence.maxBytesExceeded,
+    true,
+    "task execution mutation workspace smoke O should enforce max changed byte count",
+  );
+  assert.equal(maxByteMutation.ok, false);
+
+  const extraMutationWorkspace = await createMutationWorkspace({
+    mutationScope: createMutationScope({
+      allowedPathRefs: [mutationAllowedPath],
+      maxChangedFiles: 3,
+    }),
+  });
+  const extraMutation = await executeTaskExecutionIsolatedTestMutation({
+    authority: extraMutationWorkspace.authority,
+    operations: [
+      {
+        kind: "update_existing_file",
+        relativePath: mutationAllowedPath,
+        content: "export const value = 'allowed plus extra';\n",
+      },
+      {
+        kind: "fixture_direct_write",
+        relativePath: mutationUnexpectedPath,
+        content: "export const unexpected = true;\n",
+      },
+    ],
+  });
+  assert.equal(
+    extraMutation.ok,
+    false,
+    "task execution mutation workspace smoke R should fail the whole result when an additional unexpected mutation occurs",
+  );
+  assert.deepEqual(extraMutation.evidence.unexpectedMutations, [
+    mutationUnexpectedPath,
+  ]);
+
+  const hostileCompletionWorkspace = await createMutationWorkspace();
+  const hostileCompletionMutation =
+    await executeTaskExecutionIsolatedTestMutation({
+      authority: hostileCompletionWorkspace.authority,
+      operations: [
+        {
+          kind: "update_existing_file",
+          relativePath: mutationAllowedPath,
+          content: "export const value = 'hostile completion';\n",
+        },
+      ],
+      workerCompletionClaims: {
+        allDone: true,
+        taskCompleted: true,
+        verified: true,
+      },
+    });
+  assert.equal(
+    hostileCompletionMutation.completionAuthorityGranted,
+    false,
+    "task execution mutation workspace smoke W should ignore hostile completion claims",
+  );
+  assert.equal(hostileCompletionMutation.safety.taskCompleted, false);
+  assert.equal(hostileCompletionMutation.safety.verifierRun, false);
+  assert.equal(hostileCompletionMutation.ok, true);
+
+  assert.equal(
+    await readFile(join(mutationPrimaryRoot, mutationAllowedPath), "utf8"),
+    primaryAllowedBefore,
+    "task execution mutation workspace smoke S should leave source workspace existing file bytes unchanged",
+  );
+  assert.equal(
+    await readFile(join(mutationPrimaryRoot, mutationAllowedPathTwo), "utf8"),
+    primarySecondBefore,
+    "task execution mutation workspace smoke S should leave all source fixture files unchanged",
+  );
+  assert.equal(
+    await pathExists(join(mutationPrimaryRoot, mutationNewPath)),
+    false,
+    "task execution mutation workspace smoke S should not create files in the source workspace",
+  );
+  assert.equal(
+    await pathExists(join(mutationPrimaryRoot, mutationUnexpectedPath)),
+    false,
+    "task execution mutation workspace smoke S should not leak unexpected files into the source workspace",
+  );
+  assert.equal(localRuntime400Coverage.ok, false);
+
+  for (const authority of mutationAuthorities) {
+    const cleanup = await cleanupTaskExecutionIsolatedMutationWorkspace(
+      authority,
+    );
+    assert.equal(
+      cleanup.ok,
+      true,
+      `task execution mutation workspace smoke cleanup should remove only exact system-created roots: ${JSON.stringify(cleanup.issues)}`,
+    );
+    assert.equal(cleanup.removed, true);
+    assert.equal(await pathExists(authority.systemWorkspaceRoot), false);
+  }
+  await rm(mutationPrimaryRoot, { recursive: true, force: true });
 
   const createSmokeClaudeCodeConfiguration = (overrides = {}) => ({
     authority: "system",
