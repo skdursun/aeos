@@ -169,10 +169,11 @@ condition.
   process runtime, with safe-mode host customization isolation, restricted
   read-only tool posture, JSON Schema structured output, system-owned
   executable/workspace/environment authority, audit-before-launch ordering, and
-  durable one-shot launch consumption. Automated tests made zero real Claude or
-  Codex model calls. RealClaudeCanaryReady=false because local Claude
-  authentication is missing; RealClaudeCanaryExecuted=false; real repository
-  writes remain disabled.
+  durable one-shot launch consumption. The first real AEOS-controlled read-only
+  Claude Code canary executed successfully and returned bounded evidence through
+  the controlled worker process boundary. Repository writes remained disabled,
+  shell execution remained disabled, and worker output remained evidence only
+  with no verifier, completion, work-accounting, or task-completion authority.
 
 ## Do Not Load By Default
 
@@ -183,11 +184,9 @@ condition.
 
 ## Next Task
 
-Do not advance to TASK-0318 yet. TASK-0317 implementation is complete, but the
-real read-only Claude canary is still pending operator action. Next action:
-operator authenticates local Claude Code, then prepares and executes exactly one
-authoritative AEOS read-only Claude canary invocation through the TASK-0317
-operator boundary. The canary remains one-shot, non-mutating, and evidence-only.
+TASK-0318: Controlled write-capable Claude Code worker boundary with tightly
+bounded workspace mutation authority, automated real Claude calls disabled, and
+no unrestricted shell execution.
 
 ## Current Direction
 
@@ -197,13 +196,12 @@ returns to the Codex-orchestrator plus Claude Code worker orchestration
 architecture through provider-neutral adapter foundations, without implementing
 real Codex or Claude Code worker execution yet.
 
-The current boundary is the first explicitly controlled real local Claude Code
-worker canary. Automated real Claude calls remain disabled, real repository
-writes remain disabled, and worker output remains evidence only with no
-completion authority. Do not move into write-capable Claude work, Codex-to-
-Claude routing, cloud/provider work, work accounting, verifier/completion, or
-TASK-0318 until the operator executes the single read-only canary and its result
-is reviewed.
+TASK-0317 is complete: the first explicitly controlled real local read-only
+Claude Code worker canary returned successfully. The next product task is the
+TASK-0318 controlled write-capable Claude Code worker boundary. Automated real
+Claude calls remain disabled by default, cloud/provider work remains de-scoped,
+shell execution must not become unrestricted, and worker output remains evidence
+only unless future AEOS verifier/completion authority explicitly grants it.
 
 ## Current Plans
 

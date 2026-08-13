@@ -791,7 +791,7 @@ function invocationRecordMatchesRequest(input: {
     record.idempotencyKey === request.idempotencyKey &&
     (record.workItemId ?? null) === (request.workItemId ?? null) &&
     (record.batchId ?? null) === (request.batchId ?? null) &&
-    record.lifecycle === "invoking"
+    (record.lifecycle === "reserved" || record.lifecycle === "invoking")
   );
 }
 

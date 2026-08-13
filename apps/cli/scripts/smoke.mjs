@@ -902,6 +902,45 @@ function expectTaskPlanSourceSafety() {
   if (!commandsSource.includes("planner: planAgenticRunner")) {
     fail("task plan source did not inject planAgenticRunner as a planner dependency");
   }
+
+  const canaryPrepareIndex = commandsSource.indexOf(
+    "const prepared = prepareTaskExecutionClaudeCodeWorkerInvocation",
+  );
+  const canaryAuthIndex = commandsSource.indexOf(
+    "const hostRuntimeAuth = await runTaskExecutionClaudeCodeAuthPreflight",
+  );
+  const canaryAuditIndex = commandsSource.indexOf(
+    "const auditAppend = await appendTaskExecutionAuditEvent",
+    canaryAuthIndex,
+  );
+  const canaryConsumptionIndex = commandsSource.indexOf(
+    "const entered = await updateTaskExecutionInvocation",
+    canaryAuthIndex,
+  );
+
+  if (
+    canaryPrepareIndex < 0 ||
+    canaryAuthIndex < 0 ||
+    canaryAuditIndex < 0 ||
+    canaryConsumptionIndex < 0 ||
+    canaryPrepareIndex > canaryAuthIndex ||
+    canaryAuthIndex > canaryConsumptionIndex ||
+    canaryAuditIndex > canaryConsumptionIndex
+  ) {
+    fail(
+      "task execution claude canary source did not place static prepare, host auth, and audit before one-shot consumption",
+    );
+  }
+
+  if (
+    commandsSource.includes(
+      'allowedPathRefs: ["packages/core/src/task-execution-claude-code-worker.ts"]',
+    )
+  ) {
+    fail(
+      "task execution claude canary source used a filesystem path as workspace authority",
+    );
+  }
 }
 
 function expectProjectProfileFailureJsonShape(message, value) {

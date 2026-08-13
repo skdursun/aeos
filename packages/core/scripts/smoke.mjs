@@ -147,7 +147,9 @@ import {
   normalizeTaskExecutionWorkerResult,
   prepareTaskExecutionClaudeCodeWorkerInvocation,
   prepareTaskExecutionCodexWorkerInvocation,
+  runTaskExecutionClaudeCodeAuthPreflight,
   TASK_EXECUTION_CLAUDE_CODE_PROCESS_CONTRACT_READY,
+  TASK_EXECUTION_CLAUDE_CODE_AUTH_PREFLIGHT_READY,
   TASK_EXECUTION_CLAUDE_CODE_READ_ONLY_CANARY_EXECUTED,
   TASK_EXECUTION_CLAUDE_CODE_READ_ONLY_CANARY_PROFILE_READY,
   TASK_EXECUTION_CLAUDE_CODE_WORKER_EXTERNAL_PROCESS_ALLOWED,
@@ -20043,6 +20045,77 @@ try {
       request: claudeProcessWorkerRequest,
       invocationRecord: invokingPersisted.value.record,
     });
+  const reservedClaudeProcessWorkerRequest = createSmokeTestWorkerRequest(
+    directReservation.value.record,
+    claudeWorkerIdentity,
+    createSmokeWorkerPermissionFacts(codexProcessPermissionGate, {
+      requiredPermissions: ["process"],
+    }),
+  );
+  const reservedClaudeCodeCanaryPrepared =
+    prepareTaskExecutionClaudeCodeWorkerInvocation({
+      configuration: smokeClaudeCodeCanaryConfiguration,
+      request: reservedClaudeProcessWorkerRequest,
+      invocationRecord: directReservation.value.record,
+    });
+  assert.equal(
+    reservedClaudeCodeCanaryPrepared.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_claude_code_worker_invocation_authority_mismatch",
+    ),
+    false,
+    "task execution claude code worker canary prelaunch smoke should bind reserved one-shot invocation authority before lifecycle mutation",
+  );
+  const claudePrelaunchInvocationSnapshot = JSON.stringify(
+    invokingPersisted.value.record,
+  );
+  const invalidWorkspaceClaudeCodePrepared =
+    prepareTaskExecutionClaudeCodeWorkerInvocation({
+      configuration: createSmokeClaudeCodeConfiguration({
+        workspace: {
+          ...smokeClaudeCodeConfiguration.workspace,
+          allowedPathRefs: [
+            "packages/core/src/task-execution-claude-code-worker.ts",
+          ],
+        },
+      }),
+      request: claudeProcessWorkerRequest,
+      invocationRecord: invokingPersisted.value.record,
+    });
+  assert.ok(
+    invalidWorkspaceClaudeCodePrepared.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_claude_code_worker_workspace_authority_invalid",
+    ),
+    "task execution claude code worker canary prelaunch smoke should reject filesystem paths as workspace authority",
+  );
+  assert.equal(
+    JSON.stringify(invokingPersisted.value.record),
+    claudePrelaunchInvocationSnapshot,
+    "task execution claude code worker canary prelaunch smoke should not mutate invocation during invalid workspace preparation",
+  );
+  const invalidWorkspaceInvocationAfter = await loadTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    taskId: invokingPersisted.value.record.taskId,
+    invocationId: invokingPersisted.value.record.invocationId,
+  });
+  assert.equal(
+    invalidWorkspaceInvocationAfter.ok,
+    true,
+    "task execution claude code worker canary prelaunch smoke should reload invocation after invalid workspace preparation",
+  );
+  assert.equal(
+    invalidWorkspaceInvocationAfter.value.record.lifecycle,
+    invokingPersisted.value.record.lifecycle,
+    "task execution claude code worker canary prelaunch smoke should keep invocation lifecycle unchanged",
+  );
+  assert.equal(
+    invalidWorkspaceInvocationAfter.value.record.revision,
+    invokingPersisted.value.record.revision,
+    "task execution claude code worker canary prelaunch smoke should keep invocation revision unchanged",
+  );
   assert.equal(
     smokeClaudeCodeCanaryPrepared.preparedInvocation.readOnlyCanaryProfileReady,
     true,
@@ -20052,6 +20125,135 @@ try {
     TASK_EXECUTION_CLAUDE_CODE_READ_ONLY_CANARY_PROFILE_READY,
     true,
     "task execution claude code worker canary smoke should expose read-only profile readiness",
+  );
+  assert.equal(
+    TASK_EXECUTION_CLAUDE_CODE_AUTH_PREFLIGHT_READY,
+    true,
+    "task execution claude code auth preflight smoke A should expose host-runtime auth preflight readiness",
+  );
+  const authenticatedClaudeAuthPreflight =
+    await runTaskExecutionClaudeCodeAuthPreflight({
+      executablePath: "/test/claude",
+      run: async () => ({
+        exitCode: 0,
+        stdout: JSON.stringify({
+          loggedIn: true,
+          authMethod: "test",
+          apiProvider: "firstParty",
+        }),
+        stderr: "token-like stderr should not become persisted authority",
+        timedOut: false,
+        spawned: true,
+      }),
+    });
+  assert.deepEqual(
+    authenticatedClaudeAuthPreflight.command.argv,
+    ["auth", "status"],
+    "task execution claude code auth preflight smoke B should use only bounded auth status argv",
+  );
+  assert.equal(
+    authenticatedClaudeAuthPreflight.ok,
+    true,
+    "task execution claude code auth preflight smoke B should accept loggedIn true",
+  );
+  assert.equal(
+    authenticatedClaudeAuthPreflight.authenticated,
+    true,
+    "task execution claude code auth preflight smoke B should expose safe authenticated fact",
+  );
+  assert.equal(
+    authenticatedClaudeAuthPreflight.safety.modelInvoked,
+    false,
+    "task execution claude code auth preflight smoke B should not invoke a model",
+  );
+  assert.equal(
+    authenticatedClaudeAuthPreflight.safety.shellUsed,
+    false,
+    "task execution claude code auth preflight smoke B should not use shell execution",
+  );
+  assert.equal(
+    authenticatedClaudeAuthPreflight.safety.secretsPersisted,
+    false,
+    "task execution claude code auth preflight smoke B should not persist secrets",
+  );
+  assert.equal(
+    JSON.stringify(authenticatedClaudeAuthPreflight).includes("token-like"),
+    false,
+    "task execution claude code auth preflight smoke B should not retain raw auth stderr",
+  );
+
+  const unauthenticatedClaudeAuthPreflight =
+    await runTaskExecutionClaudeCodeAuthPreflight({
+      executablePath: "/test/claude",
+      run: async () => ({
+        exitCode: 1,
+        stdout: JSON.stringify({
+          loggedIn: false,
+          authMethod: "none",
+          apiProvider: "firstParty",
+        }),
+        stderr: "",
+        timedOut: false,
+        spawned: true,
+      }),
+    });
+  assert.equal(
+    unauthenticatedClaudeAuthPreflight.ok,
+    false,
+    "task execution claude code auth preflight smoke C should fail closed on loggedIn false",
+  );
+  assert.equal(
+    unauthenticatedClaudeAuthPreflight.status,
+    "unauthenticated",
+    "task execution claude code auth preflight smoke C should distinguish unauthenticated host runtime",
+  );
+  assert.ok(
+    unauthenticatedClaudeAuthPreflight.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_claude_code_auth_preflight_not_authenticated",
+    ),
+    "task execution claude code auth preflight smoke C should report missing auth",
+  );
+
+  const invalidClaudeAuthPreflight =
+    await runTaskExecutionClaudeCodeAuthPreflight({
+      executablePath: "/test/claude",
+      run: async () => ({
+        exitCode: 0,
+        stdout: "not json",
+        stderr: "",
+        timedOut: false,
+        spawned: true,
+      }),
+    });
+  assert.equal(
+    invalidClaudeAuthPreflight.authCheckAvailable,
+    false,
+    "task execution claude code auth preflight smoke D should reject malformed auth output",
+  );
+  assert.equal(
+    invalidClaudeAuthPreflight.authenticated,
+    false,
+    "task execution claude code auth preflight smoke D should not infer auth from malformed output",
+  );
+
+  const timedOutClaudeAuthPreflight =
+    await runTaskExecutionClaudeCodeAuthPreflight({
+      executablePath: "/test/claude",
+      run: async () => ({
+        exitCode: null,
+        signal: "SIGTERM",
+        stdout: "",
+        stderr: "",
+        timedOut: true,
+        spawned: true,
+      }),
+    });
+  assert.equal(
+    timedOutClaudeAuthPreflight.status,
+    "auth_check_unavailable",
+    "task execution claude code auth preflight smoke E should fail closed when auth status times out",
   );
   assert.equal(
     TASK_EXECUTION_CLAUDE_CODE_READ_ONLY_CANARY_EXECUTED,
@@ -20456,6 +20658,9 @@ try {
       code: "task_execution_worker_process_gate_pre_process_audit_missing",
     },
   ]) {
+    const beforeBlockedGateInvocation = JSON.stringify(
+      invokingPersisted.value.record,
+    );
     const blocked = evaluateTaskExecutionClaudeCodeWorkerProcessGate({
       configuration: smokeClaudeCodeConfiguration,
       request: claudeProcessWorkerRequest,
@@ -20480,7 +20685,47 @@ try {
       blocked.issues.some((item) => item.code === gateCase.code),
       `task execution claude code worker process gate smoke ${gateCase.label} should report ${gateCase.code}`,
     );
+    assert.equal(
+      JSON.stringify(invokingPersisted.value.record),
+      beforeBlockedGateInvocation,
+      `task execution claude code worker process gate smoke ${gateCase.label} should not mutate invocation`,
+    );
+    assert.equal(
+      blocked.ActualWorkerProcessesSpawned,
+      0,
+      `task execution claude code worker process gate smoke ${gateCase.label} should not spawn a process`,
+    );
+    assert.equal(
+      blocked.ActualClaudeCalls,
+      0,
+      `task execution claude code worker process gate smoke ${gateCase.label} should not call Claude`,
+    );
+    assert.equal(
+      blocked.ActualCodexCalls,
+      0,
+      `task execution claude code worker process gate smoke ${gateCase.label} should not call Codex`,
+    );
   }
+  const blockedGateInvocationAfter = await loadTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    taskId: invokingPersisted.value.record.taskId,
+    invocationId: invokingPersisted.value.record.invocationId,
+  });
+  assert.equal(
+    blockedGateInvocationAfter.ok,
+    true,
+    "task execution claude code worker process gate smoke should reload invocation after static failure cases",
+  );
+  assert.equal(
+    blockedGateInvocationAfter.value.record.lifecycle,
+    invokingPersisted.value.record.lifecycle,
+    "task execution claude code worker process gate smoke should keep lifecycle unchanged after static failure cases",
+  );
+  assert.equal(
+    blockedGateInvocationAfter.value.record.revision,
+    invokingPersisted.value.record.revision,
+    "task execution claude code worker process gate smoke should keep revision unchanged after static failure cases",
+  );
 
   const capabilityOnlyClaudeCodeGate =
     evaluateTaskExecutionClaudeCodeWorkerProcessGate({
