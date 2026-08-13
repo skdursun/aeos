@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   mkdtemp,
   mkdir,
@@ -11,9 +12,12 @@ import {
   writeFile as writeNodeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
 import { createFilesystemGenerationAdapter } from "../dist/filesystem-generation-writer.js";
+import {
+  executeTaskExecutionTestMutationApplyFaultInjectionSmokeOnly,
+} from "../dist/task-execution-worker-mutation-apply.js";
 import { runInitPipeline } from "../dist/init-pipeline.js";
 import {
   fileGenerationLifecycle,
@@ -124,9 +128,12 @@ import {
   cleanupTaskExecutionIsolatedMutationWorkspace,
   captureTaskExecutionMutationWorkspaceBaseline,
   createTaskExecutionIsolatedMutationWorkspace,
+  createTaskExecutionTestPrimaryWorkspace,
   createTaskExecutionClaudeCodeWorkerAdapter,
   createTaskExecutionCodexWorkerAdapter,
+  cleanupTaskExecutionTestPrimaryWorkspace,
   loadTaskExecutionMutationArtifact,
+  loadTaskExecutionMutationApplyRecord,
   loadTaskExecutionMutationEvidence,
   authorizeTaskExecutionClaudeCodeWorkerProcess,
   authorizeTaskExecutionWorkerProcess,
@@ -134,9 +141,11 @@ import {
   evaluateTaskExecutionClaudeCodeWorkerConformance,
   evaluateTaskExecutionClaudeCodeWorkerProcessGate,
   evaluateTaskExecutionClaudeWriteCanaryMutationEvidence,
+  evaluateTaskExecutionMutationApply,
   evaluateTaskExecutionCodexWorkerConformance,
   evaluateTaskExecutionWorkerProcessGate,
   executeTaskExecutionIsolatedTestMutation,
+  executeTaskExecutionTestMutationApply,
   executeTaskExecutionLocalWorkerProcess,
   evaluateTaskExecutionWorkerConformance,
   evaluateTaskExecutionProductionDispatchGate,
@@ -154,6 +163,7 @@ import {
   normalizeTaskExecutionWorkerResult,
   prepareTaskExecutionClaudeCodeWorkerInvocation,
   prepareTaskExecutionClaudeWriteCanaryMutationWorkspace,
+  prepareTaskExecutionMutationApply,
   persistTaskExecutionMutationEvidence,
   prepareTaskExecutionCodexWorkerInvocation,
   runTaskExecutionClaudeCodeAuthPreflight,
@@ -181,8 +191,12 @@ import {
   TASK_EXECUTION_MUTATION_WORKSPACE_PRIMARY_APPLY_ENABLED,
   TASK_EXECUTION_MUTATION_WORKSPACE_REAL_CLAUDE_CALLS,
   TASK_EXECUTION_MUTATION_WORKSPACE_REAL_CODEX_CALLS,
+  TASK_EXECUTION_MUTATION_APPLY_AUTOMATIC_PATCH_APPLY_ENABLED,
+  TASK_EXECUTION_PRIMARY_APPLY_CANARY_READY,
+  TASK_EXECUTION_REAL_PRIMARY_WORKSPACE_APPLY_ENABLED,
   TASK_EXECUTION_REAL_CLAUDE_WRITE_CANARY_EXECUTED,
   TASK_EXECUTION_REAL_CLAUDE_WRITE_CANARY_READY,
+  TASK_EXECUTION_TEST_MUTATION_APPLY_RUNTIME_READY,
   TASK_EXECUTION_CODEX_WORKER_EXTERNAL_PROCESS_ALLOWED,
   TASK_EXECUTION_PRODUCTION_DISPATCH_BOUNDARY,
   TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
@@ -21132,6 +21146,804 @@ try {
     "task execution mutation workspace smoke S should not leak unexpected files into the source workspace",
   );
   assert.equal(localRuntime400Coverage.ok, false);
+
+  const digestSmokeContent = (content) =>
+    createHash("sha256").update(content).digest("hex");
+  const digestSmokeJson = (value) =>
+    digestSmokeContent(`${JSON.stringify(value, null, 2)}\n`);
+  const recomputeEvidenceRecord = (record) => {
+    const { evidenceDigest: _evidenceDigest, ...withoutDigest } = record;
+
+    return {
+      ...record,
+      evidenceDigest: digestSmokeJson(withoutDigest),
+    };
+  };
+  const recomputeArtifactRecord = (record) => {
+    const { artifactDigest: _artifactDigest, ...withoutDigest } = record;
+
+    return {
+      ...record,
+      artifactDigest: digestSmokeJson(withoutDigest),
+    };
+  };
+  const writeDurableMutationRecords = async (root, evidence, artifact) => {
+    await mkdir(
+      join(root, ".aeos/state/mutation-evidence", evidence.taskId),
+      { recursive: true },
+    );
+    await mkdir(
+      join(root, ".aeos/state/mutation-artifacts", artifact.taskId),
+      { recursive: true },
+    );
+    await writeNodeFile(
+      join(
+        root,
+        ".aeos/state/mutation-evidence",
+        evidence.taskId,
+        `${evidence.invocationId}.json`,
+      ),
+      `${JSON.stringify(evidence, null, 2)}\n`,
+      "utf8",
+    );
+    await writeNodeFile(
+      join(
+        root,
+        ".aeos/state/mutation-artifacts",
+        artifact.taskId,
+        `${artifact.invocationId}.json`,
+      ),
+      `${JSON.stringify(artifact, null, 2)}\n`,
+      "utf8",
+    );
+  };
+  const makeApplyFixture = async ({
+    suffix,
+    operation = "update_existing_file",
+    relativePath = `packages/core/src/apply-${suffix}.ts`,
+    beforeContent = `export const value_${suffix.replace(/[^A-Za-z0-9]/g, "_")} = "before";\n`,
+    afterContent = `export const value_${suffix.replace(/[^A-Za-z0-9]/g, "_")} = "after";\n`,
+    primaryInitialContent = beforeContent,
+    primaryHasTarget = operation === "update_existing_file",
+    primaryExtraFiles = [],
+    mutationScopeOverrides = {},
+  } = {}) => {
+    const sourceRoot = await mkdtemp(join(tmpdir(), "aeos-apply-source-"));
+    const sourceTarget = join(sourceRoot, relativePath);
+    if (operation === "update_existing_file") {
+      await mkdir(dirname(sourceTarget), { recursive: true });
+      await writeNodeFile(sourceTarget, beforeContent, "utf8");
+    } else {
+      await mkdir(join(sourceRoot, "packages/core/src"), { recursive: true });
+    }
+
+    mutationAttempt += 1;
+    const workspace = await createTaskExecutionIsolatedMutationWorkspace({
+      taskId: "TASK-0320",
+      taskRevision: 32,
+      attemptId: `attempt-apply-${suffix}`,
+      attemptNumber: mutationAttempt,
+      invocationId: `invocation-apply-${suffix}`,
+      invocationRevision: 1,
+      idempotencyKey: `idem-apply-${suffix}`,
+      workerIdentity: claudeWorkerIdentity,
+      sourceProjectRef: "project-pro-performans",
+      sourceWorkspaceRef: "primary-workspace",
+      sourceWorkspaceRoot: sourceRoot,
+      mutationScope: {
+        authority: "system",
+        scopeId: `apply-scope-${suffix}`,
+        allowedPathRefs: [relativePath],
+        allowedOperations:
+          operation === "create_file"
+            ? ["create_file"]
+            : ["update_existing_file"],
+        maxChangedFiles: 1,
+        maxTotalChangedBytes: 4096,
+        repositoryWritePermission: true,
+        deleteAllowed: false,
+        ...mutationScopeOverrides,
+      },
+    });
+    assert.equal(
+      workspace.ok,
+      true,
+      `task execution mutation apply fixture ${suffix} should create isolated mutation workspace: ${JSON.stringify(workspace.issues)}`,
+    );
+    mutationAuthorities.push(workspace.authority);
+
+    const mutation = await executeTaskExecutionIsolatedTestMutation({
+      authority: workspace.authority,
+      operations: [
+        {
+          kind: operation,
+          relativePath,
+          content: afterContent,
+        },
+      ],
+    });
+    assert.equal(
+      mutation.ok,
+      true,
+      `task execution mutation apply fixture ${suffix} should create verified isolated mutation: ${JSON.stringify(mutation.issues)}`,
+    );
+
+    const stateRoot = await mkdtemp(join(tmpdir(), "aeos-apply-state-"));
+    const persistence = await persistTaskExecutionMutationEvidence({
+      projectRoot: stateRoot,
+      authority: workspace.authority,
+      baseline: mutation.baseline,
+      evaluation: {
+        ok: true,
+        exactResultVerified: true,
+        evidence: mutation.evidence,
+        issues: mutation.issues,
+      },
+      invocationRevision: 4,
+      invocationLifecycle: "returned",
+      persistArtifact: true,
+      forbiddenValues: ["ownership-token-apply-secret"],
+    });
+    assert.equal(
+      persistence.ok,
+      true,
+      `task execution mutation apply fixture ${suffix} should persist durable evidence and artifact: ${JSON.stringify(persistence.issues)}`,
+    );
+
+    const initialFiles = [
+      ...primaryExtraFiles,
+      ...(primaryHasTarget
+        ? [{ relativePath, content: primaryInitialContent }]
+        : [
+            {
+              relativePath: `${dirname(relativePath).split(sep).join("/")}/.keep`,
+              content: "keep\n",
+            },
+          ]),
+    ];
+    const primary = await createTaskExecutionTestPrimaryWorkspace({
+      projectRef: `project-apply-${suffix}`,
+      workspaceRef: `test-primary-${suffix}`,
+      initialFiles,
+    });
+    assert.equal(
+      primary.ok,
+      true,
+      `task execution mutation apply fixture ${suffix} should create TEST primary workspace: ${JSON.stringify(primary.issues)}`,
+    );
+
+    return {
+      sourceRoot,
+      stateRoot,
+      workspace,
+      mutation,
+      persistence,
+      primary,
+      relativePath,
+      beforeContent,
+      afterContent,
+    };
+  };
+  const applyInputFor = (fixture, overrides = {}) => ({
+    projectRoot: overrides.projectRoot ?? fixture.stateRoot,
+    mutationAuthority: overrides.mutationAuthority ?? fixture.workspace.authority,
+    primaryWorkspaceAuthority:
+      overrides.primaryWorkspaceAuthority ?? fixture.primary.authority,
+    taskModelWorkerOrOperatorPathClaims:
+      overrides.taskModelWorkerOrOperatorPathClaims,
+  });
+
+  assert.equal(TASK_EXECUTION_TEST_MUTATION_APPLY_RUNTIME_READY, true);
+  assert.equal(TASK_EXECUTION_REAL_PRIMARY_WORKSPACE_APPLY_ENABLED, false);
+  assert.equal(TASK_EXECUTION_MUTATION_APPLY_AUTOMATIC_PATCH_APPLY_ENABLED, false);
+  assert.equal(TASK_EXECUTION_PRIMARY_APPLY_CANARY_READY, false);
+
+  const validApplyFixture = await makeApplyFixture({ suffix: "valid" });
+  const validApplyEvidenceLoad = await loadTaskExecutionMutationEvidence({
+    projectRoot: validApplyFixture.stateRoot,
+    taskId: "TASK-0320",
+    invocationId: "invocation-apply-valid",
+  });
+  const validApplyArtifactLoad = await loadTaskExecutionMutationArtifact({
+    projectRoot: validApplyFixture.stateRoot,
+    taskId: "TASK-0320",
+    invocationId: "invocation-apply-valid",
+  });
+  assert.equal(
+    validApplyEvidenceLoad.ok && validApplyArtifactLoad.ok,
+    true,
+    "task execution mutation apply smoke A should load valid durable evidence and artifact",
+  );
+  const historicalApplyBlocked = await evaluateTaskExecutionMutationApply({
+    ...applyInputFor(validApplyFixture),
+    projectRoot: await mkdtemp(join(tmpdir(), "aeos-apply-historical-empty-")),
+  });
+  assert.equal(
+    historicalApplyBlocked.ok,
+    false,
+    "task execution mutation apply smoke B should block historical non-durable invocation",
+  );
+
+  const preparedApply = await prepareTaskExecutionMutationApply(
+    applyInputFor(validApplyFixture),
+  );
+  assert.equal(
+    preparedApply.status,
+    "prepared",
+    `task execution mutation apply smoke should persist durable reservation: ${JSON.stringify(preparedApply.issues)}`,
+  );
+  assert.equal(preparedApply.reservationPersisted, true);
+  const applied = await executeTaskExecutionTestMutationApply(
+    applyInputFor(validApplyFixture),
+  );
+  assert.equal(
+    applied.status,
+    "applied",
+    `task execution mutation apply smoke C should apply one-file update in TEST primary workspace: ${JSON.stringify(applied.issues)}`,
+  );
+  assert.equal(applied.applied, true);
+  assert.equal(applied.afterDigestVerified, true);
+  assert.equal(
+    await readFile(
+      join(
+        validApplyFixture.primary.authority.primaryWorkspaceRoot,
+        validApplyFixture.relativePath,
+      ),
+      "utf8",
+    ),
+    validApplyFixture.afterContent,
+    "task execution mutation apply smoke C should mutate the actual TEST primary file",
+  );
+  assert.equal(
+    applied.currentPrimaryDigest,
+    validApplyArtifactLoad.record.files[0].afterDigest,
+    "task execution mutation apply smoke D should verify the primary afterDigest",
+  );
+
+  const staleFixture = await makeApplyFixture({
+    suffix: "stale",
+    primaryInitialContent: "export const value_stale = \"changed\";\n",
+  });
+  const staleApply = await executeTaskExecutionTestMutationApply(
+    applyInputFor(staleFixture),
+  );
+  assert.equal(staleApply.status, "blocked");
+  assert.ok(
+    staleApply.issues.some(
+      (item) => item.code === "task_execution_mutation_apply_stale_baseline",
+    ),
+    "task execution mutation apply smoke E should hard-block stale beforeDigest conflicts",
+  );
+
+  const createExistsFixture = await makeApplyFixture({
+    suffix: "create-exists",
+    operation: "create_file",
+    relativePath: "packages/core/src/create-exists.ts",
+    afterContent: "export const created = true;\n",
+    primaryHasTarget: true,
+    primaryInitialContent: "already here\n",
+  });
+  const createExistsApply = await executeTaskExecutionTestMutationApply(
+    applyInputFor(createExistsFixture),
+  );
+  assert.equal(createExistsApply.status, "blocked");
+  assert.ok(
+    createExistsApply.issues.some(
+      (item) =>
+        item.code === "task_execution_mutation_apply_create_target_exists",
+    ),
+    "task execution mutation apply smoke F should block create when target already exists",
+  );
+
+  const createFixture = await makeApplyFixture({
+    suffix: "create",
+    operation: "create_file",
+    relativePath: "packages/core/src/created-by-apply.ts",
+    afterContent: "export const createdByApply = true;\n",
+    primaryHasTarget: false,
+  });
+  const createApply = await executeTaskExecutionTestMutationApply(
+    applyInputFor(createFixture),
+  );
+  assert.equal(
+    createApply.status,
+    "applied",
+    `task execution mutation apply smoke should allow single regular-file create in TEST primary: ${JSON.stringify(createApply.issues)}`,
+  );
+  assert.equal(
+    await readFile(
+      join(
+        createFixture.primary.authority.primaryWorkspaceRoot,
+        createFixture.relativePath,
+      ),
+      "utf8",
+    ),
+    createFixture.afterContent,
+  );
+
+  const mismatchFixture = await makeApplyFixture({ suffix: "mismatch-a" });
+  const mismatchOtherFixture = await makeApplyFixture({ suffix: "mismatch-b" });
+  await writeNodeFile(
+    mismatchFixture.persistence.artifactPath,
+    `${JSON.stringify(mismatchOtherFixture.persistence.artifactRecord, null, 2)}\n`,
+    "utf8",
+  );
+  const mismatchApply = await executeTaskExecutionTestMutationApply(
+    applyInputFor(mismatchFixture),
+  );
+  assert.equal(mismatchApply.status, "blocked");
+  assert.ok(
+    mismatchApply.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_mutation_artifact_identity_mismatch",
+    ),
+    "task execution mutation apply smoke G should block evidence/artifact mismatch",
+  );
+
+  const corruptEvidenceFixture = await makeApplyFixture({ suffix: "corrupt-evidence" });
+  await writeNodeFile(corruptEvidenceFixture.persistence.evidencePath, "{", "utf8");
+  const corruptEvidenceApply = await executeTaskExecutionTestMutationApply(
+    applyInputFor(corruptEvidenceFixture),
+  );
+  assert.equal(corruptEvidenceApply.status, "blocked");
+  assert.ok(
+    corruptEvidenceApply.issues.some(
+      (item) =>
+        item.code === "task_execution_mutation_evidence_record_corrupt",
+    ),
+    "task execution mutation apply smoke H should fail closed on corrupt evidence",
+  );
+
+  const corruptArtifactFixture = await makeApplyFixture({ suffix: "corrupt-artifact" });
+  await writeNodeFile(
+    corruptArtifactFixture.persistence.artifactPath,
+    `${JSON.stringify(
+      {
+        ...corruptArtifactFixture.persistence.artifactRecord,
+        files: [
+          {
+            ...corruptArtifactFixture.persistence.artifactRecord.files[0],
+            afterContent: "tampered",
+          },
+        ],
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  const corruptArtifactApply = await executeTaskExecutionTestMutationApply(
+    applyInputFor(corruptArtifactFixture),
+  );
+  assert.equal(corruptArtifactApply.status, "blocked");
+  assert.ok(
+    corruptArtifactApply.issues.some(
+      (item) => item.code === "task_execution_mutation_artifact_record_corrupt",
+    ),
+    "task execution mutation apply smoke I should fail closed on corrupt artifact",
+  );
+
+  const protectedFixture = await makeApplyFixture({ suffix: "protected" });
+  const protectedFile = {
+    ...protectedFixture.persistence.artifactRecord.files[0],
+    relativePath: ".git/config",
+  };
+  const protectedArtifact = recomputeArtifactRecord({
+    ...protectedFixture.persistence.artifactRecord,
+    totalBytes: protectedFile.afterBytes,
+    files: [protectedFile],
+  });
+  const protectedChanged = {
+    ...protectedFixture.persistence.evidenceRecord.changedFiles[0],
+    relativePath: ".git/config",
+  };
+  const protectedEvidence = recomputeEvidenceRecord({
+    ...protectedFixture.persistence.evidenceRecord,
+    actualChangedPaths: [".git/config"],
+    changedFiles: [protectedChanged],
+  });
+  const protectedArtifactBound = recomputeArtifactRecord({
+    ...protectedArtifact,
+    evidenceDigest: protectedEvidence.evidenceDigest,
+  });
+  const protectedStateRoot = await mkdtemp(join(tmpdir(), "aeos-apply-protected-"));
+  await writeDurableMutationRecords(
+    protectedStateRoot,
+    protectedEvidence,
+    protectedArtifactBound,
+  );
+  const protectedApply = await executeTaskExecutionTestMutationApply(
+    applyInputFor(protectedFixture, { projectRoot: protectedStateRoot }),
+  );
+  assert.equal(protectedApply.status, "blocked");
+  assert.ok(
+    protectedApply.issues.some(
+      (item) => item.code === "task_execution_mutation_apply_protected_path",
+    ),
+    "task execution mutation apply smoke J should block protected primary paths",
+  );
+
+  const traversalFixture = await makeApplyFixture({ suffix: "traversal" });
+  await writeNodeFile(
+    traversalFixture.persistence.artifactPath,
+    `${JSON.stringify(
+      {
+        ...traversalFixture.persistence.artifactRecord,
+        files: [
+          {
+            ...traversalFixture.persistence.artifactRecord.files[0],
+            relativePath: "../escape.ts",
+          },
+        ],
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  const traversalApply = await executeTaskExecutionTestMutationApply(
+    applyInputFor(traversalFixture),
+  );
+  assert.equal(traversalApply.status, "blocked");
+  assert.ok(
+    traversalApply.issues.some(
+      (item) => item.code === "task_execution_mutation_artifact_record_corrupt",
+    ),
+    "task execution mutation apply smoke K should fail closed on traversal artifact paths",
+  );
+
+  const symlinkTargetFixture = await makeApplyFixture({ suffix: "symlink-target" });
+  const symlinkOutsideApply = join(tmpdir(), `aeos-apply-outside-${Date.now()}`);
+  await writeNodeFile(symlinkOutsideApply, "outside", "utf8");
+  await rm(
+    join(
+      symlinkTargetFixture.primary.authority.primaryWorkspaceRoot,
+      symlinkTargetFixture.relativePath,
+    ),
+    { force: true },
+  );
+  await symlink(
+    symlinkOutsideApply,
+    join(
+      symlinkTargetFixture.primary.authority.primaryWorkspaceRoot,
+      symlinkTargetFixture.relativePath,
+    ),
+  );
+  const symlinkTargetApply = await executeTaskExecutionTestMutationApply(
+    applyInputFor(symlinkTargetFixture),
+  );
+  assert.equal(symlinkTargetApply.status, "blocked");
+  assert.ok(
+    symlinkTargetApply.issues.some(
+      (item) => item.code === "task_execution_mutation_apply_target_escape",
+    ),
+    "task execution mutation apply smoke L should block symlink targets",
+  );
+  assert.equal(await readFile(symlinkOutsideApply, "utf8"), "outside");
+
+  const parentSymlinkFixture = await makeApplyFixture({
+    suffix: "parent-symlink",
+    relativePath: "linked/apply.ts",
+    beforeContent: "before linked\n",
+    afterContent: "after linked\n",
+  });
+  const parentOutside = await mkdtemp(join(tmpdir(), "aeos-apply-parent-outside-"));
+  await rm(
+    join(parentSymlinkFixture.primary.authority.primaryWorkspaceRoot, "linked"),
+    { recursive: true, force: true },
+  );
+  await symlink(
+    parentOutside,
+    join(parentSymlinkFixture.primary.authority.primaryWorkspaceRoot, "linked"),
+  );
+  const parentSymlinkApply = await executeTaskExecutionTestMutationApply(
+    applyInputFor(parentSymlinkFixture),
+  );
+  assert.equal(parentSymlinkApply.status, "blocked");
+  assert.ok(
+    parentSymlinkApply.issues.some(
+      (item) => item.code === "task_execution_mutation_apply_parent_escape",
+    ),
+    "task execution mutation apply smoke M should block parent symlink escape",
+  );
+
+  const multiFileFixture = await makeApplyFixture({ suffix: "multi-file" });
+  const secondMultiFile = {
+    ...multiFileFixture.persistence.artifactRecord.files[0],
+    relativePath: "packages/core/src/second-apply.ts",
+  };
+  const multiArtifact = recomputeArtifactRecord({
+    ...multiFileFixture.persistence.artifactRecord,
+    totalBytes:
+      multiFileFixture.persistence.artifactRecord.files[0].afterBytes +
+      secondMultiFile.afterBytes,
+    files: [
+      multiFileFixture.persistence.artifactRecord.files[0],
+      secondMultiFile,
+    ],
+  });
+  const multiEvidence = recomputeEvidenceRecord({
+    ...multiFileFixture.persistence.evidenceRecord,
+    actualChangedPaths: [
+      multiFileFixture.relativePath,
+      "packages/core/src/second-apply.ts",
+    ],
+    changedFiles: [
+      multiFileFixture.persistence.evidenceRecord.changedFiles[0],
+      {
+        ...multiFileFixture.persistence.evidenceRecord.changedFiles[0],
+        relativePath: "packages/core/src/second-apply.ts",
+      },
+    ],
+    totalChangedFiles: 2,
+    totalChangedBytes: multiArtifact.totalBytes,
+  });
+  const multiStateRoot = await mkdtemp(join(tmpdir(), "aeos-apply-multi-"));
+  await writeDurableMutationRecords(
+    multiStateRoot,
+    multiEvidence,
+    recomputeArtifactRecord({
+      ...multiArtifact,
+      evidenceDigest: multiEvidence.evidenceDigest,
+    }),
+  );
+  const multiFileApply = await executeTaskExecutionTestMutationApply(
+    applyInputFor(multiFileFixture, { projectRoot: multiStateRoot }),
+  );
+  assert.equal(multiFileApply.status, "blocked");
+  assert.ok(
+    multiFileApply.issues.some(
+      (item) =>
+        item.code === "task_execution_mutation_apply_single_file_required",
+    ),
+    "task execution mutation apply smoke N should block multi-file artifacts",
+  );
+
+  const deleteFixture = await makeApplyFixture({ suffix: "delete" });
+  const deleteEvidence = recomputeEvidenceRecord({
+    ...deleteFixture.persistence.evidenceRecord,
+    changedFiles: [
+      {
+        ...deleteFixture.persistence.evidenceRecord.changedFiles[0],
+        operation: "deleted",
+        afterDigest: null,
+        afterBytes: 0,
+      },
+    ],
+  });
+  const deleteStateRoot = await mkdtemp(join(tmpdir(), "aeos-apply-delete-"));
+  await writeDurableMutationRecords(
+    deleteStateRoot,
+    deleteEvidence,
+    recomputeArtifactRecord({
+      ...deleteFixture.persistence.artifactRecord,
+      evidenceDigest: deleteEvidence.evidenceDigest,
+    }),
+  );
+  const deleteApply = await executeTaskExecutionTestMutationApply(
+    applyInputFor(deleteFixture, { projectRoot: deleteStateRoot }),
+  );
+  assert.equal(deleteApply.status, "blocked");
+  assert.ok(
+    deleteApply.issues.some(
+      (item) =>
+        item.code === "task_execution_mutation_apply_artifact_file_mismatch",
+    ),
+    "task execution mutation apply smoke O should block delete evidence and reject rename-shaped mismatches",
+  );
+
+  const duplicateMtimeBefore = (
+    await stat(
+      join(
+        validApplyFixture.primary.authority.primaryWorkspaceRoot,
+        validApplyFixture.relativePath,
+      ),
+    )
+  ).mtimeMs;
+  const duplicateReplay = await executeTaskExecutionTestMutationApply(
+    applyInputFor(validApplyFixture),
+  );
+  assert.equal(duplicateReplay.status, "applied");
+  assert.equal(duplicateReplay.applied, false);
+  assert.equal(
+    (
+      await stat(
+        join(
+          validApplyFixture.primary.authority.primaryWorkspaceRoot,
+          validApplyFixture.relativePath,
+        ),
+      )
+    ).mtimeMs,
+    duplicateMtimeBefore,
+    "task execution mutation apply smoke P should not mutate again on duplicate applied replay",
+  );
+
+  const applyingFaultFixture = await makeApplyFixture({ suffix: "fault-applying" });
+  const applyingFault =
+    await executeTaskExecutionTestMutationApplyFaultInjectionSmokeOnly(
+      applyInputFor(applyingFaultFixture),
+      "before_rename",
+    );
+  assert.equal(applyingFault.status, "outcome_unknown");
+  assert.equal(
+    await readFile(
+      join(
+        applyingFaultFixture.primary.authority.primaryWorkspaceRoot,
+        applyingFaultFixture.relativePath,
+      ),
+      "utf8",
+    ),
+    applyingFaultFixture.beforeContent,
+  );
+  const applyingReplay = await executeTaskExecutionTestMutationApply(
+    applyInputFor(applyingFaultFixture),
+  );
+  assert.equal(applyingReplay.status, "outcome_unknown");
+  assert.equal(applyingReplay.applied, false);
+  assert.ok(
+    applyingReplay.issues.some(
+      (item) =>
+        item.code === "task_execution_mutation_apply_replay_retry_blocked",
+    ),
+    "task execution mutation apply smoke Q should not blindly reapply applying/outcome_unknown records",
+  );
+
+  const beforeReservationFixture = await makeApplyFixture({
+    suffix: "fault-before-reservation",
+  });
+  const beforeReservation =
+    await executeTaskExecutionTestMutationApplyFaultInjectionSmokeOnly(
+      applyInputFor(beforeReservationFixture),
+      "before_reservation",
+    );
+  assert.equal(beforeReservation.reservationPersisted, false);
+  assert.equal(
+    await readFile(
+      join(
+        beforeReservationFixture.primary.authority.primaryWorkspaceRoot,
+        beforeReservationFixture.relativePath,
+      ),
+      "utf8",
+    ),
+    beforeReservationFixture.beforeContent,
+    "task execution mutation apply smoke R should leave file unchanged before reservation",
+  );
+
+  const afterReservationFixture = await makeApplyFixture({
+    suffix: "fault-after-reservation",
+  });
+  const afterReservation =
+    await executeTaskExecutionTestMutationApplyFaultInjectionSmokeOnly(
+      applyInputFor(afterReservationFixture),
+      "after_reservation",
+    );
+  assert.equal(afterReservation.reservationPersisted, true);
+  assert.equal(
+    await readFile(
+      join(
+        afterReservationFixture.primary.authority.primaryWorkspaceRoot,
+        afterReservationFixture.relativePath,
+      ),
+      "utf8",
+    ),
+    afterReservationFixture.beforeContent,
+    "task execution mutation apply smoke S should leave file unchanged after reservation before mutation",
+  );
+
+  const crashAfterRenameFixture = await makeApplyFixture({
+    suffix: "fault-after-rename",
+  });
+  const crashAfterRename =
+    await executeTaskExecutionTestMutationApplyFaultInjectionSmokeOnly(
+      applyInputFor(crashAfterRenameFixture),
+      "after_rename_before_outcome",
+    );
+  assert.equal(crashAfterRename.status, "outcome_unknown");
+  assert.equal(
+    await readFile(
+      join(
+        crashAfterRenameFixture.primary.authority.primaryWorkspaceRoot,
+        crashAfterRenameFixture.relativePath,
+      ),
+      "utf8",
+    ),
+    crashAfterRenameFixture.afterContent,
+  );
+  const crashAfterRenameRecovery = await executeTaskExecutionTestMutationApply(
+    applyInputFor(crashAfterRenameFixture),
+  );
+  assert.equal(
+    crashAfterRenameRecovery.status,
+    "applied",
+    `task execution mutation apply smoke T should recover afterDigest already-applied state: ${JSON.stringify(crashAfterRenameRecovery.issues)}`,
+  );
+  assert.equal(crashAfterRenameRecovery.afterDigestVerified, true);
+
+  const unexpectedDigestFixture = await makeApplyFixture({
+    suffix: "unexpected-digest",
+  });
+  await executeTaskExecutionTestMutationApplyFaultInjectionSmokeOnly(
+    applyInputFor(unexpectedDigestFixture),
+    "before_rename",
+  );
+  await writeNodeFile(
+    join(
+      unexpectedDigestFixture.primary.authority.primaryWorkspaceRoot,
+      unexpectedDigestFixture.relativePath,
+    ),
+    "unexpected target content\n",
+    "utf8",
+  );
+  const unexpectedDigestApply = await executeTaskExecutionTestMutationApply(
+    applyInputFor(unexpectedDigestFixture),
+  );
+  assert.equal(unexpectedDigestApply.status, "outcome_unknown");
+  assert.ok(
+    unexpectedDigestApply.issues.some(
+      (item) =>
+        item.code === "task_execution_mutation_apply_unexpected_target_digest",
+    ),
+    "task execution mutation apply smoke U should fail closed on unexpected target digest",
+  );
+
+  const outcomeFaultFixture = await makeApplyFixture({
+    suffix: "fault-outcome",
+  });
+  const outcomeFault =
+    await executeTaskExecutionTestMutationApplyFaultInjectionSmokeOnly(
+      applyInputFor(outcomeFaultFixture),
+      "outcome_persistence_failed",
+    );
+  assert.equal(outcomeFault.status, "outcome_unknown");
+  assert.equal(outcomeFault.afterDigestVerified, true);
+  const outcomeFaultRecovery = await executeTaskExecutionTestMutationApply(
+    applyInputFor(outcomeFaultFixture),
+  );
+  assert.equal(outcomeFaultRecovery.status, "applied");
+
+  const appliedRecord = await loadTaskExecutionMutationApplyRecord({
+    projectRoot: validApplyFixture.stateRoot,
+    taskId: applied.authority.taskId,
+    applyId: applied.authority.applyId,
+  });
+  assert.equal(appliedRecord.ok, true);
+  const outcomePath = join(
+    validApplyFixture.stateRoot,
+    ".aeos/state/mutation-applies",
+    applied.authority.taskId,
+    applied.authority.applyId,
+    "outcome.json",
+  );
+  const outcomeMtimeBefore = (await stat(outcomePath)).mtimeMs;
+  await executeTaskExecutionTestMutationApply(applyInputFor(validApplyFixture));
+  assert.equal(
+    (await stat(outcomePath)).mtimeMs,
+    outcomeMtimeBefore,
+    "task execution mutation apply smoke V should keep apply outcome record immutable",
+  );
+  assert.equal(
+    /ownershipToken|Authorization|Bearer|PASSWORD|SECRET|TOKEN/i.test(
+      JSON.stringify(appliedRecord.record),
+    ),
+    false,
+    "task execution mutation apply smoke W should not persist ownership token or secret-shaped values in apply records",
+  );
+  assert.equal(
+    applied.CompletionAuthorityGranted,
+    false,
+    "task execution mutation apply smoke Y should grant no completion authority",
+  );
+  assert.equal(applied.VerifierSatisfied, false);
+  assert.equal(applied.CompletionGateSatisfied, false);
+  assert.equal(applied.ActualClaudeModelCalls, 0);
+  assert.equal(applied.ActualCodexModelCalls, 0);
+  assert.equal(applied.CloudCalls, 0);
+  assert.notEqual(
+    await realpath(validApplyFixture.primary.authority.primaryWorkspaceRoot),
+    await realpath(process.cwd()),
+    "task execution mutation apply smoke X should use TEST primary workspace, not the real AEOS primary repo",
+  );
 
   for (const authority of mutationAuthorities) {
     const cleanup = await cleanupTaskExecutionIsolatedMutationWorkspace(

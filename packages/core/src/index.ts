@@ -43,6 +43,7 @@ export type * from "./task-execution-production-provider-profile.js";
 export type * from "./task-execution-worker.js";
 export type * from "./task-execution-local-worker-process.js";
 export type * from "./task-execution-worker-mutation-workspace.js";
+export type * from "./task-execution-worker-mutation-apply.js";
 export type * from "./task-execution-codex-worker.js";
 export type * from "./task-execution-claude-code-worker.js";
 export type * from "./task-execution-claude-code-auth-preflight.js";
@@ -77,6 +78,20 @@ export * from "./task-execution-production-provider-profile.js";
 export * from "./task-execution-worker.js";
 export * from "./task-execution-local-worker-process.js";
 export * from "./task-execution-worker-mutation-workspace.js";
+export {
+  cleanupTaskExecutionTestPrimaryWorkspace,
+  createTaskExecutionTestPrimaryWorkspace,
+  evaluateTaskExecutionMutationApply,
+  executeTaskExecutionTestMutationApply,
+  loadTaskExecutionMutationApplyRecord,
+  prepareTaskExecutionMutationApply,
+  TASK_EXECUTION_MUTATION_APPLY_AUTOMATIC_PATCH_APPLY_ENABLED,
+  TASK_EXECUTION_MUTATION_APPLY_MAX_FILE_BYTES,
+  TASK_EXECUTION_MUTATION_APPLY_SCHEMA_VERSION,
+  TASK_EXECUTION_PRIMARY_APPLY_CANARY_READY,
+  TASK_EXECUTION_REAL_PRIMARY_WORKSPACE_APPLY_ENABLED,
+  TASK_EXECUTION_TEST_MUTATION_APPLY_RUNTIME_READY,
+} from "./task-execution-worker-mutation-apply.js";
 export * from "./task-execution-codex-worker.js";
 export * from "./task-execution-claude-code-worker.js";
 export * from "./task-execution-claude-code-auth-preflight.js";

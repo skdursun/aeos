@@ -191,6 +191,15 @@ condition.
   repository remained untouched, shell execution and primary apply remained
   disabled, and worker evidence remains non-authoritative for verifier,
   completion, retry, approval, and task-completion authority.
+- TASK-0320: Verified durable mutation-artifact to primary-workspace single-file
+  apply authority using deterministic TEST repositories only. AEOS now verifies
+  durable evidence/artifact authority from persisted state, enforces exact
+  one-file update/create scope, protected-path and symlink/traversal rejection,
+  stale baseline conflicts, durable one-shot apply reservation, atomic TEST
+  primary mutation, afterDigest verification, immutable lifecycle outcomes,
+  replay/crash recovery semantics, bounded audit facts, and no completion,
+  verifier, retry, worker, cloud, automatic patch, or real primary apply
+  authority.
 
 ## Do Not Load By Default
 
@@ -201,9 +210,9 @@ condition.
 
 ## Next Task
 
-TASK-0320: Verified isolated-mutation artifact to primary-workspace apply
-authority using deterministic TEST repositories only. Real primary-repository
-apply remains disabled until the apply authority is behaviorally proven.
+TASK-0321: First explicitly controlled REAL primary-workspace apply canary using
+a sacrificial system-owned file/artifact, with no model invocation and no
+automatic general patch application.
 
 ## Current Direction
 
@@ -213,13 +222,14 @@ returns to the Codex-orchestrator plus Claude Code worker orchestration
 architecture through provider-neutral adapter foundations, without implementing
 real Codex or Claude Code worker execution yet.
 
-TASK-0319 is complete: the fresh real Claude Code write canary produced
-durable, immutable, invocation-bound mutation evidence and a bounded mutation
-artifact sufficient as future apply input. The primary workspace remains
-authoritative and unchanged by worker mutation; shell execution and automatic
-primary apply remain disabled. TASK-0320 is ready to design deterministic
-TEST-only isolated mutation apply authority, with real primary-repository apply
-still closed until that authority is behaviorally proven.
+TASK-0320 is complete: deterministic TEST-only isolated mutation apply authority
+is behaviorally proven for one durable artifact to one TEST primary file, with
+stale baseline, protected path, symlink/traversal, replay, crash-window, and
+afterDigest verification coverage. Real primary-repository apply, automatic
+patch apply, verifier/completion authority, retry authority, model invocation,
+worker invocation, and cloud calls remain closed. TASK-0321 is ready to design
+the first controlled REAL primary-workspace canary against a sacrificial
+system-owned file/artifact only.
 
 ## Current Plans
 
