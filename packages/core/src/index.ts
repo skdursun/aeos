@@ -79,6 +79,7 @@ export * from "./task-execution-local-worker-process.js";
 export * from "./task-execution-worker-mutation-workspace.js";
 export * from "./task-execution-codex-worker.js";
 export * from "./task-execution-claude-code-worker.js";
+export * from "./task-execution-claude-code-auth-preflight.js";
 export * from "./task-execution-audit.js";
 export * from "./task-execution-audit-persistence.js";
 export * from "./task-execution-policy-approval.js";
