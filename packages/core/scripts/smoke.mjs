@@ -172,6 +172,10 @@ import {
   prepareTaskExecutionMutationApply,
   persistTaskExecutionMutationEvidence,
   prepareTaskExecutionCodexWorkerInvocation,
+  prepareTaskExecutionTwoModelCanary,
+  runTaskExecutionTwoModelCanary,
+  createTaskExecutionTwoModelCanaryCodexFixtureResult,
+  createTaskExecutionTwoModelCanaryClaudeFixtureResult,
   runTaskExecutionClaudeCodeAuthPreflight,
   verifyTaskExecutionMutationEvidenceForAuthority,
   TASK_EXECUTION_CLAUDE_CODE_PROCESS_CONTRACT_READY,
@@ -228,6 +232,16 @@ import {
   TASK_EXECUTION_WORKER_ORCHESTRATION_REAL_CLAUDE_CALLS,
   TASK_EXECUTION_WORKER_ORCHESTRATION_REAL_CODEX_CALLS,
   TASK_EXECUTION_WORKER_ORCHESTRATION_WORKER_PROCESSES,
+  TASK_EXECUTION_REAL_CODEX_PLANNER_CANARY_READY,
+  TASK_EXECUTION_REAL_CLAUDE_ROUTED_WORKER_CANARY_READY,
+  TASK_EXECUTION_TWO_MODEL_CANARY_READY,
+  TASK_EXECUTION_TWO_MODEL_CANARY_EXECUTED,
+  TASK_EXECUTION_TWO_MODEL_CANARY_REAL_CODEX_CALLS,
+  TASK_EXECUTION_TWO_MODEL_CANARY_REAL_CLAUDE_CALLS,
+  TASK_EXECUTION_TWO_MODEL_CANARY_PRIMARY_APPLIES,
+  TASK_EXECUTION_TWO_MODEL_CANARY_CLOUD_CALLS,
+  TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+  TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID,
   deriveTaskExecutionInvocationIdentity,
   deriveTaskExecutionInvocationIdentityForAttempt,
   getTaskExecutionInvocationStoragePath,
@@ -19340,6 +19354,277 @@ try {
     false,
   );
   assert.equal(TASK_EXECUTION_WORKER_ORCHESTRATION_COMPLETION_AUTHORITY, false);
+
+  const authenticatedCodexPreflight = {
+    ok: true,
+    status: "authenticated",
+    authCheckAvailable: true,
+    authenticated: true,
+    command: {
+      executablePath: "/test/codex",
+      argv: ["login", "status"],
+      timeoutMs: 1,
+    },
+    issues: [],
+    safety: {
+      modelInvoked: false,
+      shellUsed: false,
+      arbitraryArgsAccepted: false,
+      secretsPersisted: false,
+      rawAuthOutputPersisted: false,
+    },
+  };
+  const authenticatedClaudePreflight = {
+    ok: true,
+    status: "authenticated",
+    authCheckAvailable: true,
+    authenticated: true,
+    command: {
+      executablePath: "/test/claude",
+      argv: ["auth", "status"],
+      timeoutMs: 1,
+    },
+    issues: [],
+    safety: {
+      modelInvoked: false,
+      shellUsed: false,
+      arbitraryArgsAccepted: false,
+      secretsPersisted: false,
+      rawAuthOutputPersisted: false,
+    },
+  };
+  const task0324TempRoot = await mkdtemp(join(tmpdir(), "aeos-task-0324-smoke-"));
+  const runTask0324Fixture = async (name, runnerOverrides = {}) => {
+    const root = join(task0324TempRoot, `task-0324-${name}`);
+    await mkdir(root, { recursive: true });
+    const prepared = await prepareTaskExecutionTwoModelCanary({
+      projectRoot: root,
+      now: "2026-08-14T12:00:00.000Z",
+    });
+    assert.equal(prepared.ok, true, `TASK-0324 ${name} should prepare`);
+    let plannerCalls = 0;
+    let workerCalls = 0;
+    const result = await runTaskExecutionTwoModelCanary({
+      projectRoot: root,
+      taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+      orchestrationId: TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID,
+      expectedRevision: prepared.orchestration.taskRevision,
+      expectedPlannerInvocationRevision:
+        prepared.orchestration.plannerInvocationRevision,
+      expectedWorkerInvocationRevision:
+        prepared.orchestration.workerInvocationRevision,
+      runner: {
+        codexAuthPreflight: async () =>
+          runnerOverrides.codexAuthPreflight?.() ?? authenticatedCodexPreflight,
+        claudeAuthPreflight: async () =>
+          runnerOverrides.claudeAuthPreflight?.() ??
+          authenticatedClaudePreflight,
+        codexProcess: async (request) => {
+          plannerCalls += 1;
+          return runnerOverrides.codexProcess?.(request) ??
+            createTaskExecutionTwoModelCanaryCodexFixtureResult({ request });
+        },
+        claudeProcess: async (request) => {
+          workerCalls += 1;
+          return runnerOverrides.claudeProcess?.(request) ??
+            createTaskExecutionTwoModelCanaryClaudeFixtureResult({ request });
+        },
+      },
+    });
+
+    return { root, prepared, result, plannerCalls, workerCalls };
+  };
+
+  const task0324Success = await runTask0324Fixture("success");
+  assert.equal(
+    task0324Success.result.status,
+    "worker_returned",
+    "TASK-0324 smoke A should route TEST Codex proposal to TEST Claude result",
+  );
+  assert.equal(
+    task0324Success.result.routeDecision.selectedWorkerFamily,
+    "claude_code",
+    "TASK-0324 smoke A should preserve AEOS authoritative Claude route",
+  );
+  assert.equal(task0324Success.plannerCalls, 1);
+  assert.equal(task0324Success.workerCalls, 1);
+  assert.equal(
+    task0324Success.result.workerResult.safety.taskCompleted,
+    false,
+    "TASK-0324 smoke L should ignore hostile Claude completion fields",
+  );
+  assert.equal(
+    task0324Success.result.safety.shellAllowed,
+    false,
+    "TASK-0324 smoke N should keep shell disabled",
+  );
+  assert.equal(
+    task0324Success.result.safety.primaryApplyAllowed,
+    false,
+    "TASK-0324 smoke M should keep primary apply disabled",
+  );
+  const task0324State = await loadTaskState({
+    projectRoot: task0324Success.root,
+    taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+  });
+  assert.equal(task0324State.value.state.batches[0].expectedItemCount, 400);
+  assert.equal(
+    task0324State.value.state.batches[0].skippedCount,
+    20,
+    "TASK-0324 smoke O should preserve 400/20 accounted shape",
+  );
+  assert.equal(task0324State.value.state.pendingWorkItemIds.length, 380);
+  assert.equal(task0324State.value.state.completionGate.completed, false);
+  assert.equal(task0324State.value.state.completionGate.satisfied, false);
+
+  const duplicateRun = await runTaskExecutionTwoModelCanary({
+    projectRoot: task0324Success.root,
+    taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+    orchestrationId: TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID,
+    expectedRevision: task0324Success.prepared.orchestration.taskRevision,
+    expectedPlannerInvocationRevision:
+      task0324Success.prepared.orchestration.plannerInvocationRevision,
+    expectedWorkerInvocationRevision:
+      task0324Success.prepared.orchestration.workerInvocationRevision,
+    runner: {
+      codexAuthPreflight: async () => authenticatedCodexPreflight,
+      claudeAuthPreflight: async () => authenticatedClaudePreflight,
+      codexProcess: async (request) => {
+        throw new Error(`unexpected duplicate planner ${request.invocationId}`);
+      },
+      claudeProcess: async (request) => {
+        throw new Error(`unexpected duplicate worker ${request.invocationId}`);
+      },
+    },
+  });
+  assert.equal(
+    duplicateRun.status,
+    "already_consumed",
+    "TASK-0324 smoke H should not call planner or worker on duplicate command",
+  );
+
+  const malformedPlanner = await runTask0324Fixture("malformed-planner", {
+    codexProcess: (request) =>
+      createTaskExecutionTwoModelCanaryCodexFixtureResult({
+        request,
+        proposal: null,
+      }),
+  });
+  assert.equal(malformedPlanner.result.status, "route_blocked");
+  assert.equal(malformedPlanner.workerCalls, 0);
+
+  const invalidWorker = await runTask0324Fixture("invalid-worker", {
+    codexProcess: (request) =>
+      createTaskExecutionTwoModelCanaryCodexFixtureResult({
+        request,
+        proposal: { recommendedWorkerFamily: "generic" },
+      }),
+  });
+  assert.equal(invalidWorker.result.status, "route_blocked");
+  assert.equal(invalidWorker.workerCalls, 0);
+
+  const staleRoute = await runTask0324Fixture("stale-route", {
+    codexProcess: (request) =>
+      createTaskExecutionTwoModelCanaryCodexFixtureResult({
+        request,
+        proposal: { sourceTaskRevision: request.sourceTaskRevision - 1 },
+      }),
+  });
+  assert.equal(staleRoute.result.status, "route_blocked");
+  assert.equal(staleRoute.workerCalls, 0);
+
+  const permissionContradiction = await runTask0324Fixture(
+    "permission-contradiction",
+    {
+      codexProcess: (request) =>
+        createTaskExecutionTwoModelCanaryCodexFixtureResult({
+          request,
+          proposal: {
+            capabilityRequirements: ["implementation", "repositoryWrite"],
+          },
+        }),
+    },
+  );
+  assert.equal(permissionContradiction.result.status, "route_blocked");
+  assert.equal(permissionContradiction.workerCalls, 0);
+
+  const codexFailure = await runTask0324Fixture("codex-failure", {
+    codexProcess: (request) =>
+      createTaskExecutionTwoModelCanaryCodexFixtureResult({
+        request,
+        terminationReason: "nonzero_exit",
+        exitCode: 1,
+      }),
+  });
+  assert.equal(codexFailure.result.status, "planner_failed");
+  assert.equal(codexFailure.workerCalls, 0);
+
+  const ambiguousPlanner = await runTask0324Fixture("ambiguous-planner", {
+    codexProcess: (request) =>
+      createTaskExecutionTwoModelCanaryCodexFixtureResult({
+        request,
+        stdout: JSON.stringify({
+          aeosCodexWorkerResultVersion: 1,
+          status: "in_progress",
+          workerId: request.workerIdentity.workerId,
+          workerFamily: request.workerIdentity.workerFamily,
+          runtimeKind: request.workerIdentity.runtimeKind,
+          invocationId: request.invocationId,
+          idempotencyKey: request.idempotencyKey,
+          taskId: request.taskId,
+          sourceTaskRevision: request.sourceTaskRevision,
+          attemptId: request.attemptId,
+          attemptNumber: request.attemptNumber,
+          workItemId: request.workItemId ?? null,
+          batchId: request.batchId ?? null,
+          invocationOk: false,
+          diagnosticCode: "task_0324_ambiguous_planner",
+        }),
+      }),
+  });
+  assert.equal(ambiguousPlanner.result.status, "planner_failed");
+  assert.equal(ambiguousPlanner.workerCalls, 0);
+
+  const ambiguousWorker = await runTask0324Fixture("ambiguous-worker", {
+    claudeProcess: (request) =>
+      createTaskExecutionTwoModelCanaryClaudeFixtureResult({
+        request,
+        status: "in_progress",
+      }),
+  });
+  assert.equal(ambiguousWorker.result.status, "outcome_unknown");
+  assert.equal(ambiguousWorker.workerCalls, 1);
+
+  const hostilePlanner = await runTask0324Fixture("hostile-planner", {
+    codexProcess: (request) =>
+      createTaskExecutionTwoModelCanaryCodexFixtureResult({
+        request,
+        proposal: {
+          invokeNow: true,
+          completed: true,
+          verified: true,
+          safeToRetry: true,
+          cwd: "/tmp",
+          executable: "/bin/sh",
+        },
+      }),
+  });
+  assert.equal(hostilePlanner.result.status, "worker_returned");
+  assert.equal(
+    JSON.stringify(hostilePlanner.result.routeDecision).includes("/bin/sh"),
+    false,
+    "TASK-0324 smoke K should ignore worker self-routing/process authority",
+  );
+
+  assert.equal(TASK_EXECUTION_REAL_CODEX_PLANNER_CANARY_READY, true);
+  assert.equal(TASK_EXECUTION_REAL_CLAUDE_ROUTED_WORKER_CANARY_READY, true);
+  assert.equal(TASK_EXECUTION_TWO_MODEL_CANARY_READY, true);
+  assert.equal(TASK_EXECUTION_TWO_MODEL_CANARY_EXECUTED, false);
+  assert.equal(TASK_EXECUTION_TWO_MODEL_CANARY_REAL_CODEX_CALLS, 0);
+  assert.equal(TASK_EXECUTION_TWO_MODEL_CANARY_REAL_CLAUDE_CALLS, 0);
+  assert.equal(TASK_EXECUTION_TWO_MODEL_CANARY_PRIMARY_APPLIES, 0);
+  assert.equal(TASK_EXECUTION_TWO_MODEL_CANARY_CLOUD_CALLS, 0);
+  await rm(task0324TempRoot, { recursive: true, force: true });
 
   const workerStateSnapshot = JSON.stringify(firstUpdate.value.state);
   const workerAttemptSnapshot = JSON.stringify(invocationStartedAttempt);

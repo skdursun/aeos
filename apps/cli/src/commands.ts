@@ -39,6 +39,8 @@ import {
   runAgenticRunnerDryRun,
   runInitPipeline,
   runTaskExecutionClaudeCodeAuthPreflight,
+  prepareTaskExecutionTwoModelCanary,
+  runTaskExecutionTwoModelCanary,
   sanitizeTaskExecutionCredentialResult,
   saveTaskExecutionAttempt,
   appendTaskExecutionAuditEvent,
@@ -59,6 +61,8 @@ import {
   TASK_EXECUTION_PRIMARY_APPLY_CANARY_RELATIVE_PATH,
   TASK_EXECUTION_PRODUCTION_DISPATCH_BOUNDARY,
   TASK_EXECUTION_REAL_PRIMARY_WORKSPACE_APPLY_ENABLED,
+  TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID,
+  TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
 } from "@aeos/core";
 import type {
   AgenticRunnerDryRunInput,
@@ -171,6 +175,9 @@ Commands:
   task execution claude-write-canary <task-id> --invocation-id <invocation-id> --expected-revision <number> --expected-invocation-revision <number> --json
   task execution primary-apply-canary <task-id> --apply-id <apply-id> --expected-revision <number>
   task execution primary-apply-canary <task-id> --apply-id <apply-id> --expected-revision <number> --json
+  task execution orchestration-canary prepare
+  task execution orchestration-canary run <task-id> --orchestration-id <orchestration-id> --expected-revision <number> --expected-planner-invocation-revision <number> --expected-worker-invocation-revision <number>
+  task execution orchestration-canary run <task-id> --orchestration-id <orchestration-id> --expected-revision <number> --expected-planner-invocation-revision <number> --expected-worker-invocation-revision <number> --json
   task status <task-id>
   task status <task-id> --json
   task resume --preview <task-id>
@@ -910,6 +917,50 @@ type TaskExecutionClaudeCanaryJsonOutput =
         readonly category: string;
       };
       readonly safety: TaskExecutionClaudeCanarySafety;
+      readonly issues: readonly TaskStateCliIssue[];
+    };
+
+type TaskExecutionOrchestrationCanaryJsonOutput =
+  | {
+      readonly ok: true;
+      readonly status: string;
+      readonly taskId: string;
+      readonly taskRevision: number;
+      readonly orchestrationId: string;
+      readonly plannerInvocationId: string;
+      readonly plannerInvocationRevision: number;
+      readonly workerInvocationId: string;
+      readonly workerInvocationRevision: number;
+      readonly routeDecisionId: string | null;
+      readonly selectedWorkerFamily: string | null;
+      readonly plannerCalls: number;
+      readonly workerCalls: number;
+      readonly productionCompletionReady: false;
+      readonly safety: {
+        readonly RealCodexPlannerCanaryReady: true;
+        readonly RealClaudeRoutedReadOnlyCanaryReady: true;
+        readonly RealTwoModelCanaryReady: true;
+        readonly RealCodexPlannerExecuted: boolean;
+        readonly RealClaudeRoutedWorkerExecuted: boolean;
+        readonly RealTwoModelCanaryExecuted: boolean;
+        readonly repositoryWriteAllowed: false;
+        readonly shellAllowed: false;
+        readonly primaryApplyAllowed: false;
+        readonly completionAuthority: false;
+      };
+      readonly issues: readonly TaskStateCliIssue[];
+    }
+  | {
+      readonly ok: false;
+      readonly status: string;
+      readonly taskId: string;
+      readonly orchestrationId: string | null;
+      readonly error: {
+        readonly code: string;
+        readonly message: string;
+        readonly category: string;
+      };
+      readonly productionCompletionReady: false;
       readonly issues: readonly TaskStateCliIssue[];
     };
 
@@ -4562,6 +4613,12 @@ function writeTaskExecutionClaudeCanaryJson(
   writeJsonLine(output);
 }
 
+function writeTaskExecutionOrchestrationCanaryJson(
+  output: TaskExecutionOrchestrationCanaryJsonOutput,
+): void {
+  writeJsonLine(output);
+}
+
 function createTaskExecutionClaudeCanaryErrorJsonOutput(input: {
   readonly taskId: string;
   readonly invocationId?: string | null;
@@ -4731,7 +4788,7 @@ function parseTaskExecutionDispatchArgs(args: readonly string[]): {
   readonly providerProfileId: string;
   readonly error?: AeosError;
 } {
-  let json = false;
+  let json = args.includes("--json");
   let taskId: string | undefined;
   let invocationId: string | undefined;
   let expectedRevision: string | undefined;
@@ -5114,6 +5171,182 @@ function parseTaskExecutionClaudeCanaryArgs(args: readonly string[]): {
     invocationId,
     expectedRevision,
     expectedInvocationRevision,
+  };
+}
+
+function parseTaskExecutionOrchestrationCanaryArgs(args: readonly string[]): {
+  readonly json: boolean;
+  readonly action?: "prepare" | "run";
+  readonly taskId?: string;
+  readonly orchestrationId?: string;
+  readonly expectedRevision?: string;
+  readonly expectedPlannerInvocationRevision?: string;
+  readonly expectedWorkerInvocationRevision?: string;
+  readonly error?: AeosError;
+} {
+  let json = args.includes("--json");
+  let action: "prepare" | "run" | undefined;
+  let taskId: string | undefined;
+  let orchestrationId: string | undefined;
+  let expectedRevision: string | undefined;
+  let expectedPlannerInvocationRevision: string | undefined;
+  let expectedWorkerInvocationRevision: string | undefined;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+
+    if (arg === "--orchestration-id") {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        return {
+          json,
+          action,
+          taskId,
+          orchestrationId,
+          expectedRevision,
+          expectedPlannerInvocationRevision,
+          expectedWorkerInvocationRevision,
+          error: createTaskStateCliError({
+            code: "task_execution_orchestration_canary_id_required",
+            message:
+              "Orchestration canary requires --orchestration-id <orchestration-id>.",
+          }),
+        };
+      }
+      orchestrationId = value;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--expected-revision") {
+      expectedRevision = args[index + 1];
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--expected-planner-invocation-revision") {
+      expectedPlannerInvocationRevision = args[index + 1];
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--expected-worker-invocation-revision") {
+      expectedWorkerInvocationRevision = args[index + 1];
+      index += 1;
+      continue;
+    }
+
+    if (
+      [
+        "--worker",
+        "--prompt",
+        "--cwd",
+        "--workdir",
+        "--workspace",
+        "--executable",
+        "--model",
+        "--args",
+        "--codex-args",
+        "--claude-args",
+        "--mcp",
+        "--mcp-config",
+        "--force",
+        "--retry",
+        "--completed",
+        "--safe-to-retry",
+        "--yolo",
+        "--danger-full-access",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--shell",
+      ].includes(arg)
+    ) {
+      return {
+        json,
+        action,
+        taskId,
+        orchestrationId,
+        expectedRevision,
+        expectedPlannerInvocationRevision,
+        expectedWorkerInvocationRevision,
+        error: createTaskStateCliError({
+          code:
+            "task_execution_orchestration_canary_authority_override_forbidden",
+          message:
+            "Orchestration canary does not accept worker, prompt, executable, cwd, model args, force, retry, shell, or completion authority.",
+          category: "permission",
+        }),
+      };
+    }
+
+    if (arg.startsWith("--")) {
+      return {
+        json,
+        action,
+        taskId,
+        orchestrationId,
+        expectedRevision,
+        expectedPlannerInvocationRevision,
+        expectedWorkerInvocationRevision,
+        error: createTaskStateCliError({
+          code: "task_execution_orchestration_canary_unknown_option",
+          message: "Unknown orchestration canary option.",
+        }),
+      };
+    }
+
+    if (action === undefined) {
+      if (arg !== "prepare" && arg !== "run") {
+        return {
+          json,
+          action,
+          taskId,
+          orchestrationId,
+          expectedRevision,
+          expectedPlannerInvocationRevision,
+          expectedWorkerInvocationRevision,
+          error: createTaskStateCliError({
+            code: "task_execution_orchestration_canary_action_invalid",
+            message:
+              "Orchestration canary action must be prepare or run.",
+          }),
+        };
+      }
+      action = arg;
+      continue;
+    }
+
+    if (taskId !== undefined) {
+      return {
+        json,
+        action,
+        taskId,
+        orchestrationId,
+        expectedRevision,
+        expectedPlannerInvocationRevision,
+        expectedWorkerInvocationRevision,
+        error: createTaskStateCliError({
+          code: "task_execution_orchestration_canary_duplicate_task_id",
+          message: "Orchestration canary run accepts one task id.",
+        }),
+      };
+    }
+
+    taskId = arg;
+  }
+
+  return {
+    json,
+    action,
+    taskId,
+    orchestrationId,
+    expectedRevision,
+    expectedPlannerInvocationRevision,
+    expectedWorkerInvocationRevision,
   };
 }
 
@@ -6040,6 +6273,255 @@ async function handleTaskExecutionClaudeCanary(
 
   writeOrPrint(output);
   setExitCode(runtime.processSpawned ? 0 : 1);
+}
+
+async function handleTaskExecutionOrchestrationCanary(
+  args: readonly string[],
+): Promise<void> {
+  const parsedArgs = parseTaskExecutionOrchestrationCanaryArgs(args);
+
+  function writeOrPrint(
+    output: TaskExecutionOrchestrationCanaryJsonOutput,
+  ): void {
+    if (parsedArgs.json) {
+      writeTaskExecutionOrchestrationCanaryJson(output);
+      return;
+    }
+
+    if (!output.ok) {
+      console.error("Task Execution Orchestration Canary");
+      console.error(`Status: ${output.status}`);
+      console.error(`Error: ${output.error.code}: ${output.error.message}`);
+      return;
+    }
+
+    console.log("Task Execution Orchestration Canary");
+    console.log(`Status: ${output.status}`);
+    console.log(`Task ID: ${output.taskId}`);
+    console.log(`Task revision: ${output.taskRevision}`);
+    console.log(`Orchestration ID: ${output.orchestrationId}`);
+    console.log(`Planner invocation: ${output.plannerInvocationId}`);
+    console.log(`Planner invocation revision: ${output.plannerInvocationRevision}`);
+    console.log(`Worker invocation: ${output.workerInvocationId}`);
+    console.log(`Worker invocation revision: ${output.workerInvocationRevision}`);
+    console.log(`Route decision: ${output.routeDecisionId ?? "not_run"}`);
+    console.log(`Selected worker family: ${output.selectedWorkerFamily ?? "none"}`);
+    console.log("Production completion ready: false");
+  }
+
+  if (parsedArgs.error !== undefined || parsedArgs.action === undefined) {
+    writeOrPrint({
+      ok: false,
+      status: "invalid_arguments",
+      taskId: parsedArgs.taskId ?? "",
+      orchestrationId: parsedArgs.orchestrationId ?? null,
+      error: parsedArgs.error ?? createTaskStateCliError({
+        code: "task_execution_orchestration_canary_action_required",
+        message:
+          "Orchestration canary requires prepare or run.",
+      }),
+      productionCompletionReady: false,
+      issues: [],
+    });
+    setExitCode(1);
+    return;
+  }
+
+  if (parsedArgs.action === "prepare") {
+    const result = await prepareTaskExecutionTwoModelCanary({
+      projectRoot: getCwd(),
+    });
+    if (!result.ok || result.orchestration === null) {
+      const firstIssue = result.issues[0];
+      writeOrPrint({
+        ok: false,
+        status: result.status,
+        taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+        orchestrationId: TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID,
+        error: createTaskStateCliError({
+          code:
+            firstIssue?.code ??
+            "task_execution_orchestration_canary_prepare_blocked",
+          message:
+            firstIssue?.message ??
+            "Two-model orchestration canary preparation was blocked.",
+          category: firstIssue?.category,
+        }),
+        productionCompletionReady: false,
+        issues: result.issues.map((item) =>
+          createTaskStateCliIssue({
+            code: item.code,
+            message: item.message,
+            category: item.category,
+          }),
+        ),
+      });
+      setExitCode(1);
+      return;
+    }
+
+    writeOrPrint({
+      ok: true,
+      status: result.status,
+      taskId: result.orchestration.taskId,
+      taskRevision: result.orchestration.taskRevision,
+      orchestrationId: result.orchestration.orchestrationId,
+      plannerInvocationId: result.orchestration.plannerInvocationId,
+      plannerInvocationRevision: result.orchestration.plannerInvocationRevision,
+      workerInvocationId: result.orchestration.workerInvocationId,
+      workerInvocationRevision: result.orchestration.workerInvocationRevision,
+      routeDecisionId: result.orchestration.routeDecisionId,
+      selectedWorkerFamily: result.orchestration.selectedWorkerFamily,
+      plannerCalls: 0,
+      workerCalls: 0,
+      productionCompletionReady: false,
+      safety: {
+        RealCodexPlannerCanaryReady: true,
+        RealClaudeRoutedReadOnlyCanaryReady: true,
+        RealTwoModelCanaryReady: true,
+        RealCodexPlannerExecuted: false,
+        RealClaudeRoutedWorkerExecuted: false,
+        RealTwoModelCanaryExecuted: false,
+        repositoryWriteAllowed: false,
+        shellAllowed: false,
+        primaryApplyAllowed: false,
+        completionAuthority: false,
+      },
+      issues: [],
+    });
+    return;
+  }
+
+  if (parsedArgs.taskId === undefined || parsedArgs.orchestrationId === undefined) {
+    writeOrPrint({
+      ok: false,
+      status: "invalid_arguments",
+      taskId: parsedArgs.taskId ?? "",
+      orchestrationId: parsedArgs.orchestrationId ?? null,
+      error: createTaskStateCliError({
+        code: "task_execution_orchestration_canary_ids_required",
+        message:
+          "Orchestration canary run requires task id and --orchestration-id.",
+      }),
+      productionCompletionReady: false,
+      issues: [],
+    });
+    setExitCode(1);
+    return;
+  }
+
+  const expectedRevision = parseExpectedDispatchRevision(
+    parsedArgs.expectedRevision,
+  );
+  const expectedPlannerInvocationRevision = parseExpectedDispatchRevision(
+    parsedArgs.expectedPlannerInvocationRevision,
+  );
+  const expectedWorkerInvocationRevision = parseExpectedDispatchRevision(
+    parsedArgs.expectedWorkerInvocationRevision,
+  );
+  const revisionError = !expectedRevision.ok
+    ? expectedRevision.error
+    : !expectedPlannerInvocationRevision.ok
+      ? expectedPlannerInvocationRevision.error
+      : !expectedWorkerInvocationRevision.ok
+        ? expectedWorkerInvocationRevision.error
+        : null;
+  if (
+    revisionError !== null ||
+    !expectedRevision.ok ||
+    !expectedPlannerInvocationRevision.ok ||
+    !expectedWorkerInvocationRevision.ok
+  ) {
+    writeOrPrint({
+      ok: false,
+      status: "invalid_arguments",
+      taskId: parsedArgs.taskId,
+      orchestrationId: parsedArgs.orchestrationId,
+      error: revisionError!,
+      productionCompletionReady: false,
+      issues: [],
+    });
+    setExitCode(1);
+    return;
+  }
+
+  const result = await runTaskExecutionTwoModelCanary({
+    projectRoot: getCwd(),
+    taskId: parsedArgs.taskId,
+    orchestrationId: parsedArgs.orchestrationId,
+    expectedRevision: expectedRevision.value,
+    expectedPlannerInvocationRevision: expectedPlannerInvocationRevision.value,
+    expectedWorkerInvocationRevision: expectedWorkerInvocationRevision.value,
+  });
+  if (!result.ok || result.orchestration === null) {
+    const firstIssue = result.issues[0];
+    writeOrPrint({
+      ok: false,
+      status: result.status,
+      taskId: parsedArgs.taskId,
+      orchestrationId: parsedArgs.orchestrationId,
+      error: createTaskStateCliError({
+        code:
+          firstIssue?.code ??
+          "task_execution_orchestration_canary_blocked",
+        message:
+          firstIssue?.message ??
+          "Two-model orchestration canary did not complete the one-hop route.",
+        category: firstIssue?.category,
+      }),
+      productionCompletionReady: false,
+      issues: result.issues.map((item) =>
+        createTaskStateCliIssue({
+          code: item.code,
+          message: item.message,
+          category: item.category,
+        }),
+      ),
+    });
+    setExitCode(1);
+    return;
+  }
+
+  writeOrPrint({
+    ok: true,
+    status: result.status,
+    taskId: result.orchestration.taskId,
+    taskRevision: result.orchestration.taskRevision,
+    orchestrationId: result.orchestration.orchestrationId,
+    plannerInvocationId: result.orchestration.plannerInvocationId,
+    plannerInvocationRevision:
+      result.plannerInvocation?.revision ??
+      result.orchestration.plannerInvocationRevision,
+    workerInvocationId: result.orchestration.workerInvocationId,
+    workerInvocationRevision:
+      result.workerInvocation?.revision ??
+      result.orchestration.workerInvocationRevision,
+    routeDecisionId: result.orchestration.routeDecisionId,
+    selectedWorkerFamily: result.orchestration.selectedWorkerFamily,
+    plannerCalls: result.plannerCalls,
+    workerCalls: result.workerCalls,
+    productionCompletionReady: false,
+    safety: {
+      RealCodexPlannerCanaryReady: true,
+      RealClaudeRoutedReadOnlyCanaryReady: true,
+      RealTwoModelCanaryReady: true,
+      RealCodexPlannerExecuted: result.safety.realCodexPlannerExecuted,
+      RealClaudeRoutedWorkerExecuted:
+        result.safety.realClaudeRoutedWorkerExecuted,
+      RealTwoModelCanaryExecuted: result.ok,
+      repositoryWriteAllowed: false,
+      shellAllowed: false,
+      primaryApplyAllowed: false,
+      completionAuthority: false,
+    },
+    issues: result.issues.map((item) =>
+      createTaskStateCliIssue({
+        code: item.code,
+        message: item.message,
+        category: item.category,
+      }),
+    ),
+  });
 }
 
 async function handleTaskExecutionClaudeWriteCanary(
@@ -11039,7 +11521,8 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
     args[0] !== "dispatch" &&
     args[0] !== "claude-canary" &&
     args[0] !== "claude-write-canary" &&
-    args[0] !== "primary-apply-canary"
+    args[0] !== "primary-apply-canary" &&
+    args[0] !== "orchestration-canary"
   ) {
     const json = args.includes("--json");
     const error = createTaskStateCliError({
@@ -11094,6 +11577,9 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
       console.error(
         "Usage: aeos task execution primary-apply-canary <task-id> --apply-id <apply-id> --expected-revision <number> [--json]",
       );
+      console.error(
+        "Usage: aeos task execution orchestration-canary run <task-id> --orchestration-id <orchestration-id> --expected-revision <number> --expected-planner-invocation-revision <number> --expected-worker-invocation-revision <number> [--json]",
+      );
     }
 
     setExitCode(1);
@@ -11132,6 +11618,11 @@ async function handleTaskExecution(args: readonly string[]): Promise<void> {
 
   if (args[0] === "primary-apply-canary") {
     await handleTaskExecutionPrimaryApplyCanary(args.slice(1));
+    return;
+  }
+
+  if (args[0] === "orchestration-canary") {
+    await handleTaskExecutionOrchestrationCanary(args.slice(1));
     return;
   }
 

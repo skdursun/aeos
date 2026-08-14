@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aeos-codex-planner-routing-proposal-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "aeosCodexWorkerResultVersion",
+    "status",
+    "workerId",
+    "workerFamily",
+    "runtimeKind",
+    "invocationId",
+    "idempotencyKey",
+    "taskId",
+    "sourceTaskRevision",
+    "attemptId",
+    "attemptNumber",
+    "workItemId",
+    "batchId",
+    "invocationOk",
+    "output",
+    "diagnosticCode"
+  ],
+  "properties": {
+    "aeosCodexWorkerResultVersion": { "const": 1 },
+    "status": { "const": "returned" },
+    "workerId": { "type": "string" },
+    "workerFamily": { "const": "codex" },
+    "runtimeKind": { "const": "test_worker" },
+    "invocationId": { "type": "string" },
+    "idempotencyKey": { "type": "string" },
+    "taskId": { "type": "string" },
+    "sourceTaskRevision": { "type": "integer", "minimum": 1 },
+    "attemptId": { "type": "string" },
+    "attemptNumber": { "type": "integer", "minimum": 1 },
+    "workItemId": { "type": ["string", "null"] },
+    "batchId": { "type": ["string", "null"] },
+    "invocationOk": { "const": true },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["routingProposal"],
+      "properties": {
+        "routingProposal": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "taskId",
+            "sourceTaskRevision",
+            "workItemId",
+            "operationKind",
+            "recommendedWorkerFamily",
+            "capabilityRequirements",
+            "reasonReference",
+            "expectedOperationClass"
+          ],
+          "properties": {
+            "proposalId": { "type": "string" },
+            "taskId": { "type": "string" },
+            "sourceTaskRevision": { "type": "integer", "minimum": 1 },
+            "workItemId": { "type": "string" },
+            "batchId": { "type": "string" },
+            "operationKind": { "const": "execute_task_attempt" },
+            "recommendedWorkerFamily": { "const": "claude_code" },
+            "capabilityRequirements": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "implementation",
+                  "repositoryRead",
+                  "modelReasoning",
+                  "boundedDiagnostics"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 8,
+              "uniqueItems": true
+            },
+            "reasonReference": { "const": "aeos://task/TASK-0324/operation/read-only-routed-worker-canary" },
+            "expectedOperationClass": { "const": "implementation" }
+          }
+        }
+      }
+    },
+    "outputReference": { "type": "string" },
+    "diagnosticCode": { "const": "task_0324_codex_planner_routing_proposal" },
+    "message": { "type": "string" }
+  }
+}

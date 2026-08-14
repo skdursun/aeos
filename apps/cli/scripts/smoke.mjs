@@ -11648,6 +11648,76 @@ try {
     "task_execution_primary_apply_canary_authority_override_forbidden",
     primaryApplyCanaryPathOverride,
   );
+
+  const orchestrationCanaryRoot = join(smokeDir, "orchestration-canary");
+  mkdirSync(orchestrationCanaryRoot, { recursive: true });
+  const orchestrationCanaryPrepare = runCliFrom(orchestrationCanaryRoot, [
+    "task",
+    "execution",
+    "orchestration-canary",
+    "prepare",
+    "--json",
+  ]);
+  expectExitCode(
+    "orchestration canary prepare did not exit zero",
+    orchestrationCanaryPrepare,
+    0,
+  );
+  const parsedOrchestrationCanaryPrepare = parseJsonOnlyStdout(
+    "orchestration canary prepare output was not valid JSON only",
+    orchestrationCanaryPrepare,
+  );
+  if (
+    parsedOrchestrationCanaryPrepare.ok !== true ||
+    parsedOrchestrationCanaryPrepare.safety.RealTwoModelCanaryReady !== true ||
+    parsedOrchestrationCanaryPrepare.safety.RealTwoModelCanaryExecuted !==
+      false ||
+    parsedOrchestrationCanaryPrepare.plannerCalls !== 0 ||
+    parsedOrchestrationCanaryPrepare.workerCalls !== 0
+  ) {
+    fail(
+      "orchestration canary prepare did not expose ready-not-executed state",
+      orchestrationCanaryPrepare,
+    );
+  }
+
+  const orchestrationCanaryForbidden = runCliFrom(orchestrationCanaryRoot, [
+    "task",
+    "execution",
+    "orchestration-canary",
+    "run",
+    parsedOrchestrationCanaryPrepare.taskId,
+    "--orchestration-id",
+    parsedOrchestrationCanaryPrepare.orchestrationId,
+    "--expected-revision",
+    String(parsedOrchestrationCanaryPrepare.taskRevision),
+    "--expected-planner-invocation-revision",
+    String(parsedOrchestrationCanaryPrepare.plannerInvocationRevision),
+    "--expected-worker-invocation-revision",
+    String(parsedOrchestrationCanaryPrepare.workerInvocationRevision),
+    "--worker",
+    "claude_code",
+    "--json",
+  ]);
+  expectNonzero(
+    "orchestration canary forbidden override exited zero",
+    orchestrationCanaryForbidden,
+  );
+  const parsedOrchestrationCanaryForbidden = parseJsonOnlyStdout(
+    "orchestration canary forbidden output was not valid JSON only",
+    orchestrationCanaryForbidden,
+  );
+  if (
+    parsedOrchestrationCanaryForbidden.ok !== false ||
+    parsedOrchestrationCanaryForbidden.status !== "invalid_arguments" ||
+    parsedOrchestrationCanaryForbidden.error.code !==
+      "task_execution_orchestration_canary_authority_override_forbidden"
+  ) {
+    fail(
+      "orchestration canary forbidden override did not fail closed",
+      orchestrationCanaryForbidden,
+    );
+  }
 } finally {
   for (const path of createdMemoryPaths) {
     if (existsSync(path)) {

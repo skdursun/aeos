@@ -263,6 +263,11 @@ an AuthorizedWorkerRoute-style decision and does not launch workers, mutate
 state, apply artifacts, alter work accounting, satisfy verifiers, authorize
 retry, complete tasks, or call real Codex/Claude/cloud providers.
 
+TASK-0324 implementation is ready and the single real two-model canary is
+prepared, but the real Codex planner -> AEOS route -> real Claude Code
+read-only worker canary remains pending operator execution and durable outcome
+review before completion may be claimed.
+
 ## Current Plans
 
 - docs/AGENTIC_TASK_LIFECYCLE_DESIGN.md

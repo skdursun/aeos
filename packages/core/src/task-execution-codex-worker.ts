@@ -104,6 +104,7 @@ export interface TaskExecutionCodexWorkerConfiguration {
   readonly stdoutLimitBytes: number;
   readonly stderrLimitBytes: number;
   readonly structuredResultContractRef?: string;
+  readonly structuredResultSchemaPath?: string;
 }
 
 export interface TaskExecutionCodexProcessRequest {
@@ -420,6 +421,18 @@ function isSafeModel(value: unknown): value is string {
   return typeof value === "string" && safeModelPattern.test(value);
 }
 
+function isSafeAbsolutePath(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 512 &&
+    value.startsWith("/") &&
+    !value.includes("\0") &&
+    !value.includes("/../") &&
+    !value.endsWith("/..")
+  );
+}
+
 function isPositiveInteger(value: unknown, max: number): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= max;
 }
@@ -463,7 +476,9 @@ function validateConfiguration(
     !isPositiveInteger(configuration.stdoutLimitBytes, 65536) ||
     !isPositiveInteger(configuration.stderrLimitBytes, 32768) ||
     (configuration.structuredResultContractRef !== undefined &&
-      !isSafeReference(configuration.structuredResultContractRef))
+      !isSafeReference(configuration.structuredResultContractRef)) ||
+    (configuration.structuredResultSchemaPath !== undefined &&
+      !isSafeAbsolutePath(configuration.structuredResultSchemaPath))
   ) {
     issues.push(
       issue({
@@ -576,8 +591,8 @@ function buildCodexArgv(
     configuration.approvalPolicy,
   ];
 
-  if (configuration.structuredResultContractRef !== undefined) {
-    argv.push("--output-schema", configuration.structuredResultContractRef);
+  if (configuration.structuredResultSchemaPath !== undefined) {
+    argv.push("--output-schema", configuration.structuredResultSchemaPath);
   }
 
   return argv;

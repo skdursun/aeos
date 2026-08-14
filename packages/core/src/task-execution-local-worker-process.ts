@@ -238,6 +238,7 @@ export interface TaskExecutionLocalWorkerRuntimeExecutableBinding {
   readonly executablePath: string;
   readonly executionMode:
     | "benign_test_fixture"
+    | "real_codex_read_only_planner_canary"
     | "real_claude_code_read_only_canary"
     | "real_claude_code_write_canary";
 }
@@ -998,6 +999,19 @@ function executableBindingReady(input: {
   const permissionModeIndex = input.authority.argv.indexOf("--permission-mode");
   const executionModeReady =
     input.executable.executionMode === "benign_test_fixture" ||
+    (input.executable.executionMode === "real_codex_read_only_planner_canary" &&
+      input.authority.workerFamily === "codex" &&
+      input.authority.executableKind === "codex_exec" &&
+      input.authority.environment.inheritance === "none" &&
+      input.authority.argv.includes("exec") &&
+      input.authority.argv.includes("--sandbox") &&
+      input.authority.argv.includes("read-only") &&
+      input.authority.argv.includes("--ask-for-approval") &&
+      input.authority.argv.includes("never") &&
+      input.authority.argv.includes("--output-schema") &&
+      !input.authority.argv.some((arg) =>
+        /danger|yolo|bypass|mcp|provider|api-key|credential/i.test(arg),
+      )) ||
     (input.executable.executionMode === "real_claude_code_read_only_canary" &&
       input.authority.workerFamily === "claude_code" &&
       input.authority.executableKind === "claude_code" &&

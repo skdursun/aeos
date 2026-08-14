@@ -48,6 +48,8 @@ export type * from "./task-execution-worker-mutation-apply.js";
 export type * from "./task-execution-codex-worker.js";
 export type * from "./task-execution-claude-code-worker.js";
 export type * from "./task-execution-claude-code-auth-preflight.js";
+export type * from "./task-execution-codex-auth-preflight.js";
+export type * from "./task-execution-two-model-canary.js";
 export type * from "./task-execution-audit.js";
 export type * from "./task-execution-audit-persistence.js";
 export type * from "./task-execution-policy-approval.js";
@@ -106,6 +108,8 @@ export {
 export * from "./task-execution-codex-worker.js";
 export * from "./task-execution-claude-code-worker.js";
 export * from "./task-execution-claude-code-auth-preflight.js";
+export * from "./task-execution-codex-auth-preflight.js";
+export * from "./task-execution-two-model-canary.js";
 export * from "./task-execution-audit.js";
 export * from "./task-execution-audit-persistence.js";
 export * from "./task-execution-policy-approval.js";
