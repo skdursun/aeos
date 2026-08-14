@@ -76,6 +76,7 @@ export * from "./task-execution-production-dispatch.js";
 export * from "./task-execution-production-provider-dispatch.js";
 export * from "./task-execution-production-provider-profile.js";
 export * from "./task-execution-worker.js";
+export * from "./task-execution-worker-routing.js";
 export * from "./task-execution-local-worker-process.js";
 export * from "./task-execution-worker-mutation-workspace.js";
 export {

@@ -149,7 +149,9 @@ import {
   executeTaskExecutionPrimaryApplyCanarySmokeOnly,
   executeTaskExecutionTestMutationApply,
   executeTaskExecutionLocalWorkerProcess,
+  authorizeTaskExecutionWorkerRoute,
   evaluateTaskExecutionWorkerConformance,
+  evaluateTaskExecutionWorkerRoutingProposal,
   evaluateTaskExecutionProductionDispatchGate,
   evaluateTaskExecutionProductionCredentialProviderConfiguration,
   evaluateTaskExecutionPermissionGate,
@@ -208,6 +210,15 @@ import {
   TASK_EXECUTION_PRODUCTION_DISPATCH_BOUNDARY,
   TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
   TASK_EXECUTION_WORKER_RUNTIME_EXECUTION_ENABLED,
+  TASK_EXECUTION_WORKER_ROUTING_AUTHORITY_READY,
+  TASK_EXECUTION_WORKER_ROUTING_AUTOMATIC_PATCH_APPLY_ENABLED,
+  TASK_EXECUTION_WORKER_ROUTING_AUTOMATIC_WORKER_LAUNCH_ENABLED,
+  TASK_EXECUTION_WORKER_ROUTING_CLOUD_CALLS,
+  TASK_EXECUTION_WORKER_ROUTING_GENERAL_PRIMARY_APPLY_ENABLED,
+  TASK_EXECUTION_WORKER_ROUTING_PRIMARY_APPLIES,
+  TASK_EXECUTION_WORKER_ROUTING_REAL_CLAUDE_CALLS,
+  TASK_EXECUTION_WORKER_ROUTING_REAL_CODEX_CALLS,
+  TASK_EXECUTION_WORKER_ROUTING_WORKER_PROCESSES,
   deriveTaskExecutionInvocationIdentity,
   deriveTaskExecutionInvocationIdentityForAttempt,
   getTaskExecutionInvocationStoragePath,
@@ -17888,6 +17899,568 @@ try {
     invokingPersisted.value.record,
     claudeWorkerIdentity,
     createSmokeWorkerPermissionFacts(workerPermissionGate),
+  );
+  const routingProposal = {
+    proposalId: "proposal:codex-to-claude-smoke",
+    taskId: firstUpdate.value.state.taskId,
+    sourceTaskRevision: firstUpdate.value.state.revision,
+    workItemId: invokingPersisted.value.record.workItemId,
+    batchId: invokingPersisted.value.record.batchId,
+    operationKind: "execute_task_attempt",
+    recommendedWorkerFamily: "claude_code",
+    capabilityRequirements: ["implementation", "patchGeneration"],
+    reasonReference: "smoke://codex-orchestrator-proposal",
+    expectedOperationClass: "implementation",
+  };
+  const routingRegistry = [
+    {
+      identity: codexWorkerIdentity,
+      capabilities: createSmokeTestWorkerCapabilities({
+        roles: ["planner", "implementation"],
+        repositoryRead: true,
+        modelReasoning: true,
+        patchGeneration: true,
+        testExecution: true,
+      }),
+      eligible: true,
+      allowedOperations: ["execute_task_attempt"],
+      registrationAuthority: "system",
+    },
+    {
+      identity: claudeWorkerIdentity,
+      capabilities: createSmokeTestWorkerCapabilities({
+        roles: ["implementation", "verifier"],
+        modelReasoning: true,
+        patchGeneration: true,
+        testExecution: true,
+      }),
+      eligible: true,
+      allowedOperations: ["execute_task_attempt"],
+      registrationAuthority: "system",
+    },
+  ];
+  const routingPermissionPolicyAllowed = {
+    authority: "system",
+    allowed: true,
+    policyContradiction: false,
+    permissionContradiction: false,
+    capabilityContradiction: false,
+    policyRuleRef: "aeos-routing-policy:execute-task-attempt:test-worker-v1",
+  };
+  const codexOrchestratorCapabilities = createSmokeTestWorkerCapabilities({
+    roles: ["planner"],
+    repositoryRead: true,
+    modelReasoning: true,
+    patchGeneration: false,
+  });
+  const codexToClaudeRoute = authorizeTaskExecutionWorkerRoute({
+    state: firstUpdate.value.state,
+    proposals: routingProposal,
+    orchestratorIdentity: codexWorkerIdentity,
+    orchestratorCapabilities: codexOrchestratorCapabilities,
+    workerRegistry: routingRegistry,
+    permissionPolicyStatus: routingPermissionPolicyAllowed,
+  });
+  const repeatedCodexToClaudeRoute = authorizeTaskExecutionWorkerRoute({
+    state: firstUpdate.value.state,
+    proposals: { ...routingProposal },
+    orchestratorIdentity: codexWorkerIdentity,
+    orchestratorCapabilities: codexOrchestratorCapabilities,
+    workerRegistry: routingRegistry,
+    permissionPolicyStatus: routingPermissionPolicyAllowed,
+  });
+  assert.equal(
+    codexToClaudeRoute.status,
+    "authorized",
+    "task execution worker routing smoke A should authorize Codex planner proposal to Claude Code",
+  );
+  assert.equal(
+    codexToClaudeRoute.authority,
+    "system",
+    "task execution worker routing smoke A should keep AEOS as routing authority",
+  );
+  assert.equal(
+    codexToClaudeRoute.selectedWorkerFamily,
+    "claude_code",
+    "task execution worker routing smoke A should select Claude Code worker family",
+  );
+  assert.equal(
+    codexToClaudeRoute.selectedWorkerIdentity.workerId,
+    claudeWorkerIdentity.workerId,
+    "task execution worker routing smoke A should bind selected system worker identity",
+  );
+  assert.equal(
+    codexToClaudeRoute.taskId,
+    firstUpdate.value.state.taskId,
+    "task execution worker routing smoke A should bind authoritative task id",
+  );
+  assert.equal(
+    codexToClaudeRoute.sourceTaskRevision,
+    firstUpdate.value.state.revision,
+    "task execution worker routing smoke A should bind authoritative task revision",
+  );
+  assert.equal(
+    codexToClaudeRoute.workItemId,
+    invokingPersisted.value.record.workItemId,
+    "task execution worker routing smoke A should bind authoritative work item",
+  );
+  assert.equal(
+    codexToClaudeRoute.batchId,
+    invokingPersisted.value.record.batchId,
+    "task execution worker routing smoke A should bind authoritative batch",
+  );
+  assert.equal(
+    codexToClaudeRoute.safety.realCodexCalls,
+    0,
+    "task execution worker routing smoke A should make zero real Codex calls",
+  );
+  assert.equal(
+    codexToClaudeRoute.safety.realClaudeCalls,
+    0,
+    "task execution worker routing smoke A should make zero real Claude calls",
+  );
+  assert.equal(
+    codexToClaudeRoute.safety.workerProcesses,
+    0,
+    "task execution worker routing smoke A should not launch a worker process",
+  );
+  assert.equal(
+    codexToClaudeRoute.safety.primaryApplies,
+    0,
+    "task execution worker routing smoke A should not apply primary workspace mutations",
+  );
+  assert.equal(
+    codexToClaudeRoute.safety.taskComplete,
+    false,
+    "task execution worker routing smoke A should not complete the task",
+  );
+  assert.equal(
+    codexToClaudeRoute.safety.verifierSatisfied,
+    false,
+    "task execution worker routing smoke A should not satisfy verifier authority",
+  );
+  assert.equal(
+    codexToClaudeRoute.safety.completionGateSatisfied,
+    false,
+    "task execution worker routing smoke A should not satisfy completion gate",
+  );
+  assert.equal(
+    repeatedCodexToClaudeRoute.decisionId,
+    codexToClaudeRoute.decisionId,
+    "task execution worker routing smoke J should produce deterministic repeated decisions",
+  );
+  assert.deepEqual(
+    repeatedCodexToClaudeRoute.issues,
+    codexToClaudeRoute.issues,
+    "task execution worker routing smoke J should produce stable issue ordering",
+  );
+
+  const codexToCodexRoute = authorizeTaskExecutionWorkerRoute({
+    state: firstUpdate.value.state,
+    proposals: {
+      ...routingProposal,
+      proposalId: "proposal:codex-to-codex-smoke",
+      recommendedWorkerFamily: "codex",
+      capabilityRequirements: ["implementation", "patchGeneration"],
+    },
+    orchestratorIdentity: codexWorkerIdentity,
+    orchestratorCapabilities: codexOrchestratorCapabilities,
+    workerRegistry: routingRegistry,
+    permissionPolicyStatus: routingPermissionPolicyAllowed,
+  });
+  assert.equal(
+    codexToCodexRoute.status,
+    "authorized",
+    "task execution worker routing smoke B should support future Codex to Codex route",
+  );
+  assert.equal(
+    codexToCodexRoute.selectedWorkerFamily,
+    "codex",
+    "task execution worker routing smoke B should keep Codex route model-neutral",
+  );
+
+  const hostileRoutingProposal = {
+    ...routingProposal,
+    selectedWorker: "claude_code",
+    completed: true,
+    verified: true,
+    safeToRetry: true,
+    permissionGranted: true,
+    policyApproved: true,
+    invokeNow: true,
+    cwd: "/tmp",
+    executable: "/bin/sh",
+    overrideTaskRevision: 999,
+  };
+  const hostileProposalEvaluation =
+    evaluateTaskExecutionWorkerRoutingProposal(hostileRoutingProposal);
+  assert.equal(
+    hostileProposalEvaluation.accepted,
+    true,
+    "task execution worker routing smoke C should accept only bounded hostile proposal fields",
+  );
+  assert.ok(
+    hostileProposalEvaluation.ignoredAuthorityFields.includes("completed"),
+    "task execution worker routing smoke C should ignore hostile completion authority",
+  );
+  assert.ok(
+    hostileProposalEvaluation.ignoredAuthorityFields.includes("executable"),
+    "task execution worker routing smoke C should ignore hostile process authority",
+  );
+  const hostileRoute = authorizeTaskExecutionWorkerRoute({
+    state: firstUpdate.value.state,
+    proposals: hostileRoutingProposal,
+    orchestratorIdentity: codexWorkerIdentity,
+    orchestratorCapabilities: codexOrchestratorCapabilities,
+    workerRegistry: routingRegistry,
+    permissionPolicyStatus: routingPermissionPolicyAllowed,
+  });
+  assert.equal(
+    hostileRoute.status,
+    "authorized",
+    "task execution worker routing smoke C should route despite ignored hostile authority fields",
+  );
+  assert.equal(
+    hostileRoute.sourceTaskRevision,
+    firstUpdate.value.state.revision,
+    "task execution worker routing smoke C should ignore hostile revision override",
+  );
+  assert.equal(
+    hostileRoute.safety.retryAuthorized,
+    false,
+    "task execution worker routing smoke C should not grant retry authority",
+  );
+  assert.equal(
+    hostileRoute.safety.modelSelfReportTrusted,
+    false,
+    "task execution worker routing smoke C should not trust proposal authority claims",
+  );
+
+  const unknownWorkerRoute = authorizeTaskExecutionWorkerRoute({
+    state: firstUpdate.value.state,
+    proposals: {
+      ...routingProposal,
+      recommendedWorkerFamily: "generic",
+    },
+    orchestratorIdentity: codexWorkerIdentity,
+    orchestratorCapabilities: codexOrchestratorCapabilities,
+    workerRegistry: routingRegistry.filter(
+      (entry) => entry.identity.workerFamily !== "generic",
+    ),
+    permissionPolicyStatus: routingPermissionPolicyAllowed,
+  });
+  assert.equal(
+    unknownWorkerRoute.status,
+    "blocked",
+    "task execution worker routing smoke D should block unknown registered worker family",
+  );
+  assert.ok(
+    unknownWorkerRoute.issues.some(
+      (item) => item.code === "task_execution_worker_routing_worker_unknown",
+    ),
+    "task execution worker routing smoke D should report unknown worker",
+  );
+
+  const staleRevisionRoute = authorizeTaskExecutionWorkerRoute({
+    state: firstUpdate.value.state,
+    proposals: {
+      ...routingProposal,
+      sourceTaskRevision: firstUpdate.value.state.revision - 1,
+    },
+    orchestratorIdentity: codexWorkerIdentity,
+    orchestratorCapabilities: codexOrchestratorCapabilities,
+    workerRegistry: routingRegistry,
+    permissionPolicyStatus: routingPermissionPolicyAllowed,
+  });
+  assert.equal(
+    staleRevisionRoute.status,
+    "blocked",
+    "task execution worker routing smoke E should block stale task revision",
+  );
+  assert.ok(
+    staleRevisionRoute.issues.some(
+      (item) =>
+        item.code === "task_execution_worker_routing_stale_task_revision",
+    ),
+    "task execution worker routing smoke E should report stale revision",
+  );
+
+  const unknownWorkItemRoute = authorizeTaskExecutionWorkerRoute({
+    state: firstUpdate.value.state,
+    proposals: {
+      ...routingProposal,
+      workItemId: "missing-routing-work-item",
+    },
+    orchestratorIdentity: codexWorkerIdentity,
+    orchestratorCapabilities: codexOrchestratorCapabilities,
+    workerRegistry: routingRegistry,
+    permissionPolicyStatus: routingPermissionPolicyAllowed,
+  });
+  assert.equal(
+    unknownWorkItemRoute.status,
+    "blocked",
+    "task execution worker routing smoke F should block unknown work item",
+  );
+  assert.ok(
+    unknownWorkItemRoute.issues.some(
+      (item) => item.code === "task_execution_worker_routing_work_item_unknown",
+    ),
+    "task execution worker routing smoke F should report unknown work item",
+  );
+
+  const capabilityMismatchRoute = authorizeTaskExecutionWorkerRoute({
+    state: firstUpdate.value.state,
+    proposals: {
+      ...routingProposal,
+      capabilityRequirements: ["implementation", "shellExecution"],
+    },
+    orchestratorIdentity: codexWorkerIdentity,
+    orchestratorCapabilities: codexOrchestratorCapabilities,
+    workerRegistry: routingRegistry,
+    permissionPolicyStatus: routingPermissionPolicyAllowed,
+  });
+  assert.equal(
+    capabilityMismatchRoute.status,
+    "blocked",
+    "task execution worker routing smoke G should block capability mismatch",
+  );
+  assert.ok(
+    capabilityMismatchRoute.issues.some(
+      (item) =>
+        item.code === "task_execution_worker_routing_capability_mismatch",
+    ),
+    "task execution worker routing smoke G should report capability mismatch",
+  );
+
+  const permissionContradictionRoute = authorizeTaskExecutionWorkerRoute({
+    state: firstUpdate.value.state,
+    proposals: routingProposal,
+    orchestratorIdentity: codexWorkerIdentity,
+    orchestratorCapabilities: codexOrchestratorCapabilities,
+    workerRegistry: routingRegistry,
+    permissionPolicyStatus: {
+      ...routingPermissionPolicyAllowed,
+      allowed: false,
+      permissionContradiction: true,
+    },
+  });
+  assert.equal(
+    permissionContradictionRoute.status,
+    "blocked",
+    "task execution worker routing smoke H should block permission contradiction",
+  );
+  assert.ok(
+    permissionContradictionRoute.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_worker_routing_permission_policy_contradiction",
+    ),
+    "task execution worker routing smoke H should report permission/policy contradiction",
+  );
+
+  const conflictingProposalRoute = authorizeTaskExecutionWorkerRoute({
+    state: firstUpdate.value.state,
+    proposals: [
+      routingProposal,
+      {
+        ...routingProposal,
+        proposalId: "proposal:conflicting-codex-route",
+        recommendedWorkerFamily: "codex",
+      },
+    ],
+    orchestratorIdentity: codexWorkerIdentity,
+    orchestratorCapabilities: codexOrchestratorCapabilities,
+    workerRegistry: routingRegistry,
+    permissionPolicyStatus: routingPermissionPolicyAllowed,
+  });
+  assert.equal(
+    conflictingProposalRoute.status,
+    "blocked",
+    "task execution worker routing smoke I should block conflicting proposals",
+  );
+  assert.ok(
+    conflictingProposalRoute.issues.some(
+      (item) =>
+        item.code === "task_execution_worker_routing_conflicting_proposals",
+    ),
+    "task execution worker routing smoke I should report deterministic conflict",
+  );
+
+  const claudeSelfRoutingRoute = authorizeTaskExecutionWorkerRoute({
+    state: firstUpdate.value.state,
+    proposals: {
+      ...routingProposal,
+      proposalId: "proposal:claude-self-routing",
+      recommendedWorkerFamily: "claude_code",
+      role: "orchestrator",
+      invokeNow: true,
+    },
+    orchestratorIdentity: claudeWorkerIdentity,
+    orchestratorCapabilities: createSmokeTestWorkerCapabilities({
+      roles: ["implementation"],
+      modelReasoning: true,
+      patchGeneration: true,
+    }),
+    workerRegistry: routingRegistry,
+    permissionPolicyStatus: routingPermissionPolicyAllowed,
+  });
+  assert.equal(
+    claudeSelfRoutingRoute.status,
+    "blocked",
+    "task execution worker routing smoke claude self-routing should remain blocked",
+  );
+  assert.ok(
+    claudeSelfRoutingRoute.issues.some(
+      (item) =>
+        item.code === "task_execution_worker_routing_orchestrator_not_authorized",
+    ),
+    "task execution worker routing smoke claude self-routing should require AEOS-owned planner authority",
+  );
+
+  const routing400WorkItems = Array.from({ length: 400 }, (_, index) => ({
+    id: `routing-400-work-${String(index + 1).padStart(3, "0")}`,
+    state: index < 20 ? "failed" : "pending",
+    batchId: "routing-400-batch",
+  }));
+  const routing400State = {
+    ...createInitialTaskState({
+      taskId: "TASK-ROUTING-400-20",
+      sourceTaskId: 'Codex proposal says "Claude can finish everything"',
+      createdAt,
+    }),
+    lifecycleState: "planned",
+    workItems: routing400WorkItems,
+    batches: [
+      {
+        id: "routing-400-batch",
+        workItemIds: routing400WorkItems.map((workItem) => workItem.id),
+        expectedItemCount: 400,
+        completedCount: 0,
+        failedCount: 20,
+        skippedCount: 0,
+        retryableCount: 0,
+      },
+    ],
+    pendingWorkItemIds: routing400WorkItems
+      .filter((workItem) => workItem.state === "pending")
+      .map((workItem) => workItem.id),
+    retryableWorkItemIds: [],
+    nextBatchId: "routing-400-batch",
+    plan: {
+      status: "planned",
+      summary: {
+        workItemCount: 400,
+        batchCount: 1,
+        stepCount: 1,
+        verifierRequired: true,
+        approvalRequired: false,
+        issueCount: 0,
+      },
+    },
+  };
+  const routing400Route = authorizeTaskExecutionWorkerRoute({
+    state: routing400State,
+    proposals: {
+      ...routingProposal,
+      proposalId: "proposal:routing-400-20",
+      taskId: routing400State.taskId,
+      sourceTaskRevision: routing400State.revision,
+      workItemId: "routing-400-work-021",
+      batchId: "routing-400-batch",
+      completed: true,
+      verified: true,
+      invokeNow: true,
+    },
+    orchestratorIdentity: codexWorkerIdentity,
+    orchestratorCapabilities: codexOrchestratorCapabilities,
+    workerRegistry: routingRegistry,
+    permissionPolicyStatus: routingPermissionPolicyAllowed,
+  });
+  assert.equal(
+    routing400Route.status,
+    "authorized",
+    "task execution worker routing smoke 400/20 should authorize route without accounting mutation",
+  );
+  const routing400Batch = routing400State.batches[0];
+  const routing400Accounted =
+    routing400Batch.completedCount +
+    routing400Batch.failedCount +
+    routing400Batch.skippedCount +
+    routing400Batch.retryableCount;
+  assert.equal(
+    routing400Batch.expectedItemCount,
+    400,
+    "task execution worker routing smoke 400/20 should preserve expected work",
+  );
+  assert.equal(
+    routing400Accounted,
+    20,
+    "task execution worker routing smoke 400/20 should preserve accounted work",
+  );
+  assert.equal(
+    routing400State.pendingWorkItemIds.length,
+    380,
+    "task execution worker routing smoke 400/20 should preserve remaining work",
+  );
+  assert.equal(
+    routing400State.completionGate.completed,
+    false,
+    "task execution worker routing smoke 400/20 should not complete task state",
+  );
+  assert.equal(
+    routing400State.verifier.status === "verified",
+    false,
+    "task execution worker routing smoke 400/20 should not satisfy verifier",
+  );
+  assert.equal(
+    routing400State.completionGate.satisfied,
+    false,
+    "task execution worker routing smoke 400/20 should not satisfy completion gate",
+  );
+  assert.equal(
+    TASK_EXECUTION_WORKER_ROUTING_AUTHORITY_READY,
+    true,
+    "task execution worker routing smoke should expose routing authority readiness",
+  );
+  assert.equal(
+    TASK_EXECUTION_WORKER_ROUTING_AUTOMATIC_WORKER_LAUNCH_ENABLED,
+    false,
+    "task execution worker routing smoke should keep automatic worker launch disabled",
+  );
+  assert.equal(
+    TASK_EXECUTION_WORKER_ROUTING_GENERAL_PRIMARY_APPLY_ENABLED,
+    false,
+    "task execution worker routing smoke should keep general primary apply disabled",
+  );
+  assert.equal(
+    TASK_EXECUTION_WORKER_ROUTING_AUTOMATIC_PATCH_APPLY_ENABLED,
+    false,
+    "task execution worker routing smoke should keep automatic patch apply disabled",
+  );
+  assert.equal(
+    TASK_EXECUTION_WORKER_ROUTING_REAL_CODEX_CALLS,
+    0,
+    "task execution worker routing smoke should make zero real Codex calls",
+  );
+  assert.equal(
+    TASK_EXECUTION_WORKER_ROUTING_REAL_CLAUDE_CALLS,
+    0,
+    "task execution worker routing smoke should make zero real Claude calls",
+  );
+  assert.equal(
+    TASK_EXECUTION_WORKER_ROUTING_WORKER_PROCESSES,
+    0,
+    "task execution worker routing smoke should spawn zero worker processes",
+  );
+  assert.equal(
+    TASK_EXECUTION_WORKER_ROUTING_PRIMARY_APPLIES,
+    0,
+    "task execution worker routing smoke should perform zero primary applies",
+  );
+  assert.equal(
+    TASK_EXECUTION_WORKER_ROUTING_CLOUD_CALLS,
+    0,
+    "task execution worker routing smoke should make zero cloud calls",
   );
   const workerStateSnapshot = JSON.stringify(firstUpdate.value.state);
   const workerAttemptSnapshot = JSON.stringify(invocationStartedAttempt);

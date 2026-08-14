@@ -207,6 +207,15 @@ condition.
   afterDigest, and actual file bytes. No product source file changed, general
   primary apply and automatic patch apply remain disabled, model/cloud calls
   remained zero, and verifier/completion/retry authority remains false.
+- TASK-0322: Codex-orchestrator to Claude Code worker routing authority
+  foundation. Added a deterministic TEST-only, worker-neutral AEOS routing layer
+  that treats Codex output as bounded proposal only, validates current
+  task/revision/work item/batch/policy/capability/registry authority, produces a
+  system-owned routing decision for Claude Code or Codex workers, blocks stale,
+  unknown, conflicting, ineligible, and permission-contradicted routes, ignores
+  hostile model authority fields, preserves 400/20 accounting, and keeps real
+  Codex, real Claude, worker processes, cloud calls, primary apply, automatic
+  patch apply, verifier, retry, and completion authority disabled.
 
 ## Do Not Load By Default
 
@@ -217,10 +226,10 @@ condition.
 
 ## Next Task
 
-TASK-0322: Design and implement Codex-orchestrator -> Claude Code worker routing
-authority using deterministic TEST routing only, reusing existing
-worker/process/mutation/apply authorities and keeping automatic general primary
-apply disabled.
+TASK-0323: Connect authorized routing decision to controlled worker invocation
+preparation/execution lifecycle using TEST workers only. Begin actual
+orchestration lifecycle wiring from route to invocation prepare to worker
+execution evidence, with no automatic primary apply or completion.
 
 ## Current Direction
 
@@ -237,6 +246,12 @@ automatic patch apply remain disabled, model/cloud calls remained zero, and
 completion authority remains false. The sacrificial canary file can be removed
 with the exact reviewed cleanup command after closeout commit ownership is
 handled.
+
+TASK-0322 is complete: AEOS now owns deterministic worker routing authority for
+Codex-orchestrator proposals to Claude Code/Codex TEST workers. Routing stops at
+an AuthorizedWorkerRoute-style decision and does not launch workers, mutate
+state, apply artifacts, alter work accounting, satisfy verifiers, authorize
+retry, complete tasks, or call real Codex/Claude/cloud providers.
 
 ## Current Plans
 
