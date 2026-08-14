@@ -216,6 +216,16 @@ condition.
   hostile model authority fields, preserves 400/20 accounting, and keeps real
   Codex, real Claude, worker processes, cloud calls, primary apply, automatic
   patch apply, verifier, retry, and completion authority disabled.
+- TASK-0323: Routed TEST worker orchestration lifecycle integration. Connected
+  authorized AEOS routing decisions to current task/work, started attempt, exact
+  durable invocation/idempotency authority, concrete Codex and Claude Code TEST
+  worker adapters, bounded worker requests, normalized worker evidence, audit,
+  and existing invocation outcome persistence. Repeated returned and
+  outcome_unknown invocations do not relaunch workers, hostile proposal and
+  worker authority fields remain non-authoritative, the canonical 400/20 case
+  stays incomplete after worker return, and real Codex, real Claude, worker
+  process, cloud, primary apply, retry, verifier, accounting, loop, and
+  completion authority remain disabled.
 
 ## Do Not Load By Default
 

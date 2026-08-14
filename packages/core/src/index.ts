@@ -41,6 +41,7 @@ export type * from "./task-execution-production-dispatch.js";
 export type * from "./task-execution-production-provider-dispatch.js";
 export type * from "./task-execution-production-provider-profile.js";
 export type * from "./task-execution-worker.js";
+export type * from "./task-execution-worker-orchestration.js";
 export type * from "./task-execution-local-worker-process.js";
 export type * from "./task-execution-worker-mutation-workspace.js";
 export type * from "./task-execution-worker-mutation-apply.js";
@@ -77,6 +78,7 @@ export * from "./task-execution-production-provider-dispatch.js";
 export * from "./task-execution-production-provider-profile.js";
 export * from "./task-execution-worker.js";
 export * from "./task-execution-worker-routing.js";
+export * from "./task-execution-worker-orchestration.js";
 export * from "./task-execution-local-worker-process.js";
 export * from "./task-execution-worker-mutation-workspace.js";
 export {
