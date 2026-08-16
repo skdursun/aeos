@@ -14,13 +14,18 @@ Read, in this exact order:
 3. `docs/ai/AEOS_CANONICAL_PROJECT_MEMORY.md`
 4. `docs/ai/DEVELOPER_ACCELERATION_STACK.md`
 5. `ops/handoffs/codex-to-claude-handoff.md`
-6. GitHub Issue #1 in `skdursun/aeos`
-7. GitHub Issue #4 for source-of-truth/handoff state
+6. `docs/roadmaps/PRODUCT_READY_ROADMAP.md`
+7. `docs/roadmaps/PRODUCT_READY_TASK_INDEX.md`
+8. GitHub Issue #1 in `skdursun/aeos`
+9. GitHub Issue #4 for source-of-truth/handoff state
 
 Also know that:
-- GitHub Issue #2 owns TASK-0001 → TASK-03xx historical reconstruction.
-- GitHub Issue #3 owns the complete product-ready roadmap.
-- Historical reconstruction and roadmap work may proceed as control/documentation work, but must not manually mutate TASK-0324 runtime authority.
+- GitHub Issue #2 owns TASK-0001 → TASK-03xx historical reconstruction. Do not invent missing historical meanings.
+- GitHub Issue #3 roadmap-planning objective is COMPLETE/CLOSED.
+- Product-ready implementation tasks are fully planned as TASK-0325 → TASK-0396 / GitHub Issues #5 → #76 and mirrored in the Notion AEOS Task Ledger.
+- The roadmap existing does NOT authorize skipping TASK-0324.
+- After durable TASK-0324 closeout, the default first dependency-ready product task is TASK-0325 / GitHub Issue #5.
+- Historical reconstruction/control documentation must not manually mutate TASK-0324 runtime authority.
 
 Then use Codebase Memory MCP FIRST for repository/domain discovery.
 
@@ -56,7 +61,8 @@ TOOLING STATUS:
 AEOS INVARIANTS LOADED:
 CANONICAL PROJECT MEMORY LOADED:
 HISTORICAL RECONSTRUCTION ISSUE:
-PRODUCT-READY ROADMAP ISSUE:
+PRODUCT-READY ROADMAP LOADED:
+PRODUCT-READY TASK RANGE:
 FILES READ:
 FIRST ACTION:
 
@@ -66,4 +72,6 @@ The first implementation action after acceptance is to prepare, through normal A
 
 Do not advance beyond TASK-0324 until durable closeout proves the full real Codex → AEOS route → real Claude one-hop.
 
-The project history, previously solved incidents, architecture decisions, Working Kit rules, model rules, cloud/provider restrictions, GitHub migration state, and current next action are already durably written in `docs/ai/AEOS_CANONICAL_PROJECT_MEMORY.md`. Treat that file as required handoff context, while Git/source/tests/durable AEOS state remain higher authority if a conflict is discovered.
+After TASK-0324 closes, select work from GitHub Issues according to explicit dependencies, starting by default with TASK-0325 / Issue #5. Do not jump directly to later roadmap phases just because they are already filed.
+
+The project history, solved incidents, architecture decisions, Working Kit rules, model rules, cloud/provider restrictions and GitHub migration state are durably written in `docs/ai/AEOS_CANONICAL_PROJECT_MEMORY.md`. The product-ready future program is durably written in the two roadmap documents above. Git/source/tests/durable AEOS state remain higher authority if a conflict is discovered.
