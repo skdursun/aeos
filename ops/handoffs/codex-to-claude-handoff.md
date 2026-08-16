@@ -15,14 +15,17 @@ AEOS authority → Codex planner/orchestrator → AEOS route validation → Clau
 Read in this order:
 1. Git repository / commit history
 2. GitHub active Issue
-3. `ops/handoffs/codex-to-claude-handoff.md`
-4. `PROJECT_CONTEXT.md`
-5. `AGENTS.md`
-6. `docs/ai/DEVELOPER_ACCELERATION_STACK.md`
-7. relevant task/evidence files
-8. CBM targeted repository intelligence
+3. `PROJECT_CONTEXT.md`
+4. `docs/ai/AEOS_CANONICAL_PROJECT_MEMORY.md`
+5. `ops/handoffs/codex-to-claude-handoff.md`
+6. `AGENTS.md`
+7. `docs/ai/DEVELOPER_ACCELERATION_STACK.md`
+8. relevant task/evidence files
+9. CBM targeted repository intelligence
 
 Previous chat/thread history is not required authority.
+
+`docs/ai/AEOS_CANONICAL_PROJECT_MEMORY.md` is the durable explanation of the project purpose, scope, architectural invariants, early planning, main task/milestone history, worker-runtime evolution, TASK-0324 incident/fix history, Developer Working Kit policy, GitHub migration state, and current next action. Claude MUST read it before implementation.
 
 ## Repository checkpoint
 
@@ -69,9 +72,12 @@ Only then execute exactly once.
 
 ## Completed mainline milestones
 
+The compact list below is only an index. The detailed history is in `docs/ai/AEOS_CANONICAL_PROJECT_MEMORY.md`.
+
+- planning/bootstrap contracts
 - CLI MVP
 - Memory/Project/Template MVP
-- Init pipeline
+- init pipeline
 - project intelligence/profile
 - template recommend
 - agentic task lifecycle
@@ -100,6 +106,8 @@ Only then execute exactly once.
 
 ## TASK-0324 fixes already completed
 
+Detailed root cause and lesson history is in the canonical project memory. Do not regress:
+
 - Claude host auth false-negative fix
 - invocation ordering/reporting fix
 - Codex host auth preflight
@@ -112,8 +120,7 @@ Only then execute exactly once.
 - planner profile `gpt-5.5 / high`
 - exit=1 durable diagnostic pipeline
 - stderr head/tail/terminal diagnostic improvement
-
-Do not regress these.
+- transient provider/network incident classification
 
 ## Model rules
 
@@ -176,13 +183,17 @@ Same critical context must not implement and approve itself.
 - Issue #3 — complete product-ready roadmap
 - Issue #4 — GitHub source-of-truth + Claude handoff completion
 
+Historical reconstruction must not invent missing task meanings. The full task ledger is being reconstructed from source/Git evidence; backlog text alone is not final execution authority.
+
 ## Files to read first
 
 1. `AGENTS.md`
 2. `PROJECT_CONTEXT.md`
-3. `docs/ai/DEVELOPER_ACCELERATION_STACK.md`
-4. `ops/handoffs/codex-to-claude-handoff.md`
-5. GitHub Issue #1
+3. `docs/ai/AEOS_CANONICAL_PROJECT_MEMORY.md`
+4. `docs/ai/DEVELOPER_ACCELERATION_STACK.md`
+5. `ops/handoffs/codex-to-claude-handoff.md`
+6. GitHub Issue #1
+7. GitHub Issue #4
 
 Then use CBM-first targeted discovery.
 
