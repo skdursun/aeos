@@ -3,6 +3,8 @@ import type { TaskExecutionWorkerIssue } from "./task-execution-worker.js";
 
 // @ts-expect-error Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
 import { spawn } from "node:child_process";
+// @ts-expect-error Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
+import process from "node:process";
 
 export const TASK_EXECUTION_CODEX_AUTH_PREFLIGHT_READY = true;
 
@@ -39,6 +41,8 @@ export interface TaskExecutionCodexAuthPreflightResult {
     readonly arbitraryArgsAccepted: false;
     readonly secretsPersisted: false;
     readonly rawAuthOutputPersisted: false;
+    readonly fullParentEnvironmentInherited: false;
+    readonly allowedHostEnvironmentRefs: readonly string[];
   };
 }
 
@@ -83,30 +87,54 @@ function safeResult(input: {
       arbitraryArgsAccepted: false,
       secretsPersisted: false,
       rawAuthOutputPersisted: false,
+      fullParentEnvironmentInherited: false,
+      allowedHostEnvironmentRefs: allowedHostEnvironmentRefs(),
     },
   };
 }
 
-function parseAuthenticated(stdout: string, exitCode: number | null): boolean | null {
-  const normalized = stdout.toLowerCase();
+function allowedHostEnvironmentRefs(): readonly string[] {
+  return [
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    ...((process as { env?: Record<string, string | undefined> }).env?.CODEX_HOME ===
+    undefined
+      ? []
+      : ["CODEX_HOME"]),
+  ];
+}
 
-  if (exitCode !== 0) {
-    return false;
+function safeEnvValue(value: string | undefined): string | undefined {
+  if (value === undefined || value.length === 0 || value.length > 1024) {
+    return undefined;
   }
 
-  if (normalized.includes("logged in") || normalized.includes("authenticated")) {
-    return true;
+  if (value.includes("\0")) {
+    return undefined;
   }
 
-  if (
-    normalized.includes("not logged in") ||
-    normalized.includes("logged out") ||
-    normalized.includes("unauthenticated")
-  ) {
-    return false;
+  return value;
+}
+
+function boundedHostEnvironment(): Record<string, string> {
+  const source = (process as { env?: Record<string, string | undefined> }).env ??
+    {};
+  const env: Record<string, string> = {};
+
+  for (const name of allowedHostEnvironmentRefs()) {
+    const value = safeEnvValue(source[name]);
+
+    if (value !== undefined) {
+      env[name] = value;
+    }
   }
 
-  return null;
+  return env;
 }
 
 async function runBoundedAuthStatusCommand(
@@ -120,6 +148,7 @@ async function runBoundedAuthStatusCommand(
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
+      env: boundedHostEnvironment(),
     });
     const timer = setTimeout(() => {
       if (settled) {
@@ -186,9 +215,8 @@ export async function runTaskExecutionCodexAuthPreflight(
     timeoutMs: input.timeoutMs ?? 10000,
   };
   const evidence = await (input.run ?? runBoundedAuthStatusCommand)(command);
-  const authenticated = parseAuthenticated(evidence.stdout, evidence.exitCode);
 
-  if (!evidence.spawned || evidence.timedOut || authenticated === null) {
+  if (!evidence.spawned || evidence.timedOut || evidence.exitCode === null) {
     return safeResult({
       command,
       status: "auth_check_unavailable",
@@ -207,7 +235,7 @@ export async function runTaskExecutionCodexAuthPreflight(
     });
   }
 
-  if (authenticated) {
+  if (evidence.exitCode === 0) {
     return safeResult({
       command,
       status: "authenticated",

@@ -236,10 +236,21 @@ condition.
 
 ## Next Task
 
-TASK-0323: Connect authorized routing decision to controlled worker invocation
-preparation/execution lifecycle using TEST workers only. Begin actual
-orchestration lifecycle wiring from route to invocation prepare to worker
-execution evidence, with no automatic primary apply or completion.
+TASK-0324: Execute exactly one prepared real Codex planner -> AEOS route ->
+real Claude Code read-only worker canary only after operator command
+
+## Pending Canary Notes
+
+- TASK-0324 exit=1 tail diagnostic fix is implementation-ready and
+  canary-blocked pending host Codex runtime reachability: the consumed
+  `TASK-0324-real-two-model-canary-fresh-20260814-evidencefix` planner
+  invocation exited 1 after the Codex process launch boundary, and the previous
+  head-only stderr excerpt preserved the startup banner but could discard the
+  terminal error. Future nonzero process diagnostics now persist bounded
+  sanitized stderr head, stderr tail, terminal stderr, stdout status, exit,
+  termination, and stdin-pipe facts. No fresh TASK-0324 canary is prepared until
+  Codex provider HTTP reachability is healthy or another diagnostic proves a
+  different root cause; do not rerun consumed canaries.
 
 ## Current Direction
 
@@ -263,10 +274,16 @@ an AuthorizedWorkerRoute-style decision and does not launch workers, mutate
 state, apply artifacts, alter work accounting, satisfy verifiers, authorize
 retry, complete tasks, or call real Codex/Claude/cloud providers.
 
-TASK-0324 implementation is ready and the single real two-model canary is
-prepared, but the real Codex planner -> AEOS route -> real Claude Code
-read-only worker canary remains pending operator execution and durable outcome
-review before completion may be claimed.
+TASK-0324 remains implementation/canary pending. The Codex exec nonzero
+diagnostic fix keeps real model execution disabled during verification, uses
+the installed `codex exec` contract surface, and requires one fresh operator
+command before any real Codex planner or routed Claude Code read-only worker
+canary may execute.
+
+TASK-0324 one-shot preparation semantics were fixed after a prelaunch runtime
+binding failure consumed an older planner invocation without spawning Codex.
+Fresh canary state must remain `prepared` with both planner and worker
+invocations `reserved` until the next explicit operator run.
 
 ## Current Plans
 

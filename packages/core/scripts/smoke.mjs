@@ -173,10 +173,13 @@ import {
   persistTaskExecutionMutationEvidence,
   prepareTaskExecutionCodexWorkerInvocation,
   prepareTaskExecutionTwoModelCanary,
+  loadTaskExecutionTwoModelCanaryRecord,
   runTaskExecutionTwoModelCanary,
   createTaskExecutionTwoModelCanaryCodexFixtureResult,
   createTaskExecutionTwoModelCanaryClaudeFixtureResult,
   runTaskExecutionClaudeCodeAuthPreflight,
+  runTaskExecutionCodexAuthPreflight,
+  runTaskExecutionCodexExecContractPreflight,
   verifyTaskExecutionMutationEvidenceForAuthority,
   TASK_EXECUTION_CLAUDE_CODE_PROCESS_CONTRACT_READY,
   TASK_EXECUTION_CLAUDE_CODE_AUTH_PREFLIGHT_READY,
@@ -19372,6 +19375,8 @@ try {
       arbitraryArgsAccepted: false,
       secretsPersisted: false,
       rawAuthOutputPersisted: false,
+      fullParentEnvironmentInherited: false,
+      allowedHostEnvironmentRefs: ["HOME", "USER", "LOGNAME", "TMPDIR"],
     },
   };
   const authenticatedClaudePreflight = {
@@ -19393,7 +19398,146 @@ try {
       rawAuthOutputPersisted: false,
     },
   };
+
+  const runSyntheticCodexPreflight = async (evidence) => {
+    let observedCommand = null;
+    const result = await runTaskExecutionCodexAuthPreflight({
+      executablePath: "/test/codex",
+      timeoutMs: 1234,
+      run: async (command) => {
+        observedCommand = command;
+        return evidence;
+      },
+    });
+
+    return { observedCommand, result };
+  };
+  const codexAuthChatGpt = await runSyntheticCodexPreflight({
+    exitCode: 0,
+    stdout: "Logged in using ChatGPT\n",
+    stderr: "",
+    timedOut: false,
+    spawned: true,
+  });
+  assert.equal(codexAuthChatGpt.result.authenticated, true);
+  assert.equal(codexAuthChatGpt.result.status, "authenticated");
+  assert.deepEqual(codexAuthChatGpt.observedCommand.argv, ["login", "status"]);
+  assert.equal(
+    codexAuthChatGpt.result.safety.fullParentEnvironmentInherited,
+    false,
+    "TASK-0324 auth smoke should not inherit full parent env",
+  );
+  const codexAuthFutureText = await runSyntheticCodexPreflight({
+    exitCode: 0,
+    stdout: "Signed in with a future safe host auth mode\n",
+    stderr: "",
+    timedOut: false,
+    spawned: true,
+  });
+  assert.equal(
+    codexAuthFutureText.result.authenticated,
+    true,
+    "TASK-0324 auth smoke B should trust exit code 0 instead of exact stdout",
+  );
+  const codexAuthNonzero = await runSyntheticCodexPreflight({
+    exitCode: 7,
+    stdout: "Please login\n",
+    stderr: "",
+    timedOut: false,
+    spawned: true,
+  });
+  assert.equal(codexAuthNonzero.result.status, "unauthenticated");
+  assert.equal(codexAuthNonzero.result.authenticated, false);
+  const codexAuthSpawnUnavailable = await runSyntheticCodexPreflight({
+    exitCode: null,
+    stdout: "",
+    stderr: "",
+    timedOut: false,
+    spawned: false,
+  });
+  assert.equal(
+    codexAuthSpawnUnavailable.result.status,
+    "auth_check_unavailable",
+    "TASK-0324 auth smoke D should fail closed when spawn is unavailable",
+  );
+  assert.equal(
+    JSON.stringify(codexAuthChatGpt.result).includes("auth.json"),
+    false,
+    "TASK-0324 auth smoke E should not require or report auth.json inspection",
+  );
+  assert.equal(
+    JSON.stringify(codexAuthChatGpt.result).includes("fake-codex-token"),
+    false,
+    "TASK-0324 auth smoke I should not leak credential-shaped values",
+  );
+
   const task0324TempRoot = await mkdtemp(join(tmpdir(), "aeos-task-0324-smoke-"));
+  const task0324PrepareOnlyRoot = join(
+    task0324TempRoot,
+    "task-0324-prepare-only",
+  );
+  await mkdir(task0324PrepareOnlyRoot, { recursive: true });
+  const task0324PrepareOnly = await prepareTaskExecutionTwoModelCanary({
+    projectRoot: task0324PrepareOnlyRoot,
+    now: "2026-08-14T12:00:00.000Z",
+  });
+  assert.equal(
+    task0324PrepareOnly.status,
+    "prepared",
+    "TASK-0324 one-shot smoke A should prepare a fresh orchestration authority",
+  );
+  const task0324PrepareOnlyRecord = await loadTaskExecutionTwoModelCanaryRecord({
+    projectRoot: task0324PrepareOnlyRoot,
+    taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+    orchestrationId: TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID,
+  });
+  assert.equal(task0324PrepareOnlyRecord.ok, true);
+  assert.equal(
+    task0324PrepareOnlyRecord.record.lifecycle,
+    "prepared",
+    "TASK-0324 one-shot smoke A should not consume orchestration authority during preparation",
+  );
+  assert.equal(
+    task0324PrepareOnlyRecord.record.realCodexPlannerExecuted,
+    false,
+  );
+  assert.equal(
+    task0324PrepareOnlyRecord.record.realClaudeRoutedWorkerExecuted,
+    false,
+  );
+  const task0324PrepareOnlyPlanner = await loadTaskExecutionInvocation({
+    projectRoot: task0324PrepareOnlyRoot,
+    taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+    invocationId: task0324PrepareOnly.orchestration.plannerInvocationId,
+  });
+  const task0324PrepareOnlyWorker = await loadTaskExecutionInvocation({
+    projectRoot: task0324PrepareOnlyRoot,
+    taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+    invocationId: task0324PrepareOnly.orchestration.workerInvocationId,
+  });
+  assert.equal(task0324PrepareOnlyPlanner.value.record.lifecycle, "reserved");
+  assert.equal(task0324PrepareOnlyPlanner.value.record.revision, 1);
+  assert.equal(task0324PrepareOnlyWorker.value.record.lifecycle, "reserved");
+  assert.equal(task0324PrepareOnlyWorker.value.record.revision, 1);
+  const task0324PrepareTwice = await prepareTaskExecutionTwoModelCanary({
+    projectRoot: task0324PrepareOnlyRoot,
+    now: "2026-08-14T12:00:01.000Z",
+  });
+  assert.equal(
+    task0324PrepareTwice.status,
+    "already_prepared",
+    "TASK-0324 one-shot smoke E should make repeated preparation deterministic without consumption",
+  );
+  assert.equal(
+    task0324PrepareTwice.orchestration.lifecycle,
+    "prepared",
+    "TASK-0324 one-shot smoke E should preserve prepared lifecycle on repeated preparation",
+  );
+  assert.notEqual(
+    TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+    "TASK-0324-real-two-model-canary-fresh-20260814-oneshotfix",
+    "TASK-0324 one-shot smoke F should keep deterministic smoke identity distinct from real canary ids",
+  );
   const runTask0324Fixture = async (name, runnerOverrides = {}) => {
     const root = join(task0324TempRoot, `task-0324-${name}`);
     await mkdir(root, { recursive: true });
@@ -19416,9 +19560,37 @@ try {
       runner: {
         codexAuthPreflight: async () =>
           runnerOverrides.codexAuthPreflight?.() ?? authenticatedCodexPreflight,
+        codexExecContractPreflight: async () =>
+          runnerOverrides.codexExecContractPreflight?.() ?? {
+            ok: true,
+            command: {
+              executablePath: "/test/codex",
+              argv: ["exec", "--help"],
+              timeoutMs: 1,
+            },
+            issues: [],
+            checks: {
+              executableExists: true,
+              execSurfaceSupported: true,
+              expectedFlagsSupported: true,
+              schemaPathValid: true,
+              schemaJsonValid: true,
+              cwdGitRepository: true,
+              environmentPolicyValid: true,
+            },
+            safety: {
+              modelInvoked: false,
+              shellUsed: false,
+              fullParentEnvironmentInherited: false,
+              rawHelpOutputPersisted: false,
+              credentialFilesRead: false,
+              secretsPersisted: false,
+            },
+          },
         claudeAuthPreflight: async () =>
           runnerOverrides.claudeAuthPreflight?.() ??
           authenticatedClaudePreflight,
+        policyRequirement: runnerOverrides.policyRequirement,
         codexProcess: async (request) => {
           plannerCalls += 1;
           return runnerOverrides.codexProcess?.(request) ??
@@ -19435,19 +19607,273 @@ try {
     return { root, prepared, result, plannerCalls, workerCalls };
   };
 
+  const task0324InvalidPolicyMetadata = await runTask0324Fixture(
+    "invalid-policy-metadata",
+    {
+      policyRequirement: () => ({
+        required: false,
+        policyGateId: "x".repeat(220),
+        authority: "system",
+      }),
+    },
+  );
+  assert.equal(
+    task0324InvalidPolicyMetadata.result.status,
+    "planner_failed",
+    "TASK-0324 policy metadata smoke should fail before planner auth",
+  );
+  assert.equal(task0324InvalidPolicyMetadata.plannerCalls, 0);
+  assert.equal(task0324InvalidPolicyMetadata.workerCalls, 0);
+  assert.equal(
+    task0324InvalidPolicyMetadata.result.safety.plannerAuthChecked,
+    false,
+  );
+  assert.equal(
+    task0324InvalidPolicyMetadata.result.safety.plannerAuthReady,
+    false,
+  );
+  assert.equal(
+    task0324InvalidPolicyMetadata.result.safety.plannerInvocationModified,
+    false,
+  );
+  assert.equal(
+    task0324InvalidPolicyMetadata.result.safety.plannerOneShotConsumed,
+    false,
+  );
+  assert.equal(
+    task0324InvalidPolicyMetadata.result.safety.realCodexModelCall,
+    false,
+  );
+  assert.equal(task0324InvalidPolicyMetadata.result.safety.routeCreated, false);
+  assert.equal(
+    task0324InvalidPolicyMetadata.result.safety.realClaudeModelCall,
+    false,
+  );
+  assert.equal(
+    task0324InvalidPolicyMetadata.result.safety.workerInvocationModified,
+    false,
+  );
+  assert.ok(
+    task0324InvalidPolicyMetadata.result.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_permission_gate_policy_requirement_invalid",
+    ),
+    "TASK-0324 policy metadata smoke should preserve strict gate failure",
+  );
+  const task0324InvalidPolicyPlannerReload =
+    await loadTaskExecutionInvocation({
+      projectRoot: task0324InvalidPolicyMetadata.root,
+      taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+      invocationId:
+        task0324InvalidPolicyMetadata.prepared.orchestration.plannerInvocationId,
+    });
+  assert.equal(
+    task0324InvalidPolicyPlannerReload.value.record.lifecycle,
+    "reserved",
+  );
+  assert.equal(task0324InvalidPolicyPlannerReload.value.record.revision, 1);
+
+  const task0324AuthFailure = await runTask0324Fixture("auth-failure", {
+    codexAuthPreflight: () => ({
+      ok: false,
+      status: "unauthenticated",
+      authCheckAvailable: true,
+      authenticated: false,
+      command: {
+        executablePath: "/test/codex",
+        argv: ["login", "status"],
+        timeoutMs: 1,
+      },
+      issues: [
+        {
+          code: "task_execution_codex_auth_preflight_not_authenticated",
+          message: "deterministic unauthenticated fixture",
+          severity: "error",
+          category: "permission",
+        },
+      ],
+      safety: authenticatedCodexPreflight.safety,
+    }),
+  });
+  assert.equal(
+    task0324AuthFailure.result.status,
+    "planner_failed",
+    "TASK-0324 auth smoke F should fail before planner launch authority is consumed",
+  );
+  assert.equal(task0324AuthFailure.plannerCalls, 0);
+  assert.equal(task0324AuthFailure.workerCalls, 0);
+  assert.equal(task0324AuthFailure.result.safety.plannerAuthChecked, true);
+  assert.equal(task0324AuthFailure.result.safety.plannerAuthReady, false);
+  assert.equal(task0324AuthFailure.result.safety.plannerInvocationModified, false);
+  assert.equal(task0324AuthFailure.result.safety.plannerOneShotConsumed, false);
+  assert.equal(task0324AuthFailure.result.safety.realCodexModelCall, false);
+  assert.equal(task0324AuthFailure.result.safety.routeCreated, false);
+  assert.equal(task0324AuthFailure.result.safety.realClaudeModelCall, false);
+  assert.equal(task0324AuthFailure.result.safety.workerInvocationModified, false);
+  const task0324AuthFailurePlannerReload = await loadTaskExecutionInvocation({
+    projectRoot: task0324AuthFailure.root,
+    taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+    invocationId:
+      task0324AuthFailure.prepared.orchestration.plannerInvocationId,
+  });
+  assert.equal(task0324AuthFailurePlannerReload.value.record.lifecycle, "reserved");
+  assert.equal(task0324AuthFailurePlannerReload.value.record.revision, 1);
+
+  const task0324ExecPreflightFailure = await runTask0324Fixture(
+    "exec-preflight-failure",
+    {
+      codexExecContractPreflight: () => ({
+        ok: false,
+        command: {
+          executablePath: "/test/codex",
+          argv: ["exec", "--help"],
+          timeoutMs: 1,
+        },
+        issues: [
+          {
+            code: "task_execution_codex_exec_contract_environment_invalid",
+            message: "deterministic missing bounded Codex host environment",
+            severity: "error",
+            category: "permission",
+          },
+        ],
+        checks: {
+          executableExists: true,
+          execSurfaceSupported: true,
+          expectedFlagsSupported: true,
+          schemaPathValid: true,
+          schemaJsonValid: true,
+          cwdGitRepository: true,
+          environmentPolicyValid: false,
+        },
+        safety: {
+          modelInvoked: false,
+          shellUsed: false,
+          fullParentEnvironmentInherited: false,
+          rawHelpOutputPersisted: false,
+          credentialFilesRead: false,
+          secretsPersisted: false,
+        },
+      }),
+    },
+  );
+  assert.equal(
+    task0324ExecPreflightFailure.result.status,
+    "planner_failed",
+    "TASK-0324 exec preflight smoke should fail before planner launch authority is consumed",
+  );
+  assert.equal(task0324ExecPreflightFailure.plannerCalls, 0);
+  assert.equal(task0324ExecPreflightFailure.workerCalls, 0);
+  assert.equal(
+    task0324ExecPreflightFailure.result.safety.plannerAuthChecked,
+    true,
+  );
+  assert.equal(
+    task0324ExecPreflightFailure.result.safety.plannerAuthReady,
+    true,
+  );
+  assert.equal(
+    task0324ExecPreflightFailure.result.safety.plannerInvocationModified,
+    false,
+  );
+  assert.equal(
+    task0324ExecPreflightFailure.result.safety.plannerOneShotConsumed,
+    false,
+  );
+  assert.equal(
+    task0324ExecPreflightFailure.result.safety.realCodexModelCall,
+    false,
+  );
+  assert.equal(task0324ExecPreflightFailure.result.safety.routeCreated, false);
+  assert.equal(
+    task0324ExecPreflightFailure.result.safety.realClaudeModelCall,
+    false,
+  );
+  assert.equal(
+    task0324ExecPreflightFailure.result.safety.orchestrationPrepared,
+    true,
+  );
+  assert.equal(
+    task0324ExecPreflightFailure.result.safety.orchestrationConsumed,
+    false,
+  );
+  assert.ok(
+    task0324ExecPreflightFailure.result.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_codex_exec_contract_environment_invalid",
+    ),
+  );
+  const task0324ExecPreflightFailurePlannerReload =
+    await loadTaskExecutionInvocation({
+      projectRoot: task0324ExecPreflightFailure.root,
+      taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+      invocationId:
+        task0324ExecPreflightFailure.prepared.orchestration
+          .plannerInvocationId,
+    });
+  assert.equal(
+    task0324ExecPreflightFailurePlannerReload.value.record.lifecycle,
+    "reserved",
+  );
+  assert.equal(
+    task0324ExecPreflightFailurePlannerReload.value.record.revision,
+    1,
+  );
+  const task0324ExecPreflightFailureRecord =
+    await loadTaskExecutionTwoModelCanaryRecord({
+      projectRoot: task0324ExecPreflightFailure.root,
+      taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+      orchestrationId: TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID,
+    });
+  assert.equal(
+    task0324ExecPreflightFailureRecord.record.lifecycle,
+    "prepared",
+    "TASK-0324 one-shot smoke G should preserve prepared orchestration when static preflight fails before launch",
+  );
+
   const task0324Success = await runTask0324Fixture("success");
   assert.equal(
     task0324Success.result.status,
     "worker_returned",
     "TASK-0324 smoke A should route TEST Codex proposal to TEST Claude result",
   );
+  assert.notEqual(
+    task0324Success.result.status,
+    "already_consumed",
+    "TASK-0324 one-shot smoke B should not treat the first TEST run as consumed",
+  );
   assert.equal(
     task0324Success.result.routeDecision.selectedWorkerFamily,
     "claude_code",
     "TASK-0324 smoke A should preserve AEOS authoritative Claude route",
   );
+  assert.equal(
+    task0324Success.result.routeDecision.selectedWorkerFamily,
+    "claude_code",
+    "TASK-0324 smoke B should exactly select Claude Code for the canary",
+  );
   assert.equal(task0324Success.plannerCalls, 1);
   assert.equal(task0324Success.workerCalls, 1);
+  assert.equal(task0324Success.result.safety.plannerAuthChecked, true);
+  assert.equal(task0324Success.result.safety.plannerAuthReady, true);
+  assert.equal(task0324Success.result.safety.plannerProcessOutcomeKnown, true);
+  assert.equal(
+    task0324Success.result.safety.plannerInvocationOutcomePersisted,
+    true,
+  );
+  assert.equal(
+    task0324Success.result.safety.plannerReconciliationRequired,
+    false,
+  );
+  assert.equal(task0324Success.result.safety.plannerInvocationModified, true);
+  assert.equal(task0324Success.result.safety.plannerOneShotConsumed, true);
+  assert.equal(task0324Success.result.safety.routeCreated, true);
+  assert.equal(task0324Success.result.safety.orchestrationPrepared, false);
+  assert.equal(task0324Success.result.safety.orchestrationConsumed, true);
+  assert.equal(task0324Success.result.safety.realCodexModelCall, false);
+  assert.equal(task0324Success.result.safety.realClaudeModelCall, false);
   assert.equal(
     task0324Success.result.workerResult.safety.taskCompleted,
     false,
@@ -19502,6 +19928,8 @@ try {
     "already_consumed",
     "TASK-0324 smoke H should not call planner or worker on duplicate command",
   );
+  assert.equal(duplicateRun.safety.orchestrationPrepared, false);
+  assert.equal(duplicateRun.safety.orchestrationConsumed, true);
 
   const malformedPlanner = await runTask0324Fixture("malformed-planner", {
     codexProcess: (request) =>
@@ -19513,6 +19941,104 @@ try {
   assert.equal(malformedPlanner.result.status, "route_blocked");
   assert.equal(malformedPlanner.workerCalls, 0);
 
+  const malformedPlannerStructuredOutput = await runTask0324Fixture(
+    "malformed-planner-structured-output",
+    {
+      codexProcess: (request) =>
+        createTaskExecutionTwoModelCanaryCodexFixtureResult({
+          request,
+          stdout: "Claude can complete everything.",
+        }),
+    },
+  );
+  assert.equal(malformedPlannerStructuredOutput.result.status, "planner_failed");
+  assert.equal(malformedPlannerStructuredOutput.workerCalls, 0);
+  assert.ok(
+    malformedPlannerStructuredOutput.result.issues.length > 0,
+    "TASK-0324 smoke C should report bounded malformed planner issues",
+  );
+  assert.equal(
+    malformedPlannerStructuredOutput.result.safety
+      .plannerProcessOutcomeKnown,
+    true,
+  );
+  assert.equal(
+    malformedPlannerStructuredOutput.result.safety
+      .plannerInvocationOutcomePersisted,
+    true,
+  );
+  assert.equal(
+    malformedPlannerStructuredOutput.result.issues.some(
+      (item) =>
+        item.code === "task_execution_invocation_failure_diagnostic_invalid",
+    ),
+    false,
+  );
+  const malformedPlannerStructuredInvocation =
+    await loadTaskExecutionInvocation({
+      projectRoot: malformedPlannerStructuredOutput.root,
+      taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+      invocationId:
+        malformedPlannerStructuredOutput.prepared.orchestration
+          .plannerInvocationId,
+    });
+  assert.equal(
+    malformedPlannerStructuredInvocation.value.record.lifecycle,
+    "failed",
+  );
+
+  const missingSchemaFieldPlanner = await runTask0324Fixture(
+    "missing-schema-field-planner",
+    {
+      codexProcess: (request) =>
+        createTaskExecutionTwoModelCanaryCodexFixtureResult({
+          request,
+          stdout: JSON.stringify({
+            aeosCodexWorkerResultVersion: 1,
+            status: "returned",
+            workerId: request.workerIdentity.workerId,
+            workerFamily: request.workerIdentity.workerFamily,
+            runtimeKind: request.workerIdentity.runtimeKind,
+            invocationId: request.invocationId,
+            idempotencyKey: request.idempotencyKey,
+            taskId: request.taskId,
+            sourceTaskRevision: request.sourceTaskRevision,
+            attemptId: request.attemptId,
+            attemptNumber: request.attemptNumber,
+            workItemId: request.workItemId ?? null,
+            batchId: request.batchId ?? null,
+            invocationOk: true,
+            output: {
+              routingProposal: {
+                taskId: request.taskId,
+                sourceTaskRevision: request.sourceTaskRevision,
+                workItemId: request.workItemId,
+                operationKind: "execute_task_attempt",
+                recommendedWorkerFamily: "claude_code",
+                capabilityRequirements: [
+                  "implementation",
+                  "repositoryRead",
+                ],
+                reasonReference:
+                  "aeos://task/TASK-0324/operation/read-only-routed-worker-canary",
+              },
+            },
+            diagnosticCode: "task_0324_codex_planner_routing_proposal",
+          }),
+        }),
+    },
+  );
+  assert.equal(missingSchemaFieldPlanner.result.status, "route_blocked");
+  assert.equal(missingSchemaFieldPlanner.workerCalls, 0);
+  assert.ok(
+    missingSchemaFieldPlanner.result.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_two_model_canary_planner_proposal_invalid",
+    ),
+    "TASK-0324 smoke D should reject missing required proposal fields",
+  );
+
   const invalidWorker = await runTask0324Fixture("invalid-worker", {
     codexProcess: (request) =>
       createTaskExecutionTwoModelCanaryCodexFixtureResult({
@@ -19522,6 +20048,10 @@ try {
   });
   assert.equal(invalidWorker.result.status, "route_blocked");
   assert.equal(invalidWorker.workerCalls, 0);
+  assert.ok(
+    invalidWorker.result.issues.length > 0,
+    "TASK-0324 smoke E should report unexpected worker route issues",
+  );
 
   const staleRoute = await runTask0324Fixture("stale-route", {
     codexProcess: (request) =>
@@ -19532,6 +20062,10 @@ try {
   });
   assert.equal(staleRoute.result.status, "route_blocked");
   assert.equal(staleRoute.workerCalls, 0);
+  assert.ok(
+    staleRoute.result.issues.length > 0,
+    "TASK-0324 smoke F should report stale route issues",
+  );
 
   const permissionContradiction = await runTask0324Fixture(
     "permission-contradiction",
@@ -19547,6 +20081,10 @@ try {
   );
   assert.equal(permissionContradiction.result.status, "route_blocked");
   assert.equal(permissionContradiction.workerCalls, 0);
+  assert.ok(
+    permissionContradiction.result.issues.length > 0,
+    "TASK-0324 smoke G should report capability mismatch issues",
+  );
 
   const codexFailure = await runTask0324Fixture("codex-failure", {
     codexProcess: (request) =>
@@ -19554,10 +20092,185 @@ try {
         request,
         terminationReason: "nonzero_exit",
         exitCode: 1,
+        stderr: "AEOS_TEST_CODEX_STDERR_MARKER model unavailable",
       }),
   });
   assert.equal(codexFailure.result.status, "planner_failed");
   assert.equal(codexFailure.workerCalls, 0);
+  assert.ok(
+    codexFailure.result.issues.some(
+      (item) =>
+        item.code === "task_execution_codex_worker_process_nonzero_exit",
+    ),
+    "TASK-0324 smoke I should report bounded planner process failure issues",
+  );
+  assert.equal(codexFailure.result.safety.plannerProcessOutcomeKnown, true);
+  assert.equal(codexFailure.result.safety.plannerInvocationOutcomePersisted, true);
+  const codexFailurePlannerInvocation = await loadTaskExecutionInvocation({
+    projectRoot: codexFailure.root,
+    taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+    invocationId: codexFailure.prepared.orchestration.plannerInvocationId,
+  });
+  assert.equal(codexFailurePlannerInvocation.value.record.lifecycle, "failed");
+  assert.ok(
+    codexFailurePlannerInvocation.value.record.failure?.diagnostic?.includes(
+      "termination=nonzero_exit",
+    ),
+    "TASK-0324 diagnostic smoke should persist bounded planner termination evidence",
+  );
+  assert.ok(
+    codexFailurePlannerInvocation.value.record.failure?.diagnostic?.includes(
+      "exitCode=1",
+    ),
+    "TASK-0324 diagnostic smoke should persist bounded planner exit-code evidence",
+  );
+  assert.ok(
+    codexFailurePlannerInvocation.value.record.failure?.diagnostic?.includes(
+      "stdinMode=pipe",
+    ),
+    "TASK-0324 diagnostic smoke should persist stdin mode evidence",
+  );
+  assert.ok(
+    codexFailurePlannerInvocation.value.record.failure?.diagnostic?.includes(
+      "stdinBytes=",
+    ),
+    "TASK-0324 diagnostic smoke should persist bounded prompt byte evidence",
+  );
+  assert.ok(
+    codexFailurePlannerInvocation.value.record.failure?.diagnostic?.includes(
+      "stdinWriteCompleted=true",
+    ),
+    "TASK-0324 diagnostic smoke should persist stdin write-completion evidence",
+  );
+  assert.ok(
+    codexFailurePlannerInvocation.value.record.failure?.diagnostic?.includes(
+      "stdinClosed=true",
+    ),
+    "TASK-0324 diagnostic smoke should persist stdin close evidence",
+  );
+  assert.ok(
+    codexFailurePlannerInvocation.value.record.failure?.diagnostic?.includes(
+      "stderrHead=AEOS_TEST_CODEX_STDERR_MARKER model unavailable",
+    ),
+    "TASK-0324 diagnostic smoke should persist bounded sanitized stderr head evidence",
+  );
+  assert.ok(
+    codexFailurePlannerInvocation.value.record.failure?.diagnostic?.includes(
+      "stderrTail=AEOS_TEST_CODEX_STDERR_MARKER model unavailable",
+    ),
+    "TASK-0324 diagnostic smoke should persist bounded sanitized stderr tail evidence",
+  );
+  assert.ok(
+    codexFailure.result.issues.some((item) =>
+      item.message.includes("AEOS_TEST_CODEX_STDERR_MARKER"),
+    ),
+    "TASK-0324 diagnostic smoke should expose bounded stderr marker through orchestration failure reporting",
+  );
+  const codexLongTailFailure = await runTask0324Fixture("codex-long-tail-failure", {
+    codexProcess: (request) =>
+      createTaskExecutionTwoModelCanaryCodexFixtureResult({
+        request,
+        terminationReason: "nonzero_exit",
+        exitCode: 1,
+        stderr: `START_MARKER ${"filler ".repeat(90)} ACTUAL_ERROR_MARKER`,
+      }),
+  });
+  assert.equal(codexLongTailFailure.result.status, "planner_failed");
+  assert.equal(codexLongTailFailure.workerCalls, 0);
+  const codexLongTailFailurePlannerInvocation =
+    await loadTaskExecutionInvocation({
+      projectRoot: codexLongTailFailure.root,
+      taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+      invocationId:
+        codexLongTailFailure.prepared.orchestration.plannerInvocationId,
+    });
+  const codexLongTailFailureDiagnostic =
+    codexLongTailFailurePlannerInvocation.value.record.failure?.diagnostic ?? "";
+  assert.ok(
+    codexLongTailFailureDiagnostic.includes("stderrHead=START_MARKER"),
+    "TASK-0324 diagnostic smoke should persist long stderr head through planner invocation",
+  );
+  assert.ok(
+    codexLongTailFailureDiagnostic.includes("ACTUAL_ERROR_MARKER"),
+    "TASK-0324 diagnostic smoke should persist causal stderr tail through planner invocation",
+  );
+  assert.ok(
+    codexLongTailFailure.result.issues.some((item) =>
+      item.message.includes("ACTUAL_ERROR_MARKER"),
+    ),
+    "TASK-0324 diagnostic smoke should expose causal stderr tail through orchestration reporting",
+  );
+  const codexFailureReplay = await runTaskExecutionTwoModelCanary({
+    projectRoot: codexFailure.root,
+    taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+    orchestrationId: TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID,
+    expectedRevision: codexFailure.prepared.orchestration.taskRevision,
+    expectedPlannerInvocationRevision:
+      codexFailure.prepared.orchestration.plannerInvocationRevision,
+    expectedWorkerInvocationRevision:
+      codexFailure.prepared.orchestration.workerInvocationRevision,
+    runner: {
+      codexAuthPreflight: async () => authenticatedCodexPreflight,
+      claudeAuthPreflight: async () => authenticatedClaudePreflight,
+      codexProcess: async (request) => {
+        throw new Error(
+          `unexpected replay planner after failure ${request.invocationId}`,
+        );
+      },
+      claudeProcess: async (request) => {
+        throw new Error(
+          `unexpected replay worker after failure ${request.invocationId}`,
+        );
+      },
+    },
+  });
+  assert.equal(
+    codexFailureReplay.status,
+    "already_consumed",
+    "TASK-0324 one-shot smoke H should block replay after planner launch boundary failure",
+  );
+
+  const hostileCodexFailure = await runTask0324Fixture("hostile-codex-failure", {
+    codexProcess: (request) =>
+      createTaskExecutionTwoModelCanaryCodexFixtureResult({
+        request,
+        terminationReason: "nonzero_exit",
+        exitCode: 1,
+        stderr:
+          "Error: fake stack\n    at fake (fixture.mjs:1:1)\nownershipToken=secret-token credential=sk-codex-smoke " +
+          "x".repeat(700),
+      }),
+  });
+  assert.equal(hostileCodexFailure.result.status, "planner_failed");
+  assert.equal(hostileCodexFailure.workerCalls, 0);
+  assert.equal(
+    hostileCodexFailure.result.issues.some(
+      (item) =>
+        item.code === "task_execution_invocation_failure_diagnostic_invalid",
+    ),
+    false,
+    "TASK-0324 hostile failure diagnostics should be sanitized before persistence",
+  );
+  const hostileCodexFailureInvocation = await loadTaskExecutionInvocation({
+    projectRoot: hostileCodexFailure.root,
+    taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+    invocationId:
+      hostileCodexFailure.prepared.orchestration.plannerInvocationId,
+  });
+  assert.equal(hostileCodexFailureInvocation.value.record.lifecycle, "failed");
+  assert.ok(
+    hostileCodexFailureInvocation.value.record.failure?.diagnostic?.includes(
+      "stderr=redacted",
+    ),
+    "TASK-0324 hostile failure diagnostics should persist an explicit stderr redaction marker",
+  );
+  assert.equal(
+    /Error:|fake stack|secret-token|sk-codex-smoke/.test(
+      JSON.stringify(hostileCodexFailureInvocation.value.record),
+    ),
+    false,
+    "TASK-0324 hostile failure diagnostics should not persist raw stacks, credentials, or ownership token values",
+  );
 
   const ambiguousPlanner = await runTask0324Fixture("ambiguous-planner", {
     codexProcess: (request) =>
@@ -19582,8 +20295,42 @@ try {
         }),
       }),
   });
-  assert.equal(ambiguousPlanner.result.status, "planner_failed");
+  assert.equal(ambiguousPlanner.result.status, "outcome_unknown");
   assert.equal(ambiguousPlanner.workerCalls, 0);
+  assert.equal(ambiguousPlanner.result.safety.plannerReconciliationRequired, true);
+  assert.equal(
+    ambiguousPlanner.result.safety.plannerInvocationOutcomePersisted,
+    false,
+  );
+  const ambiguousPlannerReplay = await runTaskExecutionTwoModelCanary({
+    projectRoot: ambiguousPlanner.root,
+    taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+    orchestrationId: TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID,
+    expectedRevision: ambiguousPlanner.prepared.orchestration.taskRevision,
+    expectedPlannerInvocationRevision:
+      ambiguousPlanner.prepared.orchestration.plannerInvocationRevision,
+    expectedWorkerInvocationRevision:
+      ambiguousPlanner.prepared.orchestration.workerInvocationRevision,
+    runner: {
+      codexAuthPreflight: async () => authenticatedCodexPreflight,
+      claudeAuthPreflight: async () => authenticatedClaudePreflight,
+      codexProcess: async (request) => {
+        throw new Error(
+          `unexpected replay planner after unknown ${request.invocationId}`,
+        );
+      },
+      claudeProcess: async (request) => {
+        throw new Error(
+          `unexpected replay worker after unknown ${request.invocationId}`,
+        );
+      },
+    },
+  });
+  assert.equal(
+    ambiguousPlannerReplay.status,
+    "already_consumed",
+    "TASK-0324 one-shot smoke I should block replay after outcome_unknown",
+  );
 
   const ambiguousWorker = await runTask0324Fixture("ambiguous-worker", {
     claudeProcess: (request) =>
@@ -19604,6 +20351,11 @@ try {
           completed: true,
           verified: true,
           safeToRetry: true,
+          policyRequired: false,
+          policyAuthorized: true,
+          approved: true,
+          permissionGranted: true,
+          model: "gpt-5-codex",
           cwd: "/tmp",
           executable: "/bin/sh",
         },
@@ -19614,6 +20366,20 @@ try {
     JSON.stringify(hostilePlanner.result.routeDecision).includes("/bin/sh"),
     false,
     "TASK-0324 smoke K should ignore worker self-routing/process authority",
+  );
+  assert.equal(
+    JSON.stringify(hostilePlanner.result.routeDecision).includes(
+      "policyAuthorized",
+    ),
+    false,
+    "TASK-0324 smoke K should ignore planner policy authorization claims",
+  );
+  assert.equal(
+    JSON.stringify(hostilePlanner.result.routeDecision).includes(
+      "gpt-5-codex",
+    ),
+    false,
+    "TASK-0324 smoke K should ignore planner model override claims",
   );
 
   assert.equal(TASK_EXECUTION_REAL_CODEX_PLANNER_CANARY_READY, true);
@@ -20269,6 +21035,10 @@ try {
     invocationRef: `test-codex-process:${request.invocationId}`,
     terminationReason: "exited",
     exitCode: 0,
+    stdinMode: "pipe",
+    stdinBytes: 1,
+    stdinWriteCompleted: true,
+    stdinClosed: true,
     timedOut: false,
     interrupted: false,
     stdout: createCodexStructuredStdout(request),
@@ -20338,6 +21108,58 @@ try {
     smokeCodexPrepared.preparedInvocation.runnable,
     false,
     "task execution codex worker smoke A should prepare but not run a real Codex process",
+  );
+  assert.deepEqual(
+    smokeCodexPrepared.preparedInvocation.processRequest.argv.slice(0, 5),
+    ["exec", "--model", "gpt-5", "-c", 'model_reasoning_effort="medium"'],
+    "task execution codex worker smoke A should keep the generic Codex runtime model-neutral",
+  );
+  const staleModelOverridePrepared = prepareTaskExecutionCodexWorkerInvocation({
+    configuration: smokeCodexConfiguration,
+    request: codexProcessWorkerRequest,
+    invocationRecord: invokingPersisted.value.record,
+    taskOrModelProcessClaims: {
+      model: "gpt-5-codex",
+    },
+  });
+  assert.equal(
+    staleModelOverridePrepared.preparedInvocation.processRequest.argv.includes(
+      "gpt-5-codex",
+    ),
+    false,
+    "TASK-0324 model contract smoke should ignore stale model override claims",
+  );
+  assert.ok(
+    staleModelOverridePrepared.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_codex_worker_task_model_process_claims_rejected",
+    ),
+    "TASK-0324 model contract smoke should reject stale model override claims",
+  );
+  const arbitraryModelOverridePrepared =
+    prepareTaskExecutionCodexWorkerInvocation({
+      configuration: smokeCodexConfiguration,
+      request: codexProcessWorkerRequest,
+      invocationRecord: invokingPersisted.value.record,
+      taskOrModelProcessClaims: {
+        model: "other",
+      },
+    });
+  assert.equal(
+    arbitraryModelOverridePrepared.preparedInvocation.processRequest.argv.includes(
+      "other",
+    ),
+    false,
+    "TASK-0324 model contract smoke should ignore arbitrary model override claims",
+  );
+  assert.ok(
+    arbitraryModelOverridePrepared.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_codex_worker_task_model_process_claims_rejected",
+    ),
+    "TASK-0324 model contract smoke should reject arbitrary model override claims",
   );
   const smokeCodexConformance =
     await evaluateTaskExecutionCodexWorkerConformance({
@@ -20450,6 +21272,273 @@ try {
       approvedVariableRefs: [],
     },
     "task execution worker process gate smoke 0314-O should expose only bounded environment inheritance semantics",
+  );
+  const codexExecPreflightRoot = await mkdtemp(
+    join(tmpdir(), "aeos-codex-exec-preflight-"),
+  );
+  const codexExecPreflightSchemaPath = join(
+    codexExecPreflightRoot,
+    "codex-planner-routing-proposal-v1.schema.json",
+  );
+  await writeNodeFile(
+    codexExecPreflightSchemaPath,
+    JSON.stringify({
+      additionalProperties: false,
+      required: ["output"],
+      properties: {
+        output: {
+          additionalProperties: false,
+          required: ["routingProposal"],
+          properties: {
+            routingProposal: {
+              additionalProperties: false,
+              required: [
+                "taskId",
+                "sourceTaskRevision",
+                "workItemId",
+                "operationKind",
+                "recommendedWorkerFamily",
+                "capabilityRequirements",
+                "reasonReference",
+                "expectedOperationClass",
+              ],
+              properties: {
+                operationKind: { const: "execute_task_attempt" },
+                recommendedWorkerFamily: { const: "claude_code" },
+                expectedOperationClass: { const: "implementation" },
+              },
+            },
+          },
+        },
+      },
+    }),
+    "utf8",
+  );
+  const codexPlannerEnvConfiguration = createSmokeCodexConfiguration({
+    environmentInheritance: "system_codex_read_only_planner_canary",
+    model: {
+      authority: "system",
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+    },
+    sandboxMode: "read-only",
+    structuredResultSchemaPath: codexExecPreflightSchemaPath,
+  });
+  const codexPlannerEnvPrepared = prepareTaskExecutionCodexWorkerInvocation({
+    configuration: codexPlannerEnvConfiguration,
+    request: codexProcessWorkerRequest,
+    invocationRecord: invokingPersisted.value.record,
+  });
+  const codexPlannerEnvGate = evaluateTaskExecutionWorkerProcessGate({
+    configuration: codexPlannerEnvConfiguration,
+    request: codexProcessWorkerRequest,
+    invocationRecord: invokingPersisted.value.record,
+    preparedInvocation: codexPlannerEnvPrepared.preparedInvocation,
+    permissionGateResult: codexProcessPermissionGate,
+    preProcessAuditEvent: codexProcessAuditAppend.value.event,
+    expectedInvocationRevision: invokingPersisted.value.record.revision,
+  });
+  assert.equal(
+    codexPlannerEnvGate.ok,
+    true,
+    "task execution codex worker smoke 0314-O2 should authorize bounded Codex planner host env refs",
+  );
+  assert.equal(
+    codexPlannerEnvGate.authority.environment.inheritance,
+    "system_codex_read_only_planner_canary",
+    "task execution codex worker smoke 0314-O2 should preserve Codex planner env authority",
+  );
+  assert.ok(
+    codexPlannerEnvGate.authority.environment.approvedVariableRefs.includes(
+      "HOME",
+    ),
+    "task execution codex worker smoke 0314-O2 should expose host context refs only",
+  );
+  assert.equal(
+    JSON.stringify(codexPlannerEnvGate.authority.environment).includes("="),
+    false,
+    "task execution codex worker smoke 0314-O2 should not persist env values",
+  );
+  const codexExecHelpEvidence = {
+    exitCode: 0,
+    stdout:
+      "Usage: codex exec [OPTIONS] [PROMPT]\n-c, --config <key=value>\n--model\n--sandbox\n--output-schema\n--json\n",
+    stderr: "",
+    timedOut: false,
+    spawned: true,
+  };
+  assert.deepEqual(
+    codexPlannerEnvPrepared.preparedInvocation.processRequest.argv,
+    [
+      "exec",
+      "--model",
+      "gpt-5.5",
+      "-c",
+      'model_reasoning_effort="high"',
+      "--sandbox",
+      "read-only",
+      "--output-schema",
+      codexExecPreflightSchemaPath,
+    ],
+    "TASK-0324 model contract smoke should prepare exact supported gpt-5.5/high Codex argv",
+  );
+  assert.equal(
+    codexPlannerEnvPrepared.preparedInvocation.processRequest.argv.includes(
+      "--reasoning-effort",
+    ),
+    false,
+    "TASK-0324 model contract smoke should never emit unsupported --reasoning-effort",
+  );
+  assert.equal(
+    codexPlannerEnvPrepared.preparedInvocation.processRequest.argv[4],
+    'model_reasoning_effort="high"',
+    "TASK-0324 model contract smoke should pass raw TOML config without shell quote characters",
+  );
+  assert.equal(
+    codexPlannerEnvPrepared.preparedInvocation.processRequest.argv[4].startsWith(
+      "'",
+    ) ||
+      codexPlannerEnvPrepared.preparedInvocation.processRequest.argv[4].endsWith(
+        "'",
+      ),
+    false,
+    "TASK-0324 model contract smoke should not include literal shell quotes in argv",
+  );
+  const codexExecPreflightOk =
+    await runTaskExecutionCodexExecContractPreflight({
+      executablePath: "/bin/sh",
+      projectRoot: codexExecPreflightRoot,
+      configuration: codexPlannerEnvConfiguration,
+      runHelp: async () => codexExecHelpEvidence,
+      runGitCheck: async () => true,
+    });
+  assert.equal(
+    codexExecPreflightOk.ok,
+    true,
+    "task execution codex exec preflight smoke A should accept supported codex exec flags",
+  );
+  assert.equal(
+    codexExecPreflightOk.safety.modelInvoked,
+    false,
+    "task execution codex exec preflight smoke A should not invoke a model",
+  );
+  const staleModelPreflight = await runTaskExecutionCodexExecContractPreflight({
+    executablePath: "/bin/sh",
+    projectRoot: codexExecPreflightRoot,
+    configuration: {
+      ...codexPlannerEnvConfiguration,
+      model: {
+        authority: "system",
+        model: "gpt-5-codex",
+        reasoningEffort: "high",
+      },
+    },
+    runHelp: async () => codexExecHelpEvidence,
+    runGitCheck: async () => true,
+  });
+  assert.equal(
+    staleModelPreflight.ok,
+    false,
+    "TASK-0324 model contract smoke should reject stale gpt-5-codex planner profile",
+  );
+  assert.ok(
+    staleModelPreflight.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_codex_exec_contract_model_profile_invalid",
+    ),
+  );
+  const unsupportedFlagPreflight =
+    await runTaskExecutionCodexExecContractPreflight({
+      executablePath: "/bin/sh",
+      projectRoot: codexExecPreflightRoot,
+      configuration: {
+        ...codexPlannerEnvConfiguration,
+        approvalPolicy: "never",
+        structuredResultSchemaPath:
+          codexPlannerEnvConfiguration.structuredResultSchemaPath,
+      },
+      runHelp: async () => ({
+        ...codexExecHelpEvidence,
+        stdout:
+          "Usage: codex exec [OPTIONS] [PROMPT]\n--model\n--sandbox\n",
+      }),
+      runGitCheck: async () => true,
+    });
+  assert.equal(
+    unsupportedFlagPreflight.ok,
+    false,
+    "task execution codex exec preflight smoke A2 should block unsupported expected flags",
+  );
+  assert.ok(
+    unsupportedFlagPreflight.issues.some(
+      (item) =>
+        item.code === "task_execution_codex_exec_contract_flag_unsupported",
+    ),
+  );
+  const missingSchemaPreflight =
+    await runTaskExecutionCodexExecContractPreflight({
+      executablePath: "/bin/sh",
+      projectRoot: codexExecPreflightRoot,
+      configuration: {
+        ...codexPlannerEnvConfiguration,
+        structuredResultSchemaPath: "/tmp/aeos-missing-codex-schema.json",
+      },
+      runHelp: async () => codexExecHelpEvidence,
+      runGitCheck: async () => true,
+    });
+  assert.equal(
+    missingSchemaPreflight.ok,
+    false,
+    "task execution codex exec preflight smoke B should block a missing schema before model launch",
+  );
+  const malformedSchemaPath = join(
+    await mkdtemp(join(tmpdir(), "aeos-codex-schema-")),
+    "schema.json",
+  );
+  await writeNodeFile(malformedSchemaPath, "{", "utf8");
+  const malformedSchemaPreflight =
+    await runTaskExecutionCodexExecContractPreflight({
+      executablePath: "/bin/sh",
+      projectRoot: dirname(malformedSchemaPath),
+      configuration: {
+        ...codexPlannerEnvConfiguration,
+        structuredResultSchemaPath: malformedSchemaPath,
+      },
+      runHelp: async () => codexExecHelpEvidence,
+      runGitCheck: async () => true,
+    });
+  assert.equal(
+    malformedSchemaPreflight.ok,
+    false,
+    "task execution codex exec preflight smoke C should block malformed schema before model launch",
+  );
+  const nonGitPreflight = await runTaskExecutionCodexExecContractPreflight({
+    executablePath: "/bin/sh",
+    projectRoot: codexExecPreflightRoot,
+    configuration: codexPlannerEnvConfiguration,
+    runHelp: async () => codexExecHelpEvidence,
+    runGitCheck: async () => false,
+  });
+  assert.equal(
+    nonGitPreflight.ok,
+    false,
+    "task execution codex exec preflight smoke D should block non-Git cwd before model launch",
+  );
+  const missingEnvPreflight = await runTaskExecutionCodexExecContractPreflight({
+    executablePath: "/bin/sh",
+    projectRoot: codexExecPreflightRoot,
+    configuration: {
+      ...codexPlannerEnvConfiguration,
+      environmentInheritance: "none",
+    },
+    runHelp: async () => codexExecHelpEvidence,
+    runGitCheck: async () => true,
+  });
+  assert.equal(
+    missingEnvPreflight.ok,
+    false,
+    "task execution codex exec preflight smoke E should require bounded Codex planner host env",
   );
   assert.equal(
     JSON.stringify(codexProcessGate).includes("ownershipToken"),
@@ -20983,6 +22072,95 @@ try {
     "failed",
     "task execution codex worker smoke P should normalize nonzero exit as failed evidence",
   );
+  assert.ok(
+    nonzeroCodexProcess.failure.message.includes(
+      "stderrHead=bounded nonzero diagnostic",
+    ),
+    "task execution codex worker smoke P should preserve bounded stderr head diagnostics",
+  );
+  assert.ok(
+    nonzeroCodexProcess.failure.message.includes(
+      "stderrTail=bounded nonzero diagnostic",
+    ),
+    "task execution codex worker smoke P should preserve bounded stderr tail diagnostics",
+  );
+
+  const oversizedStderrCodexProcess = normalizeTaskExecutionCodexProcessResult({
+    request: codexWorkerRequest,
+    processResult: createCodexProcessResult(codexWorkerRequest, {
+      terminationReason: "nonzero_exit",
+      exitCode: 1,
+      stdout: "",
+      stderr: "x".repeat(700),
+    }),
+  });
+  assert.equal(
+    oversizedStderrCodexProcess.failure.message.length <= 512,
+    true,
+    "task execution codex worker smoke P2 should bound large stderr diagnostics",
+  );
+  assert.ok(
+    oversizedStderrCodexProcess.failure.message.includes("stderrHead="),
+    "task execution codex worker smoke P2 should keep a bounded stderr head",
+  );
+  assert.ok(
+    oversizedStderrCodexProcess.failure.message.includes("stderrTail="),
+    "task execution codex worker smoke P2 should keep a bounded stderr tail",
+  );
+
+  const redactedStderrCodexProcess = normalizeTaskExecutionCodexProcessResult({
+    request: codexWorkerRequest,
+    processResult: createCodexProcessResult(codexWorkerRequest, {
+      terminationReason: "nonzero_exit",
+      exitCode: 1,
+      stdout: "",
+      stderr:
+        "Error: fake stack\n    at fake (fixture.mjs:1:1)\nAuthorization: Bearer secret-token",
+    }),
+  });
+  assert.ok(
+    redactedStderrCodexProcess.failure.message.includes("stderr=redacted"),
+    "task execution codex worker smoke P3 should emit an explicit redaction marker",
+  );
+
+  const longTailCodexProcess = normalizeTaskExecutionCodexProcessResult({
+    request: codexWorkerRequest,
+    processResult: createCodexProcessResult(codexWorkerRequest, {
+      terminationReason: "nonzero_exit",
+      exitCode: 1,
+      stdout: "",
+      stderr: `START_MARKER ${"filler ".repeat(90)} ACTUAL_ERROR_MARKER`,
+    }),
+  });
+  assert.ok(
+    longTailCodexProcess.failure.message.includes("stderrHead=START_MARKER"),
+    "task execution codex worker smoke P5 should preserve stderr head",
+  );
+  assert.ok(
+    longTailCodexProcess.failure.message.includes("ACTUAL_ERROR_MARKER"),
+    "task execution codex worker smoke P5 should preserve causal stderr tail",
+  );
+  assert.equal(
+    longTailCodexProcess.failure.message.length <= 512,
+    true,
+    "task execution codex worker smoke P5 should keep head/tail diagnostic bounded",
+  );
+
+  const signalCodexProcess = normalizeTaskExecutionCodexProcessResult({
+    request: codexWorkerRequest,
+    processResult: createCodexProcessResult(codexWorkerRequest, {
+      terminationReason: "signal",
+      exitCode: null,
+      signal: "SIGTERM",
+      stdout: "",
+      stderr: "terminated safely",
+    }),
+  });
+  assert.equal(
+    signalCodexProcess.failure.message.includes("SIGTERM"),
+    true,
+    "task execution codex worker smoke P4 should preserve bounded signal diagnostics",
+  );
 
   const timeoutCodexProcess = normalizeTaskExecutionCodexProcessResult({
     request: codexWorkerRequest,
@@ -21217,6 +22395,8 @@ try {
       "});",
       "if (mode === 'success') { write(process.stderr, '\\u001b[31mfixture stderr\\u001b[0m\\n'); write(process.stdout, JSON.stringify(payload())); }",
       "else if (mode === 'nonzero') { write(process.stderr, 'nonzero fixture stderr'); process.exit(7); }",
+      "else if (mode === 'long-stderr') { write(process.stderr, 'START_MARKER ' + 'filler '.repeat(90) + 'ACTUAL_ERROR_MARKER'); process.exit(7); }",
+      "else if (mode === 'hostile-nonzero') { write(process.stderr, 'Error: fake stack\\n    at fake (fixture.mjs:1:1)\\ncredential=sk-codex-smoke ' + 'e'.repeat(700)); process.exit(7); }",
       "else if (mode === 'timeout') { setTimeout(() => write(process.stdout, 'late'), 1000); }",
       "else if (mode === 'malformed') { write(process.stdout, 'all complete verified approved'); }",
       "else if (mode === 'oversized-stdout') { write(process.stdout, 'x'.repeat(4096)); }",
@@ -21564,6 +22744,139 @@ try {
     "task execution local worker process runtime smoke B should represent nonzero exit",
   );
   assert.equal(nonzeroRuntime.actualWorkerProcessesSpawned, 1);
+  assert.equal(nonzeroRuntime.processResult.exitCode, 7);
+  assert.equal(nonzeroRuntime.processResult.terminationReason, "nonzero_exit");
+  assert.equal(
+    nonzeroRuntime.processResult.stderr.includes("nonzero fixture stderr"),
+    true,
+    "task execution local worker process runtime smoke B should capture bounded stderr",
+  );
+  assert.equal(nonzeroRuntime.processResult.stdinMode, "pipe");
+  assert.ok(
+    nonzeroRuntime.processResult.stdinBytes > 0,
+    "task execution local worker process runtime smoke B should write non-empty stdin prompt bytes",
+  );
+  assert.equal(
+    nonzeroRuntime.processResult.stdinWriteCompleted,
+    true,
+    "task execution local worker process runtime smoke B should complete stdin write",
+  );
+  assert.equal(
+    nonzeroRuntime.processResult.stdinClosed,
+    true,
+    "task execution local worker process runtime smoke B should close stdin",
+  );
+  const nonzeroRuntimeInvocation = await loadTaskExecutionInvocation({
+    projectRoot: localProcessRuntimeStateRoot,
+    taskId: nonzeroRuntimeFixture.entered.value.record.taskId,
+    invocationId: nonzeroRuntimeFixture.entered.value.record.invocationId,
+  });
+  assert.equal(nonzeroRuntimeInvocation.ok, true);
+  assert.equal(nonzeroRuntimeInvocation.value.record.lifecycle, "failed");
+  assert.ok(
+    nonzeroRuntimeInvocation.value.record.failure?.diagnostic?.includes(
+      "termination=nonzero_exit",
+    ),
+    "task execution local worker process runtime smoke B should persist termination evidence",
+  );
+  assert.ok(
+    nonzeroRuntimeInvocation.value.record.failure?.diagnostic?.includes(
+      "exitCode=7",
+    ),
+    "task execution local worker process runtime smoke B should persist exit-code evidence",
+  );
+  assert.ok(
+    nonzeroRuntimeInvocation.value.record.failure?.diagnostic?.includes(
+      "stderrHead=nonzero fixture stderr",
+    ),
+    "task execution local worker process runtime smoke B should persist bounded stderr head evidence",
+  );
+  assert.ok(
+    nonzeroRuntimeInvocation.value.record.failure?.diagnostic?.includes(
+      "stderrTail=nonzero fixture stderr",
+    ),
+    "task execution local worker process runtime smoke B should persist bounded stderr tail evidence",
+  );
+
+  const longStderrRuntimeFixture = await makeLocalProcessRuntimeFixture({
+    attemptNumber: 3173,
+    mode: "long-stderr",
+  });
+  const longStderrRuntime = await executeTaskExecutionLocalWorkerProcess(
+    longStderrRuntimeFixture.runtimeInput,
+  );
+  assert.equal(
+    longStderrRuntime.status,
+    "process_failed",
+    "task execution local worker process runtime smoke B1 should persist long stderr failures",
+  );
+  assert.equal(
+    longStderrRuntime.processResult.stderr.includes("ACTUAL_ERROR_MARKER"),
+    true,
+    "task execution local worker process runtime smoke B1 should capture the causal stderr tail before normalization",
+  );
+  const longStderrRuntimeInvocation = await loadTaskExecutionInvocation({
+    projectRoot: localProcessRuntimeStateRoot,
+    taskId: longStderrRuntimeFixture.entered.value.record.taskId,
+    invocationId: longStderrRuntimeFixture.entered.value.record.invocationId,
+  });
+  assert.equal(longStderrRuntimeInvocation.ok, true);
+  assert.equal(longStderrRuntimeInvocation.value.record.lifecycle, "failed");
+  const longStderrDiagnostic =
+    longStderrRuntimeInvocation.value.record.failure?.diagnostic ?? "";
+  assert.ok(
+    longStderrDiagnostic.includes("stderrHead=START_MARKER"),
+    "task execution local worker process runtime smoke B1 should persist stderr head",
+  );
+  assert.ok(
+    longStderrDiagnostic.includes("ACTUAL_ERROR_MARKER"),
+    "task execution local worker process runtime smoke B1 should persist stderr tail",
+  );
+  assert.equal(
+    longStderrDiagnostic.length <= 512,
+    true,
+    "task execution local worker process runtime smoke B1 should keep head/tail diagnostic bounded",
+  );
+
+  const hostileNonzeroRuntimeFixture = await makeLocalProcessRuntimeFixture({
+    attemptNumber: 3172,
+    mode: "hostile-nonzero",
+  });
+  const hostileNonzeroRuntime = await executeTaskExecutionLocalWorkerProcess(
+    hostileNonzeroRuntimeFixture.runtimeInput,
+  );
+  assert.equal(
+    hostileNonzeroRuntime.status,
+    "process_failed",
+    "task execution local worker process runtime smoke B2 should persist sanitized known process failure",
+  );
+  assert.equal(
+    hostileNonzeroRuntime.issues.some(
+      (item) =>
+        item.code === "task_execution_invocation_failure_diagnostic_invalid",
+    ),
+    false,
+    "task execution local worker process runtime smoke B2 should not leak unsafe diagnostics into invocation persistence",
+  );
+  const hostileNonzeroInvocation = await loadTaskExecutionInvocation({
+    projectRoot: localProcessRuntimeStateRoot,
+    taskId: hostileNonzeroRuntimeFixture.entered.value.record.taskId,
+    invocationId: hostileNonzeroRuntimeFixture.entered.value.record.invocationId,
+  });
+  assert.equal(hostileNonzeroInvocation.ok, true);
+  assert.equal(hostileNonzeroInvocation.value.record.lifecycle, "failed");
+  assert.equal(
+    JSON.stringify(hostileNonzeroInvocation.value.record).includes(
+      "sk-codex-smoke",
+    ),
+    false,
+    "task execution local worker process runtime smoke B2 should not persist credential-shaped stderr",
+  );
+  assert.equal(
+    JSON.stringify(hostileNonzeroInvocation.value.record).includes("Error:"),
+    false,
+    "task execution local worker process runtime smoke B2 should not persist raw stack text",
+  );
 
   const timeoutRuntimeFixture = await makeLocalProcessRuntimeFixture({
     attemptNumber: 3165,

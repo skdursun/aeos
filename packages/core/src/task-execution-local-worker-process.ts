@@ -262,6 +262,7 @@ export interface TaskExecutionLocalWorkerRuntimeEnvironmentPolicy {
 
 export type TaskExecutionLocalWorkerRuntimeEnvironmentInheritance =
   | "none"
+  | "system_codex_read_only_planner_canary"
   | "system_claude_code_read_only_canary"
   | "system_claude_code_write_canary";
 
@@ -270,6 +271,10 @@ export interface TaskExecutionLocalWorkerProcessEvidence {
   readonly terminationReason: TaskExecutionLocalWorkerProcessTerminationReason;
   readonly exitCode: number | null;
   readonly signal?: string;
+  readonly stdinMode: "pipe";
+  readonly stdinBytes: number;
+  readonly stdinWriteCompleted: boolean;
+  readonly stdinClosed: boolean;
   readonly stdout: string;
   readonly stderr: string;
   readonly stdoutBytes: number;
@@ -293,6 +298,7 @@ export interface ExecuteTaskExecutionLocalWorkerProcessInput {
   readonly stdin: string;
   readonly occurredAt?: string;
   readonly forbiddenValues?: readonly string[];
+  readonly outcomePersistence?: "process_evidence" | "caller_normalized";
 }
 
 export interface TaskExecutionLocalWorkerProcessRuntimeResult {
@@ -339,6 +345,17 @@ const claudeCodeReadOnlyCanaryInheritedEnvNames = [
   "USER",
   "LOGNAME",
   "TMPDIR",
+  "PATH",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+] as const;
+const codexReadOnlyPlannerCanaryInheritedEnvNames = [
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "TMPDIR",
+  "PATH",
   "LANG",
   "LC_ALL",
   "LC_CTYPE",
@@ -360,6 +377,26 @@ function issue(input: {
 
 function isPositiveInteger(value: unknown, max: number): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= max;
+}
+
+function approvedCodexEnvironmentRefs(): readonly string[] {
+  const refs = [...codexReadOnlyPlannerCanaryInheritedEnvNames];
+  const codexHome = (process as { env?: Record<string, string | undefined> })
+    .env?.CODEX_HOME;
+
+  return codexHome === undefined ? refs : [...refs, "CODEX_HOME"];
+}
+
+function safeEnvValue(value: string | undefined): string | undefined {
+  if (value === undefined || value.length === 0 || value.length > 4096) {
+    return undefined;
+  }
+
+  if (value.includes("\0")) {
+    return undefined;
+  }
+
+  return value;
 }
 
 function isSafeReference(value: unknown): value is string {
@@ -644,6 +681,9 @@ export function evaluateTaskExecutionLocalWorkerProcessGate(
     input.preparedInvocation.processRequest.environment.variables.length === 0 &&
     (preparedEnvironmentInheritance === "none" ||
       (preparedEnvironmentInheritance ===
+        "system_codex_read_only_planner_canary" &&
+        input.expectedWorkerFamily === "codex") ||
+      (preparedEnvironmentInheritance ===
         "system_claude_code_read_only_canary" &&
         input.expectedWorkerFamily === "claude_code") ||
       (preparedEnvironmentInheritance ===
@@ -856,6 +896,9 @@ export function evaluateTaskExecutionLocalWorkerProcessGate(
             inheritance: preparedEnvironmentInheritance,
             approvedVariableRefs:
               preparedEnvironmentInheritance ===
+                "system_codex_read_only_planner_canary"
+                ? approvedCodexEnvironmentRefs()
+                : preparedEnvironmentInheritance ===
                 "system_claude_code_read_only_canary" ||
               preparedEnvironmentInheritance === "system_claude_code_write_canary"
                 ? [...claudeCodeReadOnlyCanaryInheritedEnvNames]
@@ -997,17 +1040,23 @@ function executableBindingReady(input: {
 }): boolean {
   const toolsIndex = input.authority.argv.indexOf("--tools");
   const permissionModeIndex = input.authority.argv.indexOf("--permission-mode");
+  const codexModelIndex = input.authority.argv.indexOf("--model");
+  const codexConfigIndex = input.authority.argv.indexOf("-c");
   const executionModeReady =
     input.executable.executionMode === "benign_test_fixture" ||
     (input.executable.executionMode === "real_codex_read_only_planner_canary" &&
       input.authority.workerFamily === "codex" &&
       input.authority.executableKind === "codex_exec" &&
-      input.authority.environment.inheritance === "none" &&
+      input.authority.environment.inheritance ===
+        "system_codex_read_only_planner_canary" &&
       input.authority.argv.includes("exec") &&
+      codexModelIndex >= 0 &&
+      input.authority.argv[codexModelIndex + 1] === "gpt-5.5" &&
+      codexConfigIndex >= 0 &&
+      input.authority.argv[codexConfigIndex + 1] ===
+        'model_reasoning_effort="high"' &&
       input.authority.argv.includes("--sandbox") &&
       input.authority.argv.includes("read-only") &&
-      input.authority.argv.includes("--ask-for-approval") &&
-      input.authority.argv.includes("never") &&
       input.authority.argv.includes("--output-schema") &&
       !input.authority.argv.some((arg) =>
         /danger|yolo|bypass|mcp|provider|api-key|credential/i.test(arg),
@@ -1100,6 +1149,7 @@ function environmentPolicyReady(
   if (
     environment.authority !== "system" ||
     (environment.inheritance !== "none" &&
+      environment.inheritance !== "system_codex_read_only_planner_canary" &&
       environment.inheritance !== "system_claude_code_read_only_canary" &&
       environment.inheritance !== "system_claude_code_write_canary") ||
     environment.variables.length > maxEnvironmentVariables
@@ -1123,9 +1173,25 @@ function environmentFromPolicy(
   );
 
   if (
+    environment?.inheritance !== "system_codex_read_only_planner_canary" &&
     environment?.inheritance !== "system_claude_code_read_only_canary" &&
     environment?.inheritance !== "system_claude_code_write_canary"
   ) {
+    return variables;
+  }
+
+  if (environment.inheritance === "system_codex_read_only_planner_canary") {
+    const source = (process as { env?: Record<string, string | undefined> })
+      .env ?? {};
+
+    for (const name of approvedCodexEnvironmentRefs()) {
+      const value = safeEnvValue(source[name]);
+
+      if (value !== undefined) {
+        variables[name] = value;
+      }
+    }
+
     return variables;
   }
 
@@ -1165,6 +1231,69 @@ function truncateUtf8(value: string, maxBytes: number): string {
   }
 
   return current;
+}
+
+function tailUtf8(value: string, maxBytes: number): string {
+  let current = "";
+
+  for (let index = value.length - 1; index >= 0; index -= 1) {
+    const next = `${value[index]}${current}`;
+
+    if (Buffer.byteLength(next, "utf8") > maxBytes) {
+      return current;
+    }
+
+    current = next;
+  }
+
+  return current;
+}
+
+function sanitizeDiagnosticStream(value: string): string {
+  return value
+    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line.length > 0 &&
+        !/(^at\s+|\s+at\s+|stack)/i.test(line) &&
+        !/(token|secret|credential|authorization|api[-_]?key|password|cookie|session)/i.test(
+          line,
+        ),
+    )
+    .map((line) =>
+      line
+        .replace(/\bError:/g, "error")
+        .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted]"),
+    )
+    .join(" ");
+}
+
+function streamDiagnostic(input: {
+  readonly label: "stdout" | "stderr";
+  readonly value: string;
+}): string {
+  const sanitized = sanitizeDiagnosticStream(input.value);
+
+  if (input.value.trim().length === 0) {
+    return `${input.label}=empty`;
+  }
+
+  if (sanitized.length === 0) {
+    return `${input.label}=redacted`;
+  }
+
+  const head = truncateUtf8(sanitized, 96).trim();
+  const tail = tailUtf8(sanitized, 192).trim();
+  const terminal = tailUtf8(sanitized, 96).trim();
+
+  return [
+    `${input.label}Head=${head}`,
+    `${input.label}Tail=${tail}`,
+    `${input.label}Terminal=${terminal}`,
+  ].join("; ");
 }
 
 function appendChunk(input: {
@@ -1255,11 +1384,16 @@ function diagnosticFromEvidence(
       `termination=${evidence.terminationReason}`,
       `exitCode=${evidence.exitCode ?? "null"}`,
       evidence.signal === undefined ? undefined : `signal=${evidence.signal}`,
-      evidence.stderr.length === 0 ? undefined : `stderr=${evidence.stderr}`,
+      `stdinMode=${evidence.stdinMode}`,
+      `stdinBytes=${evidence.stdinBytes}`,
+      `stdinWriteCompleted=${evidence.stdinWriteCompleted}`,
+      `stdinClosed=${evidence.stdinClosed}`,
+      streamDiagnostic({ label: "stderr", value: evidence.stderr }),
+      streamDiagnostic({ label: "stdout", value: evidence.stdout }),
     ]
       .filter((item): item is string => item !== undefined)
       .join("; "),
-    2048,
+    512,
   );
 }
 
@@ -1278,6 +1412,9 @@ async function executeBoundedChildProcess(input: {
     let stderrBytes = 0;
     let stdoutOversized = false;
     let stderrOversized = false;
+    const stdinBytes = Buffer.byteLength(input.stdin, "utf8");
+    let stdinWriteCompleted = false;
+    let stdinClosed = false;
     let timedOut = false;
     let spawned = false;
     let resolved = false;
@@ -1285,7 +1422,7 @@ async function executeBoundedChildProcess(input: {
     const finish = (
       evidence: Omit<
         TaskExecutionLocalWorkerProcessEvidence,
-        "invocationRef" | "stdout" | "stderr" | "stdoutBytes" | "stderrBytes" | "stdoutTruncated" | "stderrTruncated" | "timedOut" | "spawned" | "observedAt"
+        "invocationRef" | "stdinMode" | "stdinBytes" | "stdinWriteCompleted" | "stdinClosed" | "stdout" | "stderr" | "stdoutBytes" | "stderrBytes" | "stdoutTruncated" | "stderrTruncated" | "timedOut" | "spawned" | "observedAt"
       >,
     ) => {
       if (resolved) {
@@ -1296,6 +1433,10 @@ async function executeBoundedChildProcess(input: {
       resolveProcess({
         invocationRef: `local-worker-process:${input.authority.invocationId}`,
         ...evidence,
+        stdinMode: "pipe",
+        stdinBytes,
+        stdinWriteCompleted,
+        stdinClosed,
         stdout,
         stderr,
         stdoutBytes,
@@ -1421,7 +1562,10 @@ async function executeBoundedChildProcess(input: {
         });
       });
 
-      child.stdin?.end(input.stdin, "utf8");
+      child.stdin?.end(input.stdin, "utf8", () => {
+        stdinWriteCompleted = true;
+        stdinClosed = true;
+      });
       timeoutHandle = setTimeout(() => {
         timedOut = true;
         child.kill("SIGTERM");
@@ -1475,6 +1619,10 @@ function processEvidenceMetadata(
     terminationReason: evidence.terminationReason,
     exitCode: evidence.exitCode,
     signal: evidence.signal ?? null,
+    stdinMode: evidence.stdinMode,
+    stdinBytes: evidence.stdinBytes,
+    stdinWriteCompleted: evidence.stdinWriteCompleted,
+    stdinClosed: evidence.stdinClosed,
     stdoutBytes: evidence.stdoutBytes,
     stderrBytes: evidence.stderrBytes,
     stdoutTruncated: evidence.stdoutTruncated,
@@ -1488,14 +1636,23 @@ function processEvidenceMetadata(
 function sanitizedFailureDiagnostic(
   evidence: TaskExecutionLocalWorkerProcessEvidence,
   forbiddenValues: readonly string[],
-): string {
+): string | undefined {
   const diagnostic = diagnosticFromEvidence(evidence);
-
-  return forbiddenValues.reduce(
+  const redacted = forbiddenValues.reduce(
     (current, forbidden) =>
       forbidden.length === 0 ? current : current.split(forbidden).join("[redacted]"),
     diagnostic,
   );
+
+  if (
+    redacted.trim().length === 0 ||
+    redacted.length > 512 ||
+    /(\n\s*at\s+|Error:|stack)/i.test(redacted)
+  ) {
+    return undefined;
+  }
+
+  return redacted;
 }
 
 export async function executeTaskExecutionLocalWorkerProcess(
@@ -1642,6 +1799,24 @@ export async function executeTaskExecutionLocalWorkerProcess(
   const status = spawnStatusFromEvidence(evidence);
   const processSucceeded =
     evidence.terminationReason === "exited" && evidence.exitCode === 0;
+  if (input.outcomePersistence === "caller_normalized") {
+    return runtimeResult({
+      ok: processSucceeded,
+      status,
+      launchReservationPersisted: true,
+      oneShotAuthorityConsumed: true,
+      processSpawned: evidence.spawned,
+      actualWorkerProcessesSpawned: evidence.spawned ? 1 : 0,
+      invocationLifecycle: reservation.value.record.lifecycle,
+      invocationRevision: reservation.value.record.revision,
+      processResult: evidence,
+      reconciliationRequired: true,
+      postDispatchAuditWritten: false,
+      postDispatchAuditIncomplete: true,
+      issues,
+    });
+  }
+
   const updateResult = await updateTaskExecutionInvocation({
     projectRoot: input.projectRoot,
     taskId: invocation.taskId,

@@ -11672,6 +11672,20 @@ try {
     parsedOrchestrationCanaryPrepare.safety.RealTwoModelCanaryReady !== true ||
     parsedOrchestrationCanaryPrepare.safety.RealTwoModelCanaryExecuted !==
       false ||
+    parsedOrchestrationCanaryPrepare.safety.plannerAuthChecked !== false ||
+    parsedOrchestrationCanaryPrepare.safety.plannerProcessOutcomeKnown !==
+      false ||
+    parsedOrchestrationCanaryPrepare.safety
+      .plannerInvocationOutcomePersisted !== false ||
+    parsedOrchestrationCanaryPrepare.safety.plannerReconciliationRequired !==
+      false ||
+    parsedOrchestrationCanaryPrepare.safety.plannerInvocationModified !==
+      false ||
+    parsedOrchestrationCanaryPrepare.safety.realCodexModelCall !== false ||
+    parsedOrchestrationCanaryPrepare.safety.routeCreated !== false ||
+    parsedOrchestrationCanaryPrepare.safety.realClaudeModelCall !== false ||
+    parsedOrchestrationCanaryPrepare.safety.workerInvocationModified !==
+      false ||
     parsedOrchestrationCanaryPrepare.plannerCalls !== 0 ||
     parsedOrchestrationCanaryPrepare.workerCalls !== 0
   ) {

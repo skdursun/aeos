@@ -920,6 +920,34 @@ type TaskExecutionClaudeCanaryJsonOutput =
       readonly issues: readonly TaskStateCliIssue[];
     };
 
+type TaskExecutionOrchestrationCanarySafety = {
+  readonly RealCodexPlannerCanaryReady: true;
+  readonly RealClaudeRoutedReadOnlyCanaryReady: true;
+  readonly RealTwoModelCanaryReady: true;
+  readonly RealCodexPlannerExecuted: boolean;
+  readonly RealClaudeRoutedWorkerExecuted: boolean;
+  readonly RealTwoModelCanaryExecuted: boolean;
+  readonly orchestrationPrepared: boolean;
+  readonly orchestrationConsumed: boolean;
+  readonly plannerAuthChecked: boolean;
+  readonly plannerAuthReady: boolean;
+  readonly plannerProcessOutcomeKnown: boolean;
+  readonly plannerInvocationOutcomePersisted: boolean;
+  readonly plannerReconciliationRequired: boolean;
+  readonly plannerInvocationModified: boolean;
+  readonly plannerOneShotConsumed: boolean;
+  readonly realCodexProcessSpawned: boolean;
+  readonly realCodexModelCall: boolean;
+  readonly routeCreated: boolean;
+  readonly realClaudeProcessSpawned: boolean;
+  readonly realClaudeModelCall: boolean;
+  readonly workerInvocationModified: boolean;
+  readonly repositoryWriteAllowed: false;
+  readonly shellAllowed: false;
+  readonly primaryApplyAllowed: false;
+  readonly completionAuthority: false;
+};
+
 type TaskExecutionOrchestrationCanaryJsonOutput =
   | {
       readonly ok: true;
@@ -936,18 +964,7 @@ type TaskExecutionOrchestrationCanaryJsonOutput =
       readonly plannerCalls: number;
       readonly workerCalls: number;
       readonly productionCompletionReady: false;
-      readonly safety: {
-        readonly RealCodexPlannerCanaryReady: true;
-        readonly RealClaudeRoutedReadOnlyCanaryReady: true;
-        readonly RealTwoModelCanaryReady: true;
-        readonly RealCodexPlannerExecuted: boolean;
-        readonly RealClaudeRoutedWorkerExecuted: boolean;
-        readonly RealTwoModelCanaryExecuted: boolean;
-        readonly repositoryWriteAllowed: false;
-        readonly shellAllowed: false;
-        readonly primaryApplyAllowed: false;
-        readonly completionAuthority: false;
-      };
+      readonly safety: TaskExecutionOrchestrationCanarySafety;
       readonly issues: readonly TaskStateCliIssue[];
     }
   | {
@@ -955,12 +972,15 @@ type TaskExecutionOrchestrationCanaryJsonOutput =
       readonly status: string;
       readonly taskId: string;
       readonly orchestrationId: string | null;
+      readonly plannerCalls: number;
+      readonly workerCalls: number;
       readonly error: {
         readonly code: string;
         readonly message: string;
         readonly category: string;
       };
       readonly productionCompletionReady: false;
+      readonly safety: TaskExecutionOrchestrationCanarySafety;
       readonly issues: readonly TaskStateCliIssue[];
     };
 
@@ -6280,6 +6300,39 @@ async function handleTaskExecutionOrchestrationCanary(
 ): Promise<void> {
   const parsedArgs = parseTaskExecutionOrchestrationCanaryArgs(args);
 
+  function createSafety(
+    overrides: Partial<TaskExecutionOrchestrationCanarySafety> = {},
+  ): TaskExecutionOrchestrationCanarySafety {
+    return {
+      RealCodexPlannerCanaryReady: true,
+      RealClaudeRoutedReadOnlyCanaryReady: true,
+      RealTwoModelCanaryReady: true,
+      RealCodexPlannerExecuted: false,
+      RealClaudeRoutedWorkerExecuted: false,
+      RealTwoModelCanaryExecuted: false,
+      orchestrationPrepared: false,
+      orchestrationConsumed: false,
+      plannerAuthChecked: false,
+      plannerAuthReady: false,
+      plannerProcessOutcomeKnown: false,
+      plannerInvocationOutcomePersisted: false,
+      plannerReconciliationRequired: false,
+      plannerInvocationModified: false,
+      plannerOneShotConsumed: false,
+      realCodexProcessSpawned: false,
+      realCodexModelCall: false,
+      routeCreated: false,
+      realClaudeProcessSpawned: false,
+      realClaudeModelCall: false,
+      workerInvocationModified: false,
+      repositoryWriteAllowed: false,
+      shellAllowed: false,
+      primaryApplyAllowed: false,
+      completionAuthority: false,
+      ...overrides,
+    };
+  }
+
   function writeOrPrint(
     output: TaskExecutionOrchestrationCanaryJsonOutput,
   ): void {
@@ -6315,12 +6368,15 @@ async function handleTaskExecutionOrchestrationCanary(
       status: "invalid_arguments",
       taskId: parsedArgs.taskId ?? "",
       orchestrationId: parsedArgs.orchestrationId ?? null,
+      plannerCalls: 0,
+      workerCalls: 0,
       error: parsedArgs.error ?? createTaskStateCliError({
         code: "task_execution_orchestration_canary_action_required",
         message:
           "Orchestration canary requires prepare or run.",
       }),
       productionCompletionReady: false,
+      safety: createSafety(),
       issues: [],
     });
     setExitCode(1);
@@ -6338,6 +6394,8 @@ async function handleTaskExecutionOrchestrationCanary(
         status: result.status,
         taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
         orchestrationId: TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID,
+        plannerCalls: 0,
+        workerCalls: 0,
         error: createTaskStateCliError({
           code:
             firstIssue?.code ??
@@ -6348,6 +6406,7 @@ async function handleTaskExecutionOrchestrationCanary(
           category: firstIssue?.category,
         }),
         productionCompletionReady: false,
+        safety: createSafety(),
         issues: result.issues.map((item) =>
           createTaskStateCliIssue({
             code: item.code,
@@ -6375,18 +6434,10 @@ async function handleTaskExecutionOrchestrationCanary(
       plannerCalls: 0,
       workerCalls: 0,
       productionCompletionReady: false,
-      safety: {
-        RealCodexPlannerCanaryReady: true,
-        RealClaudeRoutedReadOnlyCanaryReady: true,
-        RealTwoModelCanaryReady: true,
-        RealCodexPlannerExecuted: false,
-        RealClaudeRoutedWorkerExecuted: false,
-        RealTwoModelCanaryExecuted: false,
-        repositoryWriteAllowed: false,
-        shellAllowed: false,
-        primaryApplyAllowed: false,
-        completionAuthority: false,
-      },
+      safety: createSafety({
+        orchestrationPrepared: result.orchestration.lifecycle === "prepared",
+        orchestrationConsumed: result.orchestration.lifecycle !== "prepared",
+      }),
       issues: [],
     });
     return;
@@ -6398,12 +6449,15 @@ async function handleTaskExecutionOrchestrationCanary(
       status: "invalid_arguments",
       taskId: parsedArgs.taskId ?? "",
       orchestrationId: parsedArgs.orchestrationId ?? null,
+      plannerCalls: 0,
+      workerCalls: 0,
       error: createTaskStateCliError({
         code: "task_execution_orchestration_canary_ids_required",
         message:
           "Orchestration canary run requires task id and --orchestration-id.",
       }),
       productionCompletionReady: false,
+      safety: createSafety(),
       issues: [],
     });
     setExitCode(1);
@@ -6437,8 +6491,11 @@ async function handleTaskExecutionOrchestrationCanary(
       status: "invalid_arguments",
       taskId: parsedArgs.taskId,
       orchestrationId: parsedArgs.orchestrationId,
+      plannerCalls: 0,
+      workerCalls: 0,
       error: revisionError!,
       productionCompletionReady: false,
+      safety: createSafety(),
       issues: [],
     });
     setExitCode(1);
@@ -6460,6 +6517,8 @@ async function handleTaskExecutionOrchestrationCanary(
       status: result.status,
       taskId: parsedArgs.taskId,
       orchestrationId: parsedArgs.orchestrationId,
+      plannerCalls: result.plannerCalls,
+      workerCalls: result.workerCalls,
       error: createTaskStateCliError({
         code:
           firstIssue?.code ??
@@ -6470,6 +6529,29 @@ async function handleTaskExecutionOrchestrationCanary(
         category: firstIssue?.category,
       }),
       productionCompletionReady: false,
+      safety: createSafety({
+        RealCodexPlannerExecuted: result.safety.realCodexPlannerExecuted,
+        RealClaudeRoutedWorkerExecuted:
+          result.safety.realClaudeRoutedWorkerExecuted,
+        RealTwoModelCanaryExecuted: result.ok,
+        orchestrationPrepared: result.safety.orchestrationPrepared,
+        orchestrationConsumed: result.safety.orchestrationConsumed,
+        plannerAuthChecked: result.safety.plannerAuthChecked,
+        plannerAuthReady: result.safety.plannerAuthReady,
+        plannerProcessOutcomeKnown: result.safety.plannerProcessOutcomeKnown,
+        plannerInvocationOutcomePersisted:
+          result.safety.plannerInvocationOutcomePersisted,
+        plannerReconciliationRequired:
+          result.safety.plannerReconciliationRequired,
+        plannerInvocationModified: result.safety.plannerInvocationModified,
+        plannerOneShotConsumed: result.safety.plannerOneShotConsumed,
+        realCodexProcessSpawned: result.safety.realCodexProcessSpawned,
+        realCodexModelCall: result.safety.realCodexModelCall,
+        routeCreated: result.safety.routeCreated,
+        realClaudeProcessSpawned: result.safety.realClaudeProcessSpawned,
+        realClaudeModelCall: result.safety.realClaudeModelCall,
+        workerInvocationModified: result.safety.workerInvocationModified,
+      }),
       issues: result.issues.map((item) =>
         createTaskStateCliIssue({
           code: item.code,
@@ -6501,19 +6583,28 @@ async function handleTaskExecutionOrchestrationCanary(
     plannerCalls: result.plannerCalls,
     workerCalls: result.workerCalls,
     productionCompletionReady: false,
-    safety: {
-      RealCodexPlannerCanaryReady: true,
-      RealClaudeRoutedReadOnlyCanaryReady: true,
-      RealTwoModelCanaryReady: true,
+    safety: createSafety({
       RealCodexPlannerExecuted: result.safety.realCodexPlannerExecuted,
       RealClaudeRoutedWorkerExecuted:
         result.safety.realClaudeRoutedWorkerExecuted,
       RealTwoModelCanaryExecuted: result.ok,
-      repositoryWriteAllowed: false,
-      shellAllowed: false,
-      primaryApplyAllowed: false,
-      completionAuthority: false,
-    },
+      orchestrationPrepared: result.safety.orchestrationPrepared,
+      orchestrationConsumed: result.safety.orchestrationConsumed,
+      plannerAuthChecked: result.safety.plannerAuthChecked,
+      plannerAuthReady: result.safety.plannerAuthReady,
+      plannerProcessOutcomeKnown: result.safety.plannerProcessOutcomeKnown,
+      plannerInvocationOutcomePersisted:
+        result.safety.plannerInvocationOutcomePersisted,
+      plannerReconciliationRequired: result.safety.plannerReconciliationRequired,
+      plannerInvocationModified: result.safety.plannerInvocationModified,
+      plannerOneShotConsumed: result.safety.plannerOneShotConsumed,
+      realCodexProcessSpawned: result.safety.realCodexProcessSpawned,
+      realCodexModelCall: result.safety.realCodexModelCall,
+      routeCreated: result.safety.routeCreated,
+      realClaudeProcessSpawned: result.safety.realClaudeProcessSpawned,
+      realClaudeModelCall: result.safety.realClaudeModelCall,
+      workerInvocationModified: result.safety.workerInvocationModified,
+    }),
     issues: result.issues.map((item) =>
       createTaskStateCliIssue({
         code: item.code,

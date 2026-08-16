@@ -28,7 +28,10 @@ import {
   prepareTaskExecutionAttempt,
   transitionTaskExecutionAttempt,
 } from "./task-execution-attempt.js";
-import type { TaskExecutionAttempt } from "./task-execution-attempt.js";
+import type {
+  TaskExecutionAttempt,
+  TaskExecutionFailureCategory,
+} from "./task-execution-attempt.js";
 import {
   loadTaskExecutionAttempt,
   saveTaskExecutionAttempt,
@@ -53,9 +56,9 @@ import type {
 import {
   evaluateTaskExecutionPermissionGate,
 } from "./task-execution-permission-gate.js";
-import {
-  deriveTaskExecutionPolicyGateId,
-} from "./task-execution-policy-approval.js";
+import type {
+  TaskExecutionPermissionGatePolicyRequirement,
+} from "./task-execution-permission-gate.js";
 import type {
   TaskExecutionAdapterCapabilities,
   TaskExecutionAdapterIdentity,
@@ -64,9 +67,11 @@ import type {
 import {
   authorizeTaskExecutionWorkerProcess,
   normalizeTaskExecutionCodexProcessResult,
+  runTaskExecutionCodexExecContractPreflight,
   prepareTaskExecutionCodexWorkerInvocation,
 } from "./task-execution-codex-worker.js";
 import type {
+  TaskExecutionCodexExecContractPreflightResult,
   TaskExecutionCodexProcessResult,
   TaskExecutionCodexWorkerConfiguration,
 } from "./task-execution-codex-worker.js";
@@ -161,9 +166,9 @@ export interface TaskExecutionTwoModelCanaryRecord {
   readonly routeDecisionStatus: "authorized" | "blocked" | "not_run";
   readonly selectedWorkerFamily: "claude_code" | null;
   readonly lifecycle: TaskExecutionTwoModelCanaryLifecycle;
-  readonly realCodexPlannerExecuted: false;
-  readonly realClaudeRoutedWorkerExecuted: false;
-  readonly realTwoModelCanaryExecuted: false;
+  readonly realCodexPlannerExecuted: boolean;
+  readonly realClaudeRoutedWorkerExecuted: boolean;
+  readonly realTwoModelCanaryExecuted: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly issues: readonly TaskExecutionWorkerIssue[];
@@ -200,6 +205,8 @@ export interface TaskExecutionTwoModelCanaryRunResult {
     | "route_blocked"
     | "worker_failed"
     | "outcome_unknown"
+    | "planner_outcome_persistence_failed"
+    | "worker_outcome_persistence_failed"
     | "already_consumed"
     | "blocked";
   readonly orchestration: TaskExecutionTwoModelCanaryRecord | null;
@@ -212,6 +219,21 @@ export interface TaskExecutionTwoModelCanaryRunResult {
   readonly workerCalls: 0 | 1;
   readonly issues: readonly TaskExecutionWorkerIssue[];
   readonly safety: {
+    readonly orchestrationPrepared: boolean;
+    readonly orchestrationConsumed: boolean;
+    readonly plannerAuthChecked: boolean;
+    readonly plannerAuthReady: boolean;
+    readonly plannerProcessOutcomeKnown: boolean;
+    readonly plannerInvocationOutcomePersisted: boolean;
+    readonly plannerReconciliationRequired: boolean;
+    readonly plannerInvocationModified: boolean;
+    readonly plannerOneShotConsumed: boolean;
+    readonly realCodexProcessSpawned: boolean;
+    readonly realCodexModelCall: boolean;
+    readonly routeCreated: boolean;
+    readonly realClaudeProcessSpawned: boolean;
+    readonly realClaudeModelCall: boolean;
+    readonly workerInvocationModified: boolean;
     readonly realCodexPlannerExecuted: boolean;
     readonly realClaudeRoutedWorkerExecuted: boolean;
     readonly repositoryWriteAllowed: false;
@@ -228,13 +250,26 @@ export interface TaskExecutionTwoModelCanaryRunResult {
 
 export interface TaskExecutionTwoModelCanaryRunner {
   readonly codexAuthPreflight?: () => Promise<TaskExecutionCodexAuthPreflightResult>;
+  readonly codexExecContractPreflight?: () => Promise<TaskExecutionCodexExecContractPreflightResult>;
   readonly claudeAuthPreflight?: () => Promise<TaskExecutionClaudeCodeAuthPreflightResult>;
+  readonly policyRequirement?: (input: {
+    readonly phase: "planner" | "worker";
+    readonly invocation: TaskExecutionInvocationRecord;
+    readonly worker: TaskExecutionWorkerIdentity;
+  }) => TaskExecutionPermissionGatePolicyRequirement;
   readonly codexProcess?: (
     request: TaskExecutionWorkerRequest,
   ) => Promise<TaskExecutionCodexProcessResult>;
   readonly claudeProcess?: (
     request: TaskExecutionWorkerRequest,
   ) => Promise<TaskExecutionClaudeCodeProcessResult>;
+}
+
+interface TaskExecutionTwoModelCanaryRefs {
+  readonly taskId: AgenticTaskId;
+  readonly orchestrationId: string;
+  readonly workItemId: AgenticWorkItemId;
+  readonly batchId: AgenticWorkBatchId;
 }
 
 const storageRootRelativePath = ".aeos/state/orchestration-canaries";
@@ -247,6 +282,21 @@ const codexPlannerSchemaPath = resolve(
   dirname(new URL(import.meta.url).pathname),
   "../schemas/codex-planner-routing-proposal-v1.schema.json",
 );
+
+function defaultCanaryRefs(input?: {
+  readonly taskId?: string;
+  readonly orchestrationId?: string;
+  readonly workItemId?: string;
+  readonly batchId?: string;
+}): TaskExecutionTwoModelCanaryRefs {
+  return {
+    taskId: input?.taskId ?? TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+    orchestrationId:
+      input?.orchestrationId ?? TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID,
+    workItemId: input?.workItemId ?? TASK_EXECUTION_TWO_MODEL_CANARY_WORK_ITEM_ID,
+    batchId: input?.batchId ?? TASK_EXECUTION_TWO_MODEL_CANARY_BATCH_ID,
+  };
+}
 
 const codexPlannerIdentity: TaskExecutionWorkerIdentity = {
   workerId: "system:codex-read-only-planner-canary",
@@ -530,15 +580,18 @@ export async function loadTaskExecutionTwoModelCanaryRecord(input: {
   }
 }
 
-function createCanaryTaskState(now: string): PersistedTaskState {
+function createCanaryTaskState(
+  now: string,
+  refs: TaskExecutionTwoModelCanaryRefs,
+): PersistedTaskState {
   const state = createInitialTaskState({
-    taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
+    taskId: refs.taskId,
     sourceTaskId: "TASK-0324",
     verifierRequired: true,
     createdAt: now,
   });
   const pendingIds = [
-    TASK_EXECUTION_TWO_MODEL_CANARY_WORK_ITEM_ID,
+    refs.workItemId,
     ...Array.from({ length: 379 }, (_item, index) =>
       `task-0324-pending-${String(index + 2).padStart(3, "0")}`,
     ),
@@ -548,24 +601,24 @@ function createCanaryTaskState(now: string): PersistedTaskState {
   );
   const workItems = [
     {
-      id: TASK_EXECUTION_TWO_MODEL_CANARY_WORK_ITEM_ID,
+      id: refs.workItemId,
       state: "pending" as const,
       title: "TASK-0324 read-only routed two-model canary",
       source: "aeos://task/TASK-0324",
-      batchId: TASK_EXECUTION_TWO_MODEL_CANARY_BATCH_ID,
+      batchId: refs.batchId,
       expectedArtifacts: ["artifact:task-0324-route-evidence"],
       updatedAt: now,
     },
     ...pendingIds.slice(1).map((id) => ({
       id,
       state: "pending" as const,
-      batchId: TASK_EXECUTION_TWO_MODEL_CANARY_BATCH_ID,
+      batchId: refs.batchId,
       updatedAt: now,
     })),
     ...accountedIds.map((id) => ({
       id,
       state: "skipped" as const,
-      batchId: TASK_EXECUTION_TWO_MODEL_CANARY_BATCH_ID,
+      batchId: refs.batchId,
       updatedAt: now,
     })),
   ];
@@ -576,7 +629,7 @@ function createCanaryTaskState(now: string): PersistedTaskState {
     workItems,
     batches: [
       {
-        id: TASK_EXECUTION_TWO_MODEL_CANARY_BATCH_ID,
+        id: refs.batchId,
         workItemIds: [...pendingIds, ...accountedIds],
         expectedItemCount: 400,
         completedCount: 0,
@@ -586,8 +639,8 @@ function createCanaryTaskState(now: string): PersistedTaskState {
       },
     ],
     pendingWorkItemIds: pendingIds,
-    currentBatchId: TASK_EXECUTION_TWO_MODEL_CANARY_BATCH_ID,
-    nextBatchId: TASK_EXECUTION_TWO_MODEL_CANARY_BATCH_ID,
+    currentBatchId: refs.batchId,
+    nextBatchId: refs.batchId,
     plan: {
       status: "planned",
       summary: {
@@ -619,6 +672,7 @@ function createCanaryTaskState(now: string): PersistedTaskState {
 async function createStartedAttempt(input: {
   readonly projectRoot: string;
   readonly state: PersistedTaskState;
+  readonly refs: TaskExecutionTwoModelCanaryRefs;
   readonly attemptNumber: number;
   readonly modelAdapterId: string;
   readonly now: string;
@@ -629,8 +683,8 @@ async function createStartedAttempt(input: {
   const prepared = prepareTaskExecutionAttempt({
     state: input.state,
     expectedRevision: input.state.revision,
-    workItemId: TASK_EXECUTION_TWO_MODEL_CANARY_WORK_ITEM_ID,
-    batchId: TASK_EXECUTION_TWO_MODEL_CANARY_BATCH_ID,
+    workItemId: input.refs.workItemId,
+    batchId: input.refs.batchId,
     attemptNumber: input.attemptNumber,
     createdAt: input.now,
     adapterReferences: {
@@ -692,12 +746,17 @@ async function reserveInvocationForAttempt(input: {
 export async function prepareTaskExecutionTwoModelCanary(input: {
   readonly projectRoot: string;
   readonly now?: string;
+  readonly taskId?: string;
+  readonly orchestrationId?: string;
+  readonly workItemId?: string;
+  readonly batchId?: string;
 }): Promise<TaskExecutionTwoModelCanaryPrepareResult> {
   const now = input.now ?? new Date().toISOString();
+  const refs = defaultCanaryRefs(input);
   const existing = await loadTaskExecutionTwoModelCanaryRecord({
     projectRoot: input.projectRoot,
-    taskId: TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID,
-    orchestrationId: TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID,
+    taskId: refs.taskId,
+    orchestrationId: refs.orchestrationId,
   });
   if (existing.ok) {
     const plannerInvocation = await loadTaskExecutionInvocation({
@@ -728,7 +787,7 @@ export async function prepareTaskExecutionTwoModelCanary(input: {
     };
   }
 
-  const state = createCanaryTaskState(now);
+  const state = createCanaryTaskState(now, refs);
   const stateValidation = validatePersistedTaskState(state);
   if (!stateValidation.ok) {
     return {
@@ -764,6 +823,7 @@ export async function prepareTaskExecutionTwoModelCanary(input: {
   const plannerAttempt = await createStartedAttempt({
     projectRoot: input.projectRoot,
     state: savedState.value.state,
+    refs,
     attemptNumber: 1,
     modelAdapterId: codexPlannerIdentity.workerId,
     now,
@@ -785,6 +845,7 @@ export async function prepareTaskExecutionTwoModelCanary(input: {
   const workerAttempt = await createStartedAttempt({
     projectRoot: input.projectRoot,
     state: savedState.value.state,
+    refs,
     attemptNumber: 2,
     modelAdapterId: claudeWorkerIdentity.workerId,
     now,
@@ -805,11 +866,11 @@ export async function prepareTaskExecutionTwoModelCanary(input: {
 
   const record: TaskExecutionTwoModelCanaryRecord = {
     schemaVersion: TASK_EXECUTION_TWO_MODEL_CANARY_SCHEMA_VERSION,
-    orchestrationId: TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID,
+    orchestrationId: refs.orchestrationId,
     taskId: savedState.value.state.taskId,
     taskRevision: savedState.value.state.revision,
-    workItemId: TASK_EXECUTION_TWO_MODEL_CANARY_WORK_ITEM_ID,
-    batchId: TASK_EXECUTION_TWO_MODEL_CANARY_BATCH_ID,
+    workItemId: refs.workItemId,
+    batchId: refs.batchId,
     plannerAttemptId: plannerAttempt.attempt.attemptId,
     plannerInvocationId: plannerInvocation.record.invocationId,
     plannerInvocationRevision: plannerInvocation.record.revision,
@@ -922,17 +983,35 @@ function permissionFacts(input: {
   };
 }
 
-function evaluateProcessPermission(input: {
+function createCanaryPolicyRequirement(input: {
   readonly invocation: TaskExecutionInvocationRecord;
   readonly worker: TaskExecutionWorkerIdentity;
-}) {
-  const adapterIdentity = createAdapterIdentity(input.worker);
-  const policyGateId = deriveTaskExecutionPolicyGateId({
+}): TaskExecutionPermissionGatePolicyRequirement {
+  const payload = JSON.stringify({
     taskId: input.invocation.taskId,
     taskStateRevision: input.invocation.taskStateRevision,
     attemptId: input.invocation.attemptId,
     invocationId: input.invocation.invocationId,
+    workerId: input.worker.workerId,
+    operationKind: "execute_task_attempt",
+    requiredPermissions: ["process"],
   });
+  const policyGateId = `policy-gate:task-0324:${sha256(payload).slice(0, 32)}`;
+
+  return {
+    required: false,
+    policyGateId,
+    referenceId: policyGateId,
+    authority: "system",
+  };
+}
+
+function evaluateProcessPermission(input: {
+  readonly invocation: TaskExecutionInvocationRecord;
+  readonly worker: TaskExecutionWorkerIdentity;
+  readonly policyRequirement?: TaskExecutionPermissionGatePolicyRequirement;
+}) {
+  const adapterIdentity = createAdapterIdentity(input.worker);
 
   return evaluateTaskExecutionPermissionGate({
     request: {
@@ -957,13 +1036,8 @@ function evaluateProcessPermission(input: {
     adapterCapabilities,
     adapterPermissions,
     operationKind: "execute_task_attempt",
-    policyRequirement: {
-      required: false,
-      policyGateId: policyGateId.ok
-        ? policyGateId.value
-        : "policy-gate:task-0324-invalid",
-      authority: "system",
-    },
+    policyRequirement: input.policyRequirement ??
+      createCanaryPolicyRequirement(input),
     requiredPermissions: [
       {
         permission: "process",
@@ -988,8 +1062,8 @@ function createPlannerConfiguration(): TaskExecutionCodexWorkerConfiguration {
     },
     model: {
       authority: "system",
-      model: "gpt-5-codex",
-      reasoningEffort: "minimal",
+      model: "gpt-5.5",
+      reasoningEffort: "high",
     },
     workspace: {
       ...workspace,
@@ -1009,6 +1083,7 @@ function createPlannerConfiguration(): TaskExecutionCodexWorkerConfiguration {
     stderrLimitBytes: 8192,
     structuredResultContractRef: "contract:aeos-codex-planner-routing-proposal-v1",
     structuredResultSchemaPath: codexPlannerSchemaPath,
+    environmentInheritance: "system_codex_read_only_planner_canary",
   };
 }
 
@@ -1087,6 +1162,9 @@ function routeProposalFromPlannerResult(input: {
     "completed",
     "verified",
     "safeToRetry",
+    "policyRequired",
+    "policyAuthorized",
+    "approved",
     "permissionGranted",
     "cwd",
     "executable",
@@ -1115,6 +1193,7 @@ function routeProposalFromPlannerResult(input: {
     (proposalValue.batchId ?? input.expectedBatchId) !== input.expectedBatchId ||
     proposalValue.operationKind !== "execute_task_attempt" ||
     proposalValue.recommendedWorkerFamily !== "claude_code" ||
+    proposalValue.expectedOperationClass !== "implementation" ||
     !Array.isArray(capabilityRequirements) ||
     !capabilityRequirements.every((item) => allowedCapabilities.has(item))
   ) {
@@ -1262,16 +1341,29 @@ async function deterministicProcessResult(input: {
               kind: "record_failed",
               failure: {
                 code:
-                  normalized.failure?.code ??
+                  boundedInvocationText(normalized.failure?.code) ??
                   "task_execution_two_model_canary_deterministic_worker_failed",
-                category: "execution_failure",
+                category: invocationFailureCategoryFromWorkerResult(normalized),
                 retryable: false,
-                diagnostic: normalized.failure?.message,
+                ...(boundedInvocationText(normalized.failure?.message) ===
+                undefined
+                  ? {}
+                  : {
+                      diagnostic: boundedInvocationText(
+                        normalized.failure?.message,
+                      ),
+                    }),
               },
             },
   });
 
   const record = update.ok ? update.value.record : entered.value.record;
+  const processStdinEvidence = input.process as {
+    readonly stdinMode?: "pipe";
+    readonly stdinBytes?: number;
+    readonly stdinWriteCompleted?: boolean;
+    readonly stdinClosed?: boolean;
+  };
   return {
     runtime: fakeRuntime(
       normalized.outcomeStatus === "returned"
@@ -1287,6 +1379,11 @@ async function deterministicProcessResult(input: {
             : input.process.terminationReason,
         exitCode: input.process.exitCode,
         signal: input.process.signal,
+        stdinMode: processStdinEvidence.stdinMode ?? "pipe",
+        stdinBytes: processStdinEvidence.stdinBytes ?? 1,
+        stdinWriteCompleted:
+          processStdinEvidence.stdinWriteCompleted ?? true,
+        stdinClosed: processStdinEvidence.stdinClosed ?? true,
         stdout: input.process.stdout,
         stderr: input.process.stderr,
         stdoutBytes: input.process.stdout.length,
@@ -1403,6 +1500,283 @@ function normalizeSyntheticFailure(
   };
 }
 
+function boundedInvocationText(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+
+  if (
+    trimmed.length === 0 ||
+    trimmed.length > 512 ||
+    /(\n\s*at\s+|Error:|stack|token|secret|credential|authorization)/i.test(
+      trimmed,
+    )
+  ) {
+    return undefined;
+  }
+
+  return trimmed;
+}
+
+function invocationFailureCategoryFromWorkerResult(
+  result: TaskExecutionWorkerResult,
+): TaskExecutionFailureCategory {
+  if (
+    result.failure?.category === "timeout" ||
+    result.failure?.category === "worker_error" ||
+    result.failure?.category === "invalid_request" ||
+    result.failure?.category === "rejected"
+  ) {
+    return "execution_failure";
+  }
+
+  return "unknown";
+}
+
+function knownWorkerOutcome(result: TaskExecutionWorkerResult | null): boolean {
+  return (
+    result?.outcomeStatus === "returned" ||
+    result?.outcomeStatus === "failed" ||
+    result?.outcomeStatus === "rejected"
+  );
+}
+
+function issueCategoryFromWorkerFailure(
+  result: TaskExecutionWorkerResult,
+): AeosError["category"] {
+  if (result.failure?.category === "timeout") {
+    return "timeout";
+  }
+
+  if (
+    result.failure?.category === "invalid_request" ||
+    result.failure?.category === "rejected"
+  ) {
+    return "validation";
+  }
+
+  return "unknown";
+}
+
+function issueFromWorkerFailure(
+  result: TaskExecutionWorkerResult | null,
+): readonly TaskExecutionWorkerIssue[] {
+  if (result?.outcomeStatus !== "failed" || result.failure === undefined) {
+    return [];
+  }
+
+  return [
+    issue({
+      code:
+        boundedInvocationText(result.failure.code) ??
+        "task_execution_two_model_canary_worker_failed",
+      message:
+        boundedInvocationText(result.failure.message) ??
+        "Worker process returned bounded failed evidence.",
+      category: issueCategoryFromWorkerFailure(result),
+    }),
+  ];
+}
+
+async function persistInvocationOutcomeFromWorkerResult(input: {
+  readonly projectRoot: string;
+  readonly taskId: string;
+  readonly invocationId: string;
+  readonly workerResult: TaskExecutionWorkerResult | null;
+  readonly expectedLifecycle: "invoking" | "outcome_unknown";
+  readonly expectedRevision: number;
+}): Promise<{
+  readonly record: TaskExecutionInvocationRecord | null;
+  readonly outcomeKnown: boolean;
+  readonly outcomePersisted: boolean;
+  readonly reconciliationRequired: boolean;
+  readonly issues: readonly TaskExecutionWorkerIssue[];
+}> {
+  if (input.workerResult === null) {
+    return {
+      record: null,
+      outcomeKnown: false,
+      outcomePersisted: false,
+      reconciliationRequired: true,
+      issues: [
+        issue({
+          code: "task_execution_two_model_canary_worker_result_missing",
+          message:
+            "Local worker process evidence did not produce a normalized worker outcome; reconciliation remains required.",
+          category: "unknown",
+        }),
+      ],
+    };
+  }
+
+  const loaded = await loadTaskExecutionInvocation({
+    projectRoot: input.projectRoot,
+    taskId: input.taskId,
+    invocationId: input.invocationId,
+  });
+  if (!loaded.ok) {
+    return {
+      record: null,
+      outcomeKnown: knownWorkerOutcome(input.workerResult),
+      outcomePersisted: false,
+      reconciliationRequired: true,
+      issues: [createErrorIssue(loaded.error)],
+    };
+  }
+
+  if (
+    loaded.value.record.lifecycle !== input.expectedLifecycle ||
+    loaded.value.record.revision !== input.expectedRevision
+  ) {
+    return {
+      record: loaded.value.record,
+      outcomeKnown: knownWorkerOutcome(input.workerResult),
+      outcomePersisted: false,
+      reconciliationRequired: true,
+      issues: [
+        issue({
+          code:
+            "task_execution_two_model_canary_invocation_outcome_context_mismatch",
+          message:
+            "Normalized worker outcome persistence requires the exact post-launch invocation lifecycle and revision.",
+          category: "conflict",
+        }),
+      ],
+    };
+  }
+
+  if (
+    input.workerResult.outcomeStatus !== "returned" &&
+    input.workerResult.outcomeStatus !== "failed" &&
+    input.workerResult.outcomeStatus !== "rejected"
+  ) {
+    if (loaded.value.record.lifecycle === "outcome_unknown") {
+      return {
+        record: loaded.value.record,
+        outcomeKnown: false,
+        outcomePersisted: false,
+        reconciliationRequired: true,
+        issues: input.workerResult.issues,
+      };
+    }
+
+    const unknown = await updateTaskExecutionInvocation({
+      projectRoot: input.projectRoot,
+      taskId: input.taskId,
+      invocationId: input.invocationId,
+      ownershipToken: loaded.value.record.ownership.ownershipToken,
+      expectedLifecycle: "invoking",
+      expectedRevision: input.expectedRevision,
+      intent: {
+        kind: "mark_outcome_unknown",
+        issue: {
+          code: "task_execution_two_model_canary_worker_outcome_ambiguous",
+          message:
+            "Worker result was not a known returned or failed outcome; reconciliation remains required and relaunch is forbidden.",
+          severity: "error",
+          category: "unknown",
+        },
+      },
+    });
+
+    return unknown.ok
+      ? {
+          record: unknown.value.record,
+          outcomeKnown: false,
+          outcomePersisted: false,
+          reconciliationRequired: true,
+          issues: input.workerResult.issues,
+        }
+      : {
+          record: loaded.value.record,
+          outcomeKnown: false,
+          outcomePersisted: false,
+          reconciliationRequired: true,
+          issues: [createErrorIssue(unknown.error)],
+        };
+  }
+
+  const observedAt = new Date().toISOString();
+  const safeOutputReference = boundedInvocationText(
+    input.workerResult.outputReference,
+  );
+  const safeDiagnosticCode =
+    boundedInvocationText(input.workerResult.diagnosticCode) ??
+    "task_execution_worker_result_returned";
+  const safeReturnedMessage = boundedInvocationText(input.workerResult.message);
+  const safeFailureCode =
+    boundedInvocationText(input.workerResult.failure?.code) ??
+    boundedInvocationText(input.workerResult.issues[0]?.code) ??
+    "task_execution_worker_result_failed";
+  const safeFailureDiagnostic =
+    boundedInvocationText(input.workerResult.failure?.message) ??
+    boundedInvocationText(input.workerResult.message) ??
+    boundedInvocationText(input.workerResult.issues[0]?.message);
+  const update = await updateTaskExecutionInvocation({
+    projectRoot: input.projectRoot,
+    taskId: input.taskId,
+    invocationId: input.invocationId,
+    ownershipToken: loaded.value.record.ownership.ownershipToken,
+    expectedLifecycle: input.expectedLifecycle,
+    expectedRevision: input.expectedRevision,
+    intent:
+      input.workerResult.outcomeStatus === "returned" &&
+        input.workerResult.invocationOk
+        ? {
+            kind: "record_returned",
+            result: {
+              invocationOk: true,
+              ...(input.workerResult.output === undefined
+                ? {}
+                : { output: input.workerResult.output }),
+              ...(safeOutputReference === undefined
+                ? {}
+                : { outputReference: safeOutputReference }),
+              diagnosticCode: safeDiagnosticCode,
+              ...(safeReturnedMessage === undefined
+                ? {}
+                : { message: safeReturnedMessage }),
+              ...(input.workerResult.metadata === undefined
+                ? {}
+                : { metadata: input.workerResult.metadata }),
+              returnedAt: observedAt,
+            },
+          }
+        : {
+            kind: "record_failed",
+            failure: {
+              code: safeFailureCode,
+              category: invocationFailureCategoryFromWorkerResult(
+                input.workerResult,
+              ),
+              ...(safeFailureDiagnostic === undefined
+                ? {}
+                : { diagnostic: safeFailureDiagnostic }),
+              retryable: false,
+              failedAt: observedAt,
+            },
+          },
+  });
+
+  return update.ok
+    ? {
+        record: update.value.record,
+        outcomeKnown: true,
+        outcomePersisted: true,
+        reconciliationRequired: false,
+        issues: input.workerResult.issues,
+      }
+    : {
+        record: loaded.value.record,
+        outcomeKnown: true,
+        outcomePersisted: false,
+        reconciliationRequired: true,
+        issues: [createErrorIssue(update.error), ...input.workerResult.issues],
+      };
+}
+
 export async function runTaskExecutionTwoModelCanary(input: {
   readonly projectRoot: string;
   readonly taskId: string;
@@ -1483,6 +1857,11 @@ export async function runTaskExecutionTwoModelCanary(input: {
   const plannerGate = evaluateProcessPermission({
     invocation: plannerInvocation,
     worker: codexPlannerIdentity,
+    policyRequirement: input.runner?.policyRequirement?.({
+      phase: "planner",
+      invocation: plannerInvocation,
+      worker: codexPlannerIdentity,
+    }),
   });
   if (!plannerGate.allowed) {
     return runResult("planner_failed", record, plannerInvocation, workerInvocation, null, null, null, 0, 0, plannerGate.issues.map((item) => issue({
@@ -1495,7 +1874,7 @@ export async function runTaskExecutionTwoModelCanary(input: {
     invocation: plannerInvocation,
     workerIdentity: codexPlannerIdentity,
     boundedInstructions:
-      "TASK-0324 fixed planner canary. Return only a structured routing proposal recommending claude_code for the supplied read-only repository reasoning work item. Do not implement code, edit files, run shell, launch workers, or claim completion.",
+      "TASK-0324 fixed planner canary. Return only the JSON Schema-backed AEOS worker result with output.routingProposal.recommendedWorkerFamily=claude_code for the assigned read-only repository reasoning work item. Do not implement code, edit files, run shell, launch workers, or claim completion.",
     contextReferences: ["aeos://task/TASK-0324/operation/read-only-routed-worker-canary"],
     permissionFacts: permissionFacts({ gate: plannerGate }),
   });
@@ -1503,7 +1882,95 @@ export async function runTaskExecutionTwoModelCanary(input: {
   const codexAuth = await (input.runner?.codexAuthPreflight ??
     (() => runTaskExecutionCodexAuthPreflight({ executablePath: trustedCodexExecutablePath })))();
   if (!codexAuth.ok) {
-    return runResult("planner_failed", record, plannerInvocation, workerInvocation, null, null, null, 0, 0, codexAuth.issues);
+    return runResult(
+      "planner_failed",
+      record,
+      plannerInvocation,
+      workerInvocation,
+      null,
+      null,
+      null,
+      0,
+      0,
+      codexAuth.issues,
+      {
+        plannerAuthChecked: true,
+        plannerAuthReady: false,
+      },
+    );
+  }
+  const plannerAuthSafety = {
+    plannerAuthChecked: true,
+    plannerAuthReady: true,
+  } as const;
+  const codexExecPreflight = await (input.runner?.codexExecContractPreflight ??
+    (input.runner?.codexProcess === undefined
+      ? () =>
+          runTaskExecutionCodexExecContractPreflight({
+            executablePath: trustedCodexExecutablePath,
+            projectRoot: input.projectRoot,
+            configuration: plannerConfig,
+          })
+      : async () => ({
+          ok: true,
+          command: {
+            executablePath: trustedCodexExecutablePath,
+            argv: ["exec", "--help"] as const,
+            timeoutMs: 1,
+          },
+          issues: [],
+          checks: {
+            executableExists: true,
+            execSurfaceSupported: true,
+            expectedFlagsSupported: true,
+            schemaPathValid: true,
+            schemaJsonValid: true,
+            cwdGitRepository: true,
+            environmentPolicyValid: true,
+          },
+          safety: {
+            modelInvoked: false,
+            shellUsed: false,
+            fullParentEnvironmentInherited: false,
+            rawHelpOutputPersisted: false,
+            credentialFilesRead: false,
+            secretsPersisted: false,
+          },
+        })))();
+  if (!codexExecPreflight.ok) {
+    return runResult(
+      "planner_failed",
+      record,
+      plannerInvocation,
+      workerInvocation,
+      null,
+      null,
+      null,
+      0,
+      0,
+      codexExecPreflight.issues,
+      plannerAuthSafety,
+    );
+  }
+  const preparedPlanner = prepareTaskExecutionCodexWorkerInvocation({
+    configuration: plannerConfig,
+    request: plannerRequest,
+    invocationRecord: plannerInvocation,
+  });
+  if (preparedPlanner.issues.some((item) => item.severity === "error")) {
+    return runResult(
+      "planner_failed",
+      record,
+      plannerInvocation,
+      workerInvocation,
+      null,
+      null,
+      null,
+      0,
+      0,
+      preparedPlanner.issues,
+      plannerAuthSafety,
+    );
   }
   const plannerAudit = await appendDispatchAudit({
     projectRoot: input.projectRoot,
@@ -1512,7 +1979,7 @@ export async function runTaskExecutionTwoModelCanary(input: {
     permissionGateId: plannerGate.policyGateId,
   });
   if (!plannerAudit.ok) {
-    return runResult("planner_failed", record, plannerInvocation, workerInvocation, null, null, null, 0, 0, plannerAudit.issues);
+    return runResult("planner_failed", record, plannerInvocation, workerInvocation, null, null, null, 0, 0, plannerAudit.issues, plannerAuthSafety);
   }
   const enteredPlanner = await updateTaskExecutionInvocation({
     projectRoot: input.projectRoot,
@@ -1524,19 +1991,22 @@ export async function runTaskExecutionTwoModelCanary(input: {
     intent: { kind: "enter_invocation" },
   });
   if (!enteredPlanner.ok) {
-    return runResult("planner_failed", record, plannerInvocation, workerInvocation, null, null, null, 0, 0, [createErrorIssue(enteredPlanner.error)]);
+    return runResult("planner_failed", record, plannerInvocation, workerInvocation, null, null, null, 0, 0, [createErrorIssue(enteredPlanner.error)], plannerAuthSafety);
   }
-  const preparedPlanner = prepareTaskExecutionCodexWorkerInvocation({
-    configuration: plannerConfig,
-    request: plannerRequest,
-    invocationRecord: enteredPlanner.value.record,
-  });
-  if (preparedPlanner.issues.some((item) => item.severity === "error")) {
-    return runResult("planner_failed", record, plannerInvocation, workerInvocation, null, null, null, 0, 0, preparedPlanner.issues);
-  }
+  const plannerEnteredSafety = {
+    ...plannerAuthSafety,
+    plannerInvocationModified: true,
+    plannerOneShotConsumed: true,
+  } as const;
 
   let plannerRuntime: TaskExecutionLocalWorkerProcessRuntimeResult;
   let plannerResult: TaskExecutionWorkerResult | null = null;
+  let plannerOutcome = {
+    outcomeKnown: false,
+    outcomePersisted: false,
+    reconciliationRequired: false,
+    issues: [] as readonly TaskExecutionWorkerIssue[],
+  };
   if (input.runner?.codexProcess !== undefined) {
     const process = await input.runner.codexProcess(plannerRequest);
     const deterministic = await deterministicProcessResult({
@@ -1554,6 +2024,14 @@ export async function runTaskExecutionTwoModelCanary(input: {
     });
     plannerRuntime = deterministic.runtime;
     plannerResult = deterministic.normalized;
+    plannerOutcome = {
+      outcomeKnown: knownWorkerOutcome(plannerResult),
+      outcomePersisted:
+        plannerRuntime.invocationLifecycle === "returned" ||
+        plannerRuntime.invocationLifecycle === "failed",
+      reconciliationRequired: plannerRuntime.reconciliationRequired,
+      issues: plannerRuntime.issues,
+    };
   } else {
     const plannerProcessGate = authorizeTaskExecutionWorkerProcess({
       configuration: plannerConfig,
@@ -1565,7 +2043,19 @@ export async function runTaskExecutionTwoModelCanary(input: {
       expectedInvocationRevision: enteredPlanner.value.record.revision,
     });
     if (!plannerProcessGate.ok || plannerProcessGate.authority === null) {
-      return runResult("planner_failed", record, plannerInvocation, workerInvocation, null, null, null, 0, 0, plannerProcessGate.issues);
+      return runResult(
+        "planner_failed",
+        record,
+        plannerInvocation,
+        workerInvocation,
+        null,
+        null,
+        null,
+        0,
+        0,
+        plannerProcessGate.issues,
+        plannerEnteredSafety,
+      );
     }
     plannerRuntime = await executeTaskExecutionLocalWorkerProcess({
       projectRoot: input.projectRoot,
@@ -1589,11 +2079,12 @@ export async function runTaskExecutionTwoModelCanary(input: {
       },
       environment: {
         authority: "system",
-        inheritance: "none",
+        inheritance: "system_codex_read_only_planner_canary",
         variables: [],
       },
       stdin: preparedPlanner.preparedInvocation.processRequest.stdin,
       forbiddenValues: [enteredPlanner.value.record.ownership.ownershipToken],
+      outcomePersistence: "caller_normalized",
     });
     plannerResult =
       plannerRuntime.processResult === null
@@ -1604,11 +2095,81 @@ export async function runTaskExecutionTwoModelCanary(input: {
             stdoutLimitBytes: plannerConfig.stdoutLimitBytes,
             stderrLimitBytes: plannerConfig.stderrLimitBytes,
           });
+    if (
+      plannerRuntime.invocationLifecycle === "outcome_unknown" &&
+      plannerRuntime.invocationRevision !== null
+    ) {
+      const persisted = await persistInvocationOutcomeFromWorkerResult({
+        projectRoot: input.projectRoot,
+        taskId: record.taskId,
+        invocationId: record.plannerInvocationId,
+        workerResult: plannerResult,
+        expectedLifecycle: "outcome_unknown",
+        expectedRevision: plannerRuntime.invocationRevision,
+      });
+      plannerOutcome = {
+        outcomeKnown: persisted.outcomeKnown,
+        outcomePersisted: persisted.outcomePersisted,
+        reconciliationRequired: persisted.reconciliationRequired,
+        issues: persisted.issues,
+      };
+      plannerRuntime = {
+        ...plannerRuntime,
+        invocationLifecycle:
+          persisted.record?.lifecycle ?? plannerRuntime.invocationLifecycle,
+        invocationRevision:
+          persisted.record?.revision ?? plannerRuntime.invocationRevision,
+        reconciliationRequired: persisted.reconciliationRequired,
+        issues: [...plannerRuntime.issues, ...persisted.issues],
+      };
+    } else {
+      plannerOutcome = {
+        outcomeKnown: knownWorkerOutcome(plannerResult),
+        outcomePersisted: false,
+        reconciliationRequired: true,
+        issues: plannerRuntime.issues,
+      };
+    }
+  }
+  const plannerOutcomeSafety = {
+    ...plannerEnteredSafety,
+    plannerProcessOutcomeKnown: plannerOutcome.outcomeKnown,
+    plannerInvocationOutcomePersisted: plannerOutcome.outcomePersisted,
+    plannerReconciliationRequired: plannerOutcome.reconciliationRequired,
+    realCodexProcessSpawned: input.runner?.codexProcess === undefined &&
+      plannerRuntime.processSpawned,
+    realCodexModelCall: input.runner?.codexProcess === undefined &&
+      plannerRuntime.processSpawned,
+    realCodexPlannerExecuted: input.runner?.codexProcess === undefined &&
+      plannerRuntime.processSpawned,
+  } as const;
+  const realPlannerProcessSpawned =
+    input.runner?.codexProcess === undefined && plannerRuntime.processSpawned;
+  if (plannerOutcome.outcomeKnown && !plannerOutcome.outcomePersisted) {
+    const issues = [...plannerRuntime.issues, ...plannerOutcome.issues];
+    const updated = await updateRecord(input.projectRoot, record, "outcome_unknown", null, "not_run", null, issues, {
+      realCodexPlannerExecuted: realPlannerProcessSpawned,
+    });
+    return runResult("planner_outcome_persistence_failed", updated, plannerInvocation, workerInvocation, null, plannerResult, null, 1, 0, issues, plannerOutcomeSafety);
   }
   if (plannerResult === null || plannerResult.outcomeStatus !== "returned") {
-    const updated = await updateRecord(input.projectRoot, record, "planner_failed", null, "not_run", null, plannerRuntime.issues);
-    return runResult("planner_failed", updated, plannerInvocation, workerInvocation, null, plannerResult, null, 1, 0, plannerRuntime.issues);
+    const issues = [
+      ...plannerRuntime.issues,
+      ...plannerOutcome.issues,
+      ...(plannerResult?.issues ?? []),
+      ...issueFromWorkerFailure(plannerResult),
+    ];
+    const lifecycle = plannerOutcome.reconciliationRequired
+      ? "outcome_unknown"
+      : "planner_failed";
+    const updated = await updateRecord(input.projectRoot, record, lifecycle, null, "not_run", null, issues, {
+      realCodexPlannerExecuted: realPlannerProcessSpawned,
+    });
+    return runResult(lifecycle === "outcome_unknown" ? "outcome_unknown" : "planner_failed", updated, plannerInvocation, workerInvocation, null, plannerResult, null, 1, 0, issues, plannerOutcomeSafety);
   }
+  const plannerCompletedSafety = {
+    ...plannerOutcomeSafety,
+  } as const;
 
   const parsedProposal = routeProposalFromPlannerResult({
     plannerResult,
@@ -1618,8 +2179,10 @@ export async function runTaskExecutionTwoModelCanary(input: {
     expectedBatchId: record.batchId,
   });
   if (parsedProposal.proposal === null) {
-    const updated = await updateRecord(input.projectRoot, record, "route_blocked", null, "blocked", null, parsedProposal.issues);
-    return runResult("route_blocked", updated, plannerInvocation, workerInvocation, null, plannerResult, null, 1, 0, parsedProposal.issues);
+    const updated = await updateRecord(input.projectRoot, record, "route_blocked", null, "blocked", null, parsedProposal.issues, {
+      realCodexPlannerExecuted: realPlannerProcessSpawned,
+    });
+    return runResult("route_blocked", updated, plannerInvocation, workerInvocation, null, plannerResult, null, 1, 0, parsedProposal.issues, plannerCompletedSafety);
   }
   const routeDecision = authorizeTaskExecutionWorkerRoute({
     state,
@@ -1664,13 +2227,24 @@ export async function runTaskExecutionTwoModelCanary(input: {
       message: item.message,
       category: item.category,
     }));
-    const updated = await updateRecord(input.projectRoot, record, "route_blocked", routeDecision.decisionId, "blocked", null, routeIssues);
-    return runResult("route_blocked", updated, plannerInvocation, workerInvocation, routeDecision, plannerResult, null, 1, 0, routeIssues);
+    const updated = await updateRecord(input.projectRoot, record, "route_blocked", routeDecision.decisionId, "blocked", null, routeIssues, {
+      realCodexPlannerExecuted: realPlannerProcessSpawned,
+    });
+    return runResult("route_blocked", updated, plannerInvocation, workerInvocation, routeDecision, plannerResult, null, 1, 0, routeIssues, plannerCompletedSafety);
   }
+  const routeCreatedSafety = {
+    ...plannerCompletedSafety,
+    routeCreated: true,
+  } as const;
 
   const workerGate = evaluateProcessPermission({
     invocation: workerInvocation,
     worker: claudeWorkerIdentity,
+    policyRequirement: input.runner?.policyRequirement?.({
+      phase: "worker",
+      invocation: workerInvocation,
+      worker: claudeWorkerIdentity,
+    }),
   });
   if (!workerGate.allowed) {
     const gateIssues = workerGate.issues.map((item) => issue({
@@ -1678,8 +2252,10 @@ export async function runTaskExecutionTwoModelCanary(input: {
       message: item.message,
       category: item.category,
     }));
-    const updated = await updateRecord(input.projectRoot, record, "worker_failed", routeDecision.decisionId, "authorized", "claude_code", gateIssues);
-    return runResult("worker_failed", updated, plannerInvocation, workerInvocation, routeDecision, plannerResult, null, 1, 0, gateIssues);
+    const updated = await updateRecord(input.projectRoot, record, "worker_failed", routeDecision.decisionId, "authorized", "claude_code", gateIssues, {
+      realCodexPlannerExecuted: realPlannerProcessSpawned,
+    });
+    return runResult("worker_failed", updated, plannerInvocation, workerInvocation, routeDecision, plannerResult, null, 1, 0, gateIssues, routeCreatedSafety);
   }
   const workerRequest = createRequest({
     invocation: workerInvocation,
@@ -1696,14 +2272,18 @@ export async function runTaskExecutionTwoModelCanary(input: {
     invocationRecord: workerInvocation,
   });
   if (preparedWorker.issues.some((item) => item.severity === "error")) {
-    const updated = await updateRecord(input.projectRoot, record, "worker_failed", routeDecision.decisionId, "authorized", "claude_code", preparedWorker.issues);
-    return runResult("worker_failed", updated, plannerInvocation, workerInvocation, routeDecision, plannerResult, null, 1, 0, preparedWorker.issues);
+    const updated = await updateRecord(input.projectRoot, record, "worker_failed", routeDecision.decisionId, "authorized", "claude_code", preparedWorker.issues, {
+      realCodexPlannerExecuted: realPlannerProcessSpawned,
+    });
+    return runResult("worker_failed", updated, plannerInvocation, workerInvocation, routeDecision, plannerResult, null, 1, 0, preparedWorker.issues, routeCreatedSafety);
   }
   const claudeAuth = await (input.runner?.claudeAuthPreflight ??
     (() => runTaskExecutionClaudeCodeAuthPreflight({ executablePath: trustedClaudeCodeExecutablePath })))();
   if (!claudeAuth.ok) {
-    const updated = await updateRecord(input.projectRoot, record, "worker_failed", routeDecision.decisionId, "authorized", "claude_code", claudeAuth.issues);
-    return runResult("worker_failed", updated, plannerInvocation, workerInvocation, routeDecision, plannerResult, null, 1, 0, claudeAuth.issues);
+    const updated = await updateRecord(input.projectRoot, record, "worker_failed", routeDecision.decisionId, "authorized", "claude_code", claudeAuth.issues, {
+      realCodexPlannerExecuted: realPlannerProcessSpawned,
+    });
+    return runResult("worker_failed", updated, plannerInvocation, workerInvocation, routeDecision, plannerResult, null, 1, 0, claudeAuth.issues, routeCreatedSafety);
   }
   const workerAudit = await appendDispatchAudit({
     projectRoot: input.projectRoot,
@@ -1712,12 +2292,20 @@ export async function runTaskExecutionTwoModelCanary(input: {
     permissionGateId: workerGate.policyGateId,
   });
   if (!workerAudit.ok) {
-    const updated = await updateRecord(input.projectRoot, record, "worker_failed", routeDecision.decisionId, "authorized", "claude_code", workerAudit.issues);
-    return runResult("worker_failed", updated, plannerInvocation, workerInvocation, routeDecision, plannerResult, null, 1, 0, workerAudit.issues);
+    const updated = await updateRecord(input.projectRoot, record, "worker_failed", routeDecision.decisionId, "authorized", "claude_code", workerAudit.issues, {
+      realCodexPlannerExecuted: realPlannerProcessSpawned,
+    });
+    return runResult("worker_failed", updated, plannerInvocation, workerInvocation, routeDecision, plannerResult, null, 1, 0, workerAudit.issues, routeCreatedSafety);
   }
 
   let workerRuntime: TaskExecutionLocalWorkerProcessRuntimeResult;
   let workerResult: TaskExecutionWorkerResult | null;
+  let workerOutcome = {
+    outcomeKnown: false,
+    outcomePersisted: false,
+    reconciliationRequired: false,
+    issues: [] as readonly TaskExecutionWorkerIssue[],
+  };
   if (input.runner?.claudeProcess !== undefined) {
     const process = await input.runner.claudeProcess(workerRequest);
     const deterministic = await deterministicProcessResult({
@@ -1735,6 +2323,14 @@ export async function runTaskExecutionTwoModelCanary(input: {
     });
     workerRuntime = deterministic.runtime;
     workerResult = deterministic.normalized;
+    workerOutcome = {
+      outcomeKnown: knownWorkerOutcome(workerResult),
+      outcomePersisted:
+        workerRuntime.invocationLifecycle === "returned" ||
+        workerRuntime.invocationLifecycle === "failed",
+      reconciliationRequired: workerRuntime.reconciliationRequired,
+      issues: workerRuntime.issues,
+    };
   } else {
     const entered = await updateTaskExecutionInvocation({
       projectRoot: input.projectRoot,
@@ -1746,8 +2342,10 @@ export async function runTaskExecutionTwoModelCanary(input: {
       intent: { kind: "enter_invocation" },
     });
     if (!entered.ok) {
-      const updated = await updateRecord(input.projectRoot, record, "worker_failed", routeDecision.decisionId, "authorized", "claude_code", [createErrorIssue(entered.error)]);
-      return runResult("worker_failed", updated, plannerInvocation, workerInvocation, routeDecision, plannerResult, null, 1, 0, [createErrorIssue(entered.error)]);
+      const updated = await updateRecord(input.projectRoot, record, "worker_failed", routeDecision.decisionId, "authorized", "claude_code", [createErrorIssue(entered.error)], {
+        realCodexPlannerExecuted: realPlannerProcessSpawned,
+      });
+      return runResult("worker_failed", updated, plannerInvocation, workerInvocation, routeDecision, plannerResult, null, 1, 0, [createErrorIssue(entered.error)], routeCreatedSafety);
     }
     const workerProcessGate = evaluateTaskExecutionClaudeCodeWorkerProcessGate({
       configuration: claudeConfig,
@@ -1759,8 +2357,13 @@ export async function runTaskExecutionTwoModelCanary(input: {
       expectedInvocationRevision: entered.value.record.revision,
     });
     if (!workerProcessGate.ok || workerProcessGate.authority === null) {
-      const updated = await updateRecord(input.projectRoot, record, "worker_failed", routeDecision.decisionId, "authorized", "claude_code", workerProcessGate.issues);
-      return runResult("worker_failed", updated, plannerInvocation, workerInvocation, routeDecision, plannerResult, null, 1, 0, workerProcessGate.issues);
+      const updated = await updateRecord(input.projectRoot, record, "worker_failed", routeDecision.decisionId, "authorized", "claude_code", workerProcessGate.issues, {
+        realCodexPlannerExecuted: realPlannerProcessSpawned,
+      });
+      return runResult("worker_failed", updated, plannerInvocation, workerInvocation, routeDecision, plannerResult, null, 1, 0, workerProcessGate.issues, {
+        ...routeCreatedSafety,
+        workerInvocationModified: true,
+      });
     }
     workerRuntime = await executeTaskExecutionLocalWorkerProcess({
       projectRoot: input.projectRoot,
@@ -1788,6 +2391,7 @@ export async function runTaskExecutionTwoModelCanary(input: {
       },
       stdin: preparedWorker.preparedInvocation.processRequest.stdin,
       forbiddenValues: [entered.value.record.ownership.ownershipToken],
+      outcomePersistence: "caller_normalized",
     });
     workerResult =
       workerRuntime.processResult === null
@@ -1798,6 +2402,69 @@ export async function runTaskExecutionTwoModelCanary(input: {
             stdoutLimitBytes: claudeConfig.stdoutLimitBytes,
             stderrLimitBytes: claudeConfig.stderrLimitBytes,
           });
+    if (
+      workerRuntime.invocationLifecycle === "outcome_unknown" &&
+      workerRuntime.invocationRevision !== null
+    ) {
+      const persisted = await persistInvocationOutcomeFromWorkerResult({
+        projectRoot: input.projectRoot,
+        taskId: record.taskId,
+        invocationId: record.workerInvocationId,
+        workerResult,
+        expectedLifecycle: "outcome_unknown",
+        expectedRevision: workerRuntime.invocationRevision,
+      });
+      workerOutcome = {
+        outcomeKnown: persisted.outcomeKnown,
+        outcomePersisted: persisted.outcomePersisted,
+        reconciliationRequired: persisted.reconciliationRequired,
+        issues: persisted.issues,
+      };
+      workerRuntime = {
+        ...workerRuntime,
+        invocationLifecycle:
+          persisted.record?.lifecycle ?? workerRuntime.invocationLifecycle,
+        invocationRevision:
+          persisted.record?.revision ?? workerRuntime.invocationRevision,
+        reconciliationRequired: persisted.reconciliationRequired,
+        issues: [...workerRuntime.issues, ...persisted.issues],
+      };
+    } else {
+      workerOutcome = {
+        outcomeKnown: knownWorkerOutcome(workerResult),
+        outcomePersisted: false,
+        reconciliationRequired: true,
+        issues: workerRuntime.issues,
+      };
+    }
+  }
+  if (workerOutcome.outcomeKnown && !workerOutcome.outcomePersisted) {
+    const issues = [...workerRuntime.issues, ...workerOutcome.issues];
+    const finalRecord = await updateRecord(
+      input.projectRoot,
+      record,
+      "outcome_unknown",
+      routeDecision.decisionId,
+      "authorized",
+      "claude_code",
+      issues,
+      {
+        realCodexPlannerExecuted: realPlannerProcessSpawned,
+        realClaudeRoutedWorkerExecuted:
+          input.runner?.claudeProcess === undefined &&
+          workerRuntime.processSpawned,
+      },
+    );
+    return runResult("worker_outcome_persistence_failed", finalRecord, plannerInvocation, workerInvocation, routeDecision, plannerResult, workerResult, 1, 1, issues, {
+      ...routeCreatedSafety,
+      workerInvocationModified: true,
+      realClaudeModelCall: input.runner?.claudeProcess === undefined &&
+        workerRuntime.processSpawned,
+      realClaudeProcessSpawned: input.runner?.claudeProcess === undefined &&
+        workerRuntime.processSpawned,
+      realClaudeRoutedWorkerExecuted: input.runner?.claudeProcess === undefined &&
+        workerRuntime.processSpawned,
+    });
   }
 
   const finalLifecycle =
@@ -1806,6 +2473,7 @@ export async function runTaskExecutionTwoModelCanary(input: {
       : workerResult?.outcomeStatus === "failed"
         ? "worker_failed"
         : "outcome_unknown";
+  const finalIssues = [...workerRuntime.issues, ...workerOutcome.issues, ...(workerResult?.issues ?? [])];
   const finalRecord = await updateRecord(
     input.projectRoot,
     record,
@@ -1813,9 +2481,27 @@ export async function runTaskExecutionTwoModelCanary(input: {
     routeDecision.decisionId,
     "authorized",
     "claude_code",
-    [...workerRuntime.issues, ...(workerResult?.issues ?? [])],
+    finalIssues,
+    {
+      realCodexPlannerExecuted: realPlannerProcessSpawned,
+      realClaudeRoutedWorkerExecuted:
+        input.runner?.claudeProcess === undefined && workerRuntime.processSpawned,
+      realTwoModelCanaryExecuted:
+        realPlannerProcessSpawned &&
+        input.runner?.claudeProcess === undefined &&
+        workerRuntime.processSpawned,
+    },
   );
-  return runResult(finalLifecycle, finalRecord, plannerInvocation, workerInvocation, routeDecision, plannerResult, workerResult, 1, 1, finalRecord.issues);
+  return runResult(finalLifecycle, finalRecord, plannerInvocation, workerInvocation, routeDecision, plannerResult, workerResult, 1, 1, finalRecord.issues, {
+    ...routeCreatedSafety,
+    workerInvocationModified: true,
+    realClaudeModelCall: input.runner?.claudeProcess === undefined &&
+      workerRuntime.processSpawned,
+    realClaudeProcessSpawned: input.runner?.claudeProcess === undefined &&
+      workerRuntime.processSpawned,
+    realClaudeRoutedWorkerExecuted: input.runner?.claudeProcess === undefined &&
+      workerRuntime.processSpawned,
+  });
 }
 
 async function updateRecord(
@@ -1826,6 +2512,11 @@ async function updateRecord(
   routeDecisionStatus: "authorized" | "blocked" | "not_run",
   selectedWorkerFamily: "claude_code" | null,
   issues: readonly TaskExecutionWorkerIssue[],
+  executionFlags: {
+    readonly realCodexPlannerExecuted?: boolean;
+    readonly realClaudeRoutedWorkerExecuted?: boolean;
+    readonly realTwoModelCanaryExecuted?: boolean;
+  } = {},
 ): Promise<TaskExecutionTwoModelCanaryRecord> {
   const updated: TaskExecutionTwoModelCanaryRecord = {
     ...record,
@@ -1833,6 +2524,15 @@ async function updateRecord(
     routeDecisionId,
     routeDecisionStatus,
     selectedWorkerFamily,
+    realCodexPlannerExecuted:
+      record.realCodexPlannerExecuted ||
+      executionFlags.realCodexPlannerExecuted === true,
+    realClaudeRoutedWorkerExecuted:
+      record.realClaudeRoutedWorkerExecuted ||
+      executionFlags.realClaudeRoutedWorkerExecuted === true,
+    realTwoModelCanaryExecuted:
+      record.realTwoModelCanaryExecuted ||
+      executionFlags.realTwoModelCanaryExecuted === true,
     updatedAt: new Date().toISOString(),
     issues,
   };
@@ -1851,7 +2551,38 @@ function runResult(
   plannerCalls: 0 | 1,
   workerCalls: 0 | 1,
   issues: readonly TaskExecutionWorkerIssue[],
+  safetyOverrides: Partial<TaskExecutionTwoModelCanaryRunResult["safety"]> = {},
 ): TaskExecutionTwoModelCanaryRunResult {
+  const defaultSafety = {
+    orchestrationPrepared: orchestration?.lifecycle === "prepared",
+    orchestrationConsumed:
+      orchestration !== null && orchestration.lifecycle !== "prepared",
+    plannerAuthChecked: false,
+    plannerAuthReady: false,
+    plannerProcessOutcomeKnown: false,
+    plannerInvocationOutcomePersisted: false,
+    plannerReconciliationRequired: false,
+    plannerInvocationModified: false,
+    plannerOneShotConsumed: false,
+    realCodexModelCall: false,
+    realCodexProcessSpawned: false,
+    routeCreated: false,
+    realClaudeModelCall: false,
+    realClaudeProcessSpawned: false,
+    workerInvocationModified: false,
+    realCodexPlannerExecuted: false,
+    realClaudeRoutedWorkerExecuted: false,
+    repositoryWriteAllowed: false,
+    shellAllowed: false,
+    primaryApplyAllowed: false,
+    automaticLoopEnabled: false,
+    completionAuthority: false,
+    verifierRun: false,
+    taskCompleted: false,
+    workCompleted: false,
+    cloudCalls: 0,
+  } as const;
+
   return {
     ok: status === "worker_returned",
     status,
@@ -1865,17 +2596,8 @@ function runResult(
     workerCalls,
     issues,
     safety: {
-      realCodexPlannerExecuted: false,
-      realClaudeRoutedWorkerExecuted: false,
-      repositoryWriteAllowed: false,
-      shellAllowed: false,
-      primaryApplyAllowed: false,
-      automaticLoopEnabled: false,
-      completionAuthority: false,
-      verifierRun: false,
-      taskCompleted: false,
-      workCompleted: false,
-      cloudCalls: 0,
+      ...defaultSafety,
+      ...safetyOverrides,
     },
   };
 }
@@ -1886,6 +2608,10 @@ export function createTaskExecutionTwoModelCanaryCodexFixtureResult(input: {
   readonly terminationReason?: TaskExecutionCodexProcessResult["terminationReason"];
   readonly exitCode?: number | null;
   readonly stdout?: string;
+  readonly stderr?: string;
+  readonly stdinBytes?: number;
+  readonly stdinWriteCompleted?: boolean;
+  readonly stdinClosed?: boolean;
 }): TaskExecutionCodexProcessResult {
   const proposal = input.proposal === null
     ? null
@@ -1930,9 +2656,13 @@ export function createTaskExecutionTwoModelCanaryCodexFixtureResult(input: {
     invocationRef: `test-codex-planner:${input.request.invocationId}`,
     terminationReason: input.terminationReason ?? "exited",
     exitCode: input.exitCode ?? 0,
+    stdinMode: "pipe",
+    stdinBytes: input.stdinBytes ?? 1,
+    stdinWriteCompleted: input.stdinWriteCompleted ?? true,
+    stdinClosed: input.stdinClosed ?? true,
     timedOut: input.terminationReason === "timeout",
     interrupted: false,
-    stderr: "",
+    stderr: input.stderr ?? "",
     stdout,
   };
 }

@@ -29,11 +29,21 @@ import {
 import type {
   TaskExecutionLocalWorkerProcessAuthority,
   TaskExecutionLocalWorkerProcessReadiness,
+  TaskExecutionLocalWorkerRuntimeEnvironmentInheritance,
 } from "./task-execution-local-worker-process.js";
 import {
   evaluateTaskExecutionLocalWorkerProcessGate,
 } from "./task-execution-local-worker-process.js";
 import type { AeosError, JsonObject, JsonValue } from "./types.js";
+
+// @ts-expect-error Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
+import { spawn } from "node:child_process";
+// @ts-expect-error Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
+import { readFile, realpath, stat } from "node:fs/promises";
+// @ts-expect-error Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
+import { relative } from "node:path";
+// @ts-expect-error Node built-ins are available at runtime; this package does not depend on Node ambient types yet.
+import process from "node:process";
 
 export const TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED = false;
 export const TASK_EXECUTION_CODEX_WORKER_EXTERNAL_PROCESS_ALLOWED = false;
@@ -50,6 +60,10 @@ export type TaskExecutionCodexReasoningEffort =
 export type TaskExecutionCodexSandboxMode = "read-only" | "workspace-write";
 
 export type TaskExecutionCodexApprovalPolicy = "never" | "on-request";
+type TaskExecutionCodexEnvironmentInheritance = Extract<
+  TaskExecutionLocalWorkerRuntimeEnvironmentInheritance,
+  "none" | "system_codex_read_only_planner_canary"
+>;
 
 export type TaskExecutionCodexProcessTerminationReason =
   | "exited"
@@ -105,6 +119,10 @@ export interface TaskExecutionCodexWorkerConfiguration {
   readonly stderrLimitBytes: number;
   readonly structuredResultContractRef?: string;
   readonly structuredResultSchemaPath?: string;
+  readonly environmentInheritance?: Extract<
+    TaskExecutionCodexEnvironmentInheritance,
+    "none" | "system_codex_read_only_planner_canary"
+  >;
 }
 
 export interface TaskExecutionCodexProcessRequest {
@@ -117,6 +135,7 @@ export interface TaskExecutionCodexProcessRequest {
   readonly stderrLimitBytes: number;
   readonly environment: {
     readonly authority: "system";
+    readonly inheritance?: TaskExecutionCodexEnvironmentInheritance;
     readonly variables: readonly [];
   };
 }
@@ -147,11 +166,64 @@ export interface TaskExecutionCodexProcessResult {
   readonly terminationReason: TaskExecutionCodexProcessTerminationReason;
   readonly exitCode: number | null;
   readonly signal?: string;
+  readonly stdinMode?: "pipe";
+  readonly stdinBytes?: number;
+  readonly stdinWriteCompleted?: boolean;
+  readonly stdinClosed?: boolean;
   readonly stdout: string;
   readonly stderr: string;
   readonly timedOut: boolean;
   readonly interrupted: boolean;
   readonly observedAt?: string;
+}
+
+export interface TaskExecutionCodexExecContractPreflightCommand {
+  readonly executablePath: string;
+  readonly argv: readonly ["exec", "--help"];
+  readonly timeoutMs: number;
+}
+
+export interface TaskExecutionCodexExecContractPreflightEvidence {
+  readonly exitCode: number | null;
+  readonly signal?: string;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly timedOut: boolean;
+  readonly spawned: boolean;
+}
+
+export interface TaskExecutionCodexExecContractPreflightResult {
+  readonly ok: boolean;
+  readonly command: TaskExecutionCodexExecContractPreflightCommand;
+  readonly issues: readonly TaskExecutionWorkerIssue[];
+  readonly checks: {
+    readonly executableExists: boolean;
+    readonly execSurfaceSupported: boolean;
+    readonly expectedFlagsSupported: boolean;
+    readonly schemaPathValid: boolean;
+    readonly schemaJsonValid: boolean;
+    readonly cwdGitRepository: boolean;
+    readonly environmentPolicyValid: boolean;
+  };
+  readonly safety: {
+    readonly modelInvoked: false;
+    readonly shellUsed: false;
+    readonly fullParentEnvironmentInherited: false;
+    readonly rawHelpOutputPersisted: false;
+    readonly credentialFilesRead: false;
+    readonly secretsPersisted: false;
+  };
+}
+
+export interface RunTaskExecutionCodexExecContractPreflightInput {
+  readonly executablePath: string;
+  readonly projectRoot: string;
+  readonly configuration: TaskExecutionCodexWorkerConfiguration;
+  readonly timeoutMs?: number;
+  readonly runHelp?: (
+    command: TaskExecutionCodexExecContractPreflightCommand,
+  ) => Promise<TaskExecutionCodexExecContractPreflightEvidence>;
+  readonly runGitCheck?: (projectRoot: string) => Promise<boolean>;
 }
 
 export interface TaskExecutionCodexWorkerAdapter
@@ -244,8 +316,8 @@ export interface TaskExecutionWorkerProcessAuthority {
   readonly timeoutMs: number;
   readonly environment: {
     readonly authority: "system";
-    readonly inheritance: "none";
-    readonly approvedVariableRefs: readonly [];
+    readonly inheritance: TaskExecutionCodexEnvironmentInheritance;
+    readonly approvedVariableRefs: readonly string[];
   };
   readonly realCodexExecutionEnabled: false;
   readonly externalProcessAllowed: false;
@@ -296,6 +368,14 @@ const forbiddenArgPrefixes = [
   "--env",
 ];
 const codexAuthorityOutputKeys = new Set(["policyauthorized"]);
+const supportedReasoningEfforts = new Set([
+  "minimal",
+  "low",
+  "medium",
+  "high",
+]);
+const codexReasoningEffortConfigPattern =
+  /^model_reasoning_effort="(?:minimal|low|medium|high)"$/;
 
 function issue(input: {
   readonly code: string;
@@ -309,6 +389,160 @@ function issue(input: {
     severity: input.severity ?? "error",
     category: input.category ?? "validation",
   };
+}
+
+const codexPlannerEnvironmentRefs = [
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "TMPDIR",
+  "PATH",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+] as const;
+
+function safeEnvValue(value: string | undefined): string | undefined {
+  if (value === undefined || value.length === 0 || value.length > 4096) {
+    return undefined;
+  }
+
+  if (value.includes("\0")) {
+    return undefined;
+  }
+
+  return value;
+}
+
+function boundedCodexHostEnvironment(): Record<string, string> {
+  const source = (process as { env?: Record<string, string | undefined> }).env ??
+    {};
+  const env: Record<string, string> = {};
+  const refs = [
+    ...codexPlannerEnvironmentRefs,
+    ...(source.CODEX_HOME === undefined ? [] : ["CODEX_HOME"]),
+  ];
+
+  for (const name of refs) {
+    const value = safeEnvValue(source[name]);
+
+    if (value !== undefined) {
+      env[name] = value;
+    }
+  }
+
+  return env;
+}
+
+async function runCodexExecHelpCommand(
+  command: TaskExecutionCodexExecContractPreflightCommand,
+): Promise<TaskExecutionCodexExecContractPreflightEvidence> {
+  return await new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const child = spawn(command.executablePath, command.argv, {
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      env: boundedCodexHostEnvironment(),
+    });
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      child.kill("SIGTERM");
+      resolve({
+        exitCode: null,
+        signal: "SIGTERM",
+        stdout,
+        stderr,
+        timedOut: true,
+        spawned: true,
+      });
+    }, command.timeoutMs);
+
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      stdout += chunk.slice(0, 8192);
+    });
+    child.stderr?.on("data", (chunk: string) => {
+      stderr += chunk.slice(0, 8192);
+    });
+    child.on("error", () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        exitCode: null,
+        stdout,
+        stderr,
+        timedOut: false,
+        spawned: false,
+      });
+    });
+    child.on("close", (exitCode: number | null, signal: string | null) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        exitCode,
+        ...(signal === null ? {} : { signal }),
+        stdout,
+        stderr,
+        timedOut: false,
+        spawned: true,
+      });
+    });
+  });
+}
+
+async function runGitRepositoryCheck(projectRoot: string): Promise<boolean> {
+  return await new Promise((resolve) => {
+    let stdout = "";
+    let settled = false;
+    const child = spawn("git", ["-C", projectRoot, "rev-parse", "--is-inside-work-tree"], {
+      shell: false,
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+      env: boundedCodexHostEnvironment(),
+    });
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      child.kill("SIGTERM");
+      resolve(false);
+    }, 5000);
+
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      stdout += chunk.slice(0, 128);
+    });
+    child.on("error", () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve(false);
+    });
+    child.on("close", (exitCode: number | null) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve(exitCode === 0 && stdout.trim() === "true");
+    });
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -461,9 +695,7 @@ function validateConfiguration(
     !isSafeReference(configuration.executable.executableRef) ||
     configuration.model.authority !== "system" ||
     !isSafeModel(configuration.model.model) ||
-    !["minimal", "low", "medium", "high"].includes(
-      configuration.model.reasoningEffort,
-    ) ||
+    !supportedReasoningEfforts.has(configuration.model.reasoningEffort) ||
     configuration.processPermission.authority !== "system" ||
     configuration.processPermission.requiredPermission !== "process" ||
     !isSafeReference(configuration.processPermission.permissionId) ||
@@ -478,7 +710,11 @@ function validateConfiguration(
     (configuration.structuredResultContractRef !== undefined &&
       !isSafeReference(configuration.structuredResultContractRef)) ||
     (configuration.structuredResultSchemaPath !== undefined &&
-      !isSafeAbsolutePath(configuration.structuredResultSchemaPath))
+      !isSafeAbsolutePath(configuration.structuredResultSchemaPath)) ||
+    (configuration.environmentInheritance !== undefined &&
+      configuration.environmentInheritance !== "none" &&
+      configuration.environmentInheritance !==
+        "system_codex_read_only_planner_canary")
   ) {
     issues.push(
       issue({
@@ -583,12 +819,10 @@ function buildCodexArgv(
     "exec",
     "--model",
     configuration.model.model,
-    "--reasoning-effort",
-    configuration.model.reasoningEffort,
+    "-c",
+    `model_reasoning_effort="${configuration.model.reasoningEffort}"`,
     "--sandbox",
     configuration.sandboxMode,
-    "--ask-for-approval",
-    configuration.approvalPolicy,
   ];
 
   if (configuration.structuredResultSchemaPath !== undefined) {
@@ -596,6 +830,404 @@ function buildCodexArgv(
   }
 
   return argv;
+}
+
+function argvContractIssues(input: {
+  readonly argv: readonly string[];
+  readonly helpText: string;
+}): readonly TaskExecutionWorkerIssue[] {
+  const issues: TaskExecutionWorkerIssue[] = [];
+  const supportedFlags = new Set([
+    "-c",
+    "--model",
+    "--sandbox",
+    "--output-schema",
+    "--json",
+    "--output-last-message",
+    "--ephemeral",
+    "--ignore-user-config",
+  ]);
+  const flagsWithValues = new Set([
+    "--model",
+    "-c",
+    "--sandbox",
+    "--output-schema",
+    "--output-last-message",
+  ]);
+
+  if (input.argv[0] !== "exec") {
+    issues.push(
+      issue({
+        code: "task_execution_codex_exec_contract_surface_invalid",
+        message: "Codex planner preflight requires the codex exec surface.",
+      }),
+    );
+  }
+
+  for (let index = 1; index < input.argv.length; index += 1) {
+    const arg = input.argv[index];
+
+    if (!arg.startsWith("--") && arg !== "-c") {
+      continue;
+    }
+
+    if (
+      !supportedFlags.has(arg) ||
+      (arg === "-c"
+        ? !input.helpText.includes("-c, --config")
+        : !input.helpText.includes(arg))
+    ) {
+      issues.push(
+        issue({
+          code: "task_execution_codex_exec_contract_flag_unsupported",
+          message: "Codex planner preflight found an unsupported exec flag.",
+        }),
+      );
+      continue;
+    }
+
+    if (flagsWithValues.has(arg)) {
+      const value = input.argv[index + 1];
+
+      if (value === undefined || value.startsWith("--")) {
+        issues.push(
+          issue({
+            code: "task_execution_codex_exec_contract_flag_value_missing",
+            message:
+              "Codex planner preflight requires all valued exec flags to have system-owned values.",
+          }),
+        );
+      }
+
+      if (arg === "-c" && !codexReasoningEffortConfigPattern.test(value ?? "")) {
+        issues.push(
+          issue({
+            code: "task_execution_codex_exec_contract_reasoning_config_invalid",
+            message:
+              "Codex planner preflight only permits the system-owned model_reasoning_effort config override.",
+            category: "permission",
+          }),
+        );
+      }
+
+      index += 1;
+    }
+  }
+
+  if (input.argv.includes("--json")) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_exec_contract_jsonl_mode_rejected",
+        message:
+          "TASK-0324 planner output parsing expects one final JSON object, not codex exec JSONL events.",
+      }),
+    );
+  }
+
+  if (
+    input.argv.includes("--reasoning-effort") ||
+    input.argv.includes("--ask-for-approval") ||
+    input.argv.includes("--config") ||
+    !input.argv.includes("--sandbox") ||
+    input.argv[input.argv.indexOf("--sandbox") + 1] !== "read-only" ||
+    !input.argv.includes("--output-schema")
+  ) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_exec_contract_required_flag_missing",
+        message:
+          "Codex planner preflight requires read-only sandbox and output-schema flags.",
+      }),
+    );
+  }
+
+  return issues;
+}
+
+function task0324CodexPlannerProfileIssues(
+  configuration: TaskExecutionCodexWorkerConfiguration,
+): readonly TaskExecutionWorkerIssue[] {
+  if (
+    configuration.environmentInheritance !==
+      "system_codex_read_only_planner_canary"
+  ) {
+    return [];
+  }
+
+  if (
+    configuration.model.authority === "system" &&
+    configuration.model.model === "gpt-5.5" &&
+    configuration.model.reasoningEffort === "high"
+  ) {
+    return [];
+  }
+
+  return [
+    issue({
+      code: "task_execution_codex_exec_contract_model_profile_invalid",
+      message:
+        "TASK-0324 Codex planner profile must use system-owned gpt-5.5 with high reasoning.",
+      category: "permission",
+    }),
+  ];
+}
+
+async function schemaContractIssues(input: {
+  readonly projectRoot: string;
+  readonly schemaPath?: string;
+}): Promise<readonly TaskExecutionWorkerIssue[]> {
+  const issues: TaskExecutionWorkerIssue[] = [];
+
+  if (input.schemaPath === undefined || !isSafeAbsolutePath(input.schemaPath)) {
+    return [
+      issue({
+        code: "task_execution_codex_exec_contract_schema_missing",
+        message:
+          "Codex planner preflight requires a system-owned absolute output schema path.",
+      }),
+    ];
+  }
+
+  try {
+    const [rootPath, schemaPath] = await Promise.all([
+      realpath(input.projectRoot),
+      realpath(input.schemaPath),
+    ]);
+    const relativeSchemaPath = relative(rootPath, schemaPath);
+
+    if (
+      relativeSchemaPath.startsWith("..") ||
+      relativeSchemaPath === "" ||
+      relativeSchemaPath.startsWith("/") ||
+      relativeSchemaPath.includes("\0")
+    ) {
+      issues.push(
+        issue({
+          code: "task_execution_codex_exec_contract_schema_outside_project",
+          message:
+            "Codex planner preflight requires the output schema to live inside the trusted project.",
+          category: "permission",
+        }),
+      );
+    }
+
+    const schemaStat = await stat(schemaPath);
+
+    if (!schemaStat.isFile()) {
+      issues.push(
+        issue({
+          code: "task_execution_codex_exec_contract_schema_not_file",
+          message: "Codex planner output schema path must resolve to a file.",
+        }),
+      );
+    }
+
+    const schema = JSON.parse(await readFile(schemaPath, "utf8")) as unknown;
+    const schemaProperties =
+      isRecord(schema) && isRecord(schema.properties)
+        ? schema.properties
+        : undefined;
+    const outputSchema = schemaProperties !== undefined
+      ? schemaProperties.output
+      : undefined;
+    const outputProperties =
+      isRecord(outputSchema) && isRecord(outputSchema.properties)
+        ? outputSchema.properties
+        : undefined;
+    const routingProposalSchema = isRecord(outputSchema)
+      ? outputProperties?.routingProposal
+      : undefined;
+    const routingProposalRequired =
+      isRecord(routingProposalSchema) &&
+      Array.isArray(routingProposalSchema.required)
+        ? routingProposalSchema.required
+        : [];
+    const routingProposalProperties = isRecord(routingProposalSchema)
+      ? routingProposalSchema.properties
+      : undefined;
+
+    if (
+      !isRecord(schema) ||
+      schema.additionalProperties !== false ||
+      !Array.isArray(schema.required) ||
+      !schema.required.includes("output") ||
+      !isRecord(outputSchema) ||
+      outputSchema.additionalProperties !== false ||
+      !Array.isArray(outputSchema.required) ||
+      !outputSchema.required.includes("routingProposal") ||
+      !isRecord(routingProposalSchema) ||
+      routingProposalSchema.additionalProperties !== false ||
+      ![
+        "taskId",
+        "sourceTaskRevision",
+        "workItemId",
+        "operationKind",
+        "recommendedWorkerFamily",
+        "capabilityRequirements",
+        "reasonReference",
+        "expectedOperationClass",
+      ].every((field) => routingProposalRequired.includes(field)) ||
+      !isRecord(routingProposalProperties) ||
+      !isRecord(routingProposalProperties.recommendedWorkerFamily) ||
+      routingProposalProperties.recommendedWorkerFamily.const !== "claude_code" ||
+      !isRecord(routingProposalProperties.operationKind) ||
+      routingProposalProperties.operationKind.const !== "execute_task_attempt" ||
+      !isRecord(routingProposalProperties.expectedOperationClass) ||
+      routingProposalProperties.expectedOperationClass.const !== "implementation"
+    ) {
+      issues.push(
+        issue({
+          code: "task_execution_codex_exec_contract_schema_invalid",
+          message:
+            "Codex planner output schema must be a closed AEOS worker-result contract.",
+        }),
+      );
+    }
+  } catch {
+    issues.push(
+      issue({
+        code: "task_execution_codex_exec_contract_schema_invalid",
+        message:
+          "Codex planner preflight could not read and parse the output schema.",
+      }),
+    );
+  }
+
+  return issues;
+}
+
+export async function runTaskExecutionCodexExecContractPreflight(
+  input: RunTaskExecutionCodexExecContractPreflightInput,
+): Promise<TaskExecutionCodexExecContractPreflightResult> {
+  const command: TaskExecutionCodexExecContractPreflightCommand = {
+    executablePath: input.executablePath,
+    argv: ["exec", "--help"],
+    timeoutMs: input.timeoutMs ?? 10000,
+  };
+  const argv = buildCodexArgv(input.configuration);
+  const issues: TaskExecutionWorkerIssue[] = [
+    ...validateConfiguration(input.configuration),
+    ...task0324CodexPlannerProfileIssues(input.configuration),
+  ];
+  let executableExists = false;
+  let execSurfaceSupported = false;
+  let cwdGitRepository = false;
+
+  try {
+    const executableRealPath = await realpath(input.executablePath);
+    executableExists = (await stat(executableRealPath)).isFile();
+  } catch {
+    executableExists = false;
+  }
+
+  if (!executableExists) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_exec_contract_executable_missing",
+        message:
+          "Codex planner preflight requires the trusted executable to exist before launch authority is consumed.",
+        category: "permission",
+      }),
+    );
+  }
+
+  const help = await (input.runHelp ?? runCodexExecHelpCommand)(command);
+  execSurfaceSupported =
+    help.spawned &&
+    !help.timedOut &&
+    help.exitCode === 0 &&
+    help.stdout.includes("Usage: codex exec");
+
+  if (!execSurfaceSupported) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_exec_contract_help_unavailable",
+        message:
+          "Codex planner preflight could not verify codex exec support without invoking a model.",
+        category: "permission",
+      }),
+    );
+  }
+
+  const flagIssues = argvContractIssues({
+    argv,
+    helpText: help.stdout,
+  });
+  issues.push(...flagIssues);
+  issues.push(
+    ...(await schemaContractIssues({
+      projectRoot: input.projectRoot,
+      schemaPath: input.configuration.structuredResultSchemaPath,
+    })),
+  );
+  cwdGitRepository = await (input.runGitCheck ?? runGitRepositoryCheck)(
+    input.projectRoot,
+  );
+
+  if (!cwdGitRepository) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_exec_contract_cwd_not_git_repository",
+        message:
+          "Codex planner preflight requires the authoritative cwd to be a Git repository.",
+        category: "permission",
+      }),
+    );
+  }
+
+  if (
+    input.configuration.environmentInheritance !==
+      "system_codex_read_only_planner_canary" ||
+    safeEnvValue(
+      (process as { env?: Record<string, string | undefined> }).env?.PATH,
+    ) === undefined
+  ) {
+    issues.push(
+      issue({
+        code: "task_execution_codex_exec_contract_environment_invalid",
+        message:
+          "Codex planner preflight requires bounded host context including PATH for Codex startup and Git discovery.",
+        category: "permission",
+      }),
+    );
+  }
+
+  const schemaIssues = issues.filter((item) =>
+    item.code.startsWith("task_execution_codex_exec_contract_schema"),
+  );
+  const environmentIssues = issues.filter((item) =>
+    item.code === "task_execution_codex_exec_contract_environment_invalid",
+  );
+
+  return {
+    ok: !issues.some((item) => item.severity === "error"),
+    command,
+    issues,
+    checks: {
+      executableExists,
+      execSurfaceSupported,
+      expectedFlagsSupported: flagIssues.length === 0,
+      schemaPathValid:
+        schemaIssues.every(
+          (item) =>
+            item.code !== "task_execution_codex_exec_contract_schema_missing" &&
+            item.code !==
+              "task_execution_codex_exec_contract_schema_outside_project" &&
+            item.code !== "task_execution_codex_exec_contract_schema_not_file",
+        ) && schemaIssues.length === 0,
+      schemaJsonValid: schemaIssues.length === 0,
+      cwdGitRepository,
+      environmentPolicyValid: environmentIssues.length === 0,
+    },
+    safety: {
+      modelInvoked: false,
+      shellUsed: false,
+      fullParentEnvironmentInherited: false,
+      rawHelpOutputPersisted: false,
+      credentialFilesRead: false,
+      secretsPersisted: false,
+    },
+  };
 }
 
 function argvIssues(argv: readonly string[]): readonly TaskExecutionWorkerIssue[] {
@@ -610,7 +1242,7 @@ function argvIssues(argv: readonly string[]): readonly TaskExecutionWorkerIssue[
     );
   }
 
-  for (const arg of argv) {
+  for (const [index, arg] of argv.entries()) {
     if (dangerousCodexArgs.has(arg) || arg.includes("danger-full-access")) {
       issues.push(
         issue({
@@ -624,7 +1256,12 @@ function argvIssues(argv: readonly string[]): readonly TaskExecutionWorkerIssue[
 
     if (
       forbiddenArgPrefixes.some(
-        (prefix) => arg === prefix || arg.startsWith(`${prefix}=`),
+        (prefix) =>
+          (arg === prefix || arg.startsWith(`${prefix}=`)) &&
+          !(
+            arg === "-c" &&
+            codexReasoningEffortConfigPattern.test(argv[index + 1] ?? "")
+          ),
       )
     ) {
       issues.push(
@@ -691,7 +1328,7 @@ function invocationRecordMatchesRequest(input: {
     record.idempotencyKey === request.idempotencyKey &&
     (record.workItemId ?? null) === (request.workItemId ?? null) &&
     (record.batchId ?? null) === (request.batchId ?? null) &&
-    record.lifecycle === "invoking"
+    (record.lifecycle === "reserved" || record.lifecycle === "invoking")
   );
 }
 
@@ -810,6 +1447,7 @@ export function prepareTaskExecutionCodexWorkerInvocation(input: {
     stderrLimitBytes: input.configuration.stderrLimitBytes,
     environment: {
       authority: "system",
+      inheritance: input.configuration.environmentInheritance ?? "none",
       variables: [],
     },
   };
@@ -994,19 +1632,31 @@ export function evaluateTaskExecutionWorkerProcessGate(
     realCodexExecutionEnabled: TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
     externalProcessAllowed: TASK_EXECUTION_CODEX_WORKER_EXTERNAL_PROCESS_ALLOWED,
   };
+  const localAuthority =
+    localGate.authority as TaskExecutionLocalWorkerProcessAuthority | null;
+  const codexEnvironment: {
+    readonly authority: "system";
+    readonly inheritance: TaskExecutionCodexEnvironmentInheritance;
+    readonly approvedVariableRefs: readonly string[];
+  } | null =
+    localAuthority?.environment.inheritance === "none" ||
+    localAuthority?.environment.inheritance ===
+      "system_codex_read_only_planner_canary"
+      ? {
+          authority: localAuthority.environment.authority,
+          inheritance: localAuthority.environment.inheritance,
+          approvedVariableRefs: localAuthority.environment.approvedVariableRefs,
+        }
+      : null;
   const authority: TaskExecutionWorkerProcessAuthority | null =
-    localGate.authority === null
+    localAuthority === null || codexEnvironment === null
       ? null
       : {
-          ...(localGate.authority as TaskExecutionLocalWorkerProcessAuthority),
+          ...localAuthority,
           boundary: TASK_EXECUTION_CODEX_PROCESS_BOUNDARY,
           workerFamily: "codex",
           executableKind: "codex_exec",
-          environment: {
-            authority: "system",
-            inheritance: "none",
-            approvedVariableRefs: [],
-          },
+          environment: codexEnvironment,
           realCodexExecutionEnabled:
             TASK_EXECUTION_CODEX_WORKER_REAL_EXECUTION_ENABLED,
           externalProcessAllowed:
@@ -1036,14 +1686,125 @@ export function authorizeTaskExecutionWorkerProcess(
   return evaluateTaskExecutionWorkerProcessGate(input);
 }
 
-function boundedDiagnostic(value: string, limit: number): string | undefined {
-  const trimmed = value.trim();
+function truncateDiagnostic(value: string, limit: number): string {
+  let current = "";
 
-  if (trimmed.length === 0 || trimmed.length > limit || /(\n\s*at\s+|stack)/i.test(trimmed)) {
-    return undefined;
+  for (const char of value) {
+    const next = `${current}${char}`;
+
+    if (next.length > limit) {
+      return current;
+    }
+
+    current = next;
   }
 
-  return trimmed;
+  return current;
+}
+
+function tailDiagnostic(value: string, limit: number): string {
+  let current = "";
+
+  for (let index = value.length - 1; index >= 0; index -= 1) {
+    const next = `${value[index]}${current}`;
+
+    if (next.length > limit) {
+      return current;
+    }
+
+    current = next;
+  }
+
+  return current;
+}
+
+function sanitizeDiagnosticStream(value: string): string {
+  return value
+    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line.length > 0 &&
+        !/(^at\s+|\s+at\s+|stack)/i.test(line) &&
+        !/(token|secret|credential|authorization|api[-_]?key|password|cookie|session)/i.test(
+          line,
+        ),
+    )
+    .map((line) =>
+      line
+        .replace(/\bError:/g, "error")
+        .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted]"),
+    )
+    .join(" ");
+}
+
+function streamDiagnostic(input: {
+  readonly label: "stdout" | "stderr";
+  readonly value: string;
+  readonly headLimit: number;
+  readonly tailLimit: number;
+}): string {
+  const sanitized = sanitizeDiagnosticStream(input.value);
+
+  if (input.value.trim().length === 0) {
+    return `${input.label}=empty`;
+  }
+
+  if (sanitized.length === 0) {
+    return `${input.label}=redacted`;
+  }
+
+  const head = truncateDiagnostic(sanitized, input.headLimit).trim();
+  const tail = tailDiagnostic(sanitized, input.tailLimit).trim();
+  const terminal = tailDiagnostic(sanitized, 96).trim();
+
+  return [
+    `${input.label}Head=${head}`,
+    `${input.label}Tail=${tail}`,
+    `${input.label}Terminal=${terminal}`,
+  ].join("; ");
+}
+
+function boundedDiagnostic(
+  processResult: TaskExecutionCodexProcessResult,
+  stderrLimitBytes: number,
+): string {
+  return truncateDiagnostic(
+    [
+      `termination=${processResult.terminationReason}`,
+      `exitCode=${processResult.exitCode ?? "null"}`,
+      processResult.signal === undefined ? undefined : `signal=${processResult.signal}`,
+      processResult.stdinMode === undefined
+        ? undefined
+        : `stdinMode=${processResult.stdinMode}`,
+      processResult.stdinBytes === undefined
+        ? undefined
+        : `stdinBytes=${processResult.stdinBytes}`,
+      processResult.stdinWriteCompleted === undefined
+        ? undefined
+        : `stdinWriteCompleted=${processResult.stdinWriteCompleted}`,
+      processResult.stdinClosed === undefined
+        ? undefined
+        : `stdinClosed=${processResult.stdinClosed}`,
+      streamDiagnostic({
+        label: "stderr",
+        value: processResult.stderr,
+        headLimit: Math.min(stderrLimitBytes, 96),
+        tailLimit: Math.min(stderrLimitBytes, 192),
+      }),
+      streamDiagnostic({
+        label: "stdout",
+        value: processResult.stdout,
+        headLimit: 64,
+        tailLimit: 96,
+      }),
+    ]
+      .filter((item): item is string => item !== undefined)
+      .join("; "),
+    512,
+  );
 }
 
 function rawFailure(input: {
@@ -1068,7 +1829,7 @@ function rawFailure(input: {
     batchId: input.request.batchId,
     failureCode: input.code,
     failureCategory: input.category,
-    message: input.message,
+    message: input.diagnostic ?? input.message,
     diagnostic: input.diagnostic,
   };
 }
@@ -1078,6 +1839,7 @@ function unavailableFailure(input: {
   readonly code: string;
   readonly category: TaskExecutionWorkerRawResult["failureCategory"];
   readonly message: string;
+  readonly diagnostic?: string;
 }): TaskExecutionWorkerRawResult {
   return {
     ...rawFailure(input),
@@ -1279,7 +2041,7 @@ export function normalizeTaskExecutionCodexProcessRawResult(input: {
 } {
   const stdoutLimitBytes = input.stdoutLimitBytes ?? 8192;
   const stderrLimitBytes = input.stderrLimitBytes ?? 2048;
-  const diagnostic = boundedDiagnostic(input.processResult.stderr, stderrLimitBytes);
+  const diagnostic = boundedDiagnostic(input.processResult, stderrLimitBytes);
 
   if (input.processResult.timedOut || input.processResult.terminationReason === "timeout") {
     return {
@@ -1289,6 +2051,7 @@ export function normalizeTaskExecutionCodexProcessRawResult(input: {
         category: "timeout",
         message:
           "Codex process timed out; this is evidence only and does not authorize completion or retry.",
+        diagnostic,
       }),
       issues: [],
     };
@@ -1313,6 +2076,7 @@ export function normalizeTaskExecutionCodexProcessRawResult(input: {
         category: "unknown",
         message:
           "Codex process was interrupted; this is evidence only and does not complete work.",
+        diagnostic,
       }),
       issues: [],
     };
