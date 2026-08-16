@@ -19474,6 +19474,7 @@ try {
   );
 
   const task0324TempRoot = await mkdtemp(join(tmpdir(), "aeos-task-0324-smoke-"));
+  try {
   const task0324PrepareOnlyRoot = join(
     task0324TempRoot,
     "task-0324-prepare-only",
@@ -20748,7 +20749,9 @@ try {
   assert.equal(TASK_EXECUTION_TWO_MODEL_CANARY_REAL_CLAUDE_CALLS, 0);
   assert.equal(TASK_EXECUTION_TWO_MODEL_CANARY_PRIMARY_APPLIES, 0);
   assert.equal(TASK_EXECUTION_TWO_MODEL_CANARY_CLOUD_CALLS, 0);
-  await rm(task0324TempRoot, { recursive: true, force: true });
+  } finally {
+    await rm(task0324TempRoot, { recursive: true, force: true });
+  }
 
   const workerStateSnapshot = JSON.stringify(firstUpdate.value.state);
   const workerAttemptSnapshot = JSON.stringify(invocationStartedAttempt);
@@ -32686,6 +32689,57 @@ try {
       (item) => item.code === "task_execution_invocation_unsafe_invocationId",
     ),
     "task execution invocation reconciliation apply smoke P should preserve path safety",
+  );
+
+  // Smoke Z: blocked-path reconciliationRequired — validates the single-authoritative predicate
+  const applyBlockedInvokingFixture = await createReconciliationApplyFixture({
+    attemptNumber: 41,
+  });
+  const applyBlockedInvoking = await applyTaskExecutionInvocationReconciliation({
+    projectRoot: reconciliationApplyRoot,
+    taskId: applyBlockedInvokingFixture.record.taskId,
+    invocationId: applyBlockedInvokingFixture.record.invocationId,
+    expectedInvocationRevision: applyBlockedInvokingFixture.record.revision + 1,
+  });
+  assert.equal(
+    applyBlockedInvoking.ok,
+    false,
+    "task execution invocation reconciliation apply smoke Z should block on revision conflict for invoking",
+  );
+  assert.equal(
+    applyBlockedInvoking.reconciliationRequired,
+    true,
+    "task execution invocation reconciliation apply smoke Z should report reconciliation required for invoking on blocked path",
+  );
+
+  const applyBlockedUnknownFixture = await createReconciliationApplyFixture({
+    attemptNumber: 42,
+    lifecycle: "outcome_unknown",
+  });
+  const applyBlockedUnknown = await applyTaskExecutionInvocationReconciliation({
+    projectRoot: reconciliationApplyRoot,
+    taskId: applyBlockedUnknownFixture.record.taskId,
+    invocationId: applyBlockedUnknownFixture.record.invocationId,
+    expectedInvocationRevision: applyBlockedUnknownFixture.record.revision + 1,
+  });
+  assert.equal(
+    applyBlockedUnknown.ok,
+    false,
+    "task execution invocation reconciliation apply smoke Z should block on revision conflict for outcome_unknown",
+  );
+  assert.equal(
+    applyBlockedUnknown.reconciliationRequired,
+    true,
+    "task execution invocation reconciliation apply smoke Z should report reconciliation required for outcome_unknown on blocked path",
+  );
+
+  assert.equal(
+    evaluateTaskExecutionInvocationReconciliation({
+      record: directReservation.value.record,
+      currentTaskRevision: 2,
+    }).reconciliationRequired,
+    false,
+    "task execution invocation reconciliation smoke Z should not require reconciliation for pristine reserved record",
   );
 
   const historicalApplyRoot = await mkdtemp(

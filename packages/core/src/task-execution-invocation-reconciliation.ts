@@ -979,7 +979,7 @@ export async function applyTaskExecutionInvocationReconciliation(
       lifecycle: record.lifecycle,
       record: referenceFromRecord({ record }),
       reconciliationRequired:
-        record.lifecycle === "invoking" || record.lifecycle === "outcome_unknown",
+        isTaskExecutionInvocationReconciliationRequiredByLifecycle(record.lifecycle),
       issues,
     });
   }
@@ -1011,7 +1011,7 @@ export async function applyTaskExecutionInvocationReconciliation(
       lifecycle: record.lifecycle,
       record: reference,
       reconciliationRequired:
-        record.lifecycle === "invoking" || record.lifecycle === "outcome_unknown",
+        isTaskExecutionInvocationReconciliationRequiredByLifecycle(record.lifecycle),
       issues,
     });
   }
@@ -1033,7 +1033,7 @@ export async function applyTaskExecutionInvocationReconciliation(
       lifecycle: record.lifecycle,
       record: reference,
       reconciliationRequired:
-        record.lifecycle === "invoking" || record.lifecycle === "outcome_unknown",
+        isTaskExecutionInvocationReconciliationRequiredByLifecycle(record.lifecycle),
       issues,
     });
   }
@@ -1061,7 +1061,7 @@ export async function applyTaskExecutionInvocationReconciliation(
       lifecycle: record.lifecycle,
       record: reference,
       reconciliationRequired:
-        record.lifecycle === "invoking" || record.lifecycle === "outcome_unknown",
+        isTaskExecutionInvocationReconciliationRequiredByLifecycle(record.lifecycle),
       issues,
     });
   }
