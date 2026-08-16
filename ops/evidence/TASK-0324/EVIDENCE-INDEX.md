@@ -45,6 +45,14 @@ ERROR: {
 
 The filenames were deliberately left as-is rather than renamed, so that this note and the audit's own cross-references stay valid. Treat `repro-bounded-*` as post-fix output and cite `preflight-audit.md` §10–11 for the failure.
 
+## schemafix-01 captures (added 2026-08-16, IMPLEMENTER-B)
+
+| File | What it is |
+|---|---|
+| `repro-stdin-schemafix01.json` | Stdin payload for the schemafix-01 identity (1192 bytes). Constructed from the persisted planner invocation record `invocation-r1-n1-00e6fb69816f29e55650f4f6.json` using the same `buildInstructionPayload` field set. DO NOT overwrite — primary evidence for Section 12. |
+| `repro-schemafix01-bounded-stdout.txt` | Codex stdout from the out-of-band bounded repro. Exit 0, 1377 bytes. Contains the full structured result with `"workerId":"codex"` — the field that fails the AEOS binding check. |
+| `repro-schemafix01-bounded-stderr.txt` | Codex stderr from the same run. Verbose session log; the JSON also appears here (line 21) preceded by the bare word `codex`. Not the stream AEOS reads. |
+
 ## Host-layout note
 
 `preflight-audit.md` retains real absolute paths in three places where the exact value **is** the evidence: the two trusted-executable source constants, and the `workdir:` line inside quoted captured stderr. Those are byte-faithful quotes and must not be sanitized. Incidental host paths elsewhere were generalized, and the script now derives `HOME`/`USER`/`TMPDIR`/`PATH` and the `codex` binary from the environment at run time.
@@ -52,3 +60,11 @@ The filenames were deliberately left as-is rather than renamed, so that this not
 ## One unrelated line in the captures
 
 Both stderr captures contain an `rmcp::transport::worker ... AuthRequired ... mcp.cloudflare.com` line. That is an ambient MCP server on the host failing its own OAuth handshake — unrelated to AEOS, not a credential, and it does not affect the exit code or the returned proposal.
+
+## REVIEWER-B4 entries (2026-08-16)
+
+| File | What it is |
+|---|---|
+| `preflight-audit.md` §13 | REVIEWER-B4 authority review and empirical pre-flight findings appended (no rewrite of §1–12). |
+
+**Note:** `repro-schemafix01-r2-bounded-stdout.txt` / `repro-schemafix01-r2-bounded-stderr.txt` were NOT written — the `codex exec` run was blocked by the permission classifier. Orchestrator must perform this capture before the next live canary.

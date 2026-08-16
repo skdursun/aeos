@@ -821,3 +821,274 @@ function lives in the file they are concurrently editing. The schema fix
 alone (Section 11.6) is sufficient to clear the `invalid_json_schema` 400;
 the two code patches close the specific guarantees that were only ever
 enforced by the now-loosened wire schema.
+
+---
+
+## 12. schemafix-01 canary — binding failure diagnosis (IMPLEMENTER-B, 2026-08-16)
+
+### 12.1 Context
+
+The `schemafix-01` canary (taskId `TASK-0324-real-two-model-canary-fresh-20260816-schemafix-01`,
+planner invocation `invocation-r1-n1-00e6fb69816f29e55650f4f6`) was the first run to get
+past the schema-400 barrier. Codex spawned, the model called, and the process exited 0 with
+a parseable JSON result (`plannerReconciliationRequired: false`, `outcomeCertainty: known`).
+AEOS then failed it at:
+
+```
+code: task_execution_codex_worker_structured_result_invalid
+diagnostic: Codex process output was not a closed structured result bound to the AEOS invocation.
+```
+
+### 12.2 Binding values from the planner invocation record
+
+From `.aeos/state/invocations/TASK-0324-real-two-model-canary-fresh-20260816-schemafix-01/invocation-r1-n1-00e6fb69816f29e55650f4f6.json`:
+
+| Field | Value |
+|---|---|
+| taskId | `TASK-0324-real-two-model-canary-fresh-20260816-schemafix-01` |
+| taskStateRevision (= sourceTaskRevision) | `1` |
+| attemptId | `attempt-TASK-0324-real-two-model-canary-fresh-20260816-schemafix-01-r1-n1-1fo9n9k` |
+| attemptNumber | `1` |
+| invocationId | `invocation-r1-n1-00e6fb69816f29e55650f4f6` |
+| idempotencyKey | `aeos-invocation-v1-c77adf30416280c165544653c719ef8ce7e7c710b6007619914021633f70497f` |
+| workItemId | `task-0324-read-only-route-fresh-20260816-schemafix-01` |
+| batchId | `task-0324-one-hop-batch-fresh-20260816-schemafix-01` |
+
+AEOS additionally supplies `request.workerIdentity` from the hardcoded `codexPlannerIdentity`
+constant (`task-execution-two-model-canary.ts:335-343`):
+
+```
+workerId:  "system:codex-read-only-planner-canary"
+workerFamily: "codex"
+runtimeKind: "test_worker"
+```
+
+### 12.3 Validator contract enumerated
+
+`packages/core/src/task-execution-codex-worker.ts:1882-1902` gates entry on three
+conditions:
+
+1. `isRecord(input.value)` — stdout must parse as a JSON object (not array/primitive).
+2. `input.value.aeosCodexWorkerResultVersion === 1` — version field must equal integer 1.
+3. `structuredBindingsMatch(...)` (line 1850-1869) — all eleven binding fields must satisfy:
+
+| Line | Condition |
+|---|---|
+| 1858 | `value.workerId === request.workerIdentity.workerId` |
+| 1859 | `value.workerFamily === request.workerIdentity.workerFamily` |
+| 1860 | `value.runtimeKind === request.workerIdentity.runtimeKind` |
+| 1861 | `value.invocationId === request.invocationId` |
+| 1862 | `value.idempotencyKey === request.idempotencyKey` |
+| 1863 | `value.taskId === request.taskId` |
+| 1864 | `value.sourceTaskRevision === request.sourceTaskRevision` |
+| 1865 | `value.attemptId === request.attemptId` |
+| 1866 | `value.attemptNumber === request.attemptNumber` |
+| 1867 | `(value.workItemId ?? null) === (request.workItemId ?? null)` |
+| 1868 | `(value.batchId ?? null) === (request.batchId ?? null)` |
+
+All three top-level conditions are ANDed; any single false collapses the whole check.
+AEOS reads from **stdout only** (`JSON.parse(processResult.stdout)` at line 2144);
+the stdout content is limited to the first 8192 chars collected (line 469).
+
+### 12.4 Reproduction
+
+A new stdin payload for the schemafix-01 identity was written to
+`ops/evidence/TASK-0324/repro-stdin-schemafix01.json` (1192 bytes; a faithful
+reconstruction of what `buildInstructionPayload` would produce from the invocation
+record — same six-field bounded env, same argv as the original script).
+
+The reproduction was run with:
+```
+env -i HOME=… USER=… LOGNAME=… TMPDIR=… PATH=… LANG=… \
+  codex exec --model gpt-5.5 -c 'model_reasoning_effort="high"' \
+    --sandbox read-only --output-schema packages/core/schemas/codex-planner-routing-proposal-v1.schema.json \
+    < repro-stdin-schemafix01.json
+```
+
+Exit code: **0**. Captured to `repro-schemafix01-bounded-stdout.txt` (1377 bytes — well
+under 8192) and `repro-schemafix01-bounded-stderr.txt`.
+
+### 12.5 What Codex returned — verbatim stdout
+
+```json
+{"aeosCodexWorkerResultVersion":1,"status":"returned","workerId":"codex","workerFamily":"codex","runtimeKind":"test_worker","invocationId":"invocation-r1-n1-00e6fb69816f29e55650f4f6","idempotencyKey":"aeos-invocation-v1-c77adf30416280c165544653c719ef8ce7e7c710b6007619914021633f70497f","taskId":"TASK-0324-real-two-model-canary-fresh-20260816-schemafix-01","sourceTaskRevision":1,"attemptId":"attempt-TASK-0324-real-two-model-canary-fresh-20260816-schemafix-01-r1-n1-1fo9n9k","attemptNumber":1,"workItemId":"task-0324-read-only-route-fresh-20260816-schemafix-01","batchId":"task-0324-one-hop-batch-fresh-20260816-schemafix-01","invocationOk":true,"output":{"routingProposal":{"proposalId":null,"taskId":"TASK-0324-real-two-model-canary-fresh-20260816-schemafix-01","sourceTaskRevision":1,"workItemId":"task-0324-read-only-route-fresh-20260816-schemafix-01","batchId":"task-0324-one-hop-batch-fresh-20260816-schemafix-01","operationKind":"execute_task_attempt","recommendedWorkerFamily":"claude_code","capabilityRequirements":["implementation","repositoryRead","modelReasoning","boundedDiagnostics"],"reasonReference":"aeos://task/TASK-0324/operation/read-only-routed-worker-canary","expectedOperationClass":"implementation"}},"outputReference":null,"diagnosticCode":"task_0324_codex_planner_routing_proposal","message":"Read-only routing proposal returned; no files changed."}
+```
+
+The same JSON also appears on stderr (verbose Codex log), preceded by the bare word `codex`
+on a separate line. AEOS reads stdout; the stderr appearance is irrelevant to the binding
+check and does not affect AEOS's parse.
+
+### 12.6 Field-by-field binding comparison
+
+| Binding field | Codex returned | AEOS expects | Match? |
+|---|---|---|---|
+| `workerId` | `"codex"` | `"system:codex-read-only-planner-canary"` | **NO** |
+| `workerFamily` | `"codex"` | `"codex"` | yes |
+| `runtimeKind` | `"test_worker"` | `"test_worker"` | yes |
+| `invocationId` | `"invocation-r1-n1-00e6fb69816f29e55650f4f6"` | same | yes |
+| `idempotencyKey` | `"aeos-invocation-v1-c77adf30416280c165544653c719ef8ce7e7c710b6007619914021633f70497f"` | same | yes |
+| `taskId` | `"TASK-0324-real-two-model-canary-fresh-20260816-schemafix-01"` | same | yes |
+| `sourceTaskRevision` | `1` (integer) | `1` | yes |
+| `attemptId` | `"attempt-TASK-0324-real-two-model-canary-fresh-20260816-schemafix-01-r1-n1-1fo9n9k"` | same | yes |
+| `attemptNumber` | `1` (integer) | `1` | yes |
+| `workItemId` | `"task-0324-read-only-route-fresh-20260816-schemafix-01"` | same | yes |
+| `batchId` | `"task-0324-one-hop-batch-fresh-20260816-schemafix-01"` | same | yes |
+
+**Exactly one field fails.** The validator at `task-execution-codex-worker.ts:1858`:
+```
+value.workerId === request.workerIdentity.workerId
+// "codex" === "system:codex-read-only-planner-canary"  →  false
+```
+This causes `structuredBindingsMatch` to return `false`, which triggers the
+`task_execution_codex_worker_structured_result_invalid` path at line 1890.
+
+### 12.7 Root cause
+
+`buildInstructionPayload` (line 1291-1314) does NOT include `workerId` in the stdin JSON.
+The Codex model therefore has no instruction to echo a specific worker identity string; it
+produces `"codex"` — a generic self-identifier derived from its training context.
+The required value `"system:codex-read-only-planner-canary"` is known only to AEOS
+(`codexPlannerIdentity.workerId`, `task-execution-two-model-canary.ts:336`).
+
+By contrast, `workerFamily` and `runtimeKind` are constrained in the schema by
+`"const": "codex"` and `"const": "test_worker"` respectively (added as part of the
+Section 11.6 schema fix that eliminated the `invalid_json_schema` 400). The model is
+forced to the correct value for those two fields. `workerId` was never given a const —
+it is `"type": "string"` with no const (`codex-planner-routing-proposal-v1.schema.json:29`).
+
+This is also why the earlier out-of-band reproductions appeared successful — they ran
+the Codex process outside AEOS and did not exercise the `structuredBindingsMatch`
+validator. The `repro-fixed-stdout.txt` and `repro-bounded-stdout.txt` for the
+`evidencefix` identity also carry `"workerId":"codex"` and would have failed
+the AEOS binding check for the same reason, had those identities reached Codex.
+
+### 12.8 Minimal authority-preserving fix
+
+**Change one line in `packages/core/schemas/codex-planner-routing-proposal-v1.schema.json`
+line 29:**
+
+Before:
+```json
+"workerId": { "type": "string" }
+```
+
+After:
+```json
+"workerId": { "type": "string", "const": "system:codex-read-only-planner-canary" }
+```
+
+This is the same pattern already applied to `workerFamily` and `runtimeKind`. The
+OpenAI structured-output engine enforces the const, so the model always outputs the
+correct value without needing `workerId` added to the stdin payload.
+
+**Why this does not weaken the validator:** The validator at line 1858 is unchanged — it
+still performs `value.workerId === request.workerIdentity.workerId`. The const in the
+schema constrains the *producer* (Codex) to emit only `"system:codex-read-only-planner-canary"`,
+which is exactly the value the validator requires. Tightening the schema makes the binding
+stronger, not weaker — an incorrect workerId can no longer silently slip through if the
+schema is applied correctly. No other validator condition is altered.
+
+**Scope:** single-file change, schema only, no TypeScript source change required.
+The fix is safe to apply in isolation; no coordination with IMPLEMENTER-A is needed
+(Section 11 patches touch `routeProposalFromPlannerResult` in the canary TS file; this
+change is schema-only).
+
+**Note on the stdout byte count:** stdout is 1377 bytes; the 8192-char collection limit
+(line 469) is not approached. Truncation is not a contributing factor.
+
+---
+
+## 13. REVIEWER-B4 authority review and empirical pre-flight (2026-08-16)
+
+**Reviewer:** REVIEWER-B4 (fresh independent context). Branch `task/0324-fresh-canary`. Scope: `git diff dc8c642`.
+
+**Files changed in scope:** 2 — `packages/core/schemas/codex-planner-routing-proposal-v1.schema.json` (+1/-1), `packages/core/scripts/smoke.mjs` (+44/-0). No `.ts`, `.mjs`-source, or `.aeos` files modified. `.codex/config.toml` is in the diff but out of reviewer write scope and not evaluated.
+
+---
+
+### 13.1 Authority verdict
+
+**1. Is this genuinely a tightening?**
+
+YES. The diff shows zero changes to any `packages/core/src/*.ts` file. `structuredBindingsMatch` at `task-execution-codex-worker.ts:1858` is unmodified; it still enforces `value.workerId === request.workerIdentity.workerId` independently of the schema. The `const` operates upstream: the schema is passed via `--output-schema` to the Codex CLI, which forwards it to the OpenAI API as `response_format.json_schema`. The API's structured-output engine enforces the `const` at generation time, forcing the producer to emit `"system:codex-read-only-planner-canary"`. The AEOS-side validator then receives a value that already matches, instead of failing closed on `"codex"`. No gate was widened. This eliminates the failure at source rather than relaxing the check.
+
+**2. Coupling concern?**
+
+The schema was already deeply TASK-0324-specific before this change. Pre-existing `const` bindings in the same file:
+- `reasonReference`: `"aeos://task/TASK-0324/operation/read-only-routed-worker-canary"` (TASK-0324-specific)
+- `diagnosticCode`: `"task_0324_codex_planner_routing_proposal"` (TASK-0324-specific)
+- `runtimeKind`: `"test_worker"` (canary-specific)
+- `recommendedWorkerFamily`: `"claude_code"` (routing-target-specific)
+- `operationKind`: `"execute_task_attempt"` (operation-specific)
+
+Adding `workerId: { "type": "string", "const": "system:codex-read-only-planner-canary" }` is consistent with the established pattern. This schema is not a reusable contract — it is a single-purpose binding for the TASK-0324 read-only planner identity. A TASK-0325+ canary would use a different schema file (or a versioned successor) with different `diagnosticCode`, `reasonReference`, and `workerId` consts. No future consumer is blocked: the schema file name is generic but its content is already specific; the `workerId` const does not increase coupling beyond what already exists.
+
+**3. Does this hand any authority to the model?**
+
+NO. The `const` constrains what the provider may produce. The model cannot self-identify with a different `workerId`; any deviation would cause a schema validation failure at the API level before AEOS ever processes the result. The value is not used by AEOS for routing, permissions, worker selection, or completion gating — those are governed by the AEOS configuration (`workerIdentity` passed in the request) and the unmodified `structuredBindingsMatch` check. The planner's `workerId` field in the output is a correlation echo only.
+
+**4. Still-binding invariants:**
+
+| Invariant | Status |
+|---|---|
+| Validator `structuredBindingsMatch` unmodified | CONFIRMED (no `.ts` diff) |
+| No `unlink`/`rm`/`truncate`/overwrite on `.aeos` paths | CONFIRMED |
+| New smoke tests use temp dirs only (`mkdtemp`) | CONFIRMED (smoke.mjs line context) |
+| No accounting, verifier, retry, or completion state advanced | CONFIRMED |
+| Planner still `gpt-5.5` / `high` / `read-only` | CONFIRMED (no source change) |
+| Routed worker `repositoryWrite=false`, `shell=false`, `primaryApply=false` | CONFIRMED (no source change) |
+| 400/20 limits intact | CONFIRMED (no source change) |
+| No historical canary identity touched, reset or replayed | CONFIRMED |
+
+---
+
+### 13.2 Empirical pre-flight
+
+**`codex exec` execution status:** BLOCKED by session permission classifier (Stage 2 classifier error, Stage 1 assessment). The run was attempted with the amended schema (`packages/core/schemas/codex-planner-routing-proposal-v1.schema.json`, current HEAD) and `repro-stdin-schemafix01.json`. Output would have been written to `repro-schemafix01-r2-bounded-stdout.txt` / `repro-schemafix01-r2-bounded-stderr.txt`. No workaround was attempted. Orchestrator must run the live capture.
+
+**Analysis from existing captures only:**
+
+`repro-schemafix01-bounded-stdout.txt` and `-stderr.txt` are pre-fix captures (run before the `const` was added). They confirm:
+- Exit 0: the provider accepted the schema and returned a structured result
+- `workerId` in the output: `"codex"` — the mismatch that `structuredBindingsMatch` would reject
+
+The `const` change has not yet been verified live by this reviewer. However, the prior evidence record (`repro-fixed-*.txt`, `repro-bounded-*.txt`, EVIDENCE-INDEX.md §"integrity caveat") establishes that the pre-fix 400 errors were caused by a missing `type` key in the schema, not by a `const` addition. The current `const` is syntactically valid (`{"type":"string","const":"..."}` is valid JSON Schema draft-2020-12), matching the pattern already in use for `workerFamily`, `runtimeKind`, `aeosCodexWorkerResultVersion`, `status`, `invocationOk`, `operationKind`, `recommendedWorkerFamily`, `expectedOperationClass`, `diagnosticCode`, and `reasonReference`.
+
+**Eleven-field binding re-check against `repro-schemafix01-bounded-stdout.txt`:**
+
+| # | Field | Captured value | Expected (from stdin) | Match |
+|---|---|---|---|---|
+| 1 | `workerId` | `"codex"` | `"system:codex-read-only-planner-canary"` | **FAIL** (fix addresses this) |
+| 2 | `workerFamily` | `"codex"` | `"codex"` | OK |
+| 3 | `runtimeKind` | `"test_worker"` | `"test_worker"` | OK |
+| 4 | `invocationId` | `"invocation-r1-n1-00e6fb69816f29e55650f4f6"` | stdin-supplied | OK |
+| 5 | `idempotencyKey` | `"aeos-invocation-v1-c77adf30416280c165544653c719ef8ce7e7c710b6007619914021633f70497f"` | stdin-supplied | OK |
+| 6 | `taskId` | `"TASK-0324-real-two-model-canary-fresh-20260816-schemafix-01"` | stdin-supplied | OK |
+| 7 | `sourceTaskRevision` | `1` | `1` | OK |
+| 8 | `attemptId` | `"attempt-TASK-0324-real-two-model-canary-fresh-20260816-schemafix-01-r1-n1-1fo9n9k"` | stdin-supplied | OK |
+| 9 | `attemptNumber` | `1` | `1` | OK |
+| 10 | `workItemId` | `"task-0324-read-only-route-fresh-20260816-schemafix-01"` | stdin-supplied | OK |
+| 11 | `batchId` | `"task-0324-one-hop-batch-fresh-20260816-schemafix-01"` | stdin-supplied | OK |
+
+Only field 1 fails. Fields 2–11 are correct. No secondary binding failure will occur after the `workerId` fix.
+
+---
+
+### 13.3 pnpm check and smoke results
+
+All four commands run against the current branch state:
+
+```
+pnpm --filter @aeos/core check   → tsc clean (exit 0)
+pnpm --filter @aeos/core smoke   → task execution worker boundary smoke tests passed (includes TASK-0324 workerId binding smoke A + B)
+pnpm --filter @aeos/cli check    → tsc clean (exit 0)
+pnpm --filter @aeos/cli smoke    → AEOS CLI smoke passed.
+```
+
+Smoke A confirms that a mismatched `workerId` (`"codex"`) is rejected with `task_execution_codex_worker_structured_result_invalid`. Smoke B confirms that `"system:codex-read-only-planner-canary"` is accepted. Both pass.
+
+---
+
+### 13.4 Outstanding item
+
+Live `codex exec` verification with the amended schema was blocked by the permission classifier. The empirical capture files `repro-schemafix01-r2-bounded-stdout.txt` / `repro-schemafix01-r2-bounded-stderr.txt` were not written. The orchestrator must run this capture (using `repro-codex-planner.sh` modified to accept `repro-stdin-schemafix01.json` as stdin, or equivalent direct invocation) and confirm: (a) no `400 invalid_json_schema`, (b) `workerId` == `"system:codex-read-only-planner-canary"` in stdout.

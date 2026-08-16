@@ -22708,6 +22708,50 @@ try {
     "task execution codex worker smoke Z should not convert worker evidence into work completion",
   );
 
+  // TASK-0324 workerId binding coverage — proves structuredBindingsMatch enforces workerId equality
+  const plannerWorkerIdentity = createSmokeTestWorkerIdentity({
+    workerId: "system:codex-read-only-planner-canary",
+    workerFamily: "codex",
+  });
+  const plannerWorkerRequest = createSmokeTestWorkerRequest(
+    invokingPersisted.value.record,
+    plannerWorkerIdentity,
+    createSmokeWorkerPermissionFacts(workerPermissionGate),
+  );
+  const wrongWorkerIdProcess = normalizeTaskExecutionCodexProcessResult({
+    request: plannerWorkerRequest,
+    processResult: createCodexProcessResult(plannerWorkerRequest, {
+      stdout: createCodexStructuredStdout(plannerWorkerRequest, {
+        workerId: "codex",
+      }),
+    }),
+    stdoutLimitBytes: smokeCodexConfiguration.stdoutLimitBytes,
+    stderrLimitBytes: smokeCodexConfiguration.stderrLimitBytes,
+  });
+  assert.equal(
+    wrongWorkerIdProcess.ok,
+    false,
+    "TASK-0324 workerId binding smoke A should reject structured result whose workerId does not match request",
+  );
+  assert.ok(
+    wrongWorkerIdProcess.issues.some(
+      (item) =>
+        item.code === "task_execution_codex_worker_structured_result_invalid",
+    ),
+    "TASK-0324 workerId binding smoke A should report task_execution_codex_worker_structured_result_invalid for mismatched workerId",
+  );
+  const matchingWorkerIdProcess = normalizeTaskExecutionCodexProcessResult({
+    request: plannerWorkerRequest,
+    processResult: createCodexProcessResult(plannerWorkerRequest),
+    stdoutLimitBytes: smokeCodexConfiguration.stdoutLimitBytes,
+    stderrLimitBytes: smokeCodexConfiguration.stderrLimitBytes,
+  });
+  assert.equal(
+    matchingWorkerIdProcess.ok,
+    true,
+    "TASK-0324 workerId binding smoke B should accept structured result whose workerId exactly matches system:codex-read-only-planner-canary",
+  );
+
   const localProcessRuntimeStateRoot = await mkdtemp(
     join(tmpdir(), "aeos-local-worker-process-runtime-state-"),
   );

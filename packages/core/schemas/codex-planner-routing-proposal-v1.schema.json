@@ -26,7 +26,7 @@
   "properties": {
     "aeosCodexWorkerResultVersion": { "type": "integer", "const": 1 },
     "status": { "type": "string", "const": "returned" },
-    "workerId": { "type": "string" },
+    "workerId": { "type": "string", "const": "system:codex-read-only-planner-canary" },
     "workerFamily": { "type": "string", "const": "codex" },
     "runtimeKind": { "type": "string", "const": "test_worker" },
     "invocationId": { "type": "string" },
