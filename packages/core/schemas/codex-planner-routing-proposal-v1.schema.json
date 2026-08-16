@@ -19,23 +19,25 @@
     "batchId",
     "invocationOk",
     "output",
-    "diagnosticCode"
+    "outputReference",
+    "diagnosticCode",
+    "message"
   ],
   "properties": {
-    "aeosCodexWorkerResultVersion": { "const": 1 },
-    "status": { "const": "returned" },
+    "aeosCodexWorkerResultVersion": { "type": "integer", "const": 1 },
+    "status": { "type": "string", "const": "returned" },
     "workerId": { "type": "string" },
-    "workerFamily": { "const": "codex" },
-    "runtimeKind": { "const": "test_worker" },
+    "workerFamily": { "type": "string", "const": "codex" },
+    "runtimeKind": { "type": "string", "const": "test_worker" },
     "invocationId": { "type": "string" },
     "idempotencyKey": { "type": "string" },
     "taskId": { "type": "string" },
-    "sourceTaskRevision": { "type": "integer", "minimum": 1 },
+    "sourceTaskRevision": { "type": "integer" },
     "attemptId": { "type": "string" },
-    "attemptNumber": { "type": "integer", "minimum": 1 },
+    "attemptNumber": { "type": "integer" },
     "workItemId": { "type": ["string", "null"] },
     "batchId": { "type": ["string", "null"] },
-    "invocationOk": { "const": true },
+    "invocationOk": { "type": "boolean", "const": true },
     "output": {
       "type": "object",
       "additionalProperties": false,
@@ -45,9 +47,11 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
+            "proposalId",
             "taskId",
             "sourceTaskRevision",
             "workItemId",
+            "batchId",
             "operationKind",
             "recommendedWorkerFamily",
             "capabilityRequirements",
@@ -55,35 +59,36 @@
             "expectedOperationClass"
           ],
           "properties": {
-            "proposalId": { "type": "string" },
+            "proposalId": { "type": ["string", "null"] },
             "taskId": { "type": "string" },
-            "sourceTaskRevision": { "type": "integer", "minimum": 1 },
+            "sourceTaskRevision": { "type": "integer" },
             "workItemId": { "type": "string" },
-            "batchId": { "type": "string" },
-            "operationKind": { "const": "execute_task_attempt" },
-            "recommendedWorkerFamily": { "const": "claude_code" },
+            "batchId": { "type": ["string", "null"] },
+            "operationKind": { "type": "string", "const": "execute_task_attempt" },
+            "recommendedWorkerFamily": { "type": "string", "const": "claude_code" },
             "capabilityRequirements": {
               "type": "array",
               "items": {
+                "type": "string",
                 "enum": [
                   "implementation",
                   "repositoryRead",
                   "modelReasoning",
                   "boundedDiagnostics"
                 ]
-              },
-              "minItems": 1,
-              "maxItems": 8,
-              "uniqueItems": true
+              }
             },
-            "reasonReference": { "const": "aeos://task/TASK-0324/operation/read-only-routed-worker-canary" },
-            "expectedOperationClass": { "const": "implementation" }
+            "reasonReference": {
+              "type": "string",
+              "const": "aeos://task/TASK-0324/operation/read-only-routed-worker-canary"
+            },
+            "expectedOperationClass": { "type": "string", "const": "implementation" }
           }
         }
       }
     },
-    "outputReference": { "type": "string" },
-    "diagnosticCode": { "const": "task_0324_codex_planner_routing_proposal" },
-    "message": { "type": "string" }
+    "outputReference": { "type": ["string", "null"] },
+    "diagnosticCode": { "type": "string", "const": "task_0324_codex_planner_routing_proposal" },
+    "message": { "type": ["string", "null"] }
   }
 }

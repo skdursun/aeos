@@ -11651,11 +11651,72 @@ try {
 
   const orchestrationCanaryRoot = join(smokeDir, "orchestration-canary");
   mkdirSync(orchestrationCanaryRoot, { recursive: true });
+
+  const orchestrationCanaryMissingSuffix = runCliFrom(orchestrationCanaryRoot, [
+    "task",
+    "execution",
+    "orchestration-canary",
+    "prepare",
+    "--json",
+  ]);
+  expectNonzero(
+    "orchestration canary prepare without --canary-suffix exited zero",
+    orchestrationCanaryMissingSuffix,
+  );
+  const parsedOrchestrationCanaryMissingSuffix = parseJsonOnlyStdout(
+    "orchestration canary missing-suffix output was not valid JSON only",
+    orchestrationCanaryMissingSuffix,
+  );
+  if (
+    parsedOrchestrationCanaryMissingSuffix.ok !== false ||
+    parsedOrchestrationCanaryMissingSuffix.error.code !==
+      "task_execution_orchestration_canary_suffix_required"
+  ) {
+    fail(
+      "orchestration canary prepare did not require --canary-suffix",
+      orchestrationCanaryMissingSuffix,
+    );
+  }
+
+  // Trailing-hyphen suffix must be rejected (pattern previously allowed "abc-").
+  const orchestrationCanaryTrailingHyphen = runCliFrom(
+    orchestrationCanaryRoot,
+    [
+      "task",
+      "execution",
+      "orchestration-canary",
+      "prepare",
+      "--canary-suffix",
+      "trailing-hyphen-",
+      "--json",
+    ],
+  );
+  expectNonzero(
+    "orchestration canary prepare with trailing-hyphen suffix exited zero",
+    orchestrationCanaryTrailingHyphen,
+  );
+  const parsedOrchestrationCanaryTrailingHyphen = parseJsonOnlyStdout(
+    "orchestration canary trailing-hyphen output was not valid JSON only",
+    orchestrationCanaryTrailingHyphen,
+  );
+  if (
+    parsedOrchestrationCanaryTrailingHyphen.ok !== false ||
+    parsedOrchestrationCanaryTrailingHyphen.error.code !==
+      "task_execution_orchestration_canary_suffix_invalid"
+  ) {
+    fail(
+      "orchestration canary prepare did not reject trailing-hyphen suffix",
+      orchestrationCanaryTrailingHyphen,
+    );
+  }
+
   const orchestrationCanaryPrepare = runCliFrom(orchestrationCanaryRoot, [
     "task",
     "execution",
     "orchestration-canary",
     "prepare",
+    "--canary-suffix",
+    "cli-smoke-01",
     "--json",
   ]);
   expectExitCode(
@@ -11730,6 +11791,41 @@ try {
     fail(
       "orchestration canary forbidden override did not fail closed",
       orchestrationCanaryForbidden,
+    );
+  }
+
+  const orchestrationCanaryStatus = runCliFrom(orchestrationCanaryRoot, [
+    "task",
+    "execution",
+    "orchestration-canary",
+    "status",
+    parsedOrchestrationCanaryPrepare.taskId,
+    "--orchestration-id",
+    parsedOrchestrationCanaryPrepare.orchestrationId,
+    "--json",
+  ]);
+  expectExitCode(
+    "orchestration canary status did not exit zero",
+    orchestrationCanaryStatus,
+    0,
+  );
+  const parsedOrchestrationCanaryStatus = parseJsonOnlyStdout(
+    "orchestration canary status output was not valid JSON only",
+    orchestrationCanaryStatus,
+  );
+  if (
+    parsedOrchestrationCanaryStatus.ok !== true ||
+    parsedOrchestrationCanaryStatus.status !== "inspected" ||
+    parsedOrchestrationCanaryStatus.orchestrationPrepared !== true ||
+    parsedOrchestrationCanaryStatus.orchestrationConsumed !== false ||
+    parsedOrchestrationCanaryStatus.plannerOneShotConsumed !== false ||
+    parsedOrchestrationCanaryStatus.workerOneShotConsumed !== false ||
+    parsedOrchestrationCanaryStatus.routePresent !== false ||
+    parsedOrchestrationCanaryStatus.reconciliationRequired !== false
+  ) {
+    fail(
+      "orchestration canary status did not report a read-only pristine snapshot",
+      orchestrationCanaryStatus,
     );
   }
 } finally {

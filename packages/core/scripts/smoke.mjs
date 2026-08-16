@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
+  chmod,
   mkdtemp,
   mkdir,
   readdir,
@@ -174,6 +175,7 @@ import {
   prepareTaskExecutionCodexWorkerInvocation,
   prepareTaskExecutionTwoModelCanary,
   loadTaskExecutionTwoModelCanaryRecord,
+  inspectTaskExecutionTwoModelCanary,
   runTaskExecutionTwoModelCanary,
   createTaskExecutionTwoModelCanaryCodexFixtureResult,
   createTaskExecutionTwoModelCanaryClaudeFixtureResult,
@@ -19538,6 +19540,244 @@ try {
     "TASK-0324-real-two-model-canary-fresh-20260814-oneshotfix",
     "TASK-0324 one-shot smoke F should keep deterministic smoke identity distinct from real canary ids",
   );
+
+  const digestDirectoryTree = async (root) => {
+    let relativePaths;
+    try {
+      relativePaths = await readdir(root, { recursive: true });
+    } catch {
+      return "missing";
+    }
+    const files = [];
+    for (const relPath of relativePaths) {
+      const stats = await stat(join(root, relPath));
+      if (stats.isFile()) {
+        files.push(relPath);
+      }
+    }
+    files.sort();
+    const hash = createHash("sha256");
+    for (const relPath of files) {
+      hash.update(relPath);
+      hash.update(await readFile(join(root, relPath)));
+    }
+    return hash.digest("hex");
+  };
+
+  const task0324FreshIdentityRoot = join(
+    task0324TempRoot,
+    "task-0324-fresh-identity",
+  );
+  await mkdir(task0324FreshIdentityRoot, { recursive: true });
+  const task0324FreshTaskId = `${TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID}-fresh-smoke-01`;
+  const task0324FreshOrchestrationId = `${TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID}-fresh-smoke-01`;
+  const task0324FreshPrepare = await prepareTaskExecutionTwoModelCanary({
+    projectRoot: task0324FreshIdentityRoot,
+    now: "2026-08-16T00:00:00.000Z",
+    taskId: task0324FreshTaskId,
+    orchestrationId: task0324FreshOrchestrationId,
+    requireFreshIdentity: true,
+  });
+  assert.equal(
+    task0324FreshPrepare.ok,
+    true,
+    "TASK-0324 fresh-identity smoke A should prepare a provably fresh identity",
+  );
+  assert.equal(task0324FreshPrepare.status, "prepared");
+  assert.equal(task0324FreshPrepare.orchestration.lifecycle, "prepared");
+  assert.equal(task0324FreshPrepare.orchestration.taskRevision, 1);
+  assert.equal(task0324FreshPrepare.orchestration.routeDecisionId, null);
+  assert.equal(
+    task0324FreshPrepare.orchestration.realCodexPlannerExecuted,
+    false,
+  );
+  assert.equal(
+    task0324FreshPrepare.orchestration.realClaudeRoutedWorkerExecuted,
+    false,
+  );
+  assert.equal(task0324FreshPrepare.plannerInvocation.lifecycle, "reserved");
+  assert.equal(task0324FreshPrepare.plannerInvocation.revision, 1);
+  assert.equal(task0324FreshPrepare.workerInvocation.lifecycle, "reserved");
+  assert.equal(task0324FreshPrepare.workerInvocation.revision, 1);
+
+  const task0324FreshIdentityDigestAfterPrepare = await digestDirectoryTree(
+    task0324FreshIdentityRoot,
+  );
+
+  const task0324FreshReplay = await prepareTaskExecutionTwoModelCanary({
+    projectRoot: task0324FreshIdentityRoot,
+    now: "2026-08-16T00:00:01.000Z",
+    taskId: task0324FreshTaskId,
+    orchestrationId: task0324FreshOrchestrationId,
+    requireFreshIdentity: true,
+  });
+  assert.equal(
+    task0324FreshReplay.ok,
+    false,
+    "TASK-0324 fresh-identity smoke B should block replay of a consumed identity",
+  );
+  assert.equal(task0324FreshReplay.status, "blocked");
+  assert.equal(
+    task0324FreshReplay.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_two_model_canary_identity_not_fresh",
+    ),
+    true,
+    "TASK-0324 fresh-identity smoke B should report the identity-not-fresh issue code",
+  );
+
+  const task0324Inspected = await inspectTaskExecutionTwoModelCanary({
+    projectRoot: task0324FreshIdentityRoot,
+    taskId: task0324FreshTaskId,
+    orchestrationId: task0324FreshOrchestrationId,
+  });
+  assert.equal(task0324Inspected.ok, true);
+  assert.equal(task0324Inspected.status, "inspected");
+  assert.equal(task0324Inspected.orchestrationLifecycle, "prepared");
+  assert.equal(task0324Inspected.orchestrationPrepared, true);
+  assert.equal(task0324Inspected.orchestrationConsumed, false);
+  assert.equal(task0324Inspected.plannerLifecycle, "reserved");
+  assert.equal(task0324Inspected.plannerRevision, 1);
+  assert.equal(task0324Inspected.plannerOneShotConsumed, false);
+  assert.equal(task0324Inspected.plannerOutcomePresent, false);
+  assert.equal(task0324Inspected.plannerReconciliationRequired, false);
+  assert.equal(task0324Inspected.workerLifecycle, "reserved");
+  assert.equal(task0324Inspected.workerRevision, 1);
+  assert.equal(task0324Inspected.workerOneShotConsumed, false);
+  assert.equal(task0324Inspected.workerOutcomePresent, false);
+  assert.equal(task0324Inspected.workerReconciliationRequired, false);
+  assert.equal(task0324Inspected.routePresent, false);
+  assert.equal(task0324Inspected.routeDecisionStatus, "not_run");
+  assert.equal(task0324Inspected.selectedWorkerFamily, null);
+  assert.equal(task0324Inspected.reconciliationRequired, false);
+
+  const task0324FreshIdentityDigestAfterInspect = await digestDirectoryTree(
+    task0324FreshIdentityRoot,
+  );
+  assert.equal(
+    task0324FreshIdentityDigestAfterInspect,
+    task0324FreshIdentityDigestAfterPrepare,
+    "TASK-0324 fresh-identity smoke C should prove inspection performed no writes",
+  );
+
+  // Smoke D — probe failure (EACCES) must fail CLOSED with
+  // task_execution_two_model_canary_identity_freshness_unverifiable, not
+  // silently treat the unverifiable path as absent ("fresh").
+  // Strategy: create the invocations directory inside the probe root, then
+  // chmod it to 000 so that lstat on a child path inside it returns EACCES.
+  // Restore permissions in the finally block so cleanup can delete the dir.
+  if (process.getuid !== undefined && process.getuid() !== 0) {
+    const task0324ProbeErrorRoot = join(
+      task0324TempRoot,
+      "task-0324-probe-error",
+    );
+    await mkdir(task0324ProbeErrorRoot, { recursive: true });
+    const invocationsDir = join(
+      task0324ProbeErrorRoot,
+      ".aeos",
+      "state",
+      "invocations",
+    );
+    await mkdir(invocationsDir, { recursive: true });
+    try {
+      await chmod(invocationsDir, 0o000);
+      const probeErrorResult = await prepareTaskExecutionTwoModelCanary({
+        projectRoot: task0324ProbeErrorRoot,
+        now: "2026-08-16T00:00:00.000Z",
+        taskId: `${TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID}-probe-error-01`,
+        orchestrationId: `${TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID}-probe-error-01`,
+        requireFreshIdentity: true,
+      });
+      assert.equal(
+        probeErrorResult.ok,
+        false,
+        "TASK-0324 fresh-identity smoke D probe failure must block preparation (fail closed)",
+      );
+      assert.equal(probeErrorResult.status, "blocked");
+      assert.equal(
+        probeErrorResult.issues.some(
+          (item) =>
+            item.code ===
+            "task_execution_two_model_canary_identity_freshness_unverifiable",
+        ),
+        true,
+        "TASK-0324 fresh-identity smoke D must report identity_freshness_unverifiable issue code",
+      );
+    } finally {
+      await chmod(invocationsDir, 0o755).catch(() => {});
+    }
+  }
+
+  // Smoke E2 — an invocation persisted in "invoking" lifecycle must cause
+  // inspectTaskExecutionTwoModelCanary to report reconciliationRequired: true.
+  // This exercises the corrected deriveReconciliationRequired that delegates to
+  // isTaskExecutionInvocationReconciliationRequiredByLifecycle rather than only
+  // checking "outcome_unknown".
+  {
+    const task0324InvokingRoot = join(
+      task0324TempRoot,
+      "task-0324-invoking-reconciliation",
+    );
+    await mkdir(task0324InvokingRoot, { recursive: true });
+    const invokingTaskId = `${TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID}-invoking-e2`;
+    const invokingOrchestrationId = `${TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID}-invoking-e2`;
+    const invokingPrepare = await prepareTaskExecutionTwoModelCanary({
+      projectRoot: task0324InvokingRoot,
+      now: "2026-08-16T00:00:00.000Z",
+      taskId: invokingTaskId,
+      orchestrationId: invokingOrchestrationId,
+      requireFreshIdentity: true,
+    });
+    assert.equal(
+      invokingPrepare.ok,
+      true,
+      "TASK-0324 fresh-identity smoke E2 should prepare",
+    );
+    // Load the planner invocation to obtain its ownership token, then
+    // transition it to "invoking" so the inspector sees an ambiguous state.
+    const invokingPlannerLoaded = await loadTaskExecutionInvocation({
+      projectRoot: task0324InvokingRoot,
+      taskId: invokingTaskId,
+      invocationId: invokingPrepare.orchestration.plannerInvocationId,
+    });
+    assert.equal(invokingPlannerLoaded.ok, true);
+    const invokingTransition = await updateTaskExecutionInvocation({
+      projectRoot: task0324InvokingRoot,
+      taskId: invokingTaskId,
+      invocationId: invokingPrepare.orchestration.plannerInvocationId,
+      ownershipToken:
+        invokingPlannerLoaded.value.record.ownership.ownershipToken,
+      expectedLifecycle: "reserved",
+      intent: {
+        kind: "enter_invocation",
+        occurredAt: "2026-08-16T00:00:01.000Z",
+      },
+    });
+    assert.equal(
+      invokingTransition.ok,
+      true,
+      "TASK-0324 fresh-identity smoke E2 transition to invoking must succeed",
+    );
+    assert.equal(invokingTransition.value.record.lifecycle, "invoking");
+    const invokingInspect = await inspectTaskExecutionTwoModelCanary({
+      projectRoot: task0324InvokingRoot,
+      taskId: invokingTaskId,
+      orchestrationId: invokingOrchestrationId,
+    });
+    assert.equal(invokingInspect.ok, true);
+    assert.equal(
+      invokingInspect.plannerReconciliationRequired,
+      true,
+      "TASK-0324 fresh-identity smoke E2 invocation in 'invoking' must report plannerReconciliationRequired: true",
+    );
+    assert.equal(
+      invokingInspect.reconciliationRequired,
+      true,
+      "TASK-0324 fresh-identity smoke E2 invocation in 'invoking' must report reconciliationRequired: true",
+    );
+  }
+
   const runTask0324Fixture = async (name, runnerOverrides = {}) => {
     const root = join(task0324TempRoot, `task-0324-${name}`);
     await mkdir(root, { recursive: true });
@@ -20084,6 +20324,124 @@ try {
   assert.ok(
     permissionContradiction.result.issues.length > 0,
     "TASK-0324 smoke G should report capability mismatch issues",
+  );
+
+  const emptyCapabilityRequirements = await runTask0324Fixture(
+    "empty-capability-requirements",
+    {
+      codexProcess: (request) =>
+        createTaskExecutionTwoModelCanaryCodexFixtureResult({
+          request,
+          proposal: {
+            capabilityRequirements: [],
+          },
+        }),
+    },
+  );
+  assert.equal(
+    emptyCapabilityRequirements.result.status,
+    "route_blocked",
+    "TASK-0324 empty-capabilities smoke should block routing on an empty capabilityRequirements array",
+  );
+  assert.equal(emptyCapabilityRequirements.workerCalls, 0);
+  assert.equal(
+    emptyCapabilityRequirements.result.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_two_model_canary_planner_capability_requirements_empty",
+    ),
+    true,
+    "TASK-0324 empty-capabilities smoke should report the empty capabilityRequirements issue code",
+  );
+
+  const duplicateCapabilityRequirements = await runTask0324Fixture(
+    "duplicate-capability-requirements",
+    {
+      codexProcess: (request) =>
+        createTaskExecutionTwoModelCanaryCodexFixtureResult({
+          request,
+          proposal: {
+            capabilityRequirements: ["implementation", "implementation"],
+          },
+        }),
+    },
+  );
+  assert.equal(
+    duplicateCapabilityRequirements.result.status,
+    "route_blocked",
+    "TASK-0324 duplicate-capabilities smoke should block routing on duplicate capabilityRequirements entries",
+  );
+  assert.equal(duplicateCapabilityRequirements.workerCalls, 0);
+  assert.equal(
+    duplicateCapabilityRequirements.result.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_two_model_canary_planner_capability_requirements_duplicate",
+    ),
+    true,
+    "TASK-0324 duplicate-capabilities smoke should report the duplicate capabilityRequirements issue code",
+  );
+
+  const plannerInvocationNotOk = await runTask0324Fixture(
+    "planner-invocation-not-ok",
+    {
+      codexProcess: (request) =>
+        createTaskExecutionTwoModelCanaryCodexFixtureResult({
+          request,
+          stdout: JSON.stringify({
+            aeosCodexWorkerResultVersion: 1,
+            status: "returned",
+            workerId: request.workerIdentity.workerId,
+            workerFamily: request.workerIdentity.workerFamily,
+            runtimeKind: request.workerIdentity.runtimeKind,
+            invocationId: request.invocationId,
+            idempotencyKey: request.idempotencyKey,
+            taskId: request.taskId,
+            sourceTaskRevision: request.sourceTaskRevision,
+            attemptId: request.attemptId,
+            attemptNumber: request.attemptNumber,
+            workItemId: request.workItemId ?? null,
+            batchId: request.batchId ?? null,
+            invocationOk: false,
+            output: {
+              routingProposal: {
+                taskId: request.taskId,
+                sourceTaskRevision: request.sourceTaskRevision,
+                workItemId:
+                  request.workItemId ?? "task-0324-read-only-route",
+                batchId: request.batchId ?? "task-0324-one-hop-batch",
+                operationKind: "execute_task_attempt",
+                recommendedWorkerFamily: "claude_code",
+                capabilityRequirements: [
+                  "implementation",
+                  "repositoryRead",
+                  "modelReasoning",
+                  "boundedDiagnostics",
+                ],
+                reasonReference:
+                  "aeos://task/TASK-0324/operation/read-only-routed-worker-canary",
+                expectedOperationClass: "implementation",
+              },
+            },
+            diagnosticCode: "task_0324_codex_planner_routing_proposal",
+          }),
+        }),
+    },
+  );
+  assert.equal(
+    plannerInvocationNotOk.result.status,
+    "route_blocked",
+    "TASK-0324 invocationOk-false smoke should block routing when the planner result disputes invocationOk",
+  );
+  assert.equal(plannerInvocationNotOk.workerCalls, 0);
+  assert.equal(
+    plannerInvocationNotOk.result.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_two_model_canary_planner_invocation_not_ok",
+    ),
+    true,
+    "TASK-0324 invocationOk-false smoke should report the planner-invocation-not-ok issue code",
   );
 
   const codexFailure = await runTask0324Fixture("codex-failure", {

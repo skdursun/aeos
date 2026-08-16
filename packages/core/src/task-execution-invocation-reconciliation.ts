@@ -622,6 +622,24 @@ function baseResult(input: {
   };
 }
 
+/**
+ * Returns true when an invocation lifecycle value alone is sufficient to
+ * conclude that reconciliation is required, without any additional context
+ * (staleness, corruption, provider evidence). "invoking" means the launch was
+ * initiated but no outcome was written; "outcome_unknown" means the process
+ * finished but the outcome could not be determined. Both are ambiguous states
+ * that must block re-execution until reconciled.
+ *
+ * This is the single authoritative definition used by both the reconciliation
+ * engine and any read-only inspector that does not have full reconciliation
+ * context available. Do not duplicate this predicate elsewhere.
+ */
+export function isTaskExecutionInvocationReconciliationRequiredByLifecycle(
+  lifecycle: TaskExecutionInvocationLifecycle,
+): boolean {
+  return lifecycle === "invoking" || lifecycle === "outcome_unknown";
+}
+
 export function evaluateTaskExecutionInvocationReconciliation(
   input: TaskExecutionInvocationReconciliationInput,
 ): TaskExecutionInvocationReconciliationResult {

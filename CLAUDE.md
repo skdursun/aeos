@@ -39,6 +39,18 @@ Maximum total topology: Primary Orchestrator + 4 subagents.
 - REVIEWER-A — standard/default effort
 - REVIEWER-B — standard/default effort
 
+**HARD, NON-OVERRIDABLE RULE:** every subagent runs on **Claude Sonnet 4.6** (`claude-sonnet-4-6`), with no exceptions — including P0/critical reviewer gates. No agent, document, skill or workflow may override this.
+
+Enforced by an admin-tier managed settings file that outranks user/project/local settings — `/Library/Application Support/ClaudeCode/managed-settings.json` (root-owned):
+
+- `env.CLAUDE_CODE_SUBAGENT_MODEL: "claude-sonnet-4-6"` — every subagent, agent team and workflow agent. Highest entry in the subagent-model precedence chain: it outranks both the per-invocation Agent `model` parameter and any agent-definition `model:` frontmatter.
+- `env.ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-6"` — pins what the bare `sonnet` alias resolves to.
+- `model: "opus[1m]"` — pins the **Primary Orchestrator**, and beats any `model` set in `~/.claude/settings.json`.
+
+So the enforced split is: orchestrator on `opus[1m]`, all subagents on `claude-sonnet-4-6`. Do not edit or work around the managed file — only the machine administrator can change it. Model and effort are separate axes; the pin fixes the model, not the reasoning effort.
+
+See `docs/ai/AEOS_AGENT_OPERATING_CONSTITUTION.md` → "Model rule" for the recorded conflict between this and the global `~/.claude/CLAUDE.md` model-policy block.
+
 Primary Orchestrator coordinates only and normally does not write product code. It may use higher/adaptive reasoning for architecture, dependency scheduling, safety and conflict resolution.
 
 Implementers use bounded task contexts and non-overlapping write scopes. Reviewers use fresh independent contexts. P0/critical work requires both reviewers to return `REVIEW PASS` before closeout.
