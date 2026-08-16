@@ -18,14 +18,16 @@ Read in this order:
 3. `PROJECT_CONTEXT.md`
 4. `docs/ai/AEOS_CANONICAL_PROJECT_MEMORY.md`
 5. `ops/handoffs/codex-to-claude-handoff.md`
-6. `AGENTS.md`
-7. `docs/ai/DEVELOPER_ACCELERATION_STACK.md`
-8. relevant task/evidence files
-9. CBM targeted repository intelligence
+6. `docs/roadmaps/PRODUCT_READY_ROADMAP.md`
+7. `docs/roadmaps/PRODUCT_READY_TASK_INDEX.md`
+8. `AGENTS.md`
+9. `docs/ai/DEVELOPER_ACCELERATION_STACK.md`
+10. relevant task/evidence files
+11. CBM targeted repository intelligence
 
 Previous chat/thread history is not required authority.
 
-`docs/ai/AEOS_CANONICAL_PROJECT_MEMORY.md` is the durable explanation of the project purpose, scope, architectural invariants, early planning, main task/milestone history, worker-runtime evolution, TASK-0324 incident/fix history, Developer Working Kit policy, GitHub migration state, and current next action. Claude MUST read it before implementation.
+`docs/ai/AEOS_CANONICAL_PROJECT_MEMORY.md` is the durable explanation of project purpose, scope, architectural invariants, historical milestones/incidents, Working Kit policy and current architecture. The roadmap documents are the durable future-product program.
 
 ## Repository checkpoint
 
@@ -33,26 +35,17 @@ Previous chat/thread history is not required authority.
 - Branch: `master`
 - Migration checkpoint commit: `63d5c5900c3b78db1f57cb52e742e70a72d01bc3`
 - Local-only runtime state: `.aeos/` excluded from Git
-- Local Codex project config: `.codex/config.toml` intentionally not included in migration checkpoint
+- Local Codex project config: `.codex/config.toml` intentionally local-only
 
-## Current active issue
+## Current active engineering issue
 
 GitHub Issue #1 — `[TASK-0324] Real Codex planner → AEOS route → real Claude read-only one-hop closeout`
 
-## Current lifecycle
+TASK-0324 remains IN PROGRESS. Historical/consumed TASK-0324 canaries must never be replayed.
 
-TASK-0324 remains IN PROGRESS.
+Latest normal-host diagnostics showed Codex auth/config/runtime, provider HTTP reachability and WebSocket reachability healthy; GPT-5.5 is visible. The earlier provider failure is treated as transient.
 
-Historical/consumed TASK-0324 canaries must never be replayed.
-
-Latest normal-host diagnostics showed:
-- Codex auth/config/runtime healthy
-- provider HTTP reachability healthy
-- WebSocket reachability healthy
-- GPT-5.5 visible
-- previous provider reachability failure classified as transient
-
-## Next safe action
+## Next safe engineering action
 
 Prepare ONE completely fresh TASK-0324 orchestration canary through normal AEOS APIs.
 
@@ -70,9 +63,36 @@ Before execution, read back and prove:
 
 Only then execute exactly once.
 
-## Completed mainline milestones
+## Product-ready roadmap — planning complete
 
-The compact list below is only an index. The detailed history is in `docs/ai/AEOS_CANONICAL_PROJECT_MEMORY.md`.
+The full pre-v1.0 program has now been created before Claude takeover.
+
+Canonical roadmap files:
+- `docs/roadmaps/PRODUCT_READY_ROADMAP.md`
+- `docs/roadmaps/PRODUCT_READY_TASK_INDEX.md`
+
+GitHub umbrella Issue #3 is COMPLETE/CLOSED.
+
+Future product-ready task coverage:
+- 72 tasks
+- TASK-0325 → TASK-0396
+- GitHub Issues #5 → #76
+- mirrored one-to-one in the Notion AEOS Task Ledger
+- every Notion task carries dependencies, priority, acceptance criteria, evidence, next-agent note and GitHub Issue URL, plus detailed Problem/Scope/Out-of-scope/Tests/Failure/Security content
+
+Default entry point after TASK-0324 closeout:
+- TASK-0325 / Issue #5
+
+Release gates:
+- TASK-0394 — Dogfood / Alpha
+- TASK-0395 — Beta / Release Candidate
+- TASK-0396 — GA / v1.0 final product-ready gate
+
+Having later issues already filed is NOT permission to skip dependency evidence or jump phases.
+
+## Completed mainline milestone index
+
+Detailed history is in `docs/ai/AEOS_CANONICAL_PROJECT_MEMORY.md`.
 
 - planning/bootstrap contracts
 - CLI MVP
@@ -106,8 +126,7 @@ The compact list below is only an index. The detailed history is in `docs/ai/AEO
 
 ## TASK-0324 fixes already completed
 
-Detailed root cause and lesson history is in the canonical project memory. Do not regress:
-
+Do not regress:
 - Claude host auth false-negative fix
 - invocation ordering/reporting fix
 - Codex host auth preflight
@@ -177,13 +196,14 @@ Reviewer Claude:
 
 Same critical context must not implement and approve itself.
 
-## Other control issues
+## Control issues
 
+- Issue #1 — active TASK-0324 engineering milestone
 - Issue #2 — historical TASK-0001 → TASK-03xx reconstruction
-- Issue #3 — complete product-ready roadmap
+- Issue #3 — product-ready roadmap planning — COMPLETE/CLOSED
 - Issue #4 — GitHub source-of-truth + Claude handoff completion
 
-Historical reconstruction must not invent missing task meanings. The full task ledger is being reconstructed from source/Git evidence; backlog text alone is not final execution authority.
+Historical reconstruction must not invent missing task meanings. Backlog text alone is not final execution authority.
 
 ## Files to read first
 
@@ -192,8 +212,10 @@ Historical reconstruction must not invent missing task meanings. The full task l
 3. `docs/ai/AEOS_CANONICAL_PROJECT_MEMORY.md`
 4. `docs/ai/DEVELOPER_ACCELERATION_STACK.md`
 5. `ops/handoffs/codex-to-claude-handoff.md`
-6. GitHub Issue #1
-7. GitHub Issue #4
+6. `docs/roadmaps/PRODUCT_READY_ROADMAP.md`
+7. `docs/roadmaps/PRODUCT_READY_TASK_INDEX.md`
+8. GitHub Issue #1
+9. GitHub Issue #4
 
 Then use CBM-first targeted discovery.
 
@@ -203,4 +225,4 @@ No currently proven persistent network/provider blocker.
 
 ## Next ready task
 
-Complete TASK-0324 through a NEW fresh canary. Do not advance to TASK-0325 until durable closeout is complete.
+Complete TASK-0324 through a NEW fresh canary. Do not advance to TASK-0325 until durable closeout is complete. After TASK-0324 closes, use GitHub dependency-ready ordering beginning with TASK-0325 / Issue #5.
