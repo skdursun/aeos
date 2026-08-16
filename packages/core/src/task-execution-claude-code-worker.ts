@@ -22,6 +22,7 @@ import type {
   TaskExecutionWorkerWorkspaceReference,
 } from "./task-execution-worker.js";
 import {
+  coreWorkerBindingsMatch,
   evaluateTaskExecutionWorkerConformance,
   normalizeTaskExecutionWorkerResult,
 } from "./task-execution-worker.js";
@@ -1227,21 +1228,29 @@ function structuredBindingsMatch(input: {
   readonly request: TaskExecutionWorkerRequest;
   readonly value: Record<string, unknown>;
 }): boolean {
-  const request = input.request;
-  const value = input.value;
+  const { request, value } = input;
 
+  // Core binding fields (invocationId, idempotencyKey, taskId, attemptId,
+  // attemptNumber) are checked via the single shared validator.  Worker-
+  // specific fields (worker identity, sourceTaskRevision, workItemId, batchId)
+  // are checked here as Claude Code boundary extensions.
   return (
     value.workerId === request.workerIdentity.workerId &&
     value.workerFamily === request.workerIdentity.workerFamily &&
     value.runtimeKind === request.workerIdentity.runtimeKind &&
-    value.invocationId === request.invocationId &&
-    value.idempotencyKey === request.idempotencyKey &&
-    value.taskId === request.taskId &&
     value.sourceTaskRevision === request.sourceTaskRevision &&
-    value.attemptId === request.attemptId &&
-    value.attemptNumber === request.attemptNumber &&
     (value.workItemId ?? null) === (request.workItemId ?? null) &&
-    (value.batchId ?? null) === (request.batchId ?? null)
+    (value.batchId ?? null) === (request.batchId ?? null) &&
+    coreWorkerBindingsMatch(
+      {
+        invocationId: value.invocationId as string,
+        idempotencyKey: value.idempotencyKey as string,
+        taskId: value.taskId as string,
+        attemptId: value.attemptId as string,
+        attemptNumber: value.attemptNumber as number,
+      },
+      request,
+    )
   );
 }
 

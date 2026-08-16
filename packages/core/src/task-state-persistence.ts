@@ -446,11 +446,35 @@ function validateWorkItems(
 
     ids.add(item.id);
 
-    if (item.state === "completed" || item.state === "verified") {
+    // "verified" remains unconditionally blocked — verifier authority is not
+    // unlocked here.
+    //
+    // "completed" is permitted only for batch-member items (batchId present).
+    // applyWorkAccountingEvent requires a non-null batchId and cross-verifies
+    // the full durable-evidence chain before marking an item completed.
+    // validateRepresentedStateReferences then enforces that batch.completedCount
+    // exactly matches the number of completed items in that batch.
+    // Standalone work items (no batchId) cannot reach "completed" through any
+    // AEOS-authorised path in this MVP, so they remain forbidden here.
+    if (item.state === "verified") {
       return err(
         createError(
           "task_state_forbidden_work_item_state",
-          "Persisted task state MVP cannot authorize completed or verified work item states.",
+          "Persisted task state MVP cannot authorize verified work item states.",
+          "validation",
+          { workItemId: item.id, state: item.state },
+        ),
+      );
+    }
+
+    if (
+      item.state === "completed" &&
+      (typeof item.batchId !== "string" || item.batchId.length === 0)
+    ) {
+      return err(
+        createError(
+          "task_state_forbidden_work_item_state",
+          "Persisted task state MVP cannot authorize completed work item states without a batch binding.",
           "validation",
           { workItemId: item.id, state: item.state },
         ),
@@ -535,16 +559,6 @@ function validateBatches(
       );
     }
 
-    if (batch.completedCount !== 0) {
-      return err(
-        createError(
-          "task_state_forbidden_batch_completion",
-          "Persisted task state MVP cannot authorize completed batch item counts.",
-          "validation",
-          { batchId: batch.id },
-        ),
-      );
-    }
   }
 
   return ok(value as readonly AgenticWorkBatch[]);
@@ -709,6 +723,7 @@ function validateRepresentedStateReferences(
     }
 
     if (
+      batch.completedCount !== countBatchItemsByState(workItems, batch, "completed") ||
       batch.failedCount !== countBatchItemsByState(workItems, batch, "failed") ||
       batch.skippedCount !== countBatchItemsByState(workItems, batch, "skipped") ||
       batch.retryableCount !== countBatchItemsByState(workItems, batch, "retryable")
@@ -1275,6 +1290,31 @@ async function readExistingState(
   return ok(stateResult.value);
 }
 
+/**
+ * Persist a task state snapshot after validating structural invariants.
+ *
+ * **F3 trust boundary (documented, not enforced at this layer):**
+ *
+ * saveTaskState validates internal consistency (batch.completedCount matches
+ * the count of completed work items, work-item states are coherent, etc.) but
+ * does NOT verify process provenance.  A caller that constructs a state with
+ * completed work items and a matching completedCount will pass validation even
+ * without durable invocation evidence.
+ *
+ * Enforcement at this layer would require embedding accounting provenance
+ * (e.g. an accountingEventId) in each AgenticWorkItem — a schema change that
+ * is deferred to a future iteration.
+ *
+ * **Trusted callers**: only `applyWorkAccountingEvent` (packages/core) and
+ * the task-state transition layer (transitionPersistedTaskState / updateTaskState)
+ * should produce states with completed work items in production.  Direct callers
+ * from outside those paths are NOT trusted by this validator and MUST establish
+ * their own authority gate before calling saveTaskState.
+ *
+ * If this boundary becomes a compliance risk, the correct fix is to add an
+ * optional `accountingEventId: string` to AgenticWorkItem, require it for
+ * state === "completed", and validate it here.
+ */
 export async function saveTaskState(
   input: SaveTaskStateInput,
 ): Promise<Result<TaskStatePersistenceResult, TaskStatePersistenceError>> {

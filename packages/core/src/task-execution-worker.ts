@@ -211,6 +211,44 @@ export interface TaskExecutionWorkerResult {
   readonly safety: TaskExecutionWorkerResultSafety;
 }
 
+/**
+ * Minimum binding fields that must be cross-checked at every site where an
+ * AEOS-produced reference is compared against a worker-supplied value.
+ */
+export interface TaskExecutionCoreBindingFields {
+  readonly invocationId: string;
+  readonly idempotencyKey: string;
+  readonly taskId: string;
+  readonly attemptId: string;
+  readonly attemptNumber: number;
+}
+
+/**
+ * Single definition of the AEOS worker core-binding cross-check.
+ *
+ * Every site that verifies binding consistency between an AEOS-owned reference
+ * and a worker-supplied value MUST use this function.  No other private copies
+ * of these field comparisons may exist in this package or in apps/ — they are
+ * the single authority for what constitutes a valid AEOS binding match.
+ *
+ * Callers add their own site-specific checks on top (e.g. worker-identity
+ * fields in the structured-result parsers, or separate workItemId / batchId
+ * checks in the work-accounting bridge).  Those extensions are explicit and
+ * intentional; they do not duplicate this function.
+ */
+export function coreWorkerBindingsMatch(
+  a: TaskExecutionCoreBindingFields,
+  b: TaskExecutionCoreBindingFields,
+): boolean {
+  return (
+    a.invocationId === b.invocationId &&
+    a.idempotencyKey === b.idempotencyKey &&
+    a.taskId === b.taskId &&
+    a.attemptId === b.attemptId &&
+    a.attemptNumber === b.attemptNumber
+  );
+}
+
 export interface TaskExecutionWorkerAdapter {
   readonly identity: TaskExecutionWorkerIdentity;
   readonly capabilities: TaskExecutionWorkerCapabilities;

@@ -289,6 +289,7 @@ import {
   validateTaskExecutionPolicyApprovalRecord,
   verifyTaskExecutionAuditChain,
   verifyAgenticCoverage,
+  applyWorkAccountingEvent,
 } from "../dist/index.js";
 import {
   directoryInsteadOfFilePathCheck,
@@ -26284,6 +26285,12 @@ try {
       preProcessAuditEvent: claudeCodeProcessAuditAppend.value.event,
       expectedInvocationRevision: invokingPersisted.value.record.revision,
     });
+  // The write-canary audit event has the same logical identity as the process
+  // audit event above (same invocation record, adapter, operation, policy).
+  // After the F1 fix, occurredAt is excluded from the auditEventId hash, so
+  // appending a second event with a different timestamp to the same audit log
+  // would be rejected as a duplicate.  Use a separate project root so the
+  // write-canary audit starts from a fresh log.
   const claudeCodeWriteCanaryAuditDraft =
     createTaskExecutionInvocationDispatchIntentAuditEvent({
       record: invokingPersisted.value.record,
@@ -26295,8 +26302,11 @@ try {
       occurredAt: "2026-08-08T01:04:17.000Z",
     });
   assert.equal(claudeCodeWriteCanaryAuditDraft.ok, true);
+  const claudeCodeWriteCanaryAuditRoot = await mkdtemp(
+    join(tmpdir(), "aeos-claude-code-write-canary-audit-"),
+  );
   const claudeCodeWriteCanaryAuditAppend = await appendTaskExecutionAuditEvent({
-    projectRoot: claudeCodeProcessAuditRoot,
+    projectRoot: claudeCodeWriteCanaryAuditRoot,
     taskId: claudeCodeWriteCanaryAuditDraft.value.taskId,
     event: claudeCodeWriteCanaryAuditDraft.value,
     forbiddenValues: ["owner-token", "sk-claude-code-smoke"],
@@ -34718,16 +34728,20 @@ try {
             id: "batch-a",
             workItemIds: ["work-a"],
             expectedItemCount: 1,
-            completedCount: 0,
+            completedCount: 0,  // intentionally mismatched — no accounting event
             failedCount: 0,
             skippedCount: 0,
             retryableCount: 0,
           },
         ],
-        pendingWorkItemIds: ["work-a"],
+        pendingWorkItemIds: ["work-a"],  // completed item cannot be pending
         retryableWorkItemIds: [],
       },
-      "task_state_forbidden_work_item_state",
+      // Previously caught by validateWorkItems ("completed" was forbidden at that layer).
+      // Now "completed" is permitted in work items (TASK-0325 accounting), so the first
+      // violation encountered is that a completed item appears in pendingWorkItemIds
+      // (caught by validateRepresentedStateReferences).  The blocking invariant holds.
+      "task_state_pending_id_state_mismatch",
     ],
     [
       "task resume handoff smoke T should block verified item re-entry",
@@ -35670,4 +35684,777 @@ try {
   console.log("filesystem generation writer smoke tests passed");
 } finally {
   await rm(tempRoot, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// TASK-0325 — Work accounting smoke tests
+// ---------------------------------------------------------------------------
+// Seven named scenarios covering the authority-boundary requirements from
+// GitHub Issue #5.  All I/O is isolated in a temporary directory; the real
+// .aeos state directory is never touched.
+// ---------------------------------------------------------------------------
+const workAccountingTempRoot = await mkdtemp(
+  join(tmpdir(), "aeos-work-accounting-smoke-"),
+);
+
+try {
+  const accountingProjectRoot = join(workAccountingTempRoot, "project");
+  await mkdir(accountingProjectRoot, { recursive: true });
+
+  const acctTaskId = "TASK-ACCOUNTING-SMOKE";
+
+  // Minimal valid worker identity (runtimeKind is the only allowed value).
+  const acctWorkerIdentity = {
+    workerId: "smoke-test-worker",
+    workerFamily: "generic",
+    runtimeKind: "test_worker",
+    implementationVersion: "0.0.0-smoke",
+    capabilityVersion: "0.0.0-smoke",
+    identityAuthority: "system",
+    selectionAuthority: "system",
+  };
+
+  // All-false safety block (matches TaskExecutionWorkerResultSafety literals).
+  const acctWorkerSafety = {
+    runtimeExecutionEnabled: false,
+    realCodexInvoked: false,
+    realClaudeCodeInvoked: false,
+    cloudCalled: false,
+    networkCalled: false,
+    filesystemTouched: false,
+    repositoryWritten: false,
+    subprocessExecuted: false,
+    shellExecuted: false,
+    modelInvoked: false,
+    taskStateModified: false,
+    attemptStateModified: false,
+    invocationStateModified: false,
+    workAccountingModified: false,
+    auditWritten: false,
+    verifierRun: false,
+    workCompleted: false,
+    taskCompleted: false,
+    verified: false,
+    approved: false,
+    safeToRetry: false,
+    rawWorkerOutputAuthoritative: false,
+  };
+
+  // Build a reserved invocation record using the system-derived identity.
+  function acctMakeReservedRecord(opts) {
+    return createReservedTaskExecutionInvocationRecord({
+      taskId: acctTaskId,
+      taskStateRevision: opts.taskStateRevision,
+      attemptId: opts.attemptId,
+      attemptNumber: opts.attemptNumber,
+      workItemId: opts.workItemId,
+      batchId: opts.batchId,
+      dependencyKind: "test_noop",
+      verifierRequired: false,
+      completionGatedByVerifier: true,
+    });
+  }
+
+  // Advance reserved → invoking → returned.
+  function acctMakeReturnedRecord(reservedRecord) {
+    const invokingResult = transitionTaskExecutionInvocationRecord({
+      record: reservedRecord,
+      intent: { kind: "enter_invocation", occurredAt: "2026-08-16T00:00:10.000Z" },
+    });
+    if (!invokingResult.ok) return invokingResult;
+    return transitionTaskExecutionInvocationRecord({
+      record: invokingResult.value,
+      intent: {
+        kind: "record_returned",
+        result: { invocationOk: true, returnedAt: "2026-08-16T00:01:00.000Z" },
+      },
+    });
+  }
+
+  // Write the invocation record to the AEOS-standard path inside the temp dir.
+  async function acctPersistInvocation(record) {
+    const invDir = join(
+      accountingProjectRoot,
+      ".aeos",
+      "state",
+      "invocations",
+      acctTaskId,
+    );
+    await mkdir(invDir, { recursive: true });
+    await writeNodeFile(
+      join(invDir, `${record.invocationId}.json`),
+      `${JSON.stringify(record, null, 2)}\n`,
+    );
+  }
+
+  // Build a TaskExecutionWorkerResult from a returned invocation record.
+  function acctMakeWorkerResult(record) {
+    return {
+      ok: true,
+      invocationReturned: true,
+      invocationOk: true,
+      outcomeStatus: "returned",
+      workerIdentity: acctWorkerIdentity,
+      taskId: record.taskId,
+      sourceTaskRevision: record.taskStateRevision,
+      attemptId: record.attemptId,
+      attemptNumber: record.attemptNumber,
+      invocationId: record.invocationId,
+      idempotencyKey: record.idempotencyKey,
+      workItemId: record.workItemId ?? null,
+      batchId: record.batchId ?? null,
+      issues: [],
+      safety: acctWorkerSafety,
+    };
+  }
+
+  // --- Set up initial task state (revision 1, lifecycle "new").
+  const acctInitialState = createInitialTaskState({
+    taskId: acctTaskId,
+    sourceTaskId: acctTaskId,
+    createdAt: "2026-08-16T00:00:00.000Z",
+  });
+  const acctInitialSave = await saveTaskState({
+    projectRoot: accountingProjectRoot,
+    state: acctInitialState,
+  });
+  assert.equal(
+    acctInitialSave.ok,
+    true,
+    "work accounting smoke: initial state should save",
+  );
+
+  // Advance to planned state with 5 work items in batch-a (revision 2).
+  const acctPlannedUpdate = await updateTaskState({
+    projectRoot: accountingProjectRoot,
+    taskId: acctTaskId,
+    expectedRevision: 1,
+    updatedAt: "2026-08-16T00:00:01.000Z",
+    update(state) {
+      return {
+        ...state,
+        lifecycleState: "planned",
+        workItems: [
+          { id: "witem-1", state: "pending", batchId: "batch-a" },
+          { id: "witem-2", state: "pending", batchId: "batch-a" },
+          { id: "witem-3", state: "pending", batchId: "batch-a" },
+          { id: "witem-4", state: "pending", batchId: "batch-a" },
+          { id: "witem-5", state: "pending", batchId: "batch-a" },
+        ],
+        batches: [
+          {
+            id: "batch-a",
+            workItemIds: ["witem-1", "witem-2", "witem-3", "witem-4", "witem-5"],
+            expectedItemCount: 5,
+            completedCount: 0,
+            failedCount: 0,
+            skippedCount: 0,
+            retryableCount: 0,
+          },
+        ],
+        pendingWorkItemIds: [
+          "witem-1",
+          "witem-2",
+          "witem-3",
+          "witem-4",
+          "witem-5",
+        ],
+        retryableWorkItemIds: [],
+        plan: { status: "planned" },
+      };
+    },
+  });
+  assert.equal(
+    acctPlannedUpdate.ok,
+    true,
+    "work accounting smoke: planned state should update",
+  );
+  assert.equal(
+    acctPlannedUpdate.value.state.revision,
+    2,
+    "work accounting smoke: planned state revision should be 2",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test A: work_accounting_applies_completed_count
+  // Demonstrates the 400/20 invariant principle: Expected=N, Accounted=K,
+  // Remaining=N-K.  Using N=5, K=1 for a deterministic fast smoke test.
+  // -----------------------------------------------------------------------
+  const acctReservedA = acctMakeReservedRecord({
+    taskStateRevision: 2,
+    attemptId: "attempt-acct-smoke-a",
+    attemptNumber: 1,
+    workItemId: "witem-1",
+    batchId: "batch-a",
+  });
+  assert.equal(
+    acctReservedA.ok,
+    true,
+    "work accounting smoke A: reserved record should be created",
+  );
+  const acctReturnedA = acctMakeReturnedRecord(acctReservedA.value);
+  assert.equal(
+    acctReturnedA.ok,
+    true,
+    "work accounting smoke A: returned record should be created",
+  );
+  await acctPersistInvocation(acctReturnedA.value);
+
+  const accountingA = await applyWorkAccountingEvent({
+    projectRoot: accountingProjectRoot,
+    workerResult: acctMakeWorkerResult(acctReturnedA.value),
+    expectedTaskRevision: 2,
+  });
+  assert.equal(
+    accountingA.ok,
+    true,
+    "work_accounting_applies_completed_count: applyWorkAccountingEvent should succeed",
+  );
+  assert.equal(
+    accountingA.value.kind,
+    "work_item_completed",
+    "work_accounting_applies_completed_count: event kind must be work_item_completed",
+  );
+  assert.equal(
+    accountingA.value.completedCount,
+    1,
+    "work_accounting_applies_completed_count: completedCount should be 1",
+  );
+  assert.equal(
+    accountingA.value.expectedItemCount,
+    5,
+    "work_accounting_applies_completed_count: expectedItemCount should be 5",
+  );
+  assert.equal(
+    accountingA.value.expectedItemCount - accountingA.value.completedCount,
+    4,
+    "work_accounting_applies_completed_count: Remaining = Expected - Accounted must hold",
+  );
+  const acctStateAfterA = await loadTaskState({
+    projectRoot: accountingProjectRoot,
+    taskId: acctTaskId,
+  });
+  assert.equal(
+    acctStateAfterA.ok,
+    true,
+    "work_accounting_applies_completed_count: state should load after accounting",
+  );
+  assert.equal(
+    acctStateAfterA.value.state.batches[0].completedCount,
+    1,
+    "work_accounting_applies_completed_count: persisted completedCount should be 1",
+  );
+  assert.equal(
+    acctStateAfterA.value.state.workItems.find((w) => w.id === "witem-1")?.state,
+    "completed",
+    "work_accounting_applies_completed_count: witem-1 should have completed state",
+  );
+  assert.equal(
+    acctStateAfterA.value.state.pendingWorkItemIds.includes("witem-1"),
+    false,
+    "work_accounting_applies_completed_count: witem-1 must be removed from pendingWorkItemIds",
+  );
+  assert.equal(
+    acctStateAfterA.value.state.revision,
+    3,
+    "work_accounting_applies_completed_count: revision should be 3 after accounting",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test B: work_accounting_duplicate_evidence_counted_once
+  //
+  // The dedup gate is exercised by calling applyWorkAccountingEvent TWICE for
+  // the same invocation evidence WITHOUT pinning accountedAt — the live
+  // timestamps will differ between calls.  With the F1 fix, occurredAt is
+  // excluded from the auditEventId hash, so both calls produce the same
+  // auditEventId regardless of when they run.
+  //
+  // With the F4 ordering fix (state mutation before audit append), the second
+  // call is rejected at the work-item eligibility gate (step 6) because
+  // witem-5 is already "completed", which is the correct fail-closed behaviour:
+  // the same work item cannot be counted twice regardless of timestamp.
+  // -----------------------------------------------------------------------
+  const acctReservedB = acctMakeReservedRecord({
+    taskStateRevision: 3,
+    attemptId: "attempt-acct-smoke-b",
+    attemptNumber: 1,
+    workItemId: "witem-5",
+    batchId: "batch-a",
+  });
+  assert.equal(
+    acctReservedB.ok,
+    true,
+    "work accounting smoke B: reserved record should be created",
+  );
+  const acctReturnedB = acctMakeReturnedRecord(acctReservedB.value);
+  assert.equal(
+    acctReturnedB.ok,
+    true,
+    "work accounting smoke B: returned record should be created",
+  );
+  await acctPersistInvocation(acctReturnedB.value);
+
+  // First accounting call — no accountedAt pin; uses live timestamp.
+  const accountingB1 = await applyWorkAccountingEvent({
+    projectRoot: accountingProjectRoot,
+    workerResult: acctMakeWorkerResult(acctReturnedB.value),
+    expectedTaskRevision: 3,
+    // accountedAt intentionally omitted → live timestamp
+  });
+  assert.equal(
+    accountingB1.ok,
+    true,
+    "work_accounting_duplicate_evidence_counted_once: first accounting call must succeed",
+  );
+  assert.equal(
+    accountingB1.value.completedCount,
+    2,
+    "work_accounting_duplicate_evidence_counted_once: completedCount should be 2 after first call",
+  );
+
+  // Second accounting call for the SAME invocation evidence — different live
+  // timestamp.  Must be rejected; completedCount must not increase.
+  const accountingB2 = await applyWorkAccountingEvent({
+    projectRoot: accountingProjectRoot,
+    workerResult: acctMakeWorkerResult(acctReturnedB.value),
+    expectedTaskRevision: accountingB1.value.taskStateRevision,
+    // accountedAt intentionally omitted → different live timestamp
+  });
+  assert.equal(
+    accountingB2.ok,
+    false,
+    "work_accounting_duplicate_evidence_counted_once: duplicate evidence must be rejected",
+  );
+  assert.equal(
+    accountingB2.error.code,
+    "work_accounting_work_item_not_accountable",
+    "work_accounting_duplicate_evidence_counted_once: rejection must report not-accountable (work item already completed)",
+  );
+  const acctStateAfterB = await loadTaskState({
+    projectRoot: accountingProjectRoot,
+    taskId: acctTaskId,
+  });
+  assert.equal(
+    acctStateAfterB.value.state.batches[0].completedCount,
+    2,
+    "work_accounting_duplicate_evidence_counted_once: completedCount must remain 2 after duplicate attempt",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test C: work_accounting_stale_revision_rejected
+  // -----------------------------------------------------------------------
+  const acctReservedC = acctMakeReservedRecord({
+    taskStateRevision: 4,
+    attemptId: "attempt-acct-smoke-c",
+    attemptNumber: 1,
+    workItemId: "witem-2",
+    batchId: "batch-a",
+  });
+  assert.equal(
+    acctReservedC.ok,
+    true,
+    "work accounting smoke C: reserved record should be created",
+  );
+  const acctReturnedC = acctMakeReturnedRecord(acctReservedC.value);
+  assert.equal(
+    acctReturnedC.ok,
+    true,
+    "work accounting smoke C: returned record should be created",
+  );
+  await acctPersistInvocation(acctReturnedC.value);
+
+  const accountingC = await applyWorkAccountingEvent({
+    projectRoot: accountingProjectRoot,
+    workerResult: acctMakeWorkerResult(acctReturnedC.value),
+    expectedTaskRevision: 99, // deliberately stale — actual revision is 4
+  });
+  assert.equal(
+    accountingC.ok,
+    false,
+    "work_accounting_stale_revision_rejected: stale expectedTaskRevision must be rejected",
+  );
+  assert.equal(
+    accountingC.error.code,
+    "task_state_revision_conflict",
+    "work_accounting_stale_revision_rejected: rejection must report task_state_revision_conflict",
+  );
+  const acctStateAfterC = await loadTaskState({
+    projectRoot: accountingProjectRoot,
+    taskId: acctTaskId,
+  });
+  assert.equal(
+    acctStateAfterC.value.state.batches[0].completedCount,
+    2,
+    "work_accounting_stale_revision_rejected: completedCount must not move on stale revision",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test D: work_accounting_wrong_work_item_rejected
+  // Worker result claims witem-4 but invocation was reserved for witem-3.
+  // -----------------------------------------------------------------------
+  const acctReservedD = acctMakeReservedRecord({
+    taskStateRevision: 4,
+    attemptId: "attempt-acct-smoke-d",
+    attemptNumber: 1,
+    workItemId: "witem-3",
+    batchId: "batch-a",
+  });
+  assert.equal(
+    acctReservedD.ok,
+    true,
+    "work accounting smoke D: reserved record should be created",
+  );
+  const acctReturnedD = acctMakeReturnedRecord(acctReservedD.value);
+  assert.equal(
+    acctReturnedD.ok,
+    true,
+    "work accounting smoke D: returned record should be created",
+  );
+  await acctPersistInvocation(acctReturnedD.value);
+
+  const accountingD = await applyWorkAccountingEvent({
+    projectRoot: accountingProjectRoot,
+    workerResult: {
+      ...acctMakeWorkerResult(acctReturnedD.value),
+      workItemId: "witem-4", // wrong — invocation is for witem-3
+    },
+    expectedTaskRevision: 4,
+  });
+  assert.equal(
+    accountingD.ok,
+    false,
+    "work_accounting_wrong_work_item_rejected: mismatched workItemId must be rejected",
+  );
+  assert.equal(
+    accountingD.error.code,
+    "work_accounting_work_item_binding_mismatch",
+    "work_accounting_wrong_work_item_rejected: rejection must report binding mismatch",
+  );
+  const acctStateAfterD = await loadTaskState({
+    projectRoot: accountingProjectRoot,
+    taskId: acctTaskId,
+  });
+  assert.equal(
+    acctStateAfterD.value.state.batches[0].completedCount,
+    2,
+    "work_accounting_wrong_work_item_rejected: completedCount must not move on binding mismatch",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test E: work_accounting_malformed_worker_claim_rejected
+  // Worker result has null workItemId — fails closed before touching anything.
+  // -----------------------------------------------------------------------
+  const accountingE = await applyWorkAccountingEvent({
+    projectRoot: accountingProjectRoot,
+    workerResult: {
+      ...acctMakeWorkerResult(acctReturnedD.value),
+      workItemId: null, // malformed — no work item binding
+    },
+    expectedTaskRevision: 4,
+  });
+  assert.equal(
+    accountingE.ok,
+    false,
+    "work_accounting_malformed_worker_claim_rejected: null workItemId must be rejected",
+  );
+  assert.equal(
+    accountingE.error.code,
+    "work_accounting_work_item_required",
+    "work_accounting_malformed_worker_claim_rejected: rejection must report work item required",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test F: work_accounting_zero_movement_on_rejected_evidence
+  // After tests C, D, E all rejected — count must still be 2 (from A and B).
+  // -----------------------------------------------------------------------
+  const acctStateAfterRejections = await loadTaskState({
+    projectRoot: accountingProjectRoot,
+    taskId: acctTaskId,
+  });
+  assert.equal(
+    acctStateAfterRejections.value.state.batches[0].completedCount,
+    2,
+    "work_accounting_zero_movement_on_rejected_evidence: completedCount must stay 2",
+  );
+  assert.equal(
+    acctStateAfterRejections.value.state.batches[0].expectedItemCount,
+    5,
+    "work_accounting_zero_movement_on_rejected_evidence: expectedItemCount must be unchanged",
+  );
+  assert.equal(
+    acctStateAfterRejections.value.state.batches[0].expectedItemCount
+      - acctStateAfterRejections.value.state.batches[0].completedCount,
+    3,
+    "work_accounting_zero_movement_on_rejected_evidence: Remaining must equal Expected minus Accounted",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test G: work_accounting_persistence_and_read_back
+  // Account a third item (witem-2); verify state is persisted correctly and
+  // the audit chain is intact.
+  // -----------------------------------------------------------------------
+  const acctReservedG = acctMakeReservedRecord({
+    taskStateRevision: 4,
+    attemptId: "attempt-acct-smoke-g",
+    attemptNumber: 1,
+    workItemId: "witem-2",
+    batchId: "batch-a",
+  });
+  assert.equal(
+    acctReservedG.ok,
+    true,
+    "work accounting smoke G: reserved record should be created",
+  );
+  const acctReturnedG = acctMakeReturnedRecord(acctReservedG.value);
+  assert.equal(
+    acctReturnedG.ok,
+    true,
+    "work accounting smoke G: returned record should be created",
+  );
+  await acctPersistInvocation(acctReturnedG.value);
+
+  const accountingG = await applyWorkAccountingEvent({
+    projectRoot: accountingProjectRoot,
+    workerResult: acctMakeWorkerResult(acctReturnedG.value),
+    expectedTaskRevision: 4,
+  });
+  assert.equal(
+    accountingG.ok,
+    true,
+    "work_accounting_persistence_and_read_back: third accounting should succeed",
+  );
+  assert.equal(
+    accountingG.value.completedCount,
+    3,
+    "work_accounting_persistence_and_read_back: completedCount should be 3",
+  );
+  assert.equal(
+    accountingG.value.expectedItemCount - accountingG.value.completedCount,
+    2,
+    "work_accounting_persistence_and_read_back: Remaining = Expected - Accounted must hold",
+  );
+
+  const acctFinalState = await loadTaskState({
+    projectRoot: accountingProjectRoot,
+    taskId: acctTaskId,
+  });
+  assert.equal(
+    acctFinalState.ok,
+    true,
+    "work_accounting_persistence_and_read_back: final state should load",
+  );
+  const acctFinalBatch = acctFinalState.value.state.batches.find(
+    (b) => b.id === "batch-a",
+  );
+  assert.equal(
+    acctFinalBatch.completedCount,
+    3,
+    "work_accounting_persistence_and_read_back: persisted completedCount should be 3",
+  );
+  assert.equal(
+    acctFinalBatch.expectedItemCount,
+    5,
+    "work_accounting_persistence_and_read_back: persisted expectedItemCount should be 5",
+  );
+  assert.equal(
+    acctFinalBatch.expectedItemCount - acctFinalBatch.completedCount,
+    2,
+    "work_accounting_persistence_and_read_back: persisted Remaining must equal Expected minus Accounted",
+  );
+  assert.equal(
+    acctFinalState.value.state.workItems.filter((w) => w.state === "completed")
+      .length,
+    3,
+    "work_accounting_persistence_and_read_back: 3 work items should have completed state",
+  );
+  assert.equal(
+    acctFinalState.value.state.pendingWorkItemIds.length,
+    2,
+    "work_accounting_persistence_and_read_back: 2 work items should remain pending",
+  );
+
+  // validatePersistedTaskState must accept a state with non-zero completedCount.
+  const acctValidationResult = validatePersistedTaskState(
+    acctFinalState.value.state,
+  );
+  assert.equal(
+    acctValidationResult.ok,
+    true,
+    "work_accounting_persistence_and_read_back: validatePersistedTaskState must accept completedCount > 0",
+  );
+
+  // Audit chain must be intact and chain-verified.
+  const acctAuditVerification = await verifyTaskExecutionAuditChain({
+    projectRoot: accountingProjectRoot,
+    taskId: acctTaskId,
+  });
+  assert.equal(
+    acctAuditVerification.ok,
+    true,
+    "work_accounting_persistence_and_read_back: audit chain should be valid",
+  );
+  assert.equal(
+    acctAuditVerification.verified,
+    true,
+    "work_accounting_persistence_and_read_back: audit chain should be verified",
+  );
+  // Test A: 1 event; Test B first call: 1 event; Test B second call: 0 (rejected); Test G: 1 event.
+  assert.equal(
+    acctAuditVerification.eventCount,
+    3,
+    "work_accounting_persistence_and_read_back: audit chain should have 3 events (A + B-first + G)",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test H: work_accounting_400_20_380_literal
+  // Issue #5 acceptance criterion: Expected=400 / Accounted=20 / Remaining=380.
+  // Uses a dedicated task state with expectedItemCount=400 and 20 actual work
+  // items, matching the canonical shape named in the issue brief.
+  // -----------------------------------------------------------------------
+  const acct400TaskId = "smoke-work-accounting-400-20-380";
+  // Create all 400 work items; expectedItemCount must equal workItemIds.length.
+  // Only the first 20 will be accounted for; the rest stay pending.
+  const acct400WorkItems = Array.from({ length: 400 }, (_, i) => ({
+    id: `witem-400-${i + 1}`,
+    state: "pending",
+    batchId: "batch-400",
+  }));
+  const acct400InitialState = createInitialTaskState({
+    taskId: acct400TaskId,
+    sourceTaskId: acct400TaskId,
+    createdAt: "2026-08-16T01:00:00.000Z",
+  });
+  const acct400Save1 = await saveTaskState({
+    projectRoot: accountingProjectRoot,
+    state: acct400InitialState,
+  });
+  assert.equal(
+    acct400Save1.ok,
+    true,
+    "work_accounting_400_20_380_literal: initial state should save",
+  );
+  const acct400PlannedUpdate = await updateTaskState({
+    projectRoot: accountingProjectRoot,
+    taskId: acct400TaskId,
+    expectedRevision: 1,
+    updatedAt: "2026-08-16T01:00:01.000Z",
+    update(state) {
+      return {
+        ...state,
+        lifecycleState: "planned",
+        workItems: acct400WorkItems,
+        batches: [
+          {
+            id: "batch-400",
+            workItemIds: acct400WorkItems.map((w) => w.id),
+            expectedItemCount: 400,
+            completedCount: 0,
+            failedCount: 0,
+            skippedCount: 0,
+            retryableCount: 0,
+          },
+        ],
+        pendingWorkItemIds: acct400WorkItems.map((w) => w.id),
+        retryableWorkItemIds: [],
+        plan: { status: "planned" },
+      };
+    },
+  });
+  assert.equal(
+    acct400PlannedUpdate.ok,
+    true,
+    "work_accounting_400_20_380_literal: planned state should update",
+  );
+  // Account all 20 work items sequentially.
+  // Use acct400TaskId (not acctTaskId) in every invocation record so that
+  // applyWorkAccountingEvent loads the correct task state.
+  const acct400InvDir = join(
+    accountingProjectRoot,
+    ".aeos",
+    "state",
+    "invocations",
+    acct400TaskId,
+  );
+  await mkdir(acct400InvDir, { recursive: true });
+
+  let acct400CurrentRevision = acct400PlannedUpdate.value.state.revision;
+  for (let i = 0; i < 20; i++) {
+    const workItemId = `witem-400-${i + 1}`;
+    const acct400Reserved = createReservedTaskExecutionInvocationRecord({
+      taskId: acct400TaskId,
+      taskStateRevision: acct400CurrentRevision,
+      attemptId: `attempt-400-smoke-${i + 1}`,
+      attemptNumber: 1,
+      workItemId,
+      batchId: "batch-400",
+      dependencyKind: "test_noop",
+      verifierRequired: false,
+      completionGatedByVerifier: true,
+    });
+    assert.equal(
+      acct400Reserved.ok,
+      true,
+      `work_accounting_400_20_380_literal: reserved record ${i + 1} should be created`,
+    );
+    const acct400Invoking = transitionTaskExecutionInvocationRecord({
+      record: acct400Reserved.value,
+      intent: { kind: "enter_invocation", occurredAt: "2026-08-16T01:01:00.000Z" },
+    });
+    assert.equal(acct400Invoking.ok, true, `work_accounting_400_20_380_literal: invoking record ${i + 1} should be created`);
+    const acct400Returned = transitionTaskExecutionInvocationRecord({
+      record: acct400Invoking.value,
+      intent: { kind: "record_returned", result: { invocationOk: true, returnedAt: "2026-08-16T01:02:00.000Z" } },
+    });
+    assert.equal(
+      acct400Returned.ok,
+      true,
+      `work_accounting_400_20_380_literal: returned record ${i + 1} should be created`,
+    );
+    await writeNodeFile(
+      join(acct400InvDir, `${acct400Returned.value.invocationId}.json`),
+      `${JSON.stringify(acct400Returned.value, null, 2)}\n`,
+    );
+    const acct400Event = await applyWorkAccountingEvent({
+      projectRoot: accountingProjectRoot,
+      workerResult: acctMakeWorkerResult(acct400Returned.value),
+      expectedTaskRevision: acct400CurrentRevision,
+    });
+    assert.equal(
+      acct400Event.ok,
+      true,
+      `work_accounting_400_20_380_literal: accounting event ${i + 1} should succeed`,
+    );
+    acct400CurrentRevision = acct400Event.value.taskStateRevision;
+  }
+  const acct400FinalState = await loadTaskState({
+    projectRoot: accountingProjectRoot,
+    taskId: acct400TaskId,
+  });
+  assert.equal(
+    acct400FinalState.ok,
+    true,
+    "work_accounting_400_20_380_literal: final state should load",
+  );
+  const acct400Batch = acct400FinalState.value.state.batches.find(
+    (b) => b.id === "batch-400",
+  );
+  assert.equal(
+    acct400Batch.expectedItemCount,
+    400,
+    "work_accounting_400_20_380_literal: Expected must be 400",
+  );
+  assert.equal(
+    acct400Batch.completedCount,
+    20,
+    "work_accounting_400_20_380_literal: Accounted must be 20",
+  );
+  assert.equal(
+    acct400Batch.expectedItemCount - acct400Batch.completedCount,
+    380,
+    "work_accounting_400_20_380_literal: Remaining = Expected - Accounted = 380",
+  );
+
+  console.log("work accounting smoke tests passed");
+} finally {
+  await rm(workAccountingTempRoot, { recursive: true, force: true });
 }

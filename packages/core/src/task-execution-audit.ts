@@ -22,7 +22,8 @@ export type TaskExecutionAuditEventKind =
   | "execution_invocation_returned"
   | "execution_invocation_failed"
   | "execution_invocation_outcome_unknown"
-  | "execution_reconciliation_applied";
+  | "execution_reconciliation_applied"
+  | "execution_work_accounting_applied";
 
 export type TaskExecutionAuditResultStatus =
   | "ok"
@@ -175,6 +176,17 @@ export interface CreateTaskExecutionCredentialEvaluatedAuditEventInput {
   readonly occurredAt?: string;
 }
 
+export interface CreateWorkItemCompletedAccountingAuditEventInput {
+  readonly taskId: AgenticTaskId;
+  readonly taskStateRevision: number;
+  readonly attemptId: AgenticExecutionAttemptId;
+  readonly attemptNumber: number;
+  readonly invocationId: string;
+  readonly workItemId: AgenticWorkItemId;
+  readonly batchId: AgenticWorkBatchId;
+  readonly occurredAt?: string;
+}
+
 const safeIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
 
 function ok<T>(value: T): Result<T, never> {
@@ -261,11 +273,25 @@ function jsonClone<T extends JsonValue>(value: T): T {
 function auditEventIdentity(
   input: TaskExecutionAuditEventIdentityInput,
 ): string {
+  // Strip occurredAt before hashing.  The declared type omits occurredAt, but
+  // baseEvent intersects TaskExecutionAuditEventIdentityInput with
+  // { occurredAt?: string }, so the runtime object carries the property and the
+  // spread would include it in the SHA-256.  Explicitly destructuring it out
+  // here keeps the declared type and the runtime hash honestly aligned: the id
+  // is derived solely from stable identity fields, making a replay at any time
+  // produce the same id and be correctly rejected by the dedup gate.
+  //
+  // Every other caller of auditEventIdentity passes a value whose runtime shape
+  // is TaskExecutionAuditEventIdentityInput (no extra occurredAt) — they are
+  // unaffected.  The only caller that intersects occurredAt is baseEvent.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { occurredAt: _stripped, ...identityFields } =
+    input as typeof input & { occurredAt?: unknown };
   return `exec-audit-${sha256(
     canonicalTaskExecutionAuditJson(
       jsonClone({
         schemaVersion: AEOS_TASK_EXECUTION_AUDIT_SCHEMA_VERSION,
-        ...input,
+        ...identityFields,
       } as unknown as JsonObject),
     ),
   ).slice(0, 32)}`;
@@ -614,6 +640,42 @@ export function createTaskExecutionCredentialResolutionEvaluatedAuditEvent(
   });
 }
 
+// Factory for the AEOS-owned accounting audit event.  The event is produced by
+// applyWorkAccountingEvent after durable invocation evidence is validated — never
+// by a worker claiming its own completion.
+export function createWorkItemCompletedAccountingAuditEvent(
+  input: CreateWorkItemCompletedAccountingAuditEventInput,
+): Result<TaskExecutionAuditEventDraft, AeosError> {
+  return baseEvent({
+    eventKind: "execution_work_accounting_applied",
+    occurredAt: input.occurredAt,
+    taskId: input.taskId,
+    taskStateRevision: input.taskStateRevision,
+    attemptId: input.attemptId,
+    invocationId: input.invocationId,
+    action: "record_work_item_completed",
+    target: {
+      type: "task",
+      id: input.workItemId,
+    },
+    result: {
+      status: "ok",
+      referenceId: input.workItemId,
+    },
+    binding: {
+      taskId: input.taskId,
+      taskStateRevision: input.taskStateRevision,
+      attemptId: input.attemptId,
+      attemptNumber: input.attemptNumber,
+      invocationId: input.invocationId,
+      workItemId: input.workItemId,
+      batchId: input.batchId,
+    },
+    resultReference: input.invocationId,
+    issues: [],
+  });
+}
+
 export function taskExecutionAuditEventDigestPayload(
   event: TaskExecutionAuditEvent,
 ): JsonObject {
@@ -645,6 +707,7 @@ export function isTaskExecutionAuditEvent(value: unknown): value is TaskExecutio
       "execution_invocation_failed",
       "execution_invocation_outcome_unknown",
       "execution_reconciliation_applied",
+      "execution_work_accounting_applied",
     ].includes(value.eventKind) &&
     isSafeId(value.taskId) &&
     isPositiveInteger(value.taskStateRevision) &&

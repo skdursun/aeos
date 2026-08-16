@@ -112,6 +112,7 @@ export * from "./task-execution-codex-auth-preflight.js";
 export * from "./task-execution-two-model-canary.js";
 export * from "./task-execution-audit.js";
 export * from "./task-execution-audit-persistence.js";
+export * from "./task-execution-work-accounting.js";
 export * from "./task-execution-policy-approval.js";
 export * from "./task-execution-policy-approval-persistence.js";
 export type * from "./init.js";
