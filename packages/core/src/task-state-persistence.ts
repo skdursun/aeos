@@ -446,6 +446,25 @@ function validateWorkItems(
 
     ids.add(item.id);
 
+    // requirementId is an additive optional field (TASK-0326).  State written
+    // before it existed stays valid, and state written with it stays readable
+    // by older validators, so AEOS_TASK_STATE_SCHEMA_VERSION does not change.
+    // When present it must be a usable identity — a malformed one would silently
+    // reroute the item into the ledger's unassigned bucket, so it fails closed.
+    if (
+      item.requirementId !== undefined &&
+      (typeof item.requirementId !== "string" || item.requirementId.length === 0)
+    ) {
+      return err(
+        createError(
+          "task_state_invalid_work_item_requirement",
+          "Persisted task state work item requirement ids must be non-empty strings when present.",
+          "validation",
+          { workItemId: item.id },
+        ),
+      );
+    }
+
     // "verified" remains unconditionally blocked — verifier authority is not
     // unlocked here.
     //

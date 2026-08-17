@@ -4,6 +4,13 @@ export type AgenticWorkItemId = string;
 
 export type AgenticWorkBatchId = string;
 
+/**
+ * Identity of a requirement — the durable unit of expected work that a group of
+ * work items satisfies.  Optional on a work item: items without one are grouped
+ * under the reserved unassigned bucket by the progress ledger.
+ */
+export type AgenticRequirementId = string;
+
 export type AgenticExecutionAttemptId = string;
 
 export type AgenticAdapterId = string;
@@ -105,6 +112,8 @@ export interface AgenticWorkItem {
   readonly source?: string;
   readonly dependsOn?: readonly AgenticWorkItemId[];
   readonly batchId?: AgenticWorkBatchId;
+  /** Requirement this work item counts towards in the progress ledger. */
+  readonly requirementId?: AgenticRequirementId;
   readonly expectedArtifacts?: readonly string[];
   readonly issues?: readonly AgenticLifecycleIssue[];
   readonly updatedAt?: AgenticISODateTime;

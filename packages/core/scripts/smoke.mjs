@@ -290,6 +290,11 @@ import {
   verifyTaskExecutionAuditChain,
   verifyAgenticCoverage,
   applyWorkAccountingEvent,
+  AEOS_PROGRESS_LEDGER_UNASSIGNED_REQUIREMENT_ID,
+  buildTaskProgressLedger,
+  loadTaskProgressLedger,
+  renderTaskProgressLedgerText,
+  toTaskProgressLedgerJson,
 } from "../dist/index.js";
 import {
   directoryInsteadOfFilePathCheck,
@@ -36457,4 +36462,1007 @@ try {
   console.log("work accounting smoke tests passed");
 } finally {
   await rm(workAccountingTempRoot, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// TASK-0326 — Requirement/task progress ledger smoke tests
+// ---------------------------------------------------------------------------
+// Covers the acceptance criteria from GitHub Issue #6.  All I/O is isolated in
+// a temporary directory; the real .aeos state directory is never touched.
+//
+// The ledger is a derived projection, never a second stored counter, so the
+// duplicate and stale scenarios below are driven by real accounting calls
+// against real durable state rather than by hand-pinned identical fixtures.
+// ---------------------------------------------------------------------------
+const progressLedgerTempRoot = await mkdtemp(
+  join(tmpdir(), "aeos-progress-ledger-smoke-"),
+);
+
+try {
+  const ledgerProjectRoot = join(progressLedgerTempRoot, "project");
+  await mkdir(ledgerProjectRoot, { recursive: true });
+
+  const ledgerTaskId = "TASK-PROGRESS-LEDGER-SMOKE";
+
+  const ledgerWorkerIdentity = {
+    workerId: "smoke-test-worker",
+    workerFamily: "generic",
+    runtimeKind: "test_worker",
+    implementationVersion: "0.0.0-smoke",
+    capabilityVersion: "0.0.0-smoke",
+    identityAuthority: "system",
+    selectionAuthority: "system",
+  };
+
+  const ledgerWorkerSafety = {
+    runtimeExecutionEnabled: false,
+    realCodexInvoked: false,
+    realClaudeCodeInvoked: false,
+    cloudCalled: false,
+    networkCalled: false,
+    filesystemTouched: false,
+    repositoryWritten: false,
+    subprocessExecuted: false,
+    shellExecuted: false,
+    modelInvoked: false,
+    taskStateModified: false,
+    attemptStateModified: false,
+    invocationStateModified: false,
+    workAccountingModified: false,
+    auditWritten: false,
+    verifierRun: false,
+    workCompleted: false,
+    taskCompleted: false,
+    verified: false,
+    approved: false,
+    safeToRetry: false,
+    rawWorkerOutputAuthoritative: false,
+  };
+
+  async function ledgerPersistInvocation(record) {
+    const invDir = join(
+      ledgerProjectRoot,
+      ".aeos",
+      "state",
+      "invocations",
+      ledgerTaskId,
+    );
+    await mkdir(invDir, { recursive: true });
+    await writeNodeFile(
+      join(invDir, `${record.invocationId}.json`),
+      `${JSON.stringify(record, null, 2)}\n`,
+    );
+  }
+
+  // Reserve → invoking → returned, persist, and return the durable record.
+  async function ledgerReturnedRecord(opts) {
+    const reserved = createReservedTaskExecutionInvocationRecord({
+      taskId: ledgerTaskId,
+      taskStateRevision: opts.taskStateRevision,
+      attemptId: opts.attemptId,
+      attemptNumber: 1,
+      workItemId: opts.workItemId,
+      batchId: "batch-ledger",
+      dependencyKind: "test_noop",
+      verifierRequired: false,
+      completionGatedByVerifier: true,
+    });
+    assert.equal(reserved.ok, true, "progress ledger smoke: reserve invocation");
+
+    const invoking = transitionTaskExecutionInvocationRecord({
+      record: reserved.value,
+      intent: { kind: "enter_invocation", occurredAt: "2026-08-16T01:00:10.000Z" },
+    });
+    assert.equal(invoking.ok, true, "progress ledger smoke: enter invocation");
+
+    const returned = transitionTaskExecutionInvocationRecord({
+      record: invoking.value,
+      intent: {
+        kind: "record_returned",
+        result: { invocationOk: true, returnedAt: "2026-08-16T01:01:00.000Z" },
+      },
+    });
+    assert.equal(returned.ok, true, "progress ledger smoke: record returned");
+
+    await ledgerPersistInvocation(returned.value);
+    return returned.value;
+  }
+
+  function ledgerWorkerResult(record) {
+    return {
+      ok: true,
+      invocationReturned: true,
+      invocationOk: true,
+      outcomeStatus: "returned",
+      workerIdentity: ledgerWorkerIdentity,
+      taskId: record.taskId,
+      sourceTaskRevision: record.taskStateRevision,
+      attemptId: record.attemptId,
+      attemptNumber: record.attemptNumber,
+      invocationId: record.invocationId,
+      idempotencyKey: record.idempotencyKey,
+      workItemId: record.workItemId ?? null,
+      batchId: record.batchId ?? null,
+      issues: [],
+      safety: ledgerWorkerSafety,
+    };
+  }
+
+  // --- Durable state: 400 work items across two requirements, one batch.
+  const ledgerWorkItemIds = Array.from(
+    { length: 400 },
+    (_, index) => `pl-item-${String(index + 1).padStart(3, "0")}`,
+  );
+
+  const ledgerInitialSave = await saveTaskState({
+    projectRoot: ledgerProjectRoot,
+    state: createInitialTaskState({
+      taskId: ledgerTaskId,
+      sourceTaskId: ledgerTaskId,
+      createdAt: "2026-08-16T01:00:00.000Z",
+    }),
+  });
+  assert.equal(
+    ledgerInitialSave.ok,
+    true,
+    "progress ledger smoke: initial state should save",
+  );
+
+  const ledgerPlanned = await updateTaskState({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    expectedRevision: 1,
+    updatedAt: "2026-08-16T01:00:01.000Z",
+    update(state) {
+      return {
+        ...state,
+        lifecycleState: "planned",
+        workItems: ledgerWorkItemIds.map((id, index) => ({
+          id,
+          state: "pending",
+          batchId: "batch-ledger",
+          requirementId: index < 200 ? "req-alpha" : "req-beta",
+        })),
+        batches: [
+          {
+            id: "batch-ledger",
+            workItemIds: ledgerWorkItemIds,
+            expectedItemCount: 400,
+            completedCount: 0,
+            failedCount: 0,
+            skippedCount: 0,
+            retryableCount: 0,
+          },
+        ],
+        pendingWorkItemIds: [...ledgerWorkItemIds],
+        retryableWorkItemIds: [],
+        plan: { status: "planned" },
+      };
+    },
+  });
+  assert.equal(
+    ledgerPlanned.ok,
+    true,
+    "progress ledger smoke: planned state should update",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test A: progress_ledger_400_20_380_literal
+  // Expected=400, Accounted=20 => Remaining=380, at both task and requirement
+  // level, driven by 20 real AEOS accounting events.
+  // -----------------------------------------------------------------------
+  const ledgerEvents = [];
+  let ledgerRevision = ledgerPlanned.value.state.revision;
+  let ledgerSnapshotBeforeLastAccounting = null;
+
+  for (let i = 0; i < 20; i += 1) {
+    if (i === 19) {
+      // Capture a genuine pre-accounting snapshot for the stale test below.
+      const snapshot = await loadTaskState({
+        projectRoot: ledgerProjectRoot,
+        taskId: ledgerTaskId,
+      });
+      assert.equal(snapshot.ok, true, "progress ledger smoke: snapshot load");
+      ledgerSnapshotBeforeLastAccounting = snapshot.value.state;
+    }
+
+    const record = await ledgerReturnedRecord({
+      taskStateRevision: ledgerRevision,
+      attemptId: `attempt-ledger-${i + 1}`,
+      workItemId: ledgerWorkItemIds[i],
+    });
+
+    const event = await applyWorkAccountingEvent({
+      projectRoot: ledgerProjectRoot,
+      workerResult: ledgerWorkerResult(record),
+      expectedTaskRevision: ledgerRevision,
+    });
+    assert.equal(
+      event.ok,
+      true,
+      `progress_ledger_400_20_380_literal: accounting event ${i + 1} should succeed`,
+    );
+
+    ledgerEvents.push(event.value);
+    ledgerRevision = event.value.taskStateRevision;
+  }
+
+  const ledgerA = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    projectedAt: "2026-08-16T02:00:00.000Z",
+  });
+  assert.equal(
+    ledgerA.ok,
+    true,
+    "progress_ledger_400_20_380_literal: ledger should project",
+  );
+  assert.equal(
+    ledgerA.value.expectedItemCount,
+    400,
+    "progress_ledger_400_20_380_literal: Expected must be 400",
+  );
+  assert.equal(
+    ledgerA.value.accountedItemCount,
+    20,
+    "progress_ledger_400_20_380_literal: Accounted must be 20",
+  );
+  assert.equal(
+    ledgerA.value.remainingItemCount,
+    380,
+    "progress_ledger_400_20_380_literal: Remaining must be 380",
+  );
+
+  const ledgerAlpha = ledgerA.value.requirements.find(
+    (requirement) => requirement.requirementId === "req-alpha",
+  );
+  const ledgerBeta = ledgerA.value.requirements.find(
+    (requirement) => requirement.requirementId === "req-beta",
+  );
+  assert.equal(
+    ledgerAlpha.expectedItemCount,
+    200,
+    "progress_ledger_400_20_380_literal: req-alpha Expected must be 200",
+  );
+  assert.equal(
+    ledgerAlpha.accountedItemCount,
+    20,
+    "progress_ledger_400_20_380_literal: req-alpha Accounted must be 20",
+  );
+  assert.equal(
+    ledgerAlpha.remainingItemCount,
+    180,
+    "progress_ledger_400_20_380_literal: req-alpha Remaining must be 180",
+  );
+  assert.equal(
+    ledgerAlpha.status,
+    "in_progress",
+    "progress_ledger_400_20_380_literal: req-alpha must read in_progress",
+  );
+  assert.equal(
+    ledgerBeta.accountedItemCount,
+    0,
+    "progress_ledger_400_20_380_literal: req-beta Accounted must be 0",
+  );
+  assert.equal(
+    ledgerBeta.remainingItemCount,
+    200,
+    "progress_ledger_400_20_380_literal: req-beta Remaining must be 200",
+  );
+  assert.equal(
+    ledgerBeta.status,
+    "not_started",
+    "progress_ledger_400_20_380_literal: req-beta must read not_started",
+  );
+  assert.equal(
+    ledgerAlpha.expectedItemCount + ledgerBeta.expectedItemCount,
+    ledgerA.value.expectedItemCount,
+    "progress_ledger_400_20_380_literal: requirement expectations must sum to the task total",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test B: progress_ledger_duplicate_evidence_counted_once
+  //
+  // The duplicate is a naturally different object: a re-read of the same
+  // durable accounting event, carrying a different accountedAt timestamp but
+  // the same deterministic accountingEventId.  Dedup must key on identity, not
+  // on object equality, and the counters must not move at all — Accounted is
+  // the size of a set of accounted work items, never a sum over the stream.
+  // -----------------------------------------------------------------------
+  const ledgerReReadEvent = {
+    ...ledgerEvents[0],
+    accountedAt: "2026-08-16T03:30:00.000Z",
+  };
+  assert.notEqual(
+    ledgerReReadEvent.accountedAt,
+    ledgerEvents[0].accountedAt,
+    "progress_ledger_duplicate_evidence_counted_once: the replayed event must differ from the original",
+  );
+  assert.equal(
+    ledgerReReadEvent.accountingEventId,
+    ledgerEvents[0].accountingEventId,
+    "progress_ledger_duplicate_evidence_counted_once: the replay must share the accounting identity",
+  );
+
+  const ledgerWithDuplicate = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    accountingEvents: [...ledgerEvents, ledgerReReadEvent],
+    projectedAt: "2026-08-16T02:00:00.000Z",
+  });
+  assert.equal(
+    ledgerWithDuplicate.ok,
+    true,
+    "progress_ledger_duplicate_evidence_counted_once: ledger should project with duplicate evidence",
+  );
+  assert.equal(
+    ledgerWithDuplicate.value.evidence.suppliedEventCount,
+    21,
+    "progress_ledger_duplicate_evidence_counted_once: 21 events must be supplied",
+  );
+  assert.equal(
+    ledgerWithDuplicate.value.evidence.countedEventCount,
+    20,
+    "progress_ledger_duplicate_evidence_counted_once: only 20 distinct events may count",
+  );
+  assert.equal(
+    ledgerWithDuplicate.value.evidence.duplicateSuppressedCount,
+    1,
+    "progress_ledger_duplicate_evidence_counted_once: the replay must be suppressed",
+  );
+  assert.equal(
+    ledgerWithDuplicate.value.accountedItemCount,
+    20,
+    "progress_ledger_duplicate_evidence_counted_once: Accounted must stay 20",
+  );
+  assert.equal(
+    ledgerWithDuplicate.value.remainingItemCount,
+    380,
+    "progress_ledger_duplicate_evidence_counted_once: Remaining must stay 380",
+  );
+  const ledgerSuppressedEntries =
+    ledgerWithDuplicate.value.evidence.entries.filter(
+      (entry) => entry.disposition === "duplicate_suppressed",
+    );
+  assert.equal(
+    ledgerSuppressedEntries.length,
+    1,
+    "progress_ledger_duplicate_evidence_counted_once: exactly one entry must be marked suppressed",
+  );
+  assert.equal(
+    ledgerSuppressedEntries[0].accountingEventId,
+    ledgerEvents[0].accountingEventId,
+    "progress_ledger_duplicate_evidence_counted_once: the suppressed entry must be the replayed identity",
+  );
+
+  // Evidence order is the caller's, not the ledger's: the same events supplied
+  // in reverse must produce a byte-identical projection.  Real callers read
+  // evidence from a directory scan or cursor whose order is not guaranteed.
+  const ledgerReversedEvidence = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    accountingEvents: [...ledgerEvents].reverse(),
+    projectedAt: "2026-08-16T02:00:00.000Z",
+  });
+  const ledgerForwardEvidence = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    accountingEvents: ledgerEvents,
+    projectedAt: "2026-08-16T02:00:00.000Z",
+  });
+  assert.equal(
+    JSON.stringify(toTaskProgressLedgerJson(ledgerReversedEvidence.value)),
+    JSON.stringify(toTaskProgressLedgerJson(ledgerForwardEvidence.value)),
+    "progress_ledger_duplicate_evidence_counted_once: evidence order must not change the projection",
+  );
+
+  // The structural claim, asserted directly: 100 replays of one event move the
+  // accounted counter by exactly nothing.  This assertion stays live against any
+  // future regression that wires evidence counts into the ledger counters.
+  const ledgerHundredReplays = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    accountingEvents: [
+      ...ledgerEvents,
+      ...Array.from({ length: 100 }, () => ledgerEvents[0]),
+    ],
+    projectedAt: "2026-08-16T02:00:00.000Z",
+  });
+  assert.equal(
+    ledgerHundredReplays.ok,
+    true,
+    "progress_ledger_duplicate_evidence_counted_once: 100 replays should still project",
+  );
+  assert.equal(
+    ledgerHundredReplays.value.accountedItemCount,
+    20,
+    "progress_ledger_duplicate_evidence_counted_once: 100 replays must not move Accounted",
+  );
+  assert.equal(
+    ledgerHundredReplays.value.remainingItemCount,
+    380,
+    "progress_ledger_duplicate_evidence_counted_once: 100 replays must not move Remaining",
+  );
+  assert.equal(
+    ledgerHundredReplays.value.evidence.duplicateSuppressedCount,
+    100,
+    "progress_ledger_duplicate_evidence_counted_once: all 100 replays must be suppressed",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test C: progress_ledger_stale_state_snapshot_refused
+  //
+  // Naturally produced: the snapshot was read before the 20th accounting call,
+  // the event was produced by that call.  Projecting the newer evidence onto
+  // the older snapshot must fail closed rather than report a stale Remaining.
+  // -----------------------------------------------------------------------
+  const ledgerStaleEvent = ledgerEvents[19];
+  assert.equal(
+    ledgerStaleEvent.taskStateRevision >
+      ledgerSnapshotBeforeLastAccounting.revision,
+    true,
+    "progress_ledger_stale_state_snapshot_refused: the event must be ahead of the snapshot",
+  );
+
+  const ledgerStale = buildTaskProgressLedger({
+    state: ledgerSnapshotBeforeLastAccounting,
+    accountingEvents: [ledgerStaleEvent],
+    projectedAt: "2026-08-16T02:00:00.000Z",
+  });
+  assert.equal(
+    ledgerStale.ok,
+    false,
+    "progress_ledger_stale_state_snapshot_refused: a stale snapshot must not project",
+  );
+  assert.equal(
+    ledgerStale.error.code,
+    "progress_ledger_state_stale_for_evidence",
+    "progress_ledger_stale_state_snapshot_refused: must fail with the stale-state code",
+  );
+
+  // The same snapshot still projects on its own — staleness is refused only
+  // where evidence proves it, and a corrupted/stale ledger is never mutated.
+  const ledgerStaleAlone = buildTaskProgressLedger({
+    state: ledgerSnapshotBeforeLastAccounting,
+    projectedAt: "2026-08-16T02:00:00.000Z",
+  });
+  assert.equal(
+    ledgerStaleAlone.ok,
+    true,
+    "progress_ledger_stale_state_snapshot_refused: the snapshot alone must still project",
+  );
+  assert.equal(
+    ledgerStaleAlone.value.accountedItemCount,
+    19,
+    "progress_ledger_stale_state_snapshot_refused: the older snapshot must report its own Accounted",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test D: progress_ledger_restart_readback_identical
+  // Two independent durable reads must produce byte-identical projections.
+  // -----------------------------------------------------------------------
+  const ledgerReadBackOne = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    accountingEvents: ledgerEvents,
+    projectedAt: "2026-08-16T04:00:00.000Z",
+  });
+  const ledgerReadBackTwo = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    accountingEvents: ledgerEvents,
+    projectedAt: "2026-08-16T04:00:00.000Z",
+  });
+  assert.equal(
+    ledgerReadBackOne.ok && ledgerReadBackTwo.ok,
+    true,
+    "progress_ledger_restart_readback_identical: both reads should project",
+  );
+  assert.equal(
+    JSON.stringify(toTaskProgressLedgerJson(ledgerReadBackOne.value)),
+    JSON.stringify(toTaskProgressLedgerJson(ledgerReadBackTwo.value)),
+    "progress_ledger_restart_readback_identical: durable read-back must be identical",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test E: progress_ledger_projection_consistency
+  // The human and JSON projections must report the same numbers.
+  // -----------------------------------------------------------------------
+  const ledgerJson = toTaskProgressLedgerJson(ledgerA.value);
+  const ledgerText = renderTaskProgressLedgerText(ledgerA.value);
+  assert.equal(
+    ledgerJson.expected === 400 &&
+      ledgerJson.accounted === 20 &&
+      ledgerJson.remaining === 380,
+    true,
+    "progress_ledger_projection_consistency: JSON projection must carry 400/20/380",
+  );
+  assert.equal(
+    ledgerText.includes("Expected=400 Accounted=20 Remaining=380"),
+    true,
+    "progress_ledger_projection_consistency: human projection must carry 400/20/380",
+  );
+  assert.equal(
+    ledgerText.includes("req-alpha [in_progress] expected=200 accounted=20 remaining=180"),
+    true,
+    "progress_ledger_projection_consistency: human projection must carry requirement progress",
+  );
+  assert.equal(
+    ledgerJson.safety.grantsCompletionAuthority,
+    false,
+    "progress_ledger_projection_consistency: the ledger must never grant completion authority",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test F: progress_ledger_model_claim_cannot_move_ledger
+  // A worker claiming completion without durable returned evidence is refused
+  // by accounting, and the ledger reads exactly the same before and after.
+  // -----------------------------------------------------------------------
+  const ledgerBeforeClaim = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    projectedAt: "2026-08-16T05:00:00.000Z",
+  });
+  assert.equal(
+    ledgerBeforeClaim.ok,
+    true,
+    "progress_ledger_model_claim_cannot_move_ledger: pre-claim ledger should project",
+  );
+
+  const ledgerReservedOnly = createReservedTaskExecutionInvocationRecord({
+    taskId: ledgerTaskId,
+    taskStateRevision: ledgerRevision,
+    attemptId: "attempt-ledger-claim",
+    attemptNumber: 1,
+    workItemId: ledgerWorkItemIds[100],
+    batchId: "batch-ledger",
+    dependencyKind: "test_noop",
+    verifierRequired: false,
+    completionGatedByVerifier: true,
+  });
+  assert.equal(
+    ledgerReservedOnly.ok,
+    true,
+    "progress_ledger_model_claim_cannot_move_ledger: reserved record should be created",
+  );
+  await ledgerPersistInvocation(ledgerReservedOnly.value);
+
+  const ledgerClaim = await applyWorkAccountingEvent({
+    projectRoot: ledgerProjectRoot,
+    // The worker asserts success on an invocation that never returned.
+    workerResult: ledgerWorkerResult(ledgerReservedOnly.value),
+    expectedTaskRevision: ledgerRevision,
+  });
+  assert.equal(
+    ledgerClaim.ok,
+    false,
+    "progress_ledger_model_claim_cannot_move_ledger: an unreturned invocation must not account",
+  );
+
+  const ledgerAfterClaim = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    projectedAt: "2026-08-16T05:00:00.000Z",
+  });
+  assert.equal(
+    JSON.stringify(toTaskProgressLedgerJson(ledgerBeforeClaim.value)),
+    JSON.stringify(toTaskProgressLedgerJson(ledgerAfterClaim.value)),
+    "progress_ledger_model_claim_cannot_move_ledger: the ledger must be unchanged by a model claim",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test G: progress_ledger_unassigned_and_zero_expected
+  // Items with no requirementId land in the reserved bucket and still sum to
+  // the task totals; an empty task reports 0/0/0 with a null ratio rather than
+  // dividing by zero.
+  // -----------------------------------------------------------------------
+  const ledgerUnassigned = buildTaskProgressLedger({
+    state: {
+      ...ledgerPlanned.value.state,
+      workItems: [
+        { id: "solo-1", state: "pending" },
+        { id: "solo-2", state: "pending", requirementId: "req-gamma" },
+      ],
+      batches: [],
+      pendingWorkItemIds: ["solo-1", "solo-2"],
+    },
+    projectedAt: "2026-08-16T06:00:00.000Z",
+  });
+  assert.equal(
+    ledgerUnassigned.ok,
+    true,
+    "progress_ledger_unassigned_and_zero_expected: mixed assignment should project",
+  );
+  assert.equal(
+    ledgerUnassigned.value.requirements.find((requirement) => requirement.unassigned)
+      ?.requirementId,
+    AEOS_PROGRESS_LEDGER_UNASSIGNED_REQUIREMENT_ID,
+    "progress_ledger_unassigned_and_zero_expected: unassigned items use the reserved bucket",
+  );
+  assert.equal(
+    ledgerUnassigned.value.requirements.reduce(
+      (total, requirement) => total + requirement.expectedItemCount,
+      0,
+    ),
+    ledgerUnassigned.value.expectedItemCount,
+    "progress_ledger_unassigned_and_zero_expected: requirement expectations must sum to the task total",
+  );
+
+  const ledgerEmpty = buildTaskProgressLedger({
+    state: {
+      ...ledgerPlanned.value.state,
+      workItems: [],
+      batches: [],
+      pendingWorkItemIds: [],
+    },
+    projectedAt: "2026-08-16T06:00:00.000Z",
+  });
+  assert.equal(
+    ledgerEmpty.ok,
+    true,
+    "progress_ledger_unassigned_and_zero_expected: an empty task should project",
+  );
+  assert.equal(
+    ledgerEmpty.value.expectedItemCount === 0 &&
+      ledgerEmpty.value.accountedItemCount === 0 &&
+      ledgerEmpty.value.remainingItemCount === 0,
+    true,
+    "progress_ledger_unassigned_and_zero_expected: an empty task must read 0/0/0",
+  );
+  assert.equal(
+    ledgerEmpty.value.accountedRatio,
+    null,
+    "progress_ledger_unassigned_and_zero_expected: an empty task must not divide by zero",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test H: progress_ledger_corruption_defences
+  // Branches reachable only if durable state or evidence has been corrupted
+  // outside AEOS.  They cannot be produced by any authorised path, so they are
+  // driven by deliberately damaged inputs and must all fail closed.
+  // -----------------------------------------------------------------------
+  const ledgerNonIntegerRevision = buildTaskProgressLedger({
+    state: { ...ledgerPlanned.value.state, revision: 1.5 },
+    projectedAt: "2026-08-16T07:00:00.000Z",
+  });
+  assert.equal(
+    ledgerNonIntegerRevision.ok,
+    false,
+    "progress_ledger_corruption_defences: a non-integer revision must not project",
+  );
+  assert.equal(
+    ledgerNonIntegerRevision.error.code,
+    "progress_ledger_unsafe_count",
+    "progress_ledger_corruption_defences: must fail with the unsafe-count code",
+  );
+
+  // Negative and out-of-safe-range revisions travel the same fail-closed path.
+  // state.revision is the one counter the ledger does not re-derive, so it is
+  // the counter a corrupted snapshot can actually poison.
+  for (const [label, revision] of [
+    ["negative", -1],
+    ["overflow", Number.MAX_SAFE_INTEGER + 2],
+  ]) {
+    const ledgerBadRevision = buildTaskProgressLedger({
+      state: { ...ledgerPlanned.value.state, revision },
+      projectedAt: "2026-08-16T07:00:00.000Z",
+    });
+    assert.equal(
+      ledgerBadRevision.ok,
+      false,
+      `progress_ledger_corruption_defences: a ${label} revision must not project`,
+    );
+    assert.equal(
+      ledgerBadRevision.error.code,
+      "progress_ledger_unsafe_count",
+      `progress_ledger_corruption_defences: a ${label} revision must fail with the unsafe-count code`,
+    );
+  }
+
+  const ledgerForeignEvent = buildTaskProgressLedger({
+    state: ledgerPlanned.value.state,
+    accountingEvents: [{ ...ledgerEvents[0], taskId: "TASK-SOMEONE-ELSE" }],
+    projectedAt: "2026-08-16T07:00:00.000Z",
+  });
+  assert.equal(
+    ledgerForeignEvent.ok,
+    false,
+    "progress_ledger_corruption_defences: evidence from another task must not project",
+  );
+  assert.equal(
+    ledgerForeignEvent.error.code,
+    "progress_ledger_event_task_mismatch",
+    "progress_ledger_corruption_defences: must fail with the task-mismatch code",
+  );
+
+  const ledgerUnknownItemEvent = buildTaskProgressLedger({
+    state: ledgerPlanned.value.state,
+    accountingEvents: [{ ...ledgerEvents[0], workItemId: "pl-item-does-not-exist" }],
+    projectedAt: "2026-08-16T07:00:00.000Z",
+  });
+  assert.equal(
+    ledgerUnknownItemEvent.error.code,
+    "progress_ledger_event_work_item_unknown",
+    "progress_ledger_corruption_defences: unrepresented work items must fail closed",
+  );
+
+  // Evidence at or below the snapshot revision naming a work item the snapshot
+  // does not show as accounted: the snapshot has been rolled back or damaged.
+  const ledgerNotReflected = buildTaskProgressLedger({
+    state: { ...ledgerPlanned.value.state, revision: 9999 },
+    accountingEvents: [ledgerEvents[0]],
+    projectedAt: "2026-08-16T07:00:00.000Z",
+  });
+  assert.equal(
+    ledgerNotReflected.error.code,
+    "progress_ledger_evidence_not_reflected_in_state",
+    "progress_ledger_corruption_defences: unreflected evidence must fail closed",
+  );
+
+  // Two distinct accounting identities for a single accounted work item.
+  const ledgerForgedSecondEvent = buildTaskProgressLedger({
+    state: ledgerSnapshotBeforeLastAccounting,
+    accountingEvents: ledgerEvents.slice(0, 19).flatMap((event, index) =>
+      index === 0
+        ? [event, { ...event, accountingEventId: `${event.accountingEventId}-forged` }]
+        : [event],
+    ),
+    projectedAt: "2026-08-16T07:00:00.000Z",
+  });
+  assert.equal(
+    ledgerForgedSecondEvent.ok,
+    false,
+    "progress_ledger_corruption_defences: forged extra evidence must not project",
+  );
+  assert.equal(
+    ledgerForgedSecondEvent.error.code,
+    "progress_ledger_evidence_exceeds_accounted",
+    "progress_ledger_corruption_defences: must fail with the evidence-exceeds-accounted code",
+  );
+
+  // A malformed requirementId must be refused at the persistence boundary
+  // rather than silently rerouted into the unassigned bucket.
+  const ledgerBadRequirementId = validatePersistedTaskState({
+    ...ledgerPlanned.value.state,
+    workItems: [{ id: "bad-1", state: "pending", requirementId: "" }],
+    batches: [],
+    pendingWorkItemIds: ["bad-1"],
+  });
+  assert.equal(
+    ledgerBadRequirementId.ok,
+    false,
+    "progress_ledger_corruption_defences: an empty requirementId must not validate",
+  );
+  assert.equal(
+    ledgerBadRequirementId.error.code,
+    "task_state_invalid_work_item_requirement",
+    "progress_ledger_corruption_defences: must fail with the invalid-requirement code",
+  );
+
+  // The ledger closes the same hole for callers handing it synthetic state that
+  // never passed through persistence: a malformed requirementId is refused, not
+  // silently rerouted into the unassigned bucket where it would misreport two
+  // requirements' Remaining at once.
+  const ledgerBypassBadRequirementId = buildTaskProgressLedger({
+    state: {
+      ...ledgerPlanned.value.state,
+      workItems: [
+        { id: "bypass-1", state: "pending", requirementId: "" },
+        { id: "bypass-2", state: "pending", requirementId: "req-real" },
+      ],
+      batches: [],
+      pendingWorkItemIds: ["bypass-1", "bypass-2"],
+    },
+    projectedAt: "2026-08-16T07:00:00.000Z",
+  });
+  assert.equal(
+    ledgerBypassBadRequirementId.ok,
+    false,
+    "progress_ledger_corruption_defences: an empty requirementId must not project",
+  );
+  assert.equal(
+    ledgerBypassBadRequirementId.error.code,
+    "progress_ledger_invalid_requirement_id",
+    "progress_ledger_corruption_defences: must fail with the ledger invalid-requirement code",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test I: progress_ledger_terminal_requirement_statuses
+  //
+  // Drives the two terminal requirement statuses on a second task with real
+  // durable state and real accounting calls:
+  //   req-done   — all 3 items completed            -> accounted_complete
+  //   req-mixed  — 1 completed, 1 failed, 1 skipped -> accounted_with_exceptions
+  // Both requirements reach Remaining == 0, which is what separates the two
+  // statuses from in_progress.
+  // -----------------------------------------------------------------------
+  const terminalTaskId = "TASK-PROGRESS-LEDGER-TERMINAL-SMOKE";
+
+  async function terminalPersistInvocation(record) {
+    const invDir = join(
+      ledgerProjectRoot,
+      ".aeos",
+      "state",
+      "invocations",
+      terminalTaskId,
+    );
+    await mkdir(invDir, { recursive: true });
+    await writeNodeFile(
+      join(invDir, `${record.invocationId}.json`),
+      `${JSON.stringify(record, null, 2)}\n`,
+    );
+  }
+
+  const terminalInitialSave = await saveTaskState({
+    projectRoot: ledgerProjectRoot,
+    state: createInitialTaskState({
+      taskId: terminalTaskId,
+      sourceTaskId: terminalTaskId,
+      createdAt: "2026-08-16T08:00:00.000Z",
+    }),
+  });
+  assert.equal(
+    terminalInitialSave.ok,
+    true,
+    "progress_ledger_terminal_requirement_statuses: initial state should save",
+  );
+
+  const terminalPlanned = await updateTaskState({
+    projectRoot: ledgerProjectRoot,
+    taskId: terminalTaskId,
+    expectedRevision: 1,
+    updatedAt: "2026-08-16T08:00:01.000Z",
+    update(state) {
+      return {
+        ...state,
+        lifecycleState: "planned",
+        workItems: [
+          { id: "t-1", state: "pending", batchId: "batch-terminal", requirementId: "req-done" },
+          { id: "t-2", state: "pending", batchId: "batch-terminal", requirementId: "req-done" },
+          { id: "t-3", state: "pending", batchId: "batch-terminal", requirementId: "req-done" },
+          { id: "t-4", state: "pending", batchId: "batch-terminal", requirementId: "req-mixed" },
+          { id: "t-5", state: "failed", batchId: "batch-terminal", requirementId: "req-mixed" },
+          { id: "t-6", state: "skipped", batchId: "batch-terminal", requirementId: "req-mixed" },
+        ],
+        batches: [
+          {
+            id: "batch-terminal",
+            workItemIds: ["t-1", "t-2", "t-3", "t-4", "t-5", "t-6"],
+            expectedItemCount: 6,
+            completedCount: 0,
+            failedCount: 1,
+            skippedCount: 1,
+            retryableCount: 0,
+          },
+        ],
+        pendingWorkItemIds: ["t-1", "t-2", "t-3", "t-4"],
+        retryableWorkItemIds: [],
+        plan: { status: "planned" },
+      };
+    },
+  });
+  assert.equal(
+    terminalPlanned.ok,
+    true,
+    "progress_ledger_terminal_requirement_statuses: planned state should update",
+  );
+
+  let terminalRevision = terminalPlanned.value.state.revision;
+
+  for (const workItemId of ["t-1", "t-2", "t-3", "t-4"]) {
+    const reserved = createReservedTaskExecutionInvocationRecord({
+      taskId: terminalTaskId,
+      taskStateRevision: terminalRevision,
+      attemptId: `attempt-terminal-${workItemId}`,
+      attemptNumber: 1,
+      workItemId,
+      batchId: "batch-terminal",
+      dependencyKind: "test_noop",
+      verifierRequired: false,
+      completionGatedByVerifier: true,
+    });
+    assert.equal(
+      reserved.ok,
+      true,
+      "progress_ledger_terminal_requirement_statuses: reserve invocation",
+    );
+
+    const invoking = transitionTaskExecutionInvocationRecord({
+      record: reserved.value,
+      intent: { kind: "enter_invocation", occurredAt: "2026-08-16T08:00:10.000Z" },
+    });
+    const returned = transitionTaskExecutionInvocationRecord({
+      record: invoking.value,
+      intent: {
+        kind: "record_returned",
+        result: { invocationOk: true, returnedAt: "2026-08-16T08:01:00.000Z" },
+      },
+    });
+    assert.equal(
+      returned.ok,
+      true,
+      "progress_ledger_terminal_requirement_statuses: record returned",
+    );
+    await terminalPersistInvocation(returned.value);
+
+    const event = await applyWorkAccountingEvent({
+      projectRoot: ledgerProjectRoot,
+      workerResult: ledgerWorkerResult(returned.value),
+      expectedTaskRevision: terminalRevision,
+    });
+    assert.equal(
+      event.ok,
+      true,
+      `progress_ledger_terminal_requirement_statuses: accounting for ${workItemId} should succeed`,
+    );
+    terminalRevision = event.value.taskStateRevision;
+  }
+
+  const terminalLedger = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: terminalTaskId,
+    projectedAt: "2026-08-16T09:00:00.000Z",
+  });
+  assert.equal(
+    terminalLedger.ok,
+    true,
+    "progress_ledger_terminal_requirement_statuses: ledger should project",
+  );
+
+  const terminalDone = terminalLedger.value.requirements.find(
+    (requirement) => requirement.requirementId === "req-done",
+  );
+  const terminalMixed = terminalLedger.value.requirements.find(
+    (requirement) => requirement.requirementId === "req-mixed",
+  );
+  assert.equal(
+    terminalDone.remainingItemCount,
+    0,
+    "progress_ledger_terminal_requirement_statuses: req-done Remaining must be 0",
+  );
+  assert.equal(
+    terminalDone.status,
+    "accounted_complete",
+    "progress_ledger_terminal_requirement_statuses: req-done must read accounted_complete",
+  );
+  assert.equal(
+    terminalMixed.remainingItemCount,
+    0,
+    "progress_ledger_terminal_requirement_statuses: req-mixed Remaining must be 0",
+  );
+  assert.equal(
+    terminalMixed.completedItemCount === 1 &&
+      terminalMixed.failedItemCount === 1 &&
+      terminalMixed.skippedItemCount === 1,
+    true,
+    "progress_ledger_terminal_requirement_statuses: req-mixed must carry 1 completed, 1 failed, 1 skipped",
+  );
+  assert.equal(
+    terminalMixed.status,
+    "accounted_with_exceptions",
+    "progress_ledger_terminal_requirement_statuses: req-mixed must read accounted_with_exceptions",
+  );
+  assert.equal(
+    terminalLedger.value.accountedItemCount === 6 &&
+      terminalLedger.value.remainingItemCount === 0,
+    true,
+    "progress_ledger_terminal_requirement_statuses: the task must be fully accounted",
+  );
+
+  // Fully accounted is an accounting statement, never a completion decision.
+  const terminalState = await loadTaskState({
+    projectRoot: ledgerProjectRoot,
+    taskId: terminalTaskId,
+  });
+  assert.equal(
+    terminalState.value.state.completionGate.satisfied === false &&
+      terminalState.value.state.completionGate.completed === false &&
+      terminalState.value.state.safety.verified === false,
+    true,
+    "progress_ledger_terminal_requirement_statuses: full accounting must not satisfy the completion gate",
+  );
+
+  console.log("progress ledger smoke tests passed");
+} finally {
+  await rm(progressLedgerTempRoot, { recursive: true, force: true });
 }
