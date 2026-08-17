@@ -97,16 +97,87 @@ Do not preload every MCP/skill. Do not add a new MCP/skill without explicit user
 - No AWS/Bedrock/S3/IAM/Cloudflare/Azure/GCP mainline architecture unless explicitly approved.
 - Codex remains GPT-5.5 unless explicitly changed by the user.
 
+## Critical Defect Precedence — HARD RULE
+
+If implementation, independent review, soak, audit or integration finds a real **P0 or
+release-blocking P1 defect on an AEOS critical authority boundary**, roadmap progress STOPS.
+
+Critical authority boundary means: concurrency, locking, idempotency, invocation identity,
+durable state, persistence, revision guards, state machines, completion authority, accounting
+authority, retry/recovery, policy/permission, security, audit/provenance.
+
+- A defect found this way is never left silently because it is "out of scope" while you move on
+  to the next dependency-ready feature.
+- Open or reuse a dedicated GitHub Issue for it, and durably record the blocker/dependency
+  relationship to the source task. GitHub and Notion must show the same state.
+- No dependent roadmap task gets closeout until the critical defect is IMPLEMENTED + TESTED +
+  INDEPENDENTLY REVIEWED + INTEGRATED.
+- A model or worker calling the problem small does not bypass this gate.
+- Non-blocking P2/P3 findings may be filed as issues and do not automatically stop the roadmap.
+- Lowering a severity requires evidence. Downgrading severity in order to keep moving is
+  forbidden.
+
+Authoritative detail: `docs/ai/AEOS_AGENT_OPERATING_CONSTITUTION.md` → "Critical Defect
+Precedence".
+
+## Canonical Integration Checkpoint — HARD RULE
+
+The canonical/default branch is currently `master`; verify it from the remote at session start
+rather than trusting this sentence.
+
+- **IMPLEMENTED and INTEGRATED are different states.** Passing tests on a task branch does not
+  complete a task.
+- A task is COMPLETE/Tamamlandı only when its final reviewed commit is reachable from the
+  canonical default branch.
+- After a critical/P0 authority task gets final REVIEW PASS, perform the canonical integration
+  checkpoint **before** dispatching the next critical roadmap task.
+- Multiple closed critical tasks must not accumulate silently on a long-lived task branch. No
+  branch — `task/0324-fresh-canary` explicitly included — becomes a permanent shadow-main.
+- If completed critical task commits sit ahead of `origin/master`, NEXT TASK DISPATCH IS
+  FORBIDDEN. Integrate first.
+- Start each new critical task from a clean bounded branch/worktree cut from the current
+  canonical default branch, and retire the old task branch after merge.
+
+Minimum preflight at the start of every task:
+
+```
+git fetch origin
+git rev-list --left-right --count origin/master...HEAD
+git log --oneline origin/master..HEAD
+```
+
+If HEAD carries task commits previously declared COMPLETE that have not reached master, emit
+`INTEGRATION_REQUIRED` and do not dispatch a new critical task.
+
 ## Current queue rule
 
 Use GitHub dependency order and validate every selected task against Notion before dispatch.
 
-At the time this router was created, TASK-0324 remains the required engineering closeout before TASK-0325. Do not trust this sentence forever; current GitHub + Notion state wins.
+The rules above are permanent. The following is a **snapshot of the current recovery chain**, not
+a hardcoded queue — current GitHub + Notion state always wins:
+
+`GitHub #77 → TASK-0328 / Issue #8 → canonical integration checkpoint → TASK-0329`
 
 ## Closeout loop
 
 For each task:
 
-`GITHUB ISSUE → NOTION CROSS-CHECK → DEPENDENCIES → CBM-FIRST DISCOVERY → SKILL ROUTER → TWO IMPLEMENTERS AS SAFE → TARGETED TESTS → TWO FRESH REVIEWERS → FIX/RE-REVIEW → COMMIT/PUSH → GITHUB UPDATE → NOTION UPDATE → NEXT READY TASK`
+`GITHUB ISSUE → NOTION CROSS-CHECK → DEPENDENCY CHECK → CBM-FIRST DISCOVERY → SKILL ROUTER → IMPLEMENT → TARGETED TESTS → FULL RELEVANT TESTS → TWO FRESH INDEPENDENT REVIEWERS → FIX/RE-REVIEW → COMMIT → PUSH → CANONICAL INTEGRATION CHECKPOINT → VERIFY COMMIT REACHABLE FROM DEFAULT BRANCH → GITHUB COMPLETE → NOTION TAMAMLANDI → NEXT TASK`
+
+None of these alone means COMPLETE:
+
+- "commit/push done" is not COMPLETE.
+- "review pass received" is not COMPLETE.
+- "issue closed" without canonical integration evidence is a wrong state.
+
+Canonical reachability must be proven, not assumed:
+
+```
+git merge-base --is-ancestor <FINAL_TASK_SHA> origin/master
+```
+
+Do not mark a task canonically COMPLETE until that exits 0. A task whose implementation is
+finished and reviewed but not yet integrated is recorded as `IMPLEMENTED_AWAITING_INTEGRATION`
+in the GitHub issue/handoff and in the matching Notion row.
 
 Never pause for a routine conversational report between tasks.
