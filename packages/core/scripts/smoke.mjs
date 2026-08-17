@@ -15240,6 +15240,51 @@ try {
     true,
     "task execution start apply smoke A should persist prepared -> started",
   );
+
+  // GitHub #77 (same defect class, attempt store).
+  const attemptLockDir = join(
+    persistenceRoot,
+    ".aeos",
+    "state",
+    "executions",
+    ".locks",
+    preparedAttempt.taskId,
+  );
+  await mkdir(attemptLockDir, { recursive: true });
+  const attemptLockPath = join(
+    attemptLockDir,
+    `${preparedAttempt.attemptId}.lock`,
+  );
+  await writeNodeFile(
+    attemptLockPath,
+    `${JSON.stringify({ heldBy: "another-process" })}\n`,
+  );
+
+  const attemptLockRefused = await updateTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
+    taskId: preparedAttempt.taskId,
+    attemptId: preparedAttempt.attemptId,
+    expectedLifecycle: "started",
+    update(currentAttempt) {
+      return { ok: true, value: currentAttempt };
+    },
+  });
+  assert.equal(
+    attemptLockRefused.ok,
+    false,
+    "attempt lock ownership #77: a held lock must refuse the update",
+  );
+  assert.equal(
+    attemptLockRefused.error.code,
+    "task_execution_attempt_update_locked",
+    "attempt lock ownership #77: must fail with the update-locked code",
+  );
+  assert.equal(
+    await pathExists(attemptLockPath),
+    true,
+    "attempt lock ownership #77: a losing caller must not delete the holder's lock",
+  );
+  await rm(attemptLockPath, { force: true });
   assert.equal(
     startApplyResult.value.attempt.lifecycle,
     "started",
@@ -16052,6 +16097,86 @@ try {
     "invoking",
     "task execution invocation record smoke I should enter invoking lifecycle",
   );
+  // -----------------------------------------------------------------------
+  // GitHub #77 regression: invocation update lock ownership under contention.
+  //
+  // A caller that LOSES the open("wx") lock race must not delete the winner's
+  // lock. With an unconditional unlink in the finally, the loser removed it and a
+  // third caller could enter the same critical section concurrently with the
+  // winner — both passing the revision guard, both returning ok, both believing
+  // they owned an enter_invocation. That is a duplicate dispatch in the
+  // invocation authority path, and the atomic rename kept the file structurally
+  // consistent so nothing else noticed.
+  //
+  // Deterministic rather than timing-dependent: plant a lock owned by another
+  // process, then assert BOTH that the update is refused AND that the planted
+  // lock still exists afterwards. The second assertion is the regression.
+  const lockOwnershipTaskId = directReservation.value.record.taskId;
+  const lockOwnershipInvocationId = directReservation.value.record.invocationId;
+  const lockOwnershipDir = join(
+    persistenceRoot,
+    ".aeos",
+    "state",
+    "invocations",
+    ".locks",
+    lockOwnershipTaskId,
+  );
+  await mkdir(lockOwnershipDir, { recursive: true });
+  const lockOwnershipPath = join(
+    lockOwnershipDir,
+    `${lockOwnershipInvocationId}.lock`,
+  );
+  await writeNodeFile(
+    lockOwnershipPath,
+    `${JSON.stringify({ heldBy: "another-process" })}\n`,
+  );
+
+  const lockOwnershipRefused = await updateTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    taskId: lockOwnershipTaskId,
+    invocationId: lockOwnershipInvocationId,
+    ownershipToken: directInvokingUpdate.value.record.ownership.ownershipToken,
+    expectedLifecycle: "invoking",
+    intent: {
+      kind: "record_returned",
+      result: {
+        invocationOk: true,
+        returnedAt: "2026-08-08T00:01:46.250Z",
+      },
+    },
+  });
+  assert.equal(
+    lockOwnershipRefused.ok,
+    false,
+    "invocation lock ownership #77: a held lock must refuse the update",
+  );
+  assert.equal(
+    lockOwnershipRefused.error.code,
+    "task_execution_invocation_update_locked",
+    "invocation lock ownership #77: must fail with the update-locked code",
+  );
+  assert.equal(
+    await pathExists(lockOwnershipPath),
+    true,
+    "invocation lock ownership #77: a losing caller must not delete the holder's lock",
+  );
+
+  // The refused update must not have advanced the record either.
+  const lockOwnershipUntouched = await loadTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    taskId: lockOwnershipTaskId,
+    invocationId: lockOwnershipInvocationId,
+  });
+  assert.equal(
+    lockOwnershipUntouched.value.record.lifecycle,
+    "invoking",
+    "invocation lock ownership #77: a lock-refused update must not advance the record",
+  );
+
+  // Once the holder releases it, the same update proceeds, and the caller that
+  // created the lock releases it again.
+  await rm(lockOwnershipPath, { force: true });
+
   const directReturnedUpdate = await updateTaskExecutionInvocation({
     projectRoot: persistenceRoot,
     taskId: directInvokingUpdate.value.record.taskId,
@@ -16068,6 +16193,11 @@ try {
       },
     },
   });
+  assert.equal(
+    await pathExists(lockOwnershipPath),
+    false,
+    "invocation lock ownership #77: a caller that created the lock must release it",
+  );
   assert.equal(
     directReturnedUpdate.ok,
     true,
@@ -21603,6 +21733,48 @@ try {
     true,
     "task execution worker process gate smoke P should persist pre-process audit intent",
   );
+
+  // GitHub #77 (same defect class, audit/provenance store): a caller that loses
+  // the open("wx") race must not delete the holder's append lock. Deterministic:
+  // plant a lock owned by another process, assert the append is refused AND that
+  // the planted lock survives.
+  const auditLockDir = join(
+    codexProcessAuditRoot,
+    ".aeos",
+    "state",
+    "audit",
+    ".locks",
+    codexProcessAuditDraft.value.taskId,
+  );
+  await mkdir(auditLockDir, { recursive: true });
+  const auditLockPath = join(auditLockDir, "append.lock");
+  await writeNodeFile(
+    auditLockPath,
+    `${JSON.stringify({ heldBy: "another-process" })}\n`,
+  );
+
+  const auditLockRefused = await appendTaskExecutionAuditEvent({
+    projectRoot: codexProcessAuditRoot,
+    taskId: codexProcessAuditDraft.value.taskId,
+    event: codexProcessAuditDraft.value,
+    forbiddenValues: ["owner-token", "sk-codex-smoke"],
+  });
+  assert.equal(
+    auditLockRefused.ok,
+    false,
+    "audit lock ownership #77: a held append lock must refuse the append",
+  );
+  assert.equal(
+    auditLockRefused.error.code,
+    "task_execution_audit_append_locked",
+    "audit lock ownership #77: must fail with the append-locked code",
+  );
+  assert.equal(
+    await pathExists(auditLockPath),
+    true,
+    "audit lock ownership #77: a losing caller must not delete the holder's lock",
+  );
+  await rm(auditLockPath, { force: true });
   const codexProcessGate = evaluateTaskExecutionWorkerProcessGate({
     configuration: smokeCodexConfiguration,
     request: codexProcessWorkerRequest,

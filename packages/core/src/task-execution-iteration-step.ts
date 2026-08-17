@@ -1422,11 +1422,17 @@ export async function updateIterationStep(
   // run the read-transition-rename cycle concurrently with the winner.  Both
   // would return ok and both would believe they own the launch — the lock would
   // actively cause the duplicate launch it exists to prevent.
-  let lockCreatedByThisCaller = false;
+  // Set immediately after open() returns, NOT after the write completes: if
+  // writeFile or sync throws, the lock file still exists on disk and this caller
+  // is the right agent to clean it up.  Gating on "fully written" instead would
+  // trade the winner-deletion race for a permanently orphaned lock, wedging the
+  // step until an operator intervenes — worse than the race it replaced.
+  let lockFileOpenedByThisCaller = false;
 
   try {
     try {
       lockHandle = await open(lockPath, "wx");
+      lockFileOpenedByThisCaller = true;
       await lockHandle.writeFile(
         `${JSON.stringify({
           taskId: input.taskId,
@@ -1438,7 +1444,6 @@ export async function updateIterationStep(
       await lockHandle.sync();
       await lockHandle.close();
       lockHandle = undefined;
-      lockCreatedByThisCaller = true;
     } catch (error) {
       if (
         isRecord(error) &&
@@ -1476,7 +1481,7 @@ export async function updateIterationStep(
       await lockHandle.close().catch(() => undefined);
     }
 
-    if (lockCreatedByThisCaller) {
+    if (lockFileOpenedByThisCaller) {
       await unlink(lockPath).catch(() => undefined);
     }
   }
