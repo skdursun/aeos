@@ -26,6 +26,10 @@ import type {
   AgenticRunnerPlanningSummary,
 } from "./agentic-runner-planning.js";
 import type { AgenticRunnerResumeState } from "./agentic-runner.js";
+// Type-only import: erased at runtime, so this does not create an import cycle
+// with the iteration budget module, which imports this one for its durable
+// load/update path.
+import type { PersistedIterationBudget } from "./task-execution-iteration-budget.js";
 import type { AeosError, Result } from "./types.js";
 
 export const AEOS_TASK_STATE_SCHEMA_VERSION = 1;
@@ -117,6 +121,15 @@ export interface PersistedTaskState {
   readonly verifier: PersistedTaskVerifierRequirement;
   readonly completionGate: PersistedTaskCompletionGate;
   readonly resume?: AgenticRunnerResumeState;
+  /**
+   * Bounded orchestration iteration budget (TASK-0327).  Additive and
+   * optional: state written before it existed still validates, and state
+   * written with it stays readable by the previous validator, so
+   * AEOS_TASK_STATE_SCHEMA_VERSION is unchanged.  Stored here rather than in a
+   * parallel file so it inherits this layer's revision guard, atomic write and
+   * restart read-back.
+   */
+  readonly iterationBudget?: PersistedIterationBudget;
   readonly issues: readonly AgenticLifecycleIssue[];
   readonly revision: number;
   readonly safety: PersistedTaskSafetyMetadata;
@@ -970,6 +983,190 @@ function validateRequiredStateSections(
   return ok(undefined);
 }
 
+/**
+ * Structural validation of the optional iteration budget (TASK-0327).
+ *
+ * This layer deliberately validates SHAPE only.  Policy validation — whether
+ * the stored limits are within the current system policy ceiling — lives in
+ * `validatePersistedIterationBudget` and runs at the point where the budget
+ * would authorise a launch.  The split is intentional: lowering the ceiling
+ * must not make an existing task state unloadable, it must make the budget
+ * unable to authorise anything.  Refusing to load would strand the task and
+ * hide its durable stop reason from the operator.
+ *
+ * The field is additive and optional, so state written before it existed
+ * still validates and AEOS_TASK_STATE_SCHEMA_VERSION is unchanged.
+ */
+function validateIterationBudgetShape(
+  value: unknown,
+): Result<void, TaskStatePersistenceError> {
+  // Safe-integer rather than the file's looser isNonNegativeInteger: the
+  // overconsumption comparison below is only meaningful if both operands are
+  // exact, and diverging from isBoundedCount in the budget module would leave
+  // one validator calling a value valid while the other calls it invalid.
+  const isBoundedBudgetCount = (candidate: unknown): candidate is number =>
+    typeof candidate === "number" &&
+    Number.isSafeInteger(candidate) &&
+    candidate >= 0;
+
+  if (value === undefined) {
+    return ok(undefined);
+  }
+
+  if (!isRecord(value)) {
+    return err(
+      createError(
+        "task_state_invalid_iteration_budget",
+        "Persisted task state iteration budget must be an object when present.",
+        "validation",
+      ),
+    );
+  }
+
+  if (typeof value.budgetId !== "string" || value.budgetId.length === 0) {
+    return err(
+      createError(
+        "task_state_invalid_iteration_budget",
+        "Persisted task state iteration budget id must be a non-empty string.",
+        "validation",
+      ),
+    );
+  }
+
+  // limitsAuthority is part of the shape, not the policy: the set of legal
+  // authorities does not change when a ceiling is tightened, so an unknown
+  // value here is a malformed record rather than a newly-out-of-policy one.
+  // Validating it at load keeps the split applied uniformly — the stop-reason
+  // pair is already checked below — and surfaces the fault at the persistence
+  // boundary instead of at the first evaluation attempt.
+  if (
+    value.limitsAuthority !== "system_default" &&
+    value.limitsAuthority !== "operator"
+  ) {
+    return err(
+      createError(
+        "task_state_invalid_iteration_budget",
+        "Persisted task state iteration budget limits authority must be system_default or operator.",
+        "validation",
+      ),
+    );
+  }
+
+  if (!isRecord(value.limits) || !isRecord(value.consumption)) {
+    return err(
+      createError(
+        "task_state_invalid_iteration_budget",
+        "Persisted task state iteration budget must carry limits and consumption objects.",
+        "validation",
+      ),
+    );
+  }
+
+  for (const field of [
+    "maxSteps",
+    "maxWallTimeMs",
+    "maxPlannerCalls",
+    "maxWorkerCalls",
+    "maxRetries",
+  ]) {
+    if (!isBoundedBudgetCount(value.limits[field])) {
+      return err(
+        createError(
+          "task_state_invalid_iteration_budget",
+          "Persisted task state iteration budget limits must be non-negative safe integers.",
+          "validation",
+          { field },
+        ),
+      );
+    }
+  }
+
+  for (const field of ["steps", "plannerCalls", "workerCalls", "retries"]) {
+    if (!isBoundedBudgetCount(value.consumption[field])) {
+      return err(
+        createError(
+          "task_state_invalid_iteration_budget",
+          "Persisted task state iteration budget consumption must be non-negative safe integers.",
+          "validation",
+          { field },
+        ),
+      );
+    }
+  }
+
+  // Consumption can never exceed its own limit: the recording path evaluates
+  // before it increments, so a state where it has is corrupted rather than
+  // merely exhausted.
+  for (const [consumed, limit] of [
+    ["steps", "maxSteps"],
+    ["plannerCalls", "maxPlannerCalls"],
+    ["workerCalls", "maxWorkerCalls"],
+    ["retries", "maxRetries"],
+  ] as const) {
+    if (
+      (value.consumption[consumed] as number) > (value.limits[limit] as number)
+    ) {
+      return err(
+        createError(
+          "task_state_iteration_budget_overconsumed",
+          "Persisted task state iteration budget consumption cannot exceed its limit.",
+          "validation",
+          {
+            counter: consumed,
+            consumed: value.consumption[consumed] as number,
+            limit: value.limits[limit] as number,
+          },
+        ),
+      );
+    }
+  }
+
+  const stopReason = value.stopReason;
+  const stoppedAt = value.stoppedAt;
+
+  // `undefined !== null` is true in JavaScript, so treat an omitted key the
+  // same as an explicit null: both mean "not stopped".
+  if (stopReason === null && stoppedAt !== null && stoppedAt !== undefined) {
+    return err(
+      createError(
+        "task_state_invalid_iteration_budget",
+        "Persisted task state iteration budget cannot carry a stop timestamp without a stop reason.",
+        "validation",
+      ),
+    );
+  }
+
+  if (
+    stopReason !== null &&
+    (typeof stopReason !== "string" || typeof stoppedAt !== "string")
+  ) {
+    return err(
+      createError(
+        "task_state_invalid_iteration_budget",
+        "Persisted task state iteration budget stop reason and timestamp must be strings together.",
+        "validation",
+      ),
+    );
+  }
+
+  // A stop timestamp that cannot be parsed is not durable evidence of when the
+  // run stopped, and both operator projections emit it verbatim.
+  if (
+    typeof stoppedAt === "string" &&
+    Number.isNaN(Date.parse(stoppedAt))
+  ) {
+    return err(
+      createError(
+        "task_state_invalid_iteration_budget",
+        "Persisted task state iteration budget stop timestamp must be a parseable ISO-8601 string.",
+        "validation",
+      ),
+    );
+  }
+
+  return ok(undefined);
+}
+
 export function validatePersistedTaskState(
   value: unknown,
 ): Result<PersistedTaskState, TaskStatePersistenceError> {
@@ -1064,6 +1261,14 @@ export function validatePersistedTaskState(
 
   if (!completionResult.ok) {
     return completionResult;
+  }
+
+  const iterationBudgetResult = validateIterationBudgetShape(
+    value.iterationBudget,
+  );
+
+  if (!iterationBudgetResult.ok) {
+    return iterationBudgetResult;
   }
 
   return ok(value as unknown as PersistedTaskState);

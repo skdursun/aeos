@@ -295,6 +295,16 @@ import {
   loadTaskProgressLedger,
   renderTaskProgressLedgerText,
   toTaskProgressLedgerJson,
+  AEOS_ITERATION_BUDGET_POLICY_CEILING,
+  AEOS_ITERATION_BUDGET_SYSTEM_DEFAULT,
+  createIterationBudget,
+  evaluateIterationBudget,
+  recordIterationBudgetLaunch,
+  refuseIterationBudgetProposal,
+  renderIterationBudgetText,
+  resolveIterationBudgetLimits,
+  toIterationBudgetJson,
+  validatePersistedIterationBudget,
 } from "../dist/index.js";
 import {
   directoryInsteadOfFilePathCheck,
@@ -37465,4 +37475,1132 @@ try {
   console.log("progress ledger smoke tests passed");
 } finally {
   await rm(progressLedgerTempRoot, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// TASK-0327 — Bounded orchestration iteration contract smoke tests
+// ---------------------------------------------------------------------------
+// Covers GitHub Issue #7. Unbounded autonomy is explicitly forbidden: these
+// tests assert that limits come only from system/operator authority, that a
+// planner/worker proposal cannot raise them, that exhaustion blocks any new
+// launch, and that the stop reason is durable and deterministic.
+// ---------------------------------------------------------------------------
+const iterationBudgetTempRoot = await mkdtemp(
+  join(tmpdir(), "aeos-iteration-budget-smoke-"),
+);
+
+try {
+  const budgetProjectRoot = join(iterationBudgetTempRoot, "project");
+  await mkdir(budgetProjectRoot, { recursive: true });
+
+  const budgetStartedAt = "2026-08-17T00:00:00.000Z";
+
+  function budgetAt(offsetMs) {
+    return new Date(Date.parse(budgetStartedAt) + offsetMs).toISOString();
+  }
+
+  // Attach a budget to a fresh task state and return { taskId, revision }.
+  async function budgetSeedTask(taskId, budget) {
+    const initial = await saveTaskState({
+      projectRoot: budgetProjectRoot,
+      state: createInitialTaskState({
+        taskId,
+        sourceTaskId: taskId,
+        createdAt: budgetStartedAt,
+      }),
+    });
+    assert.equal(initial.ok, true, `iteration budget smoke: ${taskId} initial save`);
+
+    const attached = await updateTaskState({
+      projectRoot: budgetProjectRoot,
+      taskId,
+      expectedRevision: 1,
+      updatedAt: budgetStartedAt,
+      update(state) {
+        return { ...state, lifecycleState: "planned", iterationBudget: budget };
+      },
+    });
+    assert.equal(attached.ok, true, `iteration budget smoke: ${taskId} budget attach`);
+    return attached.value.state.revision;
+  }
+
+  // -----------------------------------------------------------------------
+  // Test A: iteration_budget_default_preserves_one_hop
+  // With no operator configuration the conservative default applies, and it
+  // reproduces existing one-hop behaviour exactly: one launch, then stop.
+  // -----------------------------------------------------------------------
+  const budgetDefault = createIterationBudget({
+    budgetId: "budget-default",
+    startedAt: budgetStartedAt,
+  });
+  assert.equal(
+    budgetDefault.ok,
+    true,
+    "iteration_budget_default_preserves_one_hop: default budget should create",
+  );
+  assert.equal(
+    budgetDefault.value.limitsAuthority,
+    "system_default",
+    "iteration_budget_default_preserves_one_hop: authority must be system_default",
+  );
+  assert.equal(
+    budgetDefault.value.limits.maxSteps,
+    2,
+    "iteration_budget_default_preserves_one_hop: default maxSteps must be 2 (planner call + worker call)",
+  );
+  assert.equal(
+    budgetDefault.value.limits.maxPlannerCalls === 1 &&
+      budgetDefault.value.limits.maxWorkerCalls === 1,
+    true,
+    "iteration_budget_default_preserves_one_hop: per-kind caps of 1 are what pin the shape to one hop",
+  );
+  assert.equal(
+    AEOS_ITERATION_BUDGET_SYSTEM_DEFAULT.maxRetries,
+    0,
+    "iteration_budget_default_preserves_one_hop: default must permit no retries",
+  );
+
+  const budgetDefaultTaskId = "TASK-BUDGET-DEFAULT";
+  let budgetDefaultRevision = await budgetSeedTask(
+    budgetDefaultTaskId,
+    budgetDefault.value,
+  );
+
+  // The existing one-hop shape: a planner call followed by a worker call. BOTH
+  // must be permitted under the untouched default, or the default would be a
+  // breaking config requirement rather than a conservative no-op.
+  const budgetPlannerLaunch = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+    expectedTaskRevision: budgetDefaultRevision,
+    nextLaunch: "planner_call",
+    occurredAt: budgetAt(1000),
+  });
+  assert.equal(
+    budgetPlannerLaunch.ok && budgetPlannerLaunch.value.decision.allowed,
+    true,
+    "iteration_budget_default_preserves_one_hop: the planner call must be allowed",
+  );
+  assert.equal(
+    budgetPlannerLaunch.value.decision.safety.authority,
+    "system",
+    "iteration_budget_default_preserves_one_hop: decisions must carry system authority",
+  );
+  assert.equal(
+    budgetPlannerLaunch.value.decision.safety.modelProposedLimitsAccepted,
+    false,
+    "iteration_budget_default_preserves_one_hop: model-proposed limits must never be accepted",
+  );
+  assert.equal(
+    budgetPlannerLaunch.value.decision.safety.unboundedAutonomyPermitted,
+    false,
+    "iteration_budget_default_preserves_one_hop: unbounded autonomy must never be permitted",
+  );
+  budgetDefaultRevision = budgetPlannerLaunch.value.taskStateRevision;
+
+  const budgetFirstLaunch = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+    expectedTaskRevision: budgetDefaultRevision,
+    nextLaunch: "worker_call",
+    occurredAt: budgetAt(1500),
+  });
+  assert.equal(
+    budgetFirstLaunch.ok && budgetFirstLaunch.value.decision.allowed,
+    true,
+    "iteration_budget_default_preserves_one_hop: the worker call of a one hop must be allowed",
+  );
+  assert.equal(
+    budgetFirstLaunch.value.budget.consumption.steps,
+    2,
+    "iteration_budget_default_preserves_one_hop: a one hop must consume exactly two steps",
+  );
+  budgetDefaultRevision = budgetFirstLaunch.value.taskStateRevision;
+
+  const budgetSecondLaunch = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+    expectedTaskRevision: budgetDefaultRevision,
+    nextLaunch: "worker_call",
+    occurredAt: budgetAt(2000),
+  });
+  assert.equal(
+    budgetSecondLaunch.ok,
+    true,
+    "iteration_budget_default_preserves_one_hop: the third evaluation should return a decision",
+  );
+  assert.equal(
+    budgetSecondLaunch.value.decision.allowed,
+    false,
+    "iteration_budget_default_preserves_one_hop: a second hop must be refused under the default",
+  );
+  assert.equal(
+    budgetSecondLaunch.value.decision.stopReason,
+    "max_steps_exhausted",
+    "iteration_budget_default_preserves_one_hop: stop reason must be max_steps_exhausted",
+  );
+  assert.equal(
+    budgetSecondLaunch.value.budget.consumption.steps,
+    2,
+    "iteration_budget_default_preserves_one_hop: a refused launch must consume nothing",
+  );
+  budgetDefaultRevision = budgetSecondLaunch.value.taskStateRevision;
+
+  // -----------------------------------------------------------------------
+  // Test B: iteration_budget_zero_limit_blocks_everything
+  // -----------------------------------------------------------------------
+  const budgetZero = createIterationBudget({
+    budgetId: "budget-zero",
+    startedAt: budgetStartedAt,
+    operatorLimits: { maxSteps: 0, maxWorkerCalls: 0, maxPlannerCalls: 0 },
+  });
+  assert.equal(
+    budgetZero.ok,
+    true,
+    "iteration_budget_zero_limit_blocks_everything: zero is a legal limit",
+  );
+  assert.equal(
+    budgetZero.value.limitsAuthority,
+    "operator",
+    "iteration_budget_zero_limit_blocks_everything: operator-supplied limits must be marked operator",
+  );
+
+  const budgetZeroDecision = evaluateIterationBudget({
+    budget: budgetZero.value,
+    nextLaunch: "worker_call",
+    evaluatedAt: budgetAt(1),
+  });
+  assert.equal(
+    budgetZeroDecision.value.allowed,
+    false,
+    "iteration_budget_zero_limit_blocks_everything: nothing may launch at zero",
+  );
+  assert.equal(
+    budgetZeroDecision.value.stopReason,
+    "max_steps_exhausted",
+    "iteration_budget_zero_limit_blocks_everything: stop reason must be max_steps_exhausted",
+  );
+
+  // A zero wall-time budget refuses even at exactly startedAt: elapsedMs is 0,
+  // and the comparison is `>=`. Driven through the durable path because a
+  // regression from `>=` to `>` would otherwise pass every other test.
+  const budgetZeroWallTime = createIterationBudget({
+    budgetId: "budget-zero-wall-time",
+    startedAt: budgetStartedAt,
+    operatorLimits: { maxSteps: 5, maxWorkerCalls: 5, maxWallTimeMs: 0 },
+  });
+  assert.equal(
+    budgetZeroWallTime.ok,
+    true,
+    "iteration_budget_zero_limit_blocks_everything: a zero wall-time budget should create",
+  );
+
+  const budgetZeroWallTimeTaskId = "TASK-BUDGET-ZERO-WALL-TIME";
+  const budgetZeroWallTimeRevision = await budgetSeedTask(
+    budgetZeroWallTimeTaskId,
+    budgetZeroWallTime.value,
+  );
+  const budgetZeroWallTimeLaunch = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetZeroWallTimeTaskId,
+    expectedTaskRevision: budgetZeroWallTimeRevision,
+    nextLaunch: "worker_call",
+    // Exactly startedAt: elapsedMs === 0, which must already be exhausted.
+    occurredAt: budgetStartedAt,
+  });
+  assert.equal(
+    budgetZeroWallTimeLaunch.value.decision.allowed,
+    false,
+    "iteration_budget_zero_limit_blocks_everything: a zero wall-time budget must refuse at elapsed 0",
+  );
+  assert.equal(
+    budgetZeroWallTimeLaunch.value.decision.stopReason,
+    "max_wall_time_exhausted",
+    "iteration_budget_zero_limit_blocks_everything: stop reason must be max_wall_time_exhausted",
+  );
+
+  // A forged limits authority is a shape fault: the set of legal authorities
+  // does not change when a ceiling moves, so it is caught at the persistence
+  // boundary rather than deferred to the first evaluation attempt.
+  const budgetZeroWallTimeState = await loadTaskState({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetZeroWallTimeTaskId,
+  });
+  const budgetForgedAuthority = validatePersistedTaskState({
+    ...budgetZeroWallTimeState.value.state,
+    iterationBudget: {
+      ...budgetZeroWallTime.value,
+      limitsAuthority: "model",
+    },
+  });
+  assert.equal(
+    budgetForgedAuthority.ok,
+    false,
+    "iteration_budget_zero_limit_blocks_everything: a model-claimed limits authority must not validate",
+  );
+  assert.equal(
+    budgetForgedAuthority.error.code,
+    "task_state_invalid_iteration_budget",
+    "iteration_budget_zero_limit_blocks_everything: must fail at the persistence boundary",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test C: iteration_budget_ceiling_is_the_hard_boundary
+  // Limits exactly at the ceiling are accepted; one above is refused, not
+  // silently clamped — a clamped request would look like a success.
+  // -----------------------------------------------------------------------
+  const budgetAtCeiling = createIterationBudget({
+    budgetId: "budget-ceiling",
+    startedAt: budgetStartedAt,
+    operatorLimits: { ...AEOS_ITERATION_BUDGET_POLICY_CEILING },
+  });
+  assert.equal(
+    budgetAtCeiling.ok,
+    true,
+    "iteration_budget_ceiling_is_the_hard_boundary: limits at the ceiling must be accepted",
+  );
+  assert.equal(
+    budgetAtCeiling.value.limits.maxSteps,
+    AEOS_ITERATION_BUDGET_POLICY_CEILING.maxSteps,
+    "iteration_budget_ceiling_is_the_hard_boundary: ceiling values must be preserved exactly",
+  );
+
+  for (const field of [
+    "maxSteps",
+    "maxWallTimeMs",
+    "maxPlannerCalls",
+    "maxWorkerCalls",
+    "maxRetries",
+  ]) {
+    const overCeiling = createIterationBudget({
+      budgetId: "budget-over-ceiling",
+      startedAt: budgetStartedAt,
+      operatorLimits: {
+        [field]: AEOS_ITERATION_BUDGET_POLICY_CEILING[field] + 1,
+      },
+    });
+    assert.equal(
+      overCeiling.ok,
+      false,
+      `iteration_budget_ceiling_is_the_hard_boundary: ${field} above the ceiling must be refused`,
+    );
+    assert.equal(
+      overCeiling.error.code,
+      "iteration_budget_limit_exceeds_policy_ceiling",
+      `iteration_budget_ceiling_is_the_hard_boundary: ${field} must fail with the ceiling code`,
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Test D: iteration_budget_invalid_config_fails_closed
+  // Zero/negative/overflow protection on operator configuration.
+  // -----------------------------------------------------------------------
+  for (const [label, value] of [
+    ["negative", -1],
+    ["fractional", 2.5],
+    ["overflow", Number.MAX_SAFE_INTEGER + 2],
+    ["not-a-number", Number.NaN],
+    ["infinite", Number.POSITIVE_INFINITY],
+    ["string", "10"],
+  ]) {
+    const invalid = resolveIterationBudgetLimits({ maxSteps: value });
+    assert.equal(
+      invalid.ok,
+      false,
+      `iteration_budget_invalid_config_fails_closed: a ${label} limit must be refused`,
+    );
+    assert.equal(
+      ["iteration_budget_invalid_limit", "iteration_budget_limit_exceeds_policy_ceiling"].includes(
+        invalid.error.code,
+      ),
+      true,
+      `iteration_budget_invalid_config_fails_closed: a ${label} limit must fail closed`,
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Test E: iteration_budget_hostile_proposal_cannot_raise_limits
+  // A planner/worker/model proposal is always refused, and — the part that
+  // matters — the durable budget is byte-identical afterwards.
+  // -----------------------------------------------------------------------
+  const budgetBeforeProposal = await loadTaskState({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+  });
+  const budgetSnapshotBefore = JSON.stringify(
+    toIterationBudgetJson(budgetBeforeProposal.value.state.iterationBudget),
+  );
+
+  for (const proposedBy of ["planner", "worker", "model"]) {
+    const hostile = refuseIterationBudgetProposal({
+      budget: budgetBeforeProposal.value.state.iterationBudget,
+      proposedLimits: {
+        maxSteps: 9999,
+        maxWallTimeMs: 999999999,
+        maxRetries: 999,
+      },
+      proposedBy,
+    });
+    assert.equal(
+      hostile.ok,
+      false,
+      `iteration_budget_hostile_proposal_cannot_raise_limits: a ${proposedBy} proposal must be refused`,
+    );
+    assert.equal(
+      hostile.error.code,
+      "iteration_budget_model_proposal_refused",
+      `iteration_budget_hostile_proposal_cannot_raise_limits: ${proposedBy} must fail with the refusal code`,
+    );
+  }
+
+  // Cosmetic on its own: refuseIterationBudgetProposal is pure and has no write
+  // path, so this could not change anyway. The load-bearing version of this
+  // check — that the original limits still BIND after a refusal — is Test N.
+  const budgetAfterProposal = await loadTaskState({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+  });
+  assert.equal(
+    JSON.stringify(
+      toIterationBudgetJson(budgetAfterProposal.value.state.iterationBudget),
+    ),
+    budgetSnapshotBefore,
+    "iteration_budget_hostile_proposal_cannot_raise_limits: the durable budget must be unchanged",
+  );
+
+  // A budget stored above the current ceiling (ceiling lowered, or the file was
+  // hand-edited) cannot authorise anything, while the TASK STATE around it
+  // still loads through the shape validator.  The split is deliberate: refusing
+  // to load would strand the task and hide its stop reason from the operator.
+  const budgetOverCeilingPersisted = {
+    ...budgetDefault.value,
+    budgetId: "budget-persisted-over-ceiling",
+    limits: {
+      ...budgetDefault.value.limits,
+      maxSteps: AEOS_ITERATION_BUDGET_POLICY_CEILING.maxSteps + 1,
+    },
+  };
+  const budgetOverCeilingValidation = validatePersistedIterationBudget(
+    budgetOverCeilingPersisted,
+  );
+  assert.equal(
+    budgetOverCeilingValidation.ok,
+    false,
+    "iteration_budget_hostile_proposal_cannot_raise_limits: a stored over-ceiling budget must not validate",
+  );
+
+  // The other half of the documented split: the persistence layer validates
+  // SHAPE only, so the over-ceiling state still LOADS. Refusing to load would
+  // strand the task and hide its durable stop reason from the operator.
+  const budgetOverCeilingStateShape = validatePersistedTaskState({
+    ...budgetAfterProposal.value.state,
+    iterationBudget: budgetOverCeilingPersisted,
+  });
+  assert.equal(
+    budgetOverCeilingStateShape.ok,
+    true,
+    "iteration_budget_hostile_proposal_cannot_raise_limits: an over-ceiling budget must still be shape-valid state",
+  );
+  const budgetOverCeilingDecision = evaluateIterationBudget({
+    budget: budgetOverCeilingPersisted,
+    nextLaunch: "worker_call",
+    evaluatedAt: budgetAt(1),
+  });
+  assert.equal(
+    budgetOverCeilingDecision.ok,
+    false,
+    "iteration_budget_hostile_proposal_cannot_raise_limits: an over-ceiling budget must authorise nothing",
+  );
+  assert.equal(
+    budgetOverCeilingDecision.error.code,
+    "iteration_budget_limit_exceeds_policy_ceiling",
+    "iteration_budget_hostile_proposal_cannot_raise_limits: must fail with the ceiling code",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test F: iteration_budget_stop_reason_is_deterministic
+  // Wall time, steps and planner calls are all exhausted at once.  The stop
+  // reason must be the same on every evaluation, and must follow the exported
+  // precedence rather than evaluation order.
+  // -----------------------------------------------------------------------
+  const budgetAllExhausted = {
+    ...budgetDefault.value,
+    budgetId: "budget-all-exhausted",
+    limits: {
+      maxSteps: 2,
+      maxWallTimeMs: 1000,
+      maxPlannerCalls: 2,
+      maxWorkerCalls: 2,
+      maxRetries: 1,
+    },
+    consumption: { steps: 2, plannerCalls: 2, workerCalls: 2, retries: 1 },
+  };
+
+  const budgetTieDecisions = [
+    evaluateIterationBudget({
+      budget: budgetAllExhausted,
+      nextLaunch: "planner_call",
+      evaluatedAt: budgetAt(5000),
+    }),
+    evaluateIterationBudget({
+      budget: budgetAllExhausted,
+      nextLaunch: "planner_call",
+      evaluatedAt: budgetAt(5000),
+    }),
+  ];
+  assert.equal(
+    budgetTieDecisions[0].value.stopReason,
+    "max_wall_time_exhausted",
+    "iteration_budget_stop_reason_is_deterministic: wall time must win the tie",
+  );
+  assert.equal(
+    budgetTieDecisions[0].value.stopReason,
+    budgetTieDecisions[1].value.stopReason,
+    "iteration_budget_stop_reason_is_deterministic: repeated evaluation must agree",
+  );
+
+  // Each limit in isolation yields its own reason.
+  const budgetIsolatedCases = [
+    ["max_steps_exhausted", "worker_call", { steps: 2, plannerCalls: 0, workerCalls: 0, retries: 0 }],
+    ["max_planner_calls_exhausted", "planner_call", { steps: 0, plannerCalls: 2, workerCalls: 0, retries: 0 }],
+    ["max_worker_calls_exhausted", "worker_call", { steps: 0, plannerCalls: 0, workerCalls: 2, retries: 0 }],
+    ["max_retries_exhausted", "retry", { steps: 0, plannerCalls: 0, workerCalls: 0, retries: 1 }],
+  ];
+  for (const [expectedReason, launch, consumption] of budgetIsolatedCases) {
+    const isolated = evaluateIterationBudget({
+      budget: { ...budgetAllExhausted, consumption },
+      nextLaunch: launch,
+      evaluatedAt: budgetAt(1),
+    });
+    assert.equal(
+      isolated.value.stopReason,
+      expectedReason,
+      `iteration_budget_stop_reason_is_deterministic: ${launch} must report ${expectedReason}`,
+    );
+  }
+
+  // Simultaneous max_steps + max_worker_calls exhaustion: steps wins by the
+  // exported precedence.  Named here rather than left to Test A's incidental
+  // coverage, so a precedence inversion is caught by a test that says so.
+  const budgetStepsBeatsWorker = evaluateIterationBudget({
+    budget: {
+      ...budgetAllExhausted,
+      consumption: { steps: 2, plannerCalls: 0, workerCalls: 2, retries: 0 },
+    },
+    nextLaunch: "worker_call",
+    evaluatedAt: budgetAt(1),
+  });
+  assert.equal(
+    budgetStepsBeatsWorker.value.stopReason,
+    "max_steps_exhausted",
+    "iteration_budget_stop_reason_is_deterministic: steps must outrank worker calls in the precedence",
+  );
+
+  // A planner-call limit must not block a worker call, and vice versa.
+  const budgetCrossLimit = evaluateIterationBudget({
+    budget: {
+      ...budgetAllExhausted,
+      consumption: { steps: 0, plannerCalls: 2, workerCalls: 0, retries: 0 },
+    },
+    nextLaunch: "worker_call",
+    evaluatedAt: budgetAt(1),
+  });
+  assert.equal(
+    budgetCrossLimit.value.allowed,
+    true,
+    "iteration_budget_stop_reason_is_deterministic: an exhausted planner limit must not block a worker call",
+  );
+
+  // A clock before the budget start cannot prove a wall-time limit is met.
+  const budgetBackwardsClock = evaluateIterationBudget({
+    budget: budgetDefault.value,
+    nextLaunch: "worker_call",
+    evaluatedAt: budgetAt(-1),
+  });
+  assert.equal(
+    budgetBackwardsClock.ok,
+    false,
+    "iteration_budget_stop_reason_is_deterministic: a backwards clock must fail closed",
+  );
+  assert.equal(
+    budgetBackwardsClock.error.code,
+    "iteration_budget_evaluation_before_start",
+    "iteration_budget_stop_reason_is_deterministic: must fail with the before-start code",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test G: iteration_budget_stop_is_durable_and_recorded_once
+  // The stop reason survives a durable read-back, and a second refusal leaves
+  // the budget byte-identical — a consumed stop is never re-stamped.
+  // -----------------------------------------------------------------------
+  const budgetReloaded = await loadTaskState({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+  });
+  assert.equal(
+    budgetReloaded.value.state.iterationBudget.stopReason,
+    "max_steps_exhausted",
+    "iteration_budget_stop_is_durable_and_recorded_once: the stop reason must survive read-back",
+  );
+  assert.equal(
+    budgetReloaded.value.state.iterationBudget.stoppedAt,
+    budgetAt(2000),
+    "iteration_budget_stop_is_durable_and_recorded_once: the stop timestamp must be durable",
+  );
+
+  const budgetStoppedSnapshot = JSON.stringify(
+    toIterationBudgetJson(budgetReloaded.value.state.iterationBudget),
+  );
+
+  const budgetThirdLaunch = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+    expectedTaskRevision: budgetDefaultRevision,
+    nextLaunch: "planner_call",
+    occurredAt: budgetAt(60000),
+  });
+  assert.equal(
+    budgetThirdLaunch.value.decision.allowed,
+    false,
+    "iteration_budget_stop_is_durable_and_recorded_once: an already-stopped budget stays stopped",
+  );
+  assert.equal(
+    JSON.stringify(toIterationBudgetJson(budgetThirdLaunch.value.budget)),
+    budgetStoppedSnapshot,
+    "iteration_budget_stop_is_durable_and_recorded_once: a stopped budget must not be re-stamped",
+  );
+  assert.equal(
+    budgetThirdLaunch.value.decision.stopReason,
+    "max_steps_exhausted",
+    "iteration_budget_stop_is_durable_and_recorded_once: the original stop reason must be reported",
+  );
+
+  // Two independent durable reads project identically.
+  const budgetReadA = await loadTaskState({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+  });
+  const budgetReadB = await loadTaskState({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+  });
+  assert.equal(
+    JSON.stringify(toIterationBudgetJson(budgetReadA.value.state.iterationBudget)),
+    JSON.stringify(toIterationBudgetJson(budgetReadB.value.state.iterationBudget)),
+    "iteration_budget_stop_is_durable_and_recorded_once: durable read-back must be identical",
+  );
+  assert.equal(
+    renderIterationBudgetText(budgetReadA.value.state.iterationBudget).includes(
+      "status: stopped (max_steps_exhausted)",
+    ),
+    true,
+    "iteration_budget_stop_is_durable_and_recorded_once: the stop reason must be operator-visible",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test H: iteration_budget_stale_revision_refused
+  // -----------------------------------------------------------------------
+  const budgetStale = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+    expectedTaskRevision: 1,
+    nextLaunch: "worker_call",
+    occurredAt: budgetAt(70000),
+  });
+  assert.equal(
+    budgetStale.ok,
+    false,
+    "iteration_budget_stale_revision_refused: a stale revision must not record",
+  );
+  assert.equal(
+    budgetStale.error.code,
+    "task_state_revision_conflict",
+    "iteration_budget_stale_revision_refused: must fail with the revision-conflict code",
+  );
+
+  // A task carrying no budget cannot have a launch recorded against it.
+  const budgetMissingTaskId = "TASK-BUDGET-MISSING";
+  const budgetMissingInitial = await saveTaskState({
+    projectRoot: budgetProjectRoot,
+    state: createInitialTaskState({
+      taskId: budgetMissingTaskId,
+      sourceTaskId: budgetMissingTaskId,
+      createdAt: budgetStartedAt,
+    }),
+  });
+  assert.equal(
+    budgetMissingInitial.ok,
+    true,
+    "iteration_budget_stale_revision_refused: budget-less task should save",
+  );
+  const budgetMissing = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetMissingTaskId,
+    expectedTaskRevision: 1,
+    nextLaunch: "worker_call",
+    occurredAt: budgetAt(1),
+  });
+  assert.equal(
+    budgetMissing.error.code,
+    "iteration_budget_not_present",
+    "iteration_budget_stale_revision_refused: a missing budget must fail closed",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test I: iteration_budget_corrupt_state_refused
+  // Overconsumed and inconsistent stop states are corruption, not exhaustion.
+  // -----------------------------------------------------------------------
+  const budgetOverconsumed = validatePersistedTaskState({
+    ...budgetReadA.value.state,
+    iterationBudget: {
+      ...budgetDefault.value,
+      consumption: { steps: 5, plannerCalls: 0, workerCalls: 0, retries: 0 },
+    },
+  });
+  assert.equal(
+    budgetOverconsumed.ok,
+    false,
+    "iteration_budget_corrupt_state_refused: overconsumption must not validate",
+  );
+  assert.equal(
+    budgetOverconsumed.error.code,
+    "task_state_iteration_budget_overconsumed",
+    "iteration_budget_corrupt_state_refused: must fail with the overconsumed code",
+  );
+
+  const budgetStopWithoutReason = validatePersistedIterationBudget({
+    ...budgetDefault.value,
+    stopReason: null,
+    stoppedAt: budgetAt(1),
+  });
+  assert.equal(
+    budgetStopWithoutReason.error.code,
+    "iteration_budget_inconsistent_stop_state",
+    "iteration_budget_corrupt_state_refused: a stop timestamp without a reason must fail closed",
+  );
+
+  const budgetUnknownReason = validatePersistedIterationBudget({
+    ...budgetDefault.value,
+    stopReason: "operator_felt_like_it",
+    stoppedAt: budgetAt(1),
+  });
+  assert.equal(
+    budgetUnknownReason.error.code,
+    "iteration_budget_invalid_stop_reason",
+    "iteration_budget_corrupt_state_refused: an unrecognised stop reason must fail closed",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test J: iteration_budget_multi_step_within_bounds
+  // A widened but policy-bounded budget permits several launches and then
+  // stops deterministically. No loop is implemented here — each launch is a
+  // separate explicit call, which is the whole point of the contract.
+  // -----------------------------------------------------------------------
+  const budgetWide = createIterationBudget({
+    budgetId: "budget-wide",
+    startedAt: budgetStartedAt,
+    operatorLimits: {
+      maxSteps: 4,
+      maxPlannerCalls: 2,
+      maxWorkerCalls: 2,
+      maxRetries: 1,
+      maxWallTimeMs: 600000,
+    },
+  });
+  assert.equal(
+    budgetWide.ok,
+    true,
+    "iteration_budget_multi_step_within_bounds: a policy-bounded wide budget should create",
+  );
+
+  const budgetWideTaskId = "TASK-BUDGET-WIDE";
+  let budgetWideRevision = await budgetSeedTask(budgetWideTaskId, budgetWide.value);
+
+  const budgetWideSequence = ["planner_call", "worker_call", "planner_call", "worker_call"];
+  for (const [index, launch] of budgetWideSequence.entries()) {
+    const step = await recordIterationBudgetLaunch({
+      projectRoot: budgetProjectRoot,
+      taskId: budgetWideTaskId,
+      expectedTaskRevision: budgetWideRevision,
+      nextLaunch: launch,
+      occurredAt: budgetAt(1000 * (index + 1)),
+    });
+    assert.equal(
+      step.value.decision.allowed,
+      true,
+      `iteration_budget_multi_step_within_bounds: launch ${index + 1} must be allowed`,
+    );
+    budgetWideRevision = step.value.taskStateRevision;
+  }
+
+  const budgetWideFinal = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetWideTaskId,
+    expectedTaskRevision: budgetWideRevision,
+    nextLaunch: "worker_call",
+    occurredAt: budgetAt(9000),
+  });
+  assert.equal(
+    budgetWideFinal.value.decision.allowed,
+    false,
+    "iteration_budget_multi_step_within_bounds: the fifth launch must be refused",
+  );
+  assert.equal(
+    budgetWideFinal.value.decision.stopReason,
+    "max_steps_exhausted",
+    "iteration_budget_multi_step_within_bounds: stop reason must be max_steps_exhausted",
+  );
+  assert.equal(
+    budgetWideFinal.value.budget.consumption.steps,
+    4,
+    "iteration_budget_multi_step_within_bounds: consumption must equal the step limit exactly",
+  );
+  assert.equal(
+    budgetWideFinal.value.budget.consumption.plannerCalls === 2 &&
+      budgetWideFinal.value.budget.consumption.workerCalls === 2,
+    true,
+    "iteration_budget_multi_step_within_bounds: per-kind counters must be tracked separately",
+  );
+
+  // Completion authority is untouched by any of this.
+  const budgetWideState = await loadTaskState({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetWideTaskId,
+  });
+  assert.equal(
+    budgetWideState.value.state.completionGate.satisfied === false &&
+      budgetWideState.value.state.safety.verified === false,
+    true,
+    "iteration_budget_multi_step_within_bounds: budget consumption must not satisfy the completion gate",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test K: iteration_budget_retry_counter_recorded_durably
+  //
+  // The retry launch kind must be exercised through the DURABLE path, not only
+  // through direct evaluate calls with hand-built consumption. A copy-paste bug
+  // in the retry branch of recordIterationBudgetLaunch (incrementing the wrong
+  // counter) would leave every other test green while max_retries_exhausted
+  // could never fire in production.
+  // -----------------------------------------------------------------------
+  const budgetRetry = createIterationBudget({
+    budgetId: "budget-retry",
+    startedAt: budgetStartedAt,
+    operatorLimits: {
+      maxSteps: 4,
+      maxRetries: 1,
+      // Headroom above maxRetries so the retries sub-cap is the binding limit
+      // here; the worker-call interaction is asserted separately below.
+      maxWorkerCalls: 3,
+      maxPlannerCalls: 0,
+      maxWallTimeMs: 600000,
+    },
+  });
+  assert.equal(
+    budgetRetry.ok,
+    true,
+    "iteration_budget_retry_counter_recorded_durably: retry budget should create",
+  );
+
+  const budgetRetryTaskId = "TASK-BUDGET-RETRY";
+  let budgetRetryRevision = await budgetSeedTask(
+    budgetRetryTaskId,
+    budgetRetry.value,
+  );
+
+  const budgetRetryFirst = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetRetryTaskId,
+    expectedTaskRevision: budgetRetryRevision,
+    nextLaunch: "retry",
+    occurredAt: budgetAt(1000),
+  });
+  assert.equal(
+    budgetRetryFirst.value.decision.allowed,
+    true,
+    "iteration_budget_retry_counter_recorded_durably: the first retry must be allowed",
+  );
+  assert.equal(
+    budgetRetryFirst.value.budget.consumption.retries,
+    1,
+    "iteration_budget_retry_counter_recorded_durably: a retry must increment the retries counter",
+  );
+  assert.equal(
+    budgetRetryFirst.value.budget.consumption.steps,
+    1,
+    "iteration_budget_retry_counter_recorded_durably: a retry must also cost a step",
+  );
+  // A retry re-invokes a worker, so it MUST charge maxWorkerCalls as well.
+  // Otherwise maxWorkerCalls would not cap worker invocations: an operator
+  // setting maxWorkerCalls=1 and maxRetries=5 would get six real invocations.
+  assert.equal(
+    budgetRetryFirst.value.budget.consumption.workerCalls,
+    1,
+    "iteration_budget_retry_counter_recorded_durably: a retry must also charge a worker call",
+  );
+  assert.equal(
+    budgetRetryFirst.value.budget.consumption.plannerCalls,
+    0,
+    "iteration_budget_retry_counter_recorded_durably: a retry must not charge a planner call",
+  );
+  budgetRetryRevision = budgetRetryFirst.value.taskStateRevision;
+
+  // Read back from disk before the second attempt: the counter must be durable,
+  // not just correct in the returned object.
+  const budgetRetryReloaded = await loadTaskState({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetRetryTaskId,
+  });
+  assert.equal(
+    budgetRetryReloaded.value.state.iterationBudget.consumption.retries,
+    1,
+    "iteration_budget_retry_counter_recorded_durably: the retries counter must survive read-back",
+  );
+
+  const budgetRetrySecond = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetRetryTaskId,
+    expectedTaskRevision: budgetRetryRevision,
+    nextLaunch: "retry",
+    occurredAt: budgetAt(2000),
+  });
+  assert.equal(
+    budgetRetrySecond.value.decision.allowed,
+    false,
+    "iteration_budget_retry_counter_recorded_durably: the second retry must be refused",
+  );
+  assert.equal(
+    budgetRetrySecond.value.decision.stopReason,
+    "max_retries_exhausted",
+    "iteration_budget_retry_counter_recorded_durably: stop reason must be max_retries_exhausted through the durable path",
+  );
+  assert.equal(
+    budgetRetrySecond.value.budget.consumption.retries,
+    1,
+    "iteration_budget_retry_counter_recorded_durably: a refused retry must consume nothing",
+  );
+  assert.equal(
+    budgetRetrySecond.value.budget.stoppedAt,
+    budgetAt(2000),
+    "iteration_budget_retry_counter_recorded_durably: the retry stop must be durably stamped",
+  );
+
+  // An unparseable stop timestamp is not durable evidence of anything.
+  const budgetBadStoppedAt = validatePersistedIterationBudget({
+    ...budgetRetry.value,
+    stopReason: "max_retries_exhausted",
+    stoppedAt: "not-a-date",
+  });
+  assert.equal(
+    budgetBadStoppedAt.ok,
+    false,
+    "iteration_budget_retry_counter_recorded_durably: an unparseable stoppedAt must fail closed",
+  );
+  assert.equal(
+    budgetBadStoppedAt.error.code,
+    "iteration_budget_invalid_timestamp",
+    "iteration_budget_retry_counter_recorded_durably: must fail with the invalid-timestamp code",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test L: iteration_budget_retry_cannot_bypass_worker_cap
+  //
+  // The hole this closes: if a retry did not charge maxWorkerCalls, an operator
+  // setting maxWorkerCalls=1 and maxRetries=5 would receive six real worker
+  // invocations against a stated cap of one. maxRetries is a sub-cap on top of
+  // maxWorkerCalls, never an escape from it.
+  // -----------------------------------------------------------------------
+  const budgetBypass = createIterationBudget({
+    budgetId: "budget-bypass-attempt",
+    startedAt: budgetStartedAt,
+    operatorLimits: {
+      maxSteps: 10,
+      maxWorkerCalls: 1,
+      maxRetries: 5,
+      maxPlannerCalls: 0,
+      maxWallTimeMs: 600000,
+    },
+  });
+  assert.equal(
+    budgetBypass.ok,
+    true,
+    "iteration_budget_retry_cannot_bypass_worker_cap: budget should create",
+  );
+
+  const budgetBypassTaskId = "TASK-BUDGET-BYPASS";
+  let budgetBypassRevision = await budgetSeedTask(
+    budgetBypassTaskId,
+    budgetBypass.value,
+  );
+
+  const budgetBypassWorker = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetBypassTaskId,
+    expectedTaskRevision: budgetBypassRevision,
+    nextLaunch: "worker_call",
+    occurredAt: budgetAt(1000),
+  });
+  assert.equal(
+    budgetBypassWorker.value.decision.allowed,
+    true,
+    "iteration_budget_retry_cannot_bypass_worker_cap: the single permitted worker call must be allowed",
+  );
+  budgetBypassRevision = budgetBypassWorker.value.taskStateRevision;
+
+  // maxWorkerCalls is now spent. Five retries remain on paper, but every one of
+  // them would be a worker invocation, so the very first must be refused.
+  const budgetBypassRetry = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetBypassTaskId,
+    expectedTaskRevision: budgetBypassRevision,
+    nextLaunch: "retry",
+    occurredAt: budgetAt(2000),
+  });
+  assert.equal(
+    budgetBypassRetry.value.decision.allowed,
+    false,
+    "iteration_budget_retry_cannot_bypass_worker_cap: a retry must not slip past a spent worker cap",
+  );
+  assert.equal(
+    budgetBypassRetry.value.decision.stopReason,
+    "max_worker_calls_exhausted",
+    "iteration_budget_retry_cannot_bypass_worker_cap: stop reason must be max_worker_calls_exhausted",
+  );
+  assert.equal(
+    budgetBypassRetry.value.budget.consumption.workerCalls,
+    1,
+    "iteration_budget_retry_cannot_bypass_worker_cap: total worker invocations must not exceed the cap",
+  );
+
+  // max_worker_calls_exhausted must be reachable ahead of max_steps_exhausted,
+  // which is only true because no per-kind ceiling sits above the step ceiling.
+  assert.equal(
+    AEOS_ITERATION_BUDGET_POLICY_CEILING.maxWorkerCalls <=
+      AEOS_ITERATION_BUDGET_POLICY_CEILING.maxSteps,
+    true,
+    "iteration_budget_retry_cannot_bypass_worker_cap: no per-kind ceiling may exceed the step ceiling",
+  );
+  assert.equal(
+    AEOS_ITERATION_BUDGET_POLICY_CEILING.maxPlannerCalls <=
+      AEOS_ITERATION_BUDGET_POLICY_CEILING.maxSteps,
+    true,
+    "iteration_budget_retry_cannot_bypass_worker_cap: the planner ceiling may not exceed the step ceiling either",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test M: iteration_budget_overconsumption_is_corruption_on_the_pure_path
+  //
+  // evaluateIterationBudget is reachable without going through durable state,
+  // so the corruption check has to live in the budget validator too — not only
+  // in the persistence shape validator.
+  // -----------------------------------------------------------------------
+  const budgetPureOverconsumed = {
+    ...budgetDefault.value,
+    consumption: { steps: 99, plannerCalls: 0, workerCalls: 0, retries: 0 },
+  };
+  const budgetPureOverconsumedValidation = validatePersistedIterationBudget(
+    budgetPureOverconsumed,
+  );
+  assert.equal(
+    budgetPureOverconsumedValidation.ok,
+    false,
+    "iteration_budget_overconsumption_is_corruption_on_the_pure_path: overconsumption must not validate",
+  );
+  assert.equal(
+    budgetPureOverconsumedValidation.error.code,
+    "iteration_budget_overconsumed",
+    "iteration_budget_overconsumption_is_corruption_on_the_pure_path: must fail with the overconsumed code",
+  );
+
+  const budgetPureOverconsumedDecision = evaluateIterationBudget({
+    budget: budgetPureOverconsumed,
+    nextLaunch: "worker_call",
+    evaluatedAt: budgetAt(1),
+  });
+  assert.equal(
+    budgetPureOverconsumedDecision.ok,
+    false,
+    "iteration_budget_overconsumption_is_corruption_on_the_pure_path: a corrupt budget must authorise nothing",
+  );
+  assert.equal(
+    budgetPureOverconsumedDecision.error.code,
+    "iteration_budget_overconsumed",
+    "iteration_budget_overconsumption_is_corruption_on_the_pure_path: corruption must not be reported as mere exhaustion",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test N: iteration_budget_refused_proposal_leaves_enforcement_intact
+  //
+  // The load-bearing version of the hostile-proposal test. refuseIteration-
+  // BudgetProposal is a pure function with no write path, so asserting it had
+  // no side effect proves little on its own. What matters is that after the
+  // refusal the ORIGINAL limits still bind on the durable enforcement path.
+  // -----------------------------------------------------------------------
+  const budgetEnforce = createIterationBudget({
+    budgetId: "budget-enforce-after-refusal",
+    startedAt: budgetStartedAt,
+    operatorLimits: {
+      maxSteps: 1,
+      maxWorkerCalls: 1,
+      maxPlannerCalls: 0,
+      maxRetries: 0,
+      maxWallTimeMs: 600000,
+    },
+  });
+  const budgetEnforceTaskId = "TASK-BUDGET-ENFORCE";
+  let budgetEnforceRevision = await budgetSeedTask(
+    budgetEnforceTaskId,
+    budgetEnforce.value,
+  );
+
+  const budgetEnforceRefusal = refuseIterationBudgetProposal({
+    budget: budgetEnforce.value,
+    proposedLimits: { maxSteps: 25, maxWorkerCalls: 25 },
+    proposedBy: "planner",
+  });
+  assert.equal(
+    budgetEnforceRefusal.ok,
+    false,
+    "iteration_budget_refused_proposal_leaves_enforcement_intact: the widening must be refused",
+  );
+
+  const budgetEnforceFirst = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetEnforceTaskId,
+    expectedTaskRevision: budgetEnforceRevision,
+    nextLaunch: "worker_call",
+    occurredAt: budgetAt(1000),
+  });
+  assert.equal(
+    budgetEnforceFirst.value.decision.allowed,
+    true,
+    "iteration_budget_refused_proposal_leaves_enforcement_intact: the one permitted launch must proceed",
+  );
+  budgetEnforceRevision = budgetEnforceFirst.value.taskStateRevision;
+
+  const budgetEnforceSecond = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetEnforceTaskId,
+    expectedTaskRevision: budgetEnforceRevision,
+    nextLaunch: "worker_call",
+    occurredAt: budgetAt(2000),
+  });
+  assert.equal(
+    budgetEnforceSecond.value.decision.allowed,
+    false,
+    "iteration_budget_refused_proposal_leaves_enforcement_intact: the proposed widening must not have taken effect",
+  );
+  const budgetEnforceState = await loadTaskState({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetEnforceTaskId,
+  });
+  assert.equal(
+    budgetEnforceState.value.state.iterationBudget.limits.maxSteps,
+    1,
+    "iteration_budget_refused_proposal_leaves_enforcement_intact: durable limits must still be the operator's",
+  );
+
+  console.log("iteration budget smoke tests passed");
+} finally {
+  await rm(iterationBudgetTempRoot, { recursive: true, force: true });
 }
