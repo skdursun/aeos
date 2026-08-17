@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   chmod,
+  link,
   mkdtemp,
   mkdir,
   readdir,
@@ -305,6 +306,16 @@ import {
   resolveIterationBudgetLimits,
   toIterationBudgetJson,
   validatePersistedIterationBudget,
+  claimIterationStep,
+  createPreparedIterationStepRecord,
+  deriveIterationStepIdentity,
+  deriveIterationStepResumeState,
+  listIterationSteps,
+  loadIterationStep,
+  loadIterationStepResumeState,
+  transitionIterationStepRecord,
+  updateIterationStep,
+  validateIterationStepRecord,
 } from "../dist/index.js";
 import {
   directoryInsteadOfFilePathCheck,
@@ -38603,4 +38614,1594 @@ try {
   console.log("iteration budget smoke tests passed");
 } finally {
   await rm(iterationBudgetTempRoot, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// TASK-0328 — Durable iteration state and step identity smoke tests
+// ---------------------------------------------------------------------------
+// Covers GitHub Issue #8. The property under test is exactly-once step launch
+// across crash and duplicate/concurrent claim, with the launch boundary never
+// reset and ambiguous outcomes never replayed.
+// ---------------------------------------------------------------------------
+const iterationStepTempRoot = await mkdtemp(
+  join(tmpdir(), "aeos-iteration-step-smoke-"),
+);
+
+try {
+  const stepProjectRoot = join(iterationStepTempRoot, "project");
+  await mkdir(stepProjectRoot, { recursive: true });
+
+  const stepStartedAt = "2026-08-17T10:00:00.000Z";
+
+  // Seed a task carrying an iteration budget: a step must bind to a real parent.
+  async function stepSeedTask(taskId, budgetId) {
+    const initial = await saveTaskState({
+      projectRoot: stepProjectRoot,
+      state: createInitialTaskState({
+        taskId,
+        sourceTaskId: taskId,
+        createdAt: stepStartedAt,
+      }),
+    });
+    assert.equal(initial.ok, true, `iteration step smoke: ${taskId} initial save`);
+
+    const budget = createIterationBudget({
+      budgetId,
+      startedAt: stepStartedAt,
+      operatorLimits: { maxSteps: 6, maxPlannerCalls: 3, maxWorkerCalls: 3 },
+    });
+    assert.equal(budget.ok, true, `iteration step smoke: ${taskId} budget create`);
+
+    const attached = await updateTaskState({
+      projectRoot: stepProjectRoot,
+      taskId,
+      expectedRevision: 1,
+      updatedAt: stepStartedAt,
+      update(state) {
+        return {
+          ...state,
+          lifecycleState: "planned",
+          iterationBudget: budget.value,
+        };
+      },
+    });
+    assert.equal(attached.ok, true, `iteration step smoke: ${taskId} budget attach`);
+    return attached.value.state.revision;
+  }
+
+  const stepTaskId = "TASK-ITERATION-STEP-SMOKE";
+  const stepBudgetId = "budget-iteration-step-smoke";
+  const stepTaskRevision = await stepSeedTask(stepTaskId, stepBudgetId);
+
+  function stepParent(stepNumber, overrides = {}) {
+    return {
+      taskId: stepTaskId,
+      taskStateRevision: stepTaskRevision,
+      budgetId: stepBudgetId,
+      stepNumber,
+      ...overrides,
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // Test A: iteration_step_identity_is_deterministic
+  // Determinism IS the idempotency mechanism: the same orchestration intent
+  // must land on the same stepId, so a replay collides instead of creating a
+  // second step for the same intent.
+  // -----------------------------------------------------------------------
+  const stepIdentityOne = deriveIterationStepIdentity({
+    parent: stepParent(1),
+    launchKind: "planner_call",
+  });
+  const stepIdentityTwo = deriveIterationStepIdentity({
+    parent: stepParent(1),
+    launchKind: "planner_call",
+  });
+  assert.equal(
+    stepIdentityOne.ok && stepIdentityTwo.ok,
+    true,
+    "iteration_step_identity_is_deterministic: identity should derive",
+  );
+  assert.equal(
+    stepIdentityOne.value.stepId,
+    stepIdentityTwo.value.stepId,
+    "iteration_step_identity_is_deterministic: the same intent must yield the same stepId",
+  );
+
+  // Every identity-bearing field must change the id, or two different intents
+  // would share a claim slot.
+  const stepIdentityVariants = [
+    ["stepNumber", { parent: stepParent(2), launchKind: "planner_call" }],
+    ["launchKind", { parent: stepParent(1), launchKind: "worker_call" }],
+    [
+      "budgetId",
+      { parent: stepParent(1, { budgetId: "other-budget" }), launchKind: "planner_call" },
+    ],
+    [
+      "taskStateRevision",
+      { parent: stepParent(1, { taskStateRevision: 99 }), launchKind: "planner_call" },
+    ],
+    [
+      "taskId",
+      { parent: stepParent(1, { taskId: "OTHER-TASK" }), launchKind: "planner_call" },
+    ],
+  ];
+  for (const [field, variant] of stepIdentityVariants) {
+    const derived = deriveIterationStepIdentity(variant);
+    assert.equal(
+      derived.value.stepId === stepIdentityOne.value.stepId,
+      false,
+      `iteration_step_identity_is_deterministic: ${field} must change the derived stepId`,
+    );
+  }
+
+  // A record whose stored id does not match its own binding is tampered with.
+  const stepPrepared = createPreparedIterationStepRecord({
+    parent: stepParent(1),
+    launchKind: "planner_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepPrepared.ok,
+    true,
+    "iteration_step_identity_is_deterministic: prepared record should create",
+  );
+  // The cross-field invariants: a launch timestamp must be present exactly when
+  // the launch boundary has been crossed.
+  const stepSpuriousLaunchedAt = validateIterationStepRecord({
+    ...stepPrepared.value,
+    launchedAt: "2026-08-17T10:30:00.000Z",
+  });
+  assert.equal(
+    stepSpuriousLaunchedAt.ok,
+    false,
+    "iteration_step_identity_is_deterministic: an unlaunched step must not carry a launch timestamp",
+  );
+  assert.equal(
+    stepSpuriousLaunchedAt.error.code,
+    "iteration_step_launch_timestamp_inconsistent",
+    "iteration_step_identity_is_deterministic: must fail with the launch-timestamp code",
+  );
+
+  const stepMissingLaunchedAt = validateIterationStepRecord({
+    ...stepPrepared.value,
+    lifecycle: "running",
+    launchBoundaryCrossed: true,
+    outcomeCertainty: "launched_pending",
+  });
+  assert.equal(
+    stepMissingLaunchedAt.error.code,
+    "iteration_step_launch_timestamp_inconsistent",
+    "iteration_step_identity_is_deterministic: a launched step must carry a launch timestamp",
+  );
+
+  // An unsafe taskId must not derive an identity at all: the digest joins its
+  // inputs with a space, so a delimiter in either id would make it ambiguous.
+  const stepUnsafeTaskId = deriveIterationStepIdentity({
+    parent: stepParent(1, { taskId: "task with spaces" }),
+    launchKind: "planner_call",
+  });
+  assert.equal(
+    stepUnsafeTaskId.ok,
+    false,
+    "iteration_step_identity_is_deterministic: an unsafe taskId must not derive an identity",
+  );
+  assert.equal(
+    stepUnsafeTaskId.error.code,
+    "iteration_step_invalid_parent_binding",
+    "iteration_step_identity_is_deterministic: must fail with the invalid-parent-binding code",
+  );
+
+  const stepForgedId = validateIterationStepRecord({
+    ...stepPrepared.value,
+    stepId: "step-forged",
+  });
+  assert.equal(
+    stepForgedId.ok,
+    false,
+    "iteration_step_identity_is_deterministic: a forged stepId must not validate",
+  );
+  assert.equal(
+    stepForgedId.error.code,
+    "iteration_step_identity_mismatch",
+    "iteration_step_identity_is_deterministic: must fail with the identity-mismatch code",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test B: iteration_step_duplicate_claim_is_refused
+  // -----------------------------------------------------------------------
+  const stepClaimFirst = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: stepParent(1),
+    launchKind: "planner_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepClaimFirst.ok,
+    true,
+    "iteration_step_duplicate_claim_is_refused: the first claim should succeed",
+  );
+  assert.equal(
+    stepClaimFirst.value.status,
+    "claimed",
+    "iteration_step_duplicate_claim_is_refused: the first claim must report claimed",
+  );
+  assert.equal(
+    stepClaimFirst.value.record.lifecycle,
+    "prepared",
+    "iteration_step_duplicate_claim_is_refused: a fresh claim must be prepared",
+  );
+  assert.equal(
+    stepClaimFirst.value.record.launchBoundaryCrossed,
+    false,
+    "iteration_step_duplicate_claim_is_refused: a fresh claim must not have crossed the launch boundary",
+  );
+
+  // A replay of the same intent with a DIFFERENT claim timestamp and owner: the
+  // identity is what matters, and the second claimer must lose.
+  const stepClaimReplay = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: stepParent(1),
+    launchKind: "planner_call",
+    claimedAt: "2026-08-17T10:05:00.000Z",
+    ownerId: "a-different-owner",
+  });
+  assert.equal(
+    stepClaimReplay.value.status,
+    "already_claimed",
+    "iteration_step_duplicate_claim_is_refused: a replay must report already_claimed",
+  );
+  assert.equal(
+    stepClaimReplay.value.record.ownership.ownerId,
+    stepClaimFirst.value.record.ownership.ownerId,
+    "iteration_step_duplicate_claim_is_refused: the original owner must keep the claim",
+  );
+  assert.equal(
+    stepClaimReplay.value.record.ownership.claimedAt,
+    stepStartedAt,
+    "iteration_step_duplicate_claim_is_refused: the original claim timestamp must survive",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test C: iteration_step_concurrent_claim_has_one_winner
+  // The winner is decided by the filesystem (open "wx"), not by a read-then-
+  // write in application code, so there is no window where both claimers think
+  // they own the step.
+  // -----------------------------------------------------------------------
+  const stepConcurrent = await Promise.all(
+    Array.from({ length: 8 }, (_, index) =>
+      claimIterationStep({
+        projectRoot: stepProjectRoot,
+        parent: stepParent(2),
+        launchKind: "worker_call",
+        claimedAt: stepStartedAt,
+        ownerId: `racer-${index}`,
+      }),
+    ),
+  );
+  assert.equal(
+    stepConcurrent.every((result) => result.ok),
+    true,
+    "iteration_step_concurrent_claim_has_one_winner: every concurrent claim should resolve",
+  );
+  assert.equal(
+    stepConcurrent.filter((result) => result.value.status === "claimed").length,
+    1,
+    "iteration_step_concurrent_claim_has_one_winner: exactly one claimer may win",
+  );
+  assert.equal(
+    stepConcurrent.filter((result) => result.value.status === "already_claimed")
+      .length,
+    7,
+    "iteration_step_concurrent_claim_has_one_winner: every other claimer must lose",
+  );
+  const stepConcurrentIds = new Set(
+    stepConcurrent.map((result) => result.value.record.stepId),
+  );
+  assert.equal(
+    stepConcurrentIds.size,
+    1,
+    "iteration_step_concurrent_claim_has_one_winner: all claimers must agree on one stepId",
+  );
+  const stepConcurrentOwners = new Set(
+    stepConcurrent.map((result) => result.value.record.ownership.ownershipToken),
+  );
+  assert.equal(
+    stepConcurrentOwners.size,
+    1,
+    "iteration_step_concurrent_claim_has_one_winner: only the winner's ownership token may be durable",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test D: iteration_step_stale_parent_is_refused
+  // -----------------------------------------------------------------------
+  const stepStaleRevision = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: stepParent(3, { taskStateRevision: stepTaskRevision + 5 }),
+    launchKind: "planner_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepStaleRevision.ok,
+    false,
+    "iteration_step_stale_parent_is_refused: a stale parent revision must not claim",
+  );
+  assert.equal(
+    stepStaleRevision.error.code,
+    "iteration_step_parent_revision_stale",
+    "iteration_step_stale_parent_is_refused: must fail with the stale-revision code",
+  );
+
+  const stepForeignBudget = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: stepParent(3, { budgetId: "not-the-durable-budget" }),
+    launchKind: "planner_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepForeignBudget.error.code,
+    "iteration_step_parent_budget_mismatch",
+    "iteration_step_stale_parent_is_refused: a foreign budget id must fail closed",
+  );
+
+  // A task with no iteration budget has no orchestration run to bind to.
+  const stepNoBudgetTaskId = "TASK-ITERATION-STEP-NO-BUDGET";
+  const stepNoBudgetSave = await saveTaskState({
+    projectRoot: stepProjectRoot,
+    state: createInitialTaskState({
+      taskId: stepNoBudgetTaskId,
+      sourceTaskId: stepNoBudgetTaskId,
+      createdAt: stepStartedAt,
+    }),
+  });
+  assert.equal(
+    stepNoBudgetSave.ok,
+    true,
+    "iteration_step_stale_parent_is_refused: budget-less task should save",
+  );
+  const stepNoBudgetClaim = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: {
+      taskId: stepNoBudgetTaskId,
+      taskStateRevision: 1,
+      budgetId: stepBudgetId,
+      stepNumber: 1,
+    },
+    launchKind: "planner_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepNoBudgetClaim.error.code,
+    "iteration_step_parent_budget_missing",
+    "iteration_step_stale_parent_is_refused: a missing parent budget must fail closed",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test E: iteration_step_crash_before_launch_is_resumable
+  // The step is durable in "prepared" and nothing ran, so a launch is safe.
+  // This is the ONLY case where resume permits a launch.
+  // -----------------------------------------------------------------------
+  const stepBeforeLaunchResume = await loadIterationStepResumeState({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+  });
+  assert.equal(
+    stepBeforeLaunchResume.ok,
+    true,
+    "iteration_step_crash_before_launch_is_resumable: resume state should derive",
+  );
+  assert.equal(
+    stepBeforeLaunchResume.value.action,
+    "resume_prepared_step",
+    "iteration_step_crash_before_launch_is_resumable: a prepared step must be resumable",
+  );
+  assert.equal(
+    stepBeforeLaunchResume.value.launchPermitted,
+    true,
+    "iteration_step_crash_before_launch_is_resumable: launch must be permitted before the boundary",
+  );
+  assert.equal(
+    stepBeforeLaunchResume.value.stepNumber,
+    1,
+    "iteration_step_crash_before_launch_is_resumable: the lowest unsettled step number must be chosen",
+  );
+
+  const stepLaunch = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepClaimFirst.value.record.stepId,
+    expectedRevision: 1,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T10:10:00.000Z" },
+  });
+  assert.equal(
+    stepLaunch.ok,
+    true,
+    "iteration_step_crash_before_launch_is_resumable: the launch should be recorded",
+  );
+  assert.equal(
+    stepLaunch.value.record.lifecycle,
+    "running",
+    "iteration_step_crash_before_launch_is_resumable: the step must be running after launch",
+  );
+  assert.equal(
+    stepLaunch.value.record.launchBoundaryCrossed,
+    true,
+    "iteration_step_crash_before_launch_is_resumable: the launch boundary must be marked crossed",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test F: iteration_step_crash_after_launch_is_never_relaunched
+  // The load-bearing property of the whole task.
+  // -----------------------------------------------------------------------
+  const stepAfterLaunchResume = await loadIterationStepResumeState({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+  });
+  assert.equal(
+    stepAfterLaunchResume.value.action,
+    "reconcile_launched_step",
+    "iteration_step_crash_after_launch_is_never_relaunched: a launched step must be reconciled, not resumed",
+  );
+  assert.equal(
+    stepAfterLaunchResume.value.launchPermitted,
+    false,
+    "iteration_step_crash_after_launch_is_never_relaunched: launch must NOT be permitted after the boundary",
+  );
+  assert.equal(
+    typeof stepAfterLaunchResume.value.blockedReason,
+    "string",
+    "iteration_step_crash_after_launch_is_never_relaunched: the block must carry an operator-visible reason",
+  );
+
+  const stepRelaunchAttempt = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepClaimFirst.value.record.stepId,
+    expectedRevision: 2,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T10:11:00.000Z" },
+  });
+  assert.equal(
+    stepRelaunchAttempt.ok,
+    false,
+    "iteration_step_crash_after_launch_is_never_relaunched: a relaunch must be refused",
+  );
+  assert.equal(
+    stepRelaunchAttempt.error.code,
+    "iteration_step_launch_boundary_already_crossed",
+    "iteration_step_crash_after_launch_is_never_relaunched: must fail with the boundary-crossed code",
+  );
+
+  // The durable record is untouched by the refused relaunch.
+  const stepAfterRefusedRelaunch = await loadIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepClaimFirst.value.record.stepId,
+  });
+  assert.equal(
+    stepAfterRefusedRelaunch.value.record.revision,
+    2,
+    "iteration_step_crash_after_launch_is_never_relaunched: a refused relaunch must not advance the revision",
+  );
+  assert.equal(
+    stepAfterRefusedRelaunch.value.record.launchedAt,
+    "2026-08-17T10:10:00.000Z",
+    "iteration_step_crash_after_launch_is_never_relaunched: the original launch timestamp must survive",
+  );
+
+  // No transition can walk a launched step back to prepared.
+  const stepResetAttempt = transitionIterationStepRecord({
+    record: { ...stepLaunch.value.record, lifecycle: "prepared" },
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T10:12:00.000Z" },
+  });
+  assert.equal(
+    stepResetAttempt.ok,
+    false,
+    "iteration_step_crash_after_launch_is_never_relaunched: a hand-reset lifecycle must not validate",
+  );
+  assert.equal(
+    stepResetAttempt.error.code,
+    "iteration_step_launch_boundary_inconsistent",
+    "iteration_step_crash_after_launch_is_never_relaunched: the boundary flag must contradict the reset",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test G: iteration_step_outcome_unknown_blocks_replay
+  // -----------------------------------------------------------------------
+  const stepUnknown = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepClaimFirst.value.record.stepId,
+    expectedRevision: 2,
+    intent: {
+      kind: "mark_outcome_unknown",
+      occurredAt: "2026-08-17T10:15:00.000Z",
+    },
+  });
+  assert.equal(
+    stepUnknown.ok,
+    true,
+    "iteration_step_outcome_unknown_blocks_replay: the step should be markable unknown",
+  );
+  assert.equal(
+    stepUnknown.value.record.lifecycle,
+    "outcome_unknown",
+    "iteration_step_outcome_unknown_blocks_replay: lifecycle must be outcome_unknown",
+  );
+  assert.equal(
+    stepUnknown.value.record.outcomeCertainty,
+    "unknown",
+    "iteration_step_outcome_unknown_blocks_replay: certainty must be unknown",
+  );
+
+  const stepUnknownRelaunch = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepClaimFirst.value.record.stepId,
+    expectedRevision: 3,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T10:16:00.000Z" },
+  });
+  assert.equal(
+    stepUnknownRelaunch.error.code,
+    "iteration_step_launch_boundary_already_crossed",
+    "iteration_step_outcome_unknown_blocks_replay: an ambiguous step must never be replayed",
+  );
+
+  const stepUnknownResume = await loadIterationStepResumeState({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+  });
+  assert.equal(
+    stepUnknownResume.value.action,
+    "reconcile_outcome_unknown",
+    "iteration_step_outcome_unknown_blocks_replay: ambiguity must outrank other resume work",
+  );
+  assert.equal(
+    stepUnknownResume.value.launchPermitted,
+    false,
+    "iteration_step_outcome_unknown_blocks_replay: no launch may be permitted while ambiguous",
+  );
+
+  // Reconciliation — not a blind retry — is the only way forward.
+  const stepReconciled = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepClaimFirst.value.record.stepId,
+    expectedRevision: 3,
+    intent: {
+      kind: "record_returned",
+      result: { stepOk: true, returnedAt: "2026-08-17T10:17:00.000Z" },
+    },
+  });
+  assert.equal(
+    stepReconciled.ok,
+    true,
+    "iteration_step_outcome_unknown_blocks_replay: an ambiguous step must be reconcilable",
+  );
+  assert.equal(
+    stepReconciled.value.record.lifecycle,
+    "returned",
+    "iteration_step_outcome_unknown_blocks_replay: reconciliation must settle the step",
+  );
+  assert.equal(
+    stepReconciled.value.record.outcomeUnknownAt,
+    undefined,
+    "iteration_step_outcome_unknown_blocks_replay: settling must clear the ambiguity marker",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test H: iteration_step_stale_revision_guard
+  // -----------------------------------------------------------------------
+  const stepStaleUpdate = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepClaimFirst.value.record.stepId,
+    expectedRevision: 1,
+    intent: {
+      kind: "record_failed",
+      failure: { code: "whatever", retryable: false, failedAt: stepStartedAt },
+    },
+  });
+  assert.equal(
+    stepStaleUpdate.ok,
+    false,
+    "iteration_step_stale_revision_guard: a stale step revision must not update",
+  );
+  assert.equal(
+    stepStaleUpdate.error.code,
+    "iteration_step_revision_conflict",
+    "iteration_step_stale_revision_guard: must fail with the revision-conflict code",
+  );
+
+  // Isolate the revision guard: a running step with a legal intent, but a stale
+  // revision. The lifecycle guard cannot be what refuses this one.
+  const stepRevisionOnlyTaskId = "TASK-ITERATION-STEP-REVISION";
+  const stepRevisionBudgetId = "budget-iteration-step-revision";
+  const stepRevisionRevision = await stepSeedTask(
+    stepRevisionOnlyTaskId,
+    stepRevisionBudgetId,
+  );
+  const stepRevisionClaim = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: {
+      taskId: stepRevisionOnlyTaskId,
+      taskStateRevision: stepRevisionRevision,
+      budgetId: stepRevisionBudgetId,
+      stepNumber: 1,
+    },
+    launchKind: "worker_call",
+    claimedAt: stepStartedAt,
+  });
+  const stepRevisionLaunched = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepRevisionOnlyTaskId,
+    stepId: stepRevisionClaim.value.record.stepId,
+    expectedRevision: 1,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T14:00:00.000Z" },
+  });
+  assert.equal(
+    stepRevisionLaunched.ok && stepRevisionLaunched.value.record.lifecycle === "running",
+    true,
+    "iteration_step_stale_revision_guard: the probe step should be running",
+  );
+
+  const stepRevisionOnly = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepRevisionOnlyTaskId,
+    stepId: stepRevisionClaim.value.record.stepId,
+    // record_failed IS legal from running, so only the revision can refuse it.
+    expectedRevision: 1,
+    intent: {
+      kind: "record_failed",
+      failure: {
+        code: "worker_failed",
+        retryable: false,
+        failedAt: "2026-08-17T14:01:00.000Z",
+      },
+    },
+  });
+  assert.equal(
+    stepRevisionOnly.ok,
+    false,
+    "iteration_step_stale_revision_guard: a stale revision must refuse an otherwise-legal transition",
+  );
+  assert.equal(
+    stepRevisionOnly.error.code,
+    "iteration_step_revision_conflict",
+    "iteration_step_stale_revision_guard: the refusal must come from the revision guard alone",
+  );
+
+  // A settled step's outcome cannot be overwritten.
+  const stepOverwriteSettled = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepClaimFirst.value.record.stepId,
+    expectedRevision: 4,
+    intent: {
+      kind: "record_failed",
+      failure: { code: "late-failure", retryable: true, failedAt: stepStartedAt },
+    },
+  });
+  assert.equal(
+    stepOverwriteSettled.ok,
+    false,
+    "iteration_step_stale_revision_guard: a settled outcome must not be overwritten",
+  );
+  assert.equal(
+    stepOverwriteSettled.error.code,
+    "iteration_step_transition_not_allowed",
+    "iteration_step_stale_revision_guard: must fail with the transition-not-allowed code",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test I: iteration_step_restart_readback_is_deterministic
+  // -----------------------------------------------------------------------
+  const stepListOne = await listIterationSteps({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+  });
+  const stepListTwo = await listIterationSteps({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+  });
+  assert.equal(
+    stepListOne.ok && stepListTwo.ok,
+    true,
+    "iteration_step_restart_readback_is_deterministic: listing should succeed",
+  );
+  assert.equal(
+    JSON.stringify(stepListOne.value),
+    JSON.stringify(stepListTwo.value),
+    "iteration_step_restart_readback_is_deterministic: two durable reads must be identical",
+  );
+  assert.equal(
+    stepListOne.value.map((step) => step.parent.stepNumber).join(","),
+    "1,2",
+    "iteration_step_restart_readback_is_deterministic: steps must be ordered by step number",
+  );
+
+  const stepResumeOne = deriveIterationStepResumeState(stepListOne.value);
+  const stepResumeTwo = deriveIterationStepResumeState(
+    [...stepListOne.value].reverse(),
+  );
+  assert.equal(
+    JSON.stringify(stepResumeOne),
+    JSON.stringify(stepResumeTwo),
+    "iteration_step_restart_readback_is_deterministic: resume must not depend on enumeration order",
+  );
+  assert.equal(
+    stepResumeOne.action,
+    "resume_prepared_step",
+    "iteration_step_restart_readback_is_deterministic: step 2 remains prepared and resumable",
+  );
+  assert.equal(
+    stepResumeOne.stepNumber,
+    2,
+    "iteration_step_restart_readback_is_deterministic: the remaining prepared step must be chosen",
+  );
+  assert.equal(
+    stepResumeOne.settledStepCount,
+    1,
+    "iteration_step_restart_readback_is_deterministic: exactly one step is settled",
+  );
+
+  // A task with a real orchestration run but no claimed steps reads as no_steps.
+  const stepEmptyTaskId = "TASK-ITERATION-STEP-EMPTY";
+  await stepSeedTask(stepEmptyTaskId, "budget-iteration-step-empty");
+  const stepEmptyResume = await loadIterationStepResumeState({
+    projectRoot: stepProjectRoot,
+    taskId: stepEmptyTaskId,
+  });
+  assert.equal(
+    stepEmptyResume.ok && stepEmptyResume.value.action === "no_steps",
+    true,
+    "iteration_step_restart_readback_is_deterministic: a run with no claimed steps must read no_steps",
+  );
+  assert.equal(
+    stepEmptyResume.value.launchPermitted,
+    false,
+    "iteration_step_restart_readback_is_deterministic: no_steps must not permit a launch",
+  );
+
+  // A task with no orchestration run at all has no scope to resume against, so
+  // the resume state fails closed instead of inventing an unscoped answer.
+  const stepNoRunResume = await loadIterationStepResumeState({
+    projectRoot: stepProjectRoot,
+    taskId: stepNoBudgetTaskId,
+  });
+  assert.equal(
+    stepNoRunResume.ok,
+    false,
+    "iteration_step_restart_readback_is_deterministic: a task with no run must not produce a resume state",
+  );
+  assert.equal(
+    stepNoRunResume.error.code,
+    "iteration_step_parent_budget_missing",
+    "iteration_step_restart_readback_is_deterministic: must fail with the missing-budget code",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test J: iteration_step_all_settled_and_authority
+  // -----------------------------------------------------------------------
+  const stepSecondId = stepConcurrent[0].value.record.stepId;
+  const stepSecondLaunch = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepSecondId,
+    expectedRevision: 1,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T10:20:00.000Z" },
+  });
+  assert.equal(
+    stepSecondLaunch.ok,
+    true,
+    "iteration_step_all_settled_and_authority: the second step should launch",
+  );
+  const stepSecondFailed = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepSecondId,
+    expectedRevision: 2,
+    intent: {
+      kind: "record_failed",
+      failure: {
+        code: "worker_failed",
+        retryable: true,
+        failedAt: "2026-08-17T10:21:00.000Z",
+      },
+    },
+  });
+  assert.equal(
+    stepSecondFailed.value.record.lifecycle,
+    "failed",
+    "iteration_step_all_settled_and_authority: a failed outcome must settle the step",
+  );
+
+  const stepSettledResume = await loadIterationStepResumeState({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+  });
+  assert.equal(
+    stepSettledResume.value.action,
+    "all_steps_settled",
+    "iteration_step_all_settled_and_authority: every settled step must read all_steps_settled",
+  );
+  assert.equal(
+    stepSettledResume.value.launchPermitted,
+    false,
+    "iteration_step_all_settled_and_authority: all_steps_settled must not permit a launch",
+  );
+  assert.equal(
+    stepSettledResume.value.settledStepCount,
+    2,
+    "iteration_step_all_settled_and_authority: both steps must be counted as settled",
+  );
+
+  // A retryable failure records the fact; it does not authorise a retry here.
+  // Retry eligibility is TASK-0334, and no step may be relaunched regardless.
+  const stepRetryAttempt = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepSecondId,
+    expectedRevision: 3,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T10:22:00.000Z" },
+  });
+  assert.equal(
+    stepRetryAttempt.error.code,
+    "iteration_step_launch_boundary_already_crossed",
+    "iteration_step_all_settled_and_authority: a retryable failure must not authorise a relaunch",
+  );
+
+  // Step lifecycle grants no completion authority.
+  const stepFinalRecord = await loadIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepSecondId,
+  });
+  assert.equal(
+    stepFinalRecord.value.record.safety.lifecycleAuthority,
+    "system",
+    "iteration_step_all_settled_and_authority: lifecycle authority must be system",
+  );
+  assert.equal(
+    stepFinalRecord.value.record.safety.taskCompleted === false &&
+      stepFinalRecord.value.record.safety.verified === false &&
+      stepFinalRecord.value.record.safety.modelSelfReportTrusted === false,
+    true,
+    "iteration_step_all_settled_and_authority: step safety markers must all remain false",
+  );
+  const stepForgedSafety = validateIterationStepRecord({
+    ...stepFinalRecord.value.record,
+    safety: { ...stepFinalRecord.value.record.safety, taskCompleted: true },
+  });
+  assert.equal(
+    stepForgedSafety.error.code,
+    "iteration_step_invalid_safety",
+    "iteration_step_all_settled_and_authority: a forged completion marker must fail closed",
+  );
+
+  const stepFinalTaskState = await loadTaskState({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+  });
+  assert.equal(
+    stepFinalTaskState.value.state.completionGate.satisfied === false &&
+      stepFinalTaskState.value.state.safety.verified === false,
+    true,
+    "iteration_step_all_settled_and_authority: step progress must not satisfy the completion gate",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test K: iteration_step_concurrent_update_has_one_winner
+  //
+  // The signal for the revision-guard-alone hole: two concurrent launch_step
+  // callers can BOTH read revision N, both pass the revision check and both
+  // return ok, each believing it owns the launch. An exclusive lock is what
+  // makes exactly one of them win.
+  // -----------------------------------------------------------------------
+  const stepRaceTaskId = "TASK-ITERATION-STEP-RACE";
+  const stepRaceBudgetId = "budget-iteration-step-race";
+  const stepRaceRevision = await stepSeedTask(stepRaceTaskId, stepRaceBudgetId);
+  const stepRaceClaim = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: {
+      taskId: stepRaceTaskId,
+      taskStateRevision: stepRaceRevision,
+      budgetId: stepRaceBudgetId,
+      stepNumber: 1,
+    },
+    launchKind: "worker_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepRaceClaim.ok && stepRaceClaim.value.status === "claimed",
+    true,
+    "iteration_step_concurrent_update_has_one_winner: the race step should claim",
+  );
+
+  // This asserts the invariant that matters — never two ok results for one
+  // launch — but it does NOT isolate the lock: whichever caller finishes first
+  // advances the revision, so the losers may fail on the revision guard instead.
+  // Lock behaviour is isolated by the planted-lock sub-test below.
+  const stepRaceUpdates = await Promise.all(
+    Array.from({ length: 6 }, (_, index) =>
+      updateIterationStep({
+        projectRoot: stepProjectRoot,
+        taskId: stepRaceTaskId,
+        stepId: stepRaceClaim.value.record.stepId,
+        expectedRevision: 1,
+        intent: {
+          kind: "launch_step",
+          occurredAt: `2026-08-17T11:0${index}:00.000Z`,
+        },
+      }),
+    ),
+  );
+  assert.equal(
+    stepRaceUpdates.filter((result) => result.ok).length,
+    1,
+    "iteration_step_concurrent_update_has_one_winner: exactly one concurrent launch may succeed",
+  );
+  assert.equal(
+    stepRaceUpdates
+      .filter((result) => !result.ok)
+      .every((result) =>
+        ["iteration_step_update_locked", "iteration_step_revision_conflict"].includes(
+          result.error.code,
+        ),
+      ),
+    true,
+    "iteration_step_concurrent_update_has_one_winner: every loser must fail closed on the lock or the revision",
+  );
+
+  const stepRaceFinal = await loadIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepRaceTaskId,
+    stepId: stepRaceClaim.value.record.stepId,
+  });
+  assert.equal(
+    stepRaceFinal.value.record.revision,
+    2,
+    "iteration_step_concurrent_update_has_one_winner: the step must advance exactly one revision",
+  );
+  assert.equal(
+    stepRaceFinal.value.record.lifecycle,
+    "running",
+    "iteration_step_concurrent_update_has_one_winner: the step must be launched exactly once",
+  );
+
+  // The lock must not leak: a later sequential update still succeeds.
+  const stepRaceSettle = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepRaceTaskId,
+    stepId: stepRaceClaim.value.record.stepId,
+    expectedRevision: 2,
+    intent: {
+      kind: "record_returned",
+      result: { stepOk: true, returnedAt: "2026-08-17T11:30:00.000Z" },
+    },
+  });
+  assert.equal(
+    stepRaceSettle.ok,
+    true,
+    "iteration_step_concurrent_update_has_one_winner: the update lock must be released after use",
+  );
+
+  // A held lock must survive a losing caller. This isolates the exact race the
+  // Promise.all above cannot reach: the loser's cleanup must NOT delete a lock it
+  // does not own. With an unconditional unlink, the loser would remove the
+  // holder's lock and a third caller could then run the update concurrently with
+  // the holder.
+  //
+  // Deliberately performed on a PREPARED step: if the lock were removed
+  // entirely, this launch would SUCCEED. Using a settled step instead would let
+  // the launch-boundary guard refuse it, and the test would pass without the lock
+  // doing any work.
+  const stepLockProbe = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: {
+      taskId: stepRaceTaskId,
+      taskStateRevision: stepRaceRevision,
+      budgetId: stepRaceBudgetId,
+      stepNumber: 2,
+    },
+    launchKind: "planner_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepLockProbe.ok && stepLockProbe.value.record.lifecycle === "prepared",
+    true,
+    "iteration_step_concurrent_update_has_one_winner: the lock probe step should claim as prepared",
+  );
+
+  const stepLockDir = join(
+    stepProjectRoot,
+    ".aeos",
+    "state",
+    "iteration-step-locks",
+    stepRaceTaskId,
+  );
+  await mkdir(stepLockDir, { recursive: true });
+  const stepHeldLockPath = join(
+    stepLockDir,
+    `${stepLockProbe.value.record.stepId}.lock`,
+  );
+  await writeNodeFile(
+    stepHeldLockPath,
+    `${JSON.stringify({ heldBy: "another-process" })}\n`,
+  );
+
+  const stepLockedUpdate = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepRaceTaskId,
+    stepId: stepLockProbe.value.record.stepId,
+    expectedRevision: 1,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T11:40:00.000Z" },
+  });
+  assert.equal(
+    stepLockedUpdate.ok,
+    false,
+    "iteration_step_concurrent_update_has_one_winner: a held lock must refuse an otherwise-valid launch",
+  );
+  assert.equal(
+    stepLockedUpdate.error.code,
+    "iteration_step_update_locked",
+    "iteration_step_concurrent_update_has_one_winner: the refusal must come from the lock, not another guard",
+  );
+  assert.equal(
+    await pathExists(stepHeldLockPath),
+    true,
+    "iteration_step_concurrent_update_has_one_winner: a losing caller must not delete the holder's lock",
+  );
+
+  const stepStillPrepared = await loadIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepRaceTaskId,
+    stepId: stepLockProbe.value.record.stepId,
+  });
+  assert.equal(
+    stepStillPrepared.value.record.lifecycle,
+    "prepared",
+    "iteration_step_concurrent_update_has_one_winner: a lock-refused launch must not advance the step",
+  );
+
+  // Once the holder releases it, the same launch proceeds — the lock is a gate,
+  // not a permanent wedge, for any gracefully released lock.
+  await rm(stepHeldLockPath, { force: true });
+  const stepAfterLockReleased = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepRaceTaskId,
+    stepId: stepLockProbe.value.record.stepId,
+    expectedRevision: 1,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T11:41:00.000Z" },
+  });
+  assert.equal(
+    stepAfterLockReleased.ok,
+    true,
+    "iteration_step_concurrent_update_has_one_winner: the launch must succeed once the lock clears",
+  );
+  assert.equal(
+    await pathExists(stepHeldLockPath),
+    false,
+    "iteration_step_concurrent_update_has_one_winner: a caller that created the lock must release it",
+  );
+
+  // Settle it so the run is not left unsettled for later tests.
+  const stepLockProbeSettled = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepRaceTaskId,
+    stepId: stepLockProbe.value.record.stepId,
+    expectedRevision: 2,
+    intent: {
+      kind: "record_returned",
+      result: { stepOk: true, returnedAt: "2026-08-17T11:42:00.000Z" },
+    },
+  });
+  assert.equal(
+    stepLockProbeSettled.ok,
+    true,
+    "iteration_step_concurrent_update_has_one_winner: the probe step should settle",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test L: iteration_step_unsettled_run_refuses_new_claims
+  //
+  // Closes the blind-retry route: a "retry" launch kind hashes to a different
+  // stepId, so without this gate a caller could claim a fresh retry step while
+  // the step being retried sits unreconciled in outcome_unknown — never
+  // touching the original's launch boundary.
+  // -----------------------------------------------------------------------
+  const stepGateTaskId = "TASK-ITERATION-STEP-GATE";
+  const stepGateBudgetId = "budget-iteration-step-gate";
+  const stepGateRevision = await stepSeedTask(stepGateTaskId, stepGateBudgetId);
+
+  function stepGateParent(stepNumber) {
+    return {
+      taskId: stepGateTaskId,
+      taskStateRevision: stepGateRevision,
+      budgetId: stepGateBudgetId,
+      stepNumber,
+    };
+  }
+
+  const stepGateFirst = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: stepGateParent(1),
+    launchKind: "worker_call",
+    claimedAt: stepStartedAt,
+  });
+  const stepGateLaunched = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepGateTaskId,
+    stepId: stepGateFirst.value.record.stepId,
+    expectedRevision: 1,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T12:00:00.000Z" },
+  });
+  assert.equal(
+    stepGateLaunched.ok,
+    true,
+    "iteration_step_unsettled_run_refuses_new_claims: the first step should launch",
+  );
+
+  // While step 1 is running, a fresh step of ANY kind must be refused.
+  const stepGateWhileRunning = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: stepGateParent(2),
+    launchKind: "planner_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepGateWhileRunning.ok,
+    false,
+    "iteration_step_unsettled_run_refuses_new_claims: a new claim must be refused while a step is running",
+  );
+  assert.equal(
+    stepGateWhileRunning.error.code,
+    "iteration_step_run_blocked_by_unsettled_step",
+    "iteration_step_unsettled_run_refuses_new_claims: must fail with the run-blocked code",
+  );
+
+  // A replay of the RUNNING step itself still resolves to already_claimed: the
+  // gate excludes the step being claimed, so the exactly-once path still answers.
+  const stepGateReplay = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: stepGateParent(1),
+    launchKind: "worker_call",
+    claimedAt: "2026-08-17T12:05:00.000Z",
+  });
+  assert.equal(
+    stepGateReplay.ok && stepGateReplay.value.status === "already_claimed",
+    true,
+    "iteration_step_unsettled_run_refuses_new_claims: a replay of the unsettled step must still report already_claimed",
+  );
+
+  // Now make it ambiguous and attempt the blind retry.
+  const stepGateUnknown = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepGateTaskId,
+    stepId: stepGateFirst.value.record.stepId,
+    expectedRevision: 2,
+    intent: {
+      kind: "mark_outcome_unknown",
+      occurredAt: "2026-08-17T12:10:00.000Z",
+    },
+  });
+  assert.equal(
+    stepGateUnknown.ok,
+    true,
+    "iteration_step_unsettled_run_refuses_new_claims: the step should become ambiguous",
+  );
+
+  const stepGateBlindRetry = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: stepGateParent(1),
+    launchKind: "retry",
+    claimedAt: "2026-08-17T12:11:00.000Z",
+  });
+  assert.equal(
+    stepGateBlindRetry.ok,
+    false,
+    "iteration_step_unsettled_run_refuses_new_claims: a blind retry of an ambiguous step must be refused",
+  );
+  assert.equal(
+    stepGateBlindRetry.error.code,
+    "iteration_step_run_blocked_by_unsettled_step",
+    "iteration_step_unsettled_run_refuses_new_claims: must fail with the run-blocked code",
+  );
+
+  // After reconciliation, a retry step is claimable — and it is a NEW step with
+  // its own identity, not a relaunch of the reconciled one.
+  const stepGateReconciled = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepGateTaskId,
+    stepId: stepGateFirst.value.record.stepId,
+    expectedRevision: 3,
+    intent: {
+      kind: "record_failed",
+      failure: {
+        code: "worker_failed",
+        retryable: true,
+        failedAt: "2026-08-17T12:12:00.000Z",
+      },
+    },
+  });
+  assert.equal(
+    stepGateReconciled.ok,
+    true,
+    "iteration_step_unsettled_run_refuses_new_claims: reconciliation should settle the step",
+  );
+
+  const stepGateRetry = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: stepGateParent(1),
+    launchKind: "retry",
+    claimedAt: "2026-08-17T12:13:00.000Z",
+  });
+  assert.equal(
+    stepGateRetry.ok && stepGateRetry.value.status === "claimed",
+    true,
+    "iteration_step_unsettled_run_refuses_new_claims: a retry is claimable once the run is reconciled",
+  );
+  assert.equal(
+    stepGateRetry.value.record.stepId === stepGateFirst.value.record.stepId,
+    false,
+    "iteration_step_unsettled_run_refuses_new_claims: a retry must be a distinct step identity",
+  );
+  assert.equal(
+    stepGateRetry.value.record.launchKind,
+    "retry",
+    "iteration_step_unsettled_run_refuses_new_claims: the retry launch kind must be durable",
+  );
+  assert.equal(
+    stepGateRetry.value.record.launchBoundaryCrossed,
+    false,
+    "iteration_step_unsettled_run_refuses_new_claims: a fresh retry step starts before the launch boundary",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test M: iteration_step_orphaned_run_is_never_launchable
+  //
+  // A step claimed against a superseded revision/budget stays on disk. It must
+  // never be selected for launch by the current run — otherwise resume would
+  // launch work bound to a parent context that no longer exists.
+  // -----------------------------------------------------------------------
+  const stepOrphanTaskId = "TASK-ITERATION-STEP-ORPHAN";
+  const stepOrphanBudgetId = "budget-iteration-step-orphan-1";
+  const stepOrphanRevision = await stepSeedTask(
+    stepOrphanTaskId,
+    stepOrphanBudgetId,
+  );
+  const stepOrphanClaim = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: {
+      taskId: stepOrphanTaskId,
+      taskStateRevision: stepOrphanRevision,
+      budgetId: stepOrphanBudgetId,
+      stepNumber: 1,
+    },
+    launchKind: "planner_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepOrphanClaim.ok && stepOrphanClaim.value.record.lifecycle === "prepared",
+    true,
+    "iteration_step_orphaned_run_is_never_launchable: the soon-to-be orphan should claim",
+  );
+
+  // Leave the orphan UNSETTLED. This is what makes the claim gate's scope filter
+  // load-bearing: without it, a superseded run holding a running step would block
+  // every future run's claims for good — a livelock, not merely stale data.
+  const stepOrphanLaunched = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepOrphanTaskId,
+    stepId: stepOrphanClaim.value.record.stepId,
+    expectedRevision: 1,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T12:50:00.000Z" },
+  });
+  assert.equal(
+    stepOrphanLaunched.ok && stepOrphanLaunched.value.record.lifecycle === "running",
+    true,
+    "iteration_step_orphaned_run_is_never_launchable: the orphan should be left running",
+  );
+
+  // Supersede the run: new revision, new budget.
+  const stepOrphanSuperseded = await updateTaskState({
+    projectRoot: stepProjectRoot,
+    taskId: stepOrphanTaskId,
+    expectedRevision: stepOrphanRevision,
+    updatedAt: "2026-08-17T13:00:00.000Z",
+    update(state) {
+      const nextBudget = createIterationBudget({
+        budgetId: "budget-iteration-step-orphan-2",
+        startedAt: "2026-08-17T13:00:00.000Z",
+        operatorLimits: { maxSteps: 6, maxPlannerCalls: 3, maxWorkerCalls: 3 },
+      });
+      return { ...state, iterationBudget: nextBudget.value };
+    },
+  });
+  assert.equal(
+    stepOrphanSuperseded.ok,
+    true,
+    "iteration_step_orphaned_run_is_never_launchable: the run should be supersedable",
+  );
+
+  const stepOrphanResume = await loadIterationStepResumeState({
+    projectRoot: stepProjectRoot,
+    taskId: stepOrphanTaskId,
+  });
+  assert.equal(
+    stepOrphanResume.ok,
+    true,
+    "iteration_step_orphaned_run_is_never_launchable: resume state should derive",
+  );
+  assert.equal(
+    stepOrphanResume.value.action,
+    "no_steps",
+    "iteration_step_orphaned_run_is_never_launchable: the new run must see no steps of its own",
+  );
+  assert.equal(
+    stepOrphanResume.value.launchPermitted,
+    false,
+    "iteration_step_orphaned_run_is_never_launchable: an orphan must never be launchable",
+  );
+  assert.equal(
+    stepOrphanResume.value.orphanedStepCount,
+    1,
+    "iteration_step_orphaned_run_is_never_launchable: the orphan must be reported, not silently dropped",
+  );
+  assert.equal(
+    stepOrphanResume.value.stepCount,
+    0,
+    "iteration_step_orphaned_run_is_never_launchable: the orphan must not be counted in scope",
+  );
+
+  // Unscoped derivation still sees it — the filter is the scope, not a deletion.
+  const stepOrphanAll = await listIterationSteps({
+    projectRoot: stepProjectRoot,
+    taskId: stepOrphanTaskId,
+  });
+  assert.equal(
+    stepOrphanAll.value.length,
+    1,
+    "iteration_step_orphaned_run_is_never_launchable: the orphan record must still be durable",
+  );
+  assert.equal(
+    deriveIterationStepResumeState(stepOrphanAll.value).action,
+    "reconcile_launched_step",
+    "iteration_step_orphaned_run_is_never_launchable: an unscoped derivation would still be blocked by the orphan",
+  );
+
+  // The claim gate must be scoped too: the new run can claim its own work even
+  // though a superseded run left a running step behind. Without the scope filter
+  // in refuseClaimWhileRunIsBlocked, this claim would be refused forever.
+  const stepOrphanNewRunClaim = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: {
+      taskId: stepOrphanTaskId,
+      taskStateRevision: stepOrphanSuperseded.value.state.revision,
+      budgetId: "budget-iteration-step-orphan-2",
+      stepNumber: 1,
+    },
+    launchKind: "planner_call",
+    claimedAt: "2026-08-17T13:05:00.000Z",
+  });
+  assert.equal(
+    stepOrphanNewRunClaim.ok,
+    true,
+    "iteration_step_orphaned_run_is_never_launchable: a superseded run's running step must not block the new run",
+  );
+  assert.equal(
+    stepOrphanNewRunClaim.value.status,
+    "claimed",
+    "iteration_step_orphaned_run_is_never_launchable: the new run must get its own fresh claim",
+  );
+  assert.equal(
+    stepOrphanNewRunClaim.value.record.stepId ===
+      stepOrphanClaim.value.record.stepId,
+    false,
+    "iteration_step_orphaned_run_is_never_launchable: the new run's step must be a distinct identity",
+  );
+
+  // And the new run's resume state sees only its own step.
+  const stepOrphanNewRunResume = await loadIterationStepResumeState({
+    projectRoot: stepProjectRoot,
+    taskId: stepOrphanTaskId,
+  });
+  assert.equal(
+    stepOrphanNewRunResume.value.action,
+    "resume_prepared_step",
+    "iteration_step_orphaned_run_is_never_launchable: the new run must resume its own prepared step",
+  );
+  assert.equal(
+    stepOrphanNewRunResume.value.stepId,
+    stepOrphanNewRunClaim.value.record.stepId,
+    "iteration_step_orphaned_run_is_never_launchable: resume must point at the in-scope step",
+  );
+  assert.equal(
+    stepOrphanNewRunResume.value.orphanedStepCount,
+    1,
+    "iteration_step_orphaned_run_is_never_launchable: the running orphan must remain visible as an orphan",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test N: iteration_step_store_directory_is_hardened
+  //
+  // listIterationSteps feeds refuseClaimWhileRunIsBlocked, so anything that can
+  // wedge or poison the directory read also wedges or poisons every claim for
+  // the task. Three hostile entries, each of which must fail closed rather than
+  // throw or be adopted.
+  // -----------------------------------------------------------------------
+  const stepHardenTaskId = "TASK-ITERATION-STEP-HARDEN";
+  const stepHardenBudgetId = "budget-iteration-step-harden";
+  const stepHardenRevision = await stepSeedTask(
+    stepHardenTaskId,
+    stepHardenBudgetId,
+  );
+  const stepHardenClaim = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: {
+      taskId: stepHardenTaskId,
+      taskStateRevision: stepHardenRevision,
+      budgetId: stepHardenBudgetId,
+      stepNumber: 1,
+    },
+    launchKind: "worker_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepHardenClaim.ok,
+    true,
+    "iteration_step_store_directory_is_hardened: the baseline step should claim",
+  );
+
+  const stepHardenDir = join(
+    stepProjectRoot,
+    ".aeos",
+    "state",
+    "iteration-steps",
+    stepHardenTaskId,
+  );
+
+  // (1) A DIRECTORY named like a record. readFile would throw EISDIR, and an
+  // uncaught throw here would wedge every later claim for this task.
+  const stepHardenFakeDir = join(stepHardenDir, "step-not-a-file.json");
+  await mkdir(stepHardenFakeDir, { recursive: true });
+  const stepHardenDirRead = await listIterationSteps({
+    projectRoot: stepProjectRoot,
+    taskId: stepHardenTaskId,
+  });
+  assert.equal(
+    stepHardenDirRead.ok,
+    false,
+    "iteration_step_store_directory_is_hardened: a directory named like a record must fail closed, not throw",
+  );
+  assert.equal(
+    stepHardenDirRead.error.code,
+    "iteration_step_unsafe_target",
+    "iteration_step_store_directory_is_hardened: must fail with the unsafe-target code",
+  );
+  await rm(stepHardenFakeDir, { recursive: true, force: true });
+
+  // (2) A SYMLINK to a record outside this directory.
+  const stepHardenRealRecord = join(
+    stepHardenDir,
+    `${stepHardenClaim.value.record.stepId}.json`,
+  );
+  const stepHardenSymlink = join(stepHardenDir, "step-symlinked.json");
+  await symlink(stepHardenRealRecord, stepHardenSymlink);
+  const stepHardenSymlinkRead = await listIterationSteps({
+    projectRoot: stepProjectRoot,
+    taskId: stepHardenTaskId,
+  });
+  assert.equal(
+    stepHardenSymlinkRead.ok,
+    false,
+    "iteration_step_store_directory_is_hardened: a symlinked record must not be followed",
+  );
+  assert.equal(
+    stepHardenSymlinkRead.error.code,
+    "iteration_step_unsafe_target",
+    "iteration_step_store_directory_is_hardened: must fail with the unsafe-target code",
+  );
+  await rm(stepHardenSymlink, { force: true });
+
+  // (3) A structurally VALID record belonging to a different task, planted here.
+  // Self-consistency is not proof of belonging: if it were adopted and it were
+  // running, the claim gate would block this task's run on a foreign step.
+  const stepHardenForeign = createPreparedIterationStepRecord({
+    parent: {
+      taskId: "TASK-SOMEONE-ELSE",
+      taskStateRevision: 2,
+      budgetId: "budget-someone-else",
+      stepNumber: 1,
+    },
+    launchKind: "worker_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepHardenForeign.ok,
+    true,
+    "iteration_step_store_directory_is_hardened: the foreign record should be structurally valid",
+  );
+  const stepHardenForeignPath = join(
+    stepHardenDir,
+    `${stepHardenForeign.value.stepId}.json`,
+  );
+  await writeNodeFile(
+    stepHardenForeignPath,
+    `${JSON.stringify(stepHardenForeign.value, null, 2)}\n`,
+  );
+  const stepHardenForeignRead = await listIterationSteps({
+    projectRoot: stepProjectRoot,
+    taskId: stepHardenTaskId,
+  });
+  assert.equal(
+    stepHardenForeignRead.ok,
+    false,
+    "iteration_step_store_directory_is_hardened: a foreign task's record must not be adopted",
+  );
+  assert.equal(
+    stepHardenForeignRead.error.code,
+    "iteration_step_foreign_record",
+    "iteration_step_store_directory_is_hardened: must fail with the foreign-record code",
+  );
+  await rm(stepHardenForeignPath, { force: true });
+
+  // (4) A HARD LINK to this task's own record under a different name. lstat sees
+  // a regular file, and the content is a valid record for this very task, so the
+  // only thing that can refuse it is the filename-identity invariant: a record
+  // must live at the path its own derived stepId dictates. Without it, the same
+  // identity would appear twice in the listing.
+  const stepHardenHardLink = join(stepHardenDir, "step-hardlinked.json");
+  await link(stepHardenRealRecord, stepHardenHardLink);
+  const stepHardenHardLinkRead = await listIterationSteps({
+    projectRoot: stepProjectRoot,
+    taskId: stepHardenTaskId,
+  });
+  assert.equal(
+    stepHardenHardLinkRead.ok,
+    false,
+    "iteration_step_store_directory_is_hardened: a hard-linked duplicate must not be adopted",
+  );
+  assert.equal(
+    stepHardenHardLinkRead.error.code,
+    "iteration_step_path_identity_mismatch",
+    "iteration_step_store_directory_is_hardened: must fail with the path-identity-mismatch code",
+  );
+  await rm(stepHardenHardLink, { force: true });
+
+  // With the hostile entries gone, the store reads normally again.
+  const stepHardenClean = await listIterationSteps({
+    projectRoot: stepProjectRoot,
+    taskId: stepHardenTaskId,
+  });
+  assert.equal(
+    stepHardenClean.ok && stepHardenClean.value.length === 1,
+    true,
+    "iteration_step_store_directory_is_hardened: the store must read normally once cleaned",
+  );
+
+  // A budgetId carrying the identity-digest delimiter is refused, so the digest
+  // cannot be made ambiguous across different bindings.
+  const stepHardenBadBudgetId = deriveIterationStepIdentity({
+    parent: {
+      taskId: stepHardenTaskId,
+      taskStateRevision: stepHardenRevision,
+      budgetId: "budget with spaces",
+      stepNumber: 1,
+    },
+    launchKind: "worker_call",
+  });
+  assert.equal(
+    stepHardenBadBudgetId.ok,
+    false,
+    "iteration_step_store_directory_is_hardened: an unsafe budgetId must not derive an identity",
+  );
+  assert.equal(
+    stepHardenBadBudgetId.error.code,
+    "iteration_step_invalid_parent_binding",
+    "iteration_step_store_directory_is_hardened: must fail with the invalid-parent-binding code",
+  );
+
+  console.log("iteration step smoke tests passed");
+} finally {
+  await rm(iterationStepTempRoot, { recursive: true, force: true });
 }

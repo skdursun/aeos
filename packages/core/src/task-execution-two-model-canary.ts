@@ -49,6 +49,10 @@ import { AEOS_TASK_STATE_ROOT_RELATIVE_PATH } from "./task-state-persistence.js"
 import { AEOS_TASK_EXECUTION_INVOCATION_ROOT_RELATIVE_PATH } from "./task-execution-invocation-persistence.js";
 import { AEOS_TASK_EXECUTION_ATTEMPT_ROOT_RELATIVE_PATH } from "./task-execution-attempt-persistence.js";
 import { AEOS_TASK_EXECUTION_AUDIT_ROOT_RELATIVE_PATH } from "./task-execution-audit-persistence.js";
+import {
+  AEOS_ITERATION_STEP_LOCK_ROOT_RELATIVE_PATH,
+  AEOS_ITERATION_STEP_ROOT_RELATIVE_PATH,
+} from "./task-execution-iteration-step.js";
 import { isTaskExecutionInvocationReconciliationRequiredByLifecycle } from "./task-execution-invocation-reconciliation.js";
 import {
   appendTaskExecutionAuditEvent,
@@ -712,6 +716,27 @@ async function findIdentityCollision(input: {
       path: resolve(
         projectRoot,
         AEOS_TASK_EXECUTION_AUDIT_ROOT_RELATIVE_PATH,
+        input.taskId,
+      ),
+    },
+    // Iteration step stores (TASK-0328).  Added so the freshness probe stays
+    // exhaustive as new per-task state roots appear: a canary taskId that
+    // already owns steps or step locks is not fresh, and the AEOS rule that
+    // historical canaries are never replayed has to cover every state root, not
+    // just the ones that existed when the probe was written.
+    {
+      root: resolve(projectRoot, AEOS_ITERATION_STEP_ROOT_RELATIVE_PATH),
+      path: resolve(
+        projectRoot,
+        AEOS_ITERATION_STEP_ROOT_RELATIVE_PATH,
+        input.taskId,
+      ),
+    },
+    {
+      root: resolve(projectRoot, AEOS_ITERATION_STEP_LOCK_ROOT_RELATIVE_PATH),
+      path: resolve(
+        projectRoot,
+        AEOS_ITERATION_STEP_LOCK_ROOT_RELATIVE_PATH,
         input.taskId,
       ),
     },
