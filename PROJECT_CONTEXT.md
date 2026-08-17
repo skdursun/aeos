@@ -236,8 +236,21 @@ condition.
 
 ## Next Task
 
-TASK-0325 / GitHub Issue #5: Worker result -> work accounting bridge.
-TASK-0324 closed durably; see below.
+**Do not read a task pointer out of this file.** This document is narrative context, not the
+execution queue. A hardcoded "next task" here goes stale silently and has already done so once:
+it named TASK-0325 long after TASK-0325 through TASK-0328 were closed and integrated.
+
+Derive the next task from live state instead, in this order:
+
+1. `git fetch origin`, then the §8c integration preflight — if commits for tasks already declared
+   complete sit ahead of the canonical default branch, the answer is `INTEGRATION_REQUIRED` and no
+   new critical task may be dispatched;
+2. open GitHub Issues in dependency order — a critical-authority defect issue outranks roadmap
+   work (§8b);
+3. cross-check the selected task against its Notion Task Ledger row before dispatch.
+
+Governing rules: root `CLAUDE.md` and `docs/ai/AEOS_AGENT_OPERATING_CONSTITUTION.md` §8b/§8c.
+Live git + GitHub + Notion state always wins over any prose in this file.
 
 ## TASK-0324 closeout
 
