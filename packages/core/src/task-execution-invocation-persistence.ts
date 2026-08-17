@@ -1280,10 +1280,26 @@ export async function updateTaskExecutionInvocation(
   }
 
   let lockHandle: Awaited<ReturnType<typeof open>> | undefined;
+  // Only the caller that CREATED the lock may remove it (GitHub #77).  An
+  // unconditional unlink in the finally had the caller that LOST the open("wx")
+  // race delete the winner's lock while the winner was still mid-update, letting
+  // a third caller acquire it and run the read-transition-rename cycle
+  // concurrently.  Both would pass the revision guard and both would return ok,
+  // each believing it owned the transition — a duplicate dispatch in the
+  // invocation authority path.  The atomic rename left the file structurally
+  // consistent, which is why nothing else surfaced it.
+  //
+  // The flag is set immediately after open() returns, NOT after the write
+  // completes: if writeFile or sync throws, the lock file still exists on disk and
+  // this caller is the right agent to clean it up.  Gating on "fully written"
+  // instead would trade the race for a permanently orphaned lock — a wedged
+  // record needing manual intervention, which is worse than the original defect.
+  let lockFileOpenedByThisCaller = false;
 
   try {
     try {
       lockHandle = await open(lockPath, "wx");
+      lockFileOpenedByThisCaller = true;
       await lockHandle.writeFile(
         `${JSON.stringify({
           taskId: input.taskId,
@@ -1488,7 +1504,9 @@ export async function updateTaskExecutionInvocation(
       await lockHandle.close().catch(() => undefined);
     }
 
-    await unlink(lockPath).catch(() => undefined);
+    if (lockFileOpenedByThisCaller) {
+      await unlink(lockPath).catch(() => undefined);
+    }
   }
 }
 

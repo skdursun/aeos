@@ -42,8 +42,18 @@ import {
   updateTaskExecutionInvocation,
 } from "./task-execution-invocation-persistence.js";
 import type {
+  TaskExecutionInvocationLifecycle,
   TaskExecutionInvocationRecord,
 } from "./task-execution-invocation-record.js";
+import { AEOS_TASK_STATE_ROOT_RELATIVE_PATH } from "./task-state-persistence.js";
+import { AEOS_TASK_EXECUTION_INVOCATION_ROOT_RELATIVE_PATH } from "./task-execution-invocation-persistence.js";
+import { AEOS_TASK_EXECUTION_ATTEMPT_ROOT_RELATIVE_PATH } from "./task-execution-attempt-persistence.js";
+import { AEOS_TASK_EXECUTION_AUDIT_ROOT_RELATIVE_PATH } from "./task-execution-audit-persistence.js";
+import {
+  AEOS_ITERATION_STEP_LOCK_ROOT_RELATIVE_PATH,
+  AEOS_ITERATION_STEP_ROOT_RELATIVE_PATH,
+} from "./task-execution-iteration-step.js";
+import { isTaskExecutionInvocationReconciliationRequiredByLifecycle } from "./task-execution-invocation-reconciliation.js";
 import {
   appendTaskExecutionAuditEvent,
 } from "./task-execution-audit-persistence.js";
@@ -194,6 +204,34 @@ export interface TaskExecutionTwoModelCanaryPrepareResult {
   readonly workerAttempt: TaskExecutionAttempt | null;
   readonly workerInvocation: TaskExecutionInvocationRecord | null;
   readonly orchestration: TaskExecutionTwoModelCanaryRecord | null;
+  readonly issues: readonly TaskExecutionWorkerIssue[];
+}
+
+export interface TaskExecutionTwoModelCanaryInspectResult {
+  readonly ok: boolean;
+  readonly status: "inspected" | "not_found" | "blocked";
+  readonly taskId: string | null;
+  readonly taskRevision: number | null;
+  readonly orchestrationId: string;
+  readonly orchestrationLifecycle: TaskExecutionTwoModelCanaryLifecycle | null;
+  readonly orchestrationPrepared: boolean | null;
+  readonly orchestrationConsumed: boolean | null;
+  readonly plannerInvocationId: string | null;
+  readonly plannerLifecycle: TaskExecutionInvocationLifecycle | null;
+  readonly plannerRevision: number | null;
+  readonly plannerOneShotConsumed: boolean | null;
+  readonly plannerOutcomePresent: boolean | null;
+  readonly plannerReconciliationRequired: boolean | null;
+  readonly workerInvocationId: string | null;
+  readonly workerLifecycle: TaskExecutionInvocationLifecycle | null;
+  readonly workerRevision: number | null;
+  readonly workerOneShotConsumed: boolean | null;
+  readonly workerOutcomePresent: boolean | null;
+  readonly workerReconciliationRequired: boolean | null;
+  readonly routePresent: boolean | null;
+  readonly routeDecisionStatus: "authorized" | "blocked" | "not_run" | null;
+  readonly selectedWorkerFamily: "claude_code" | null;
+  readonly reconciliationRequired: boolean | null;
   readonly issues: readonly TaskExecutionWorkerIssue[];
 }
 
@@ -580,6 +618,172 @@ export async function loadTaskExecutionTwoModelCanaryRecord(input: {
   }
 }
 
+type PathProbeResult =
+  | { readonly kind: "exists" }
+  | { readonly kind: "absent" }
+  | { readonly kind: "error"; readonly errno: string };
+
+// Probes whether a filesystem path exists without masking non-ENOENT errors.
+// ENOENT and ENOTDIR both mean "genuinely absent" (the latter arises when an
+// ancestor component is a non-directory — also a proof of absence). Any other
+// error (EACCES, EIO, etc.) means the probe could not determine existence and
+// must fail closed: the caller must treat it as unverifiable rather than absent.
+async function probePath(path: string): Promise<PathProbeResult> {
+  try {
+    await lstat(path);
+    return { kind: "exists" };
+  } catch (err) {
+    const code = (err as { code?: string }).code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      return { kind: "absent" };
+    }
+    return { kind: "error", errno: code ?? "UNKNOWN" };
+  }
+}
+
+/**
+ * Verifies that a two-model canary identity (taskId) has never produced any
+ * durable artifact anywhere under .aeos/state/. This is a read-only probe: it
+ * never creates, mutates, or deletes anything. It exists to fail closed
+ * against silent identity reuse (see
+ * task_execution_two_model_canary_identity_not_fresh below).
+ */
+async function findIdentityCollision(input: {
+  readonly projectRoot: string;
+  readonly taskId: string;
+}): Promise<
+  | { readonly ok: true }
+  | { readonly ok: false; readonly issue: TaskExecutionWorkerIssue }
+> {
+  if (!isSafeId(input.taskId)) {
+    return {
+      ok: false,
+      issue: issue({
+        code: "task_execution_two_model_canary_storage_id_invalid",
+        message: "Two-model canary storage ids must be safe system identifiers.",
+      }),
+    };
+  }
+
+  const projectRoot = await realpath(resolve(input.projectRoot)).catch(
+    () => null,
+  );
+  if (projectRoot === null) {
+    return {
+      ok: false,
+      issue: issue({
+        code: "task_execution_two_model_canary_project_root_missing",
+        message: "Two-model canary project root was not found.",
+        category: "not_found",
+      }),
+    };
+  }
+
+  const candidates: readonly {
+    readonly root: string;
+    readonly path: string;
+  }[] = [
+    {
+      root: resolve(projectRoot, storageRootRelativePath),
+      path: resolve(projectRoot, storageRootRelativePath, input.taskId),
+    },
+    {
+      root: resolve(projectRoot, AEOS_TASK_EXECUTION_INVOCATION_ROOT_RELATIVE_PATH),
+      path: resolve(
+        projectRoot,
+        AEOS_TASK_EXECUTION_INVOCATION_ROOT_RELATIVE_PATH,
+        input.taskId,
+      ),
+    },
+    {
+      root: resolve(projectRoot, AEOS_TASK_EXECUTION_ATTEMPT_ROOT_RELATIVE_PATH),
+      path: resolve(
+        projectRoot,
+        AEOS_TASK_EXECUTION_ATTEMPT_ROOT_RELATIVE_PATH,
+        input.taskId,
+      ),
+    },
+    {
+      root: resolve(projectRoot, AEOS_TASK_STATE_ROOT_RELATIVE_PATH),
+      path: resolve(
+        projectRoot,
+        AEOS_TASK_STATE_ROOT_RELATIVE_PATH,
+        `${input.taskId}.json`,
+      ),
+    },
+    {
+      root: resolve(projectRoot, AEOS_TASK_EXECUTION_AUDIT_ROOT_RELATIVE_PATH),
+      path: resolve(
+        projectRoot,
+        AEOS_TASK_EXECUTION_AUDIT_ROOT_RELATIVE_PATH,
+        input.taskId,
+      ),
+    },
+    // Iteration step stores (TASK-0328).  Added so the freshness probe stays
+    // exhaustive as new per-task state roots appear: a canary taskId that
+    // already owns steps or step locks is not fresh, and the AEOS rule that
+    // historical canaries are never replayed has to cover every state root, not
+    // just the ones that existed when the probe was written.
+    {
+      root: resolve(projectRoot, AEOS_ITERATION_STEP_ROOT_RELATIVE_PATH),
+      path: resolve(
+        projectRoot,
+        AEOS_ITERATION_STEP_ROOT_RELATIVE_PATH,
+        input.taskId,
+      ),
+    },
+    {
+      root: resolve(projectRoot, AEOS_ITERATION_STEP_LOCK_ROOT_RELATIVE_PATH),
+      path: resolve(
+        projectRoot,
+        AEOS_ITERATION_STEP_LOCK_ROOT_RELATIVE_PATH,
+        input.taskId,
+      ),
+    },
+  ];
+
+  for (const candidate of candidates) {
+    if (
+      !isInsideOrEqual(projectRoot, candidate.root) ||
+      !isInsideOrEqual(candidate.root, candidate.path)
+    ) {
+      return {
+        ok: false,
+        issue: issue({
+          code: "task_execution_two_model_canary_storage_escape",
+          message:
+            "Two-model canary identity freshness probe path escaped AEOS state root.",
+          category: "permission",
+        }),
+      };
+    }
+
+    const probe = await probePath(candidate.path);
+    if (probe.kind === "error") {
+      return {
+        ok: false,
+        issue: issue({
+          code: "task_execution_two_model_canary_identity_freshness_unverifiable",
+          message: `Two-model canary identity freshness could not be verified: probe at ${relative(projectRoot, candidate.path)} failed with errno ${probe.errno}. Failing closed to prevent silent identity reuse.`,
+          category: "conflict",
+        }),
+      };
+    }
+    if (probe.kind === "exists") {
+      return {
+        ok: false,
+        issue: issue({
+          code: "task_execution_two_model_canary_identity_not_fresh",
+          message: `Two-model canary identity is not fresh: a durable artifact already exists at ${relative(projectRoot, candidate.path)}.`,
+          category: "conflict",
+        }),
+      };
+    }
+  }
+
+  return { ok: true };
+}
+
 function createCanaryTaskState(
   now: string,
   refs: TaskExecutionTwoModelCanaryRefs,
@@ -750,15 +954,42 @@ export async function prepareTaskExecutionTwoModelCanary(input: {
   readonly orchestrationId?: string;
   readonly workItemId?: string;
   readonly batchId?: string;
+  readonly requireFreshIdentity?: boolean;
 }): Promise<TaskExecutionTwoModelCanaryPrepareResult> {
   const now = input.now ?? new Date().toISOString();
   const refs = defaultCanaryRefs(input);
+
+  if (input.requireFreshIdentity === true) {
+    const collision = await findIdentityCollision({
+      projectRoot: input.projectRoot,
+      taskId: refs.taskId,
+    });
+    if (!collision.ok) {
+      return blockedPrepare(null, [collision.issue]);
+    }
+  }
+
   const existing = await loadTaskExecutionTwoModelCanaryRecord({
     projectRoot: input.projectRoot,
     taskId: refs.taskId,
     orchestrationId: refs.orchestrationId,
   });
   if (existing.ok) {
+    if (input.requireFreshIdentity === true) {
+      // A pre-existing orchestration record is a collision, not a success,
+      // when the caller demanded a provably fresh identity. The
+      // findIdentityCollision probe above should already have caught this
+      // (the orchestration-canaries/<taskId>/ directory would exist), but
+      // this guard keeps the invariant explicit and fails closed even if the
+      // probe's coverage ever changes.
+      return blockedPrepare(null, [
+        issue({
+          code: "task_execution_two_model_canary_identity_not_fresh",
+          message: `Two-model canary identity is not fresh: an orchestration record already exists for taskId ${existing.record.taskId}.`,
+          category: "conflict",
+        }),
+      ]);
+    }
     const plannerInvocation = await loadTaskExecutionInvocation({
       projectRoot: input.projectRoot,
       taskId: existing.record.taskId,
@@ -923,6 +1154,186 @@ function blockedPrepare(
     workerAttempt: null,
     workerInvocation: null,
     orchestration: null,
+    issues,
+  };
+}
+
+function emptyInspectResult(input: {
+  readonly status: "not_found" | "blocked";
+  readonly orchestrationId: string;
+  readonly issues: readonly TaskExecutionWorkerIssue[];
+}): TaskExecutionTwoModelCanaryInspectResult {
+  return {
+    ok: false,
+    status: input.status,
+    taskId: null,
+    taskRevision: null,
+    orchestrationId: input.orchestrationId,
+    orchestrationLifecycle: null,
+    orchestrationPrepared: null,
+    orchestrationConsumed: null,
+    plannerInvocationId: null,
+    plannerLifecycle: null,
+    plannerRevision: null,
+    plannerOneShotConsumed: null,
+    plannerOutcomePresent: null,
+    plannerReconciliationRequired: null,
+    workerInvocationId: null,
+    workerLifecycle: null,
+    workerRevision: null,
+    workerOneShotConsumed: null,
+    workerOutcomePresent: null,
+    workerReconciliationRequired: null,
+    routePresent: null,
+    routeDecisionStatus: null,
+    selectedWorkerFamily: null,
+    reconciliationRequired: null,
+    issues: input.issues,
+  };
+}
+
+// The persisted invocation record shape (schemaVersion, invocationId,
+// lifecycle, ownership, request, result?, failure?, outcomeCertainty,
+// revision, safety, issues) has no literal "oneShotLaunchConsumed" field.
+// "reserved" is the only lifecycle a one-shot invocation can occupy before
+// its single launch attempt has been made (see
+// reserveTaskExecutionInvocation / updateTaskExecutionInvocation's
+// "enter_invocation" intent, which moves lifecycle out of "reserved"), so
+// oneShotConsumed is honestly derived as lifecycle !== "reserved" rather than
+// invented.
+function deriveOneShotConsumed(
+  record: TaskExecutionInvocationRecord | null,
+): boolean | null {
+  return record === null ? null : record.lifecycle !== "reserved";
+}
+
+// outcomePresent is derived from whether a returned result or a failure
+// record was actually persisted onto the invocation, not from a synthetic
+// flag.
+function deriveOutcomePresent(
+  record: TaskExecutionInvocationRecord | null,
+): boolean | null {
+  return record === null
+    ? null
+    : record.result !== undefined || record.failure !== undefined;
+}
+
+// reconciliationRequired uses the single authoritative predicate exported from
+// task-execution-invocation-reconciliation.ts. Do not duplicate the lifecycle
+// check here — that module is the source of truth. The predicate covers both
+// "invoking" (launch initiated, no outcome written) and "outcome_unknown"
+// (process finished but outcome indeterminate); either is an ambiguous state
+// that must block re-execution until reconciled. Staleness and corruption
+// require additional context not available to a read-only inspector and are
+// not evaluated here — those components must be checked separately if needed.
+function deriveReconciliationRequired(
+  record: TaskExecutionInvocationRecord | null,
+): boolean | null {
+  return record === null
+    ? null
+    : isTaskExecutionInvocationReconciliationRequiredByLifecycle(
+        record.lifecycle,
+      );
+}
+
+/**
+ * Purely read-only inspection of a two-model canary identity's durable
+ * state. Never writes, creates, or touches any file; loads only existing
+ * records via loadTaskExecutionTwoModelCanaryRecord and
+ * loadTaskExecutionInvocation.
+ */
+export async function inspectTaskExecutionTwoModelCanary(input: {
+  readonly projectRoot: string;
+  readonly taskId: string;
+  readonly orchestrationId: string;
+}): Promise<TaskExecutionTwoModelCanaryInspectResult> {
+  const loaded = await loadTaskExecutionTwoModelCanaryRecord({
+    projectRoot: input.projectRoot,
+    taskId: input.taskId,
+    orchestrationId: input.orchestrationId,
+  });
+  if (!loaded.ok) {
+    return emptyInspectResult({
+      status:
+        loaded.issue.code === "task_execution_two_model_canary_record_not_found"
+          ? "not_found"
+          : "blocked",
+      orchestrationId: input.orchestrationId,
+      issues: [loaded.issue],
+    });
+  }
+
+  const record = loaded.record;
+  const issues: TaskExecutionWorkerIssue[] = [];
+
+  const plannerInvocation = await loadTaskExecutionInvocation({
+    projectRoot: input.projectRoot,
+    taskId: record.taskId,
+    invocationId: record.plannerInvocationId,
+  });
+  if (!plannerInvocation.ok) {
+    issues.push(
+      issue({
+        code:
+          "task_execution_two_model_canary_inspect_planner_invocation_unavailable",
+        message:
+          "Planner invocation record could not be loaded for inspection; derived planner facts are unavailable.",
+        severity: "warning",
+      }),
+    );
+  }
+  const workerInvocation = await loadTaskExecutionInvocation({
+    projectRoot: input.projectRoot,
+    taskId: record.taskId,
+    invocationId: record.workerInvocationId,
+  });
+  if (!workerInvocation.ok) {
+    issues.push(
+      issue({
+        code:
+          "task_execution_two_model_canary_inspect_worker_invocation_unavailable",
+        message:
+          "Worker invocation record could not be loaded for inspection; derived worker facts are unavailable.",
+        severity: "warning",
+      }),
+    );
+  }
+
+  const plannerRecord = plannerInvocation.ok ? plannerInvocation.value.record : null;
+  const workerRecord = workerInvocation.ok ? workerInvocation.value.record : null;
+  const plannerReconciliationRequired = deriveReconciliationRequired(plannerRecord);
+  const workerReconciliationRequired = deriveReconciliationRequired(workerRecord);
+
+  return {
+    ok: true,
+    status: "inspected",
+    taskId: record.taskId,
+    taskRevision: record.taskRevision,
+    orchestrationId: record.orchestrationId,
+    orchestrationLifecycle: record.lifecycle,
+    orchestrationPrepared: record.lifecycle === "prepared",
+    orchestrationConsumed: record.lifecycle !== "prepared",
+    plannerInvocationId: record.plannerInvocationId,
+    plannerLifecycle: plannerRecord?.lifecycle ?? null,
+    plannerRevision: plannerRecord?.revision ?? null,
+    plannerOneShotConsumed: deriveOneShotConsumed(plannerRecord),
+    plannerOutcomePresent: deriveOutcomePresent(plannerRecord),
+    plannerReconciliationRequired,
+    workerInvocationId: record.workerInvocationId,
+    workerLifecycle: workerRecord?.lifecycle ?? null,
+    workerRevision: workerRecord?.revision ?? null,
+    workerOneShotConsumed: deriveOneShotConsumed(workerRecord),
+    workerOutcomePresent: deriveOutcomePresent(workerRecord),
+    workerReconciliationRequired,
+    routePresent: record.routeDecisionId !== null,
+    routeDecisionStatus: record.routeDecisionStatus,
+    selectedWorkerFamily: record.selectedWorkerFamily,
+    reconciliationRequired:
+      plannerReconciliationRequired === null &&
+      workerReconciliationRequired === null
+        ? null
+        : Boolean(plannerReconciliationRequired) ||
+          Boolean(workerReconciliationRequired),
     issues,
   };
 }
@@ -1157,6 +1568,25 @@ function routeProposalFromPlannerResult(input: {
     };
   }
 
+  // Defense-in-depth: the wire schema constrains invocationOk to const:true,
+  // but a route must never be produced from a normalized result that itself
+  // disputes success. This does not depend on the wire schema and must hold
+  // for any plannerResult, schema-conformant or not.
+  if (input.plannerResult.invocationOk !== true) {
+    return {
+      proposal: null,
+      ignoredAuthorityFields,
+      issues: [
+        issue({
+          code: "task_execution_two_model_canary_planner_invocation_not_ok",
+          message:
+            "Codex planner result did not assert invocationOk; routing requires an explicit successful invocation.",
+          category: "conflict",
+        }),
+      ],
+    };
+  }
+
   const forbidden = [
     "invokeNow",
     "completed",
@@ -1186,6 +1616,74 @@ function routeProposalFromPlannerResult(input: {
     "modelReasoning",
     "boundedDiagnostics",
   ]);
+
+  // The wire schema can no longer express minItems:1 (provider-rejected
+  // keyword), so an empty capabilityRequirements array — vacuously accepted
+  // by Array.prototype.every — must be rejected here instead.
+  if (
+    Array.isArray(capabilityRequirements) &&
+    capabilityRequirements.length === 0
+  ) {
+    return {
+      proposal: null,
+      ignoredAuthorityFields,
+      issues: [
+        issue({
+          code:
+            "task_execution_two_model_canary_planner_capability_requirements_empty",
+          message:
+            "Codex planner proposal capabilityRequirements must not be empty.",
+          category: "conflict",
+        }),
+      ],
+    };
+  }
+
+  // The wire schema can no longer express uniqueItems:true (provider-rejected
+  // keyword), so duplicate entries — also vacuously accepted by
+  // Array.prototype.every — must be rejected here instead.
+  if (
+    Array.isArray(capabilityRequirements) &&
+    new Set(capabilityRequirements).size !== capabilityRequirements.length
+  ) {
+    return {
+      proposal: null,
+      ignoredAuthorityFields,
+      issues: [
+        issue({
+          code:
+            "task_execution_two_model_canary_planner_capability_requirements_duplicate",
+          message:
+            "Codex planner proposal capabilityRequirements must not contain duplicate entries.",
+          category: "conflict",
+        }),
+      ],
+    };
+  }
+
+  // The wire schema can no longer express maxItems:8. Emptiness and
+  // uniqueness above already bound this to at most the 4 allowed distinct
+  // capability values, making this check moot in practice; it is kept as a
+  // cheap explicit bound for defense-in-depth.
+  if (
+    Array.isArray(capabilityRequirements) &&
+    capabilityRequirements.length > 8
+  ) {
+    return {
+      proposal: null,
+      ignoredAuthorityFields,
+      issues: [
+        issue({
+          code:
+            "task_execution_two_model_canary_planner_capability_requirements_oversized",
+          message:
+            "Codex planner proposal capabilityRequirements exceeded the maximum bounded size.",
+          category: "conflict",
+        }),
+      ],
+    };
+  }
+
   if (
     proposalValue.taskId !== input.expectedTaskId ||
     proposalValue.sourceTaskRevision !== input.expectedRevision ||

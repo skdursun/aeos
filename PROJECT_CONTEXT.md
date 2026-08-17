@@ -236,21 +236,53 @@ condition.
 
 ## Next Task
 
-TASK-0324: Execute exactly one prepared real Codex planner -> AEOS route ->
-real Claude Code read-only worker canary only after operator command
+TASK-0325 / GitHub Issue #5: Worker result -> work accounting bridge.
+TASK-0324 closed durably; see below.
+
+## TASK-0324 closeout
+
+TASK-0324 is COMPLETE. The full real one-hop executed exactly once on identity
+`...-fresh-20260816-workerid-01`: real Codex planner -> schema-valid routing
+proposal -> AEOS-authorized route -> real Claude Code read-only worker ->
+durable worker outcome.
+
+Durable read-back: orchestration `worker_returned`; planner and worker both
+`returned` at revision 4 with one-shot consumed and outcome present; route
+present and `authorized`; selected worker family `claude_code`;
+`reconciliationRequired=false`; no issues. A second run is refused with
+`already_consumed` and makes zero model calls.
+
+Safety held throughout: `repositoryWriteAllowed=false`, `shellAllowed=false`,
+`primaryApplyAllowed=false`, `completionAuthority=false`. The canonical
+accounting invariant is intact - `expectedItemCount=400`, `skippedCount=20`,
+Remaining=380, `completionGate.completed=false`, `verified=false`,
+`verifierRun=false` - even though both models returned successfully.
+
+Two root causes were found and fixed, each verified out-of-band against the
+live provider before any one-shot identity was spent:
+
+1. The wire schema was valid JSON Schema 2020-12 but not a valid OpenAI
+   structured-output schema - `const` without `type` - so the provider returned
+   400 `invalid_json_schema` and Codex exited 1 with empty stdout. This killed
+   all nine historical canaries; the earlier "transient provider reachability"
+   classification is superseded, since a 400 can only come from the provider.
+2. `workerId` was the one identity field left unconstrained in the schema, so
+   the planner emitted its generic self-identifier `codex` and failed
+   `structuredBindingsMatch`. Adding the `const` tightened the producer without
+   touching the validator.
+
+Provider-rejected keywords removed from the wire format (`minimum`, `minItems`,
+`maxItems`, `uniqueItems`) are each enforced independently in AEOS code, so no
+validator was weakened.
 
 ## Pending Canary Notes
 
-- TASK-0324 exit=1 tail diagnostic fix is implementation-ready and
-  canary-blocked pending host Codex runtime reachability: the consumed
-  `TASK-0324-real-two-model-canary-fresh-20260814-evidencefix` planner
-  invocation exited 1 after the Codex process launch boundary, and the previous
-  head-only stderr excerpt preserved the startup banner but could discard the
-  terminal error. Future nonzero process diagnostics now persist bounded
-  sanitized stderr head, stderr tail, terminal stderr, stdout status, exit,
-  termination, and stdin-pipe facts. No fresh TASK-0324 canary is prepared until
-  Codex provider HTTP reachability is healthy or another diagnostic proves a
-  different root cause; do not rerun consumed canaries.
+- Resolved. The exit=1 diagnostics were never a provider-reachability problem;
+  the root cause was the invalid structured-output schema described above. All
+  eleven canary identities (nine historical, plus `...-schemafix-01` and
+  `...-workerid-01`) are consumed historical evidence and must never be
+  replayed. `...-schemafix-01` is `failed`/`known` with reconciliation false -
+  a clean terminal state, not an ambiguous one.
 
 ## Current Direction
 

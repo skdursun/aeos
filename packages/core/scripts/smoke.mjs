@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
+  chmod,
+  link,
   mkdtemp,
   mkdir,
   readdir,
@@ -174,6 +176,7 @@ import {
   prepareTaskExecutionCodexWorkerInvocation,
   prepareTaskExecutionTwoModelCanary,
   loadTaskExecutionTwoModelCanaryRecord,
+  inspectTaskExecutionTwoModelCanary,
   runTaskExecutionTwoModelCanary,
   createTaskExecutionTwoModelCanaryCodexFixtureResult,
   createTaskExecutionTwoModelCanaryClaudeFixtureResult,
@@ -287,6 +290,32 @@ import {
   validateTaskExecutionPolicyApprovalRecord,
   verifyTaskExecutionAuditChain,
   verifyAgenticCoverage,
+  applyWorkAccountingEvent,
+  AEOS_PROGRESS_LEDGER_UNASSIGNED_REQUIREMENT_ID,
+  buildTaskProgressLedger,
+  loadTaskProgressLedger,
+  renderTaskProgressLedgerText,
+  toTaskProgressLedgerJson,
+  AEOS_ITERATION_BUDGET_POLICY_CEILING,
+  AEOS_ITERATION_BUDGET_SYSTEM_DEFAULT,
+  createIterationBudget,
+  evaluateIterationBudget,
+  recordIterationBudgetLaunch,
+  refuseIterationBudgetProposal,
+  renderIterationBudgetText,
+  resolveIterationBudgetLimits,
+  toIterationBudgetJson,
+  validatePersistedIterationBudget,
+  claimIterationStep,
+  createPreparedIterationStepRecord,
+  deriveIterationStepIdentity,
+  deriveIterationStepResumeState,
+  listIterationSteps,
+  loadIterationStep,
+  loadIterationStepResumeState,
+  transitionIterationStepRecord,
+  updateIterationStep,
+  validateIterationStepRecord,
 } from "../dist/index.js";
 import {
   directoryInsteadOfFilePathCheck,
@@ -15211,6 +15240,51 @@ try {
     true,
     "task execution start apply smoke A should persist prepared -> started",
   );
+
+  // GitHub #77 (same defect class, attempt store).
+  const attemptLockDir = join(
+    persistenceRoot,
+    ".aeos",
+    "state",
+    "executions",
+    ".locks",
+    preparedAttempt.taskId,
+  );
+  await mkdir(attemptLockDir, { recursive: true });
+  const attemptLockPath = join(
+    attemptLockDir,
+    `${preparedAttempt.attemptId}.lock`,
+  );
+  await writeNodeFile(
+    attemptLockPath,
+    `${JSON.stringify({ heldBy: "another-process" })}\n`,
+  );
+
+  const attemptLockRefused = await updateTaskExecutionAttempt({
+    projectRoot: persistenceRoot,
+    taskId: preparedAttempt.taskId,
+    attemptId: preparedAttempt.attemptId,
+    expectedLifecycle: "started",
+    update(currentAttempt) {
+      return { ok: true, value: currentAttempt };
+    },
+  });
+  assert.equal(
+    attemptLockRefused.ok,
+    false,
+    "attempt lock ownership #77: a held lock must refuse the update",
+  );
+  assert.equal(
+    attemptLockRefused.error.code,
+    "task_execution_attempt_update_locked",
+    "attempt lock ownership #77: must fail with the update-locked code",
+  );
+  assert.equal(
+    await pathExists(attemptLockPath),
+    true,
+    "attempt lock ownership #77: a losing caller must not delete the holder's lock",
+  );
+  await rm(attemptLockPath, { force: true });
   assert.equal(
     startApplyResult.value.attempt.lifecycle,
     "started",
@@ -16023,6 +16097,86 @@ try {
     "invoking",
     "task execution invocation record smoke I should enter invoking lifecycle",
   );
+  // -----------------------------------------------------------------------
+  // GitHub #77 regression: invocation update lock ownership under contention.
+  //
+  // A caller that LOSES the open("wx") lock race must not delete the winner's
+  // lock. With an unconditional unlink in the finally, the loser removed it and a
+  // third caller could enter the same critical section concurrently with the
+  // winner — both passing the revision guard, both returning ok, both believing
+  // they owned an enter_invocation. That is a duplicate dispatch in the
+  // invocation authority path, and the atomic rename kept the file structurally
+  // consistent so nothing else noticed.
+  //
+  // Deterministic rather than timing-dependent: plant a lock owned by another
+  // process, then assert BOTH that the update is refused AND that the planted
+  // lock still exists afterwards. The second assertion is the regression.
+  const lockOwnershipTaskId = directReservation.value.record.taskId;
+  const lockOwnershipInvocationId = directReservation.value.record.invocationId;
+  const lockOwnershipDir = join(
+    persistenceRoot,
+    ".aeos",
+    "state",
+    "invocations",
+    ".locks",
+    lockOwnershipTaskId,
+  );
+  await mkdir(lockOwnershipDir, { recursive: true });
+  const lockOwnershipPath = join(
+    lockOwnershipDir,
+    `${lockOwnershipInvocationId}.lock`,
+  );
+  await writeNodeFile(
+    lockOwnershipPath,
+    `${JSON.stringify({ heldBy: "another-process" })}\n`,
+  );
+
+  const lockOwnershipRefused = await updateTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    taskId: lockOwnershipTaskId,
+    invocationId: lockOwnershipInvocationId,
+    ownershipToken: directInvokingUpdate.value.record.ownership.ownershipToken,
+    expectedLifecycle: "invoking",
+    intent: {
+      kind: "record_returned",
+      result: {
+        invocationOk: true,
+        returnedAt: "2026-08-08T00:01:46.250Z",
+      },
+    },
+  });
+  assert.equal(
+    lockOwnershipRefused.ok,
+    false,
+    "invocation lock ownership #77: a held lock must refuse the update",
+  );
+  assert.equal(
+    lockOwnershipRefused.error.code,
+    "task_execution_invocation_update_locked",
+    "invocation lock ownership #77: must fail with the update-locked code",
+  );
+  assert.equal(
+    await pathExists(lockOwnershipPath),
+    true,
+    "invocation lock ownership #77: a losing caller must not delete the holder's lock",
+  );
+
+  // The refused update must not have advanced the record either.
+  const lockOwnershipUntouched = await loadTaskExecutionInvocation({
+    projectRoot: persistenceRoot,
+    taskId: lockOwnershipTaskId,
+    invocationId: lockOwnershipInvocationId,
+  });
+  assert.equal(
+    lockOwnershipUntouched.value.record.lifecycle,
+    "invoking",
+    "invocation lock ownership #77: a lock-refused update must not advance the record",
+  );
+
+  // Once the holder releases it, the same update proceeds, and the caller that
+  // created the lock releases it again.
+  await rm(lockOwnershipPath, { force: true });
+
   const directReturnedUpdate = await updateTaskExecutionInvocation({
     projectRoot: persistenceRoot,
     taskId: directInvokingUpdate.value.record.taskId,
@@ -16039,6 +16193,11 @@ try {
       },
     },
   });
+  assert.equal(
+    await pathExists(lockOwnershipPath),
+    false,
+    "invocation lock ownership #77: a caller that created the lock must release it",
+  );
   assert.equal(
     directReturnedUpdate.ok,
     true,
@@ -19472,6 +19631,7 @@ try {
   );
 
   const task0324TempRoot = await mkdtemp(join(tmpdir(), "aeos-task-0324-smoke-"));
+  try {
   const task0324PrepareOnlyRoot = join(
     task0324TempRoot,
     "task-0324-prepare-only",
@@ -19538,6 +19698,244 @@ try {
     "TASK-0324-real-two-model-canary-fresh-20260814-oneshotfix",
     "TASK-0324 one-shot smoke F should keep deterministic smoke identity distinct from real canary ids",
   );
+
+  const digestDirectoryTree = async (root) => {
+    let relativePaths;
+    try {
+      relativePaths = await readdir(root, { recursive: true });
+    } catch {
+      return "missing";
+    }
+    const files = [];
+    for (const relPath of relativePaths) {
+      const stats = await stat(join(root, relPath));
+      if (stats.isFile()) {
+        files.push(relPath);
+      }
+    }
+    files.sort();
+    const hash = createHash("sha256");
+    for (const relPath of files) {
+      hash.update(relPath);
+      hash.update(await readFile(join(root, relPath)));
+    }
+    return hash.digest("hex");
+  };
+
+  const task0324FreshIdentityRoot = join(
+    task0324TempRoot,
+    "task-0324-fresh-identity",
+  );
+  await mkdir(task0324FreshIdentityRoot, { recursive: true });
+  const task0324FreshTaskId = `${TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID}-fresh-smoke-01`;
+  const task0324FreshOrchestrationId = `${TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID}-fresh-smoke-01`;
+  const task0324FreshPrepare = await prepareTaskExecutionTwoModelCanary({
+    projectRoot: task0324FreshIdentityRoot,
+    now: "2026-08-16T00:00:00.000Z",
+    taskId: task0324FreshTaskId,
+    orchestrationId: task0324FreshOrchestrationId,
+    requireFreshIdentity: true,
+  });
+  assert.equal(
+    task0324FreshPrepare.ok,
+    true,
+    "TASK-0324 fresh-identity smoke A should prepare a provably fresh identity",
+  );
+  assert.equal(task0324FreshPrepare.status, "prepared");
+  assert.equal(task0324FreshPrepare.orchestration.lifecycle, "prepared");
+  assert.equal(task0324FreshPrepare.orchestration.taskRevision, 1);
+  assert.equal(task0324FreshPrepare.orchestration.routeDecisionId, null);
+  assert.equal(
+    task0324FreshPrepare.orchestration.realCodexPlannerExecuted,
+    false,
+  );
+  assert.equal(
+    task0324FreshPrepare.orchestration.realClaudeRoutedWorkerExecuted,
+    false,
+  );
+  assert.equal(task0324FreshPrepare.plannerInvocation.lifecycle, "reserved");
+  assert.equal(task0324FreshPrepare.plannerInvocation.revision, 1);
+  assert.equal(task0324FreshPrepare.workerInvocation.lifecycle, "reserved");
+  assert.equal(task0324FreshPrepare.workerInvocation.revision, 1);
+
+  const task0324FreshIdentityDigestAfterPrepare = await digestDirectoryTree(
+    task0324FreshIdentityRoot,
+  );
+
+  const task0324FreshReplay = await prepareTaskExecutionTwoModelCanary({
+    projectRoot: task0324FreshIdentityRoot,
+    now: "2026-08-16T00:00:01.000Z",
+    taskId: task0324FreshTaskId,
+    orchestrationId: task0324FreshOrchestrationId,
+    requireFreshIdentity: true,
+  });
+  assert.equal(
+    task0324FreshReplay.ok,
+    false,
+    "TASK-0324 fresh-identity smoke B should block replay of a consumed identity",
+  );
+  assert.equal(task0324FreshReplay.status, "blocked");
+  assert.equal(
+    task0324FreshReplay.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_two_model_canary_identity_not_fresh",
+    ),
+    true,
+    "TASK-0324 fresh-identity smoke B should report the identity-not-fresh issue code",
+  );
+
+  const task0324Inspected = await inspectTaskExecutionTwoModelCanary({
+    projectRoot: task0324FreshIdentityRoot,
+    taskId: task0324FreshTaskId,
+    orchestrationId: task0324FreshOrchestrationId,
+  });
+  assert.equal(task0324Inspected.ok, true);
+  assert.equal(task0324Inspected.status, "inspected");
+  assert.equal(task0324Inspected.orchestrationLifecycle, "prepared");
+  assert.equal(task0324Inspected.orchestrationPrepared, true);
+  assert.equal(task0324Inspected.orchestrationConsumed, false);
+  assert.equal(task0324Inspected.plannerLifecycle, "reserved");
+  assert.equal(task0324Inspected.plannerRevision, 1);
+  assert.equal(task0324Inspected.plannerOneShotConsumed, false);
+  assert.equal(task0324Inspected.plannerOutcomePresent, false);
+  assert.equal(task0324Inspected.plannerReconciliationRequired, false);
+  assert.equal(task0324Inspected.workerLifecycle, "reserved");
+  assert.equal(task0324Inspected.workerRevision, 1);
+  assert.equal(task0324Inspected.workerOneShotConsumed, false);
+  assert.equal(task0324Inspected.workerOutcomePresent, false);
+  assert.equal(task0324Inspected.workerReconciliationRequired, false);
+  assert.equal(task0324Inspected.routePresent, false);
+  assert.equal(task0324Inspected.routeDecisionStatus, "not_run");
+  assert.equal(task0324Inspected.selectedWorkerFamily, null);
+  assert.equal(task0324Inspected.reconciliationRequired, false);
+
+  const task0324FreshIdentityDigestAfterInspect = await digestDirectoryTree(
+    task0324FreshIdentityRoot,
+  );
+  assert.equal(
+    task0324FreshIdentityDigestAfterInspect,
+    task0324FreshIdentityDigestAfterPrepare,
+    "TASK-0324 fresh-identity smoke C should prove inspection performed no writes",
+  );
+
+  // Smoke D — probe failure (EACCES) must fail CLOSED with
+  // task_execution_two_model_canary_identity_freshness_unverifiable, not
+  // silently treat the unverifiable path as absent ("fresh").
+  // Strategy: create the invocations directory inside the probe root, then
+  // chmod it to 000 so that lstat on a child path inside it returns EACCES.
+  // Restore permissions in the finally block so cleanup can delete the dir.
+  if (process.getuid !== undefined && process.getuid() !== 0) {
+    const task0324ProbeErrorRoot = join(
+      task0324TempRoot,
+      "task-0324-probe-error",
+    );
+    await mkdir(task0324ProbeErrorRoot, { recursive: true });
+    const invocationsDir = join(
+      task0324ProbeErrorRoot,
+      ".aeos",
+      "state",
+      "invocations",
+    );
+    await mkdir(invocationsDir, { recursive: true });
+    try {
+      await chmod(invocationsDir, 0o000);
+      const probeErrorResult = await prepareTaskExecutionTwoModelCanary({
+        projectRoot: task0324ProbeErrorRoot,
+        now: "2026-08-16T00:00:00.000Z",
+        taskId: `${TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID}-probe-error-01`,
+        orchestrationId: `${TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID}-probe-error-01`,
+        requireFreshIdentity: true,
+      });
+      assert.equal(
+        probeErrorResult.ok,
+        false,
+        "TASK-0324 fresh-identity smoke D probe failure must block preparation (fail closed)",
+      );
+      assert.equal(probeErrorResult.status, "blocked");
+      assert.equal(
+        probeErrorResult.issues.some(
+          (item) =>
+            item.code ===
+            "task_execution_two_model_canary_identity_freshness_unverifiable",
+        ),
+        true,
+        "TASK-0324 fresh-identity smoke D must report identity_freshness_unverifiable issue code",
+      );
+    } finally {
+      await chmod(invocationsDir, 0o755).catch(() => {});
+    }
+  }
+
+  // Smoke E2 — an invocation persisted in "invoking" lifecycle must cause
+  // inspectTaskExecutionTwoModelCanary to report reconciliationRequired: true.
+  // This exercises the corrected deriveReconciliationRequired that delegates to
+  // isTaskExecutionInvocationReconciliationRequiredByLifecycle rather than only
+  // checking "outcome_unknown".
+  {
+    const task0324InvokingRoot = join(
+      task0324TempRoot,
+      "task-0324-invoking-reconciliation",
+    );
+    await mkdir(task0324InvokingRoot, { recursive: true });
+    const invokingTaskId = `${TASK_EXECUTION_TWO_MODEL_CANARY_TASK_ID}-invoking-e2`;
+    const invokingOrchestrationId = `${TASK_EXECUTION_TWO_MODEL_CANARY_ORCHESTRATION_ID}-invoking-e2`;
+    const invokingPrepare = await prepareTaskExecutionTwoModelCanary({
+      projectRoot: task0324InvokingRoot,
+      now: "2026-08-16T00:00:00.000Z",
+      taskId: invokingTaskId,
+      orchestrationId: invokingOrchestrationId,
+      requireFreshIdentity: true,
+    });
+    assert.equal(
+      invokingPrepare.ok,
+      true,
+      "TASK-0324 fresh-identity smoke E2 should prepare",
+    );
+    // Load the planner invocation to obtain its ownership token, then
+    // transition it to "invoking" so the inspector sees an ambiguous state.
+    const invokingPlannerLoaded = await loadTaskExecutionInvocation({
+      projectRoot: task0324InvokingRoot,
+      taskId: invokingTaskId,
+      invocationId: invokingPrepare.orchestration.plannerInvocationId,
+    });
+    assert.equal(invokingPlannerLoaded.ok, true);
+    const invokingTransition = await updateTaskExecutionInvocation({
+      projectRoot: task0324InvokingRoot,
+      taskId: invokingTaskId,
+      invocationId: invokingPrepare.orchestration.plannerInvocationId,
+      ownershipToken:
+        invokingPlannerLoaded.value.record.ownership.ownershipToken,
+      expectedLifecycle: "reserved",
+      intent: {
+        kind: "enter_invocation",
+        occurredAt: "2026-08-16T00:00:01.000Z",
+      },
+    });
+    assert.equal(
+      invokingTransition.ok,
+      true,
+      "TASK-0324 fresh-identity smoke E2 transition to invoking must succeed",
+    );
+    assert.equal(invokingTransition.value.record.lifecycle, "invoking");
+    const invokingInspect = await inspectTaskExecutionTwoModelCanary({
+      projectRoot: task0324InvokingRoot,
+      taskId: invokingTaskId,
+      orchestrationId: invokingOrchestrationId,
+    });
+    assert.equal(invokingInspect.ok, true);
+    assert.equal(
+      invokingInspect.plannerReconciliationRequired,
+      true,
+      "TASK-0324 fresh-identity smoke E2 invocation in 'invoking' must report plannerReconciliationRequired: true",
+    );
+    assert.equal(
+      invokingInspect.reconciliationRequired,
+      true,
+      "TASK-0324 fresh-identity smoke E2 invocation in 'invoking' must report reconciliationRequired: true",
+    );
+  }
+
   const runTask0324Fixture = async (name, runnerOverrides = {}) => {
     const root = join(task0324TempRoot, `task-0324-${name}`);
     await mkdir(root, { recursive: true });
@@ -20086,6 +20484,124 @@ try {
     "TASK-0324 smoke G should report capability mismatch issues",
   );
 
+  const emptyCapabilityRequirements = await runTask0324Fixture(
+    "empty-capability-requirements",
+    {
+      codexProcess: (request) =>
+        createTaskExecutionTwoModelCanaryCodexFixtureResult({
+          request,
+          proposal: {
+            capabilityRequirements: [],
+          },
+        }),
+    },
+  );
+  assert.equal(
+    emptyCapabilityRequirements.result.status,
+    "route_blocked",
+    "TASK-0324 empty-capabilities smoke should block routing on an empty capabilityRequirements array",
+  );
+  assert.equal(emptyCapabilityRequirements.workerCalls, 0);
+  assert.equal(
+    emptyCapabilityRequirements.result.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_two_model_canary_planner_capability_requirements_empty",
+    ),
+    true,
+    "TASK-0324 empty-capabilities smoke should report the empty capabilityRequirements issue code",
+  );
+
+  const duplicateCapabilityRequirements = await runTask0324Fixture(
+    "duplicate-capability-requirements",
+    {
+      codexProcess: (request) =>
+        createTaskExecutionTwoModelCanaryCodexFixtureResult({
+          request,
+          proposal: {
+            capabilityRequirements: ["implementation", "implementation"],
+          },
+        }),
+    },
+  );
+  assert.equal(
+    duplicateCapabilityRequirements.result.status,
+    "route_blocked",
+    "TASK-0324 duplicate-capabilities smoke should block routing on duplicate capabilityRequirements entries",
+  );
+  assert.equal(duplicateCapabilityRequirements.workerCalls, 0);
+  assert.equal(
+    duplicateCapabilityRequirements.result.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_two_model_canary_planner_capability_requirements_duplicate",
+    ),
+    true,
+    "TASK-0324 duplicate-capabilities smoke should report the duplicate capabilityRequirements issue code",
+  );
+
+  const plannerInvocationNotOk = await runTask0324Fixture(
+    "planner-invocation-not-ok",
+    {
+      codexProcess: (request) =>
+        createTaskExecutionTwoModelCanaryCodexFixtureResult({
+          request,
+          stdout: JSON.stringify({
+            aeosCodexWorkerResultVersion: 1,
+            status: "returned",
+            workerId: request.workerIdentity.workerId,
+            workerFamily: request.workerIdentity.workerFamily,
+            runtimeKind: request.workerIdentity.runtimeKind,
+            invocationId: request.invocationId,
+            idempotencyKey: request.idempotencyKey,
+            taskId: request.taskId,
+            sourceTaskRevision: request.sourceTaskRevision,
+            attemptId: request.attemptId,
+            attemptNumber: request.attemptNumber,
+            workItemId: request.workItemId ?? null,
+            batchId: request.batchId ?? null,
+            invocationOk: false,
+            output: {
+              routingProposal: {
+                taskId: request.taskId,
+                sourceTaskRevision: request.sourceTaskRevision,
+                workItemId:
+                  request.workItemId ?? "task-0324-read-only-route",
+                batchId: request.batchId ?? "task-0324-one-hop-batch",
+                operationKind: "execute_task_attempt",
+                recommendedWorkerFamily: "claude_code",
+                capabilityRequirements: [
+                  "implementation",
+                  "repositoryRead",
+                  "modelReasoning",
+                  "boundedDiagnostics",
+                ],
+                reasonReference:
+                  "aeos://task/TASK-0324/operation/read-only-routed-worker-canary",
+                expectedOperationClass: "implementation",
+              },
+            },
+            diagnosticCode: "task_0324_codex_planner_routing_proposal",
+          }),
+        }),
+    },
+  );
+  assert.equal(
+    plannerInvocationNotOk.result.status,
+    "route_blocked",
+    "TASK-0324 invocationOk-false smoke should block routing when the planner result disputes invocationOk",
+  );
+  assert.equal(plannerInvocationNotOk.workerCalls, 0);
+  assert.equal(
+    plannerInvocationNotOk.result.issues.some(
+      (item) =>
+        item.code ===
+        "task_execution_two_model_canary_planner_invocation_not_ok",
+    ),
+    true,
+    "TASK-0324 invocationOk-false smoke should report the planner-invocation-not-ok issue code",
+  );
+
   const codexFailure = await runTask0324Fixture("codex-failure", {
     codexProcess: (request) =>
       createTaskExecutionTwoModelCanaryCodexFixtureResult({
@@ -20390,7 +20906,9 @@ try {
   assert.equal(TASK_EXECUTION_TWO_MODEL_CANARY_REAL_CLAUDE_CALLS, 0);
   assert.equal(TASK_EXECUTION_TWO_MODEL_CANARY_PRIMARY_APPLIES, 0);
   assert.equal(TASK_EXECUTION_TWO_MODEL_CANARY_CLOUD_CALLS, 0);
-  await rm(task0324TempRoot, { recursive: true, force: true });
+  } finally {
+    await rm(task0324TempRoot, { recursive: true, force: true });
+  }
 
   const workerStateSnapshot = JSON.stringify(firstUpdate.value.state);
   const workerAttemptSnapshot = JSON.stringify(invocationStartedAttempt);
@@ -21215,6 +21733,48 @@ try {
     true,
     "task execution worker process gate smoke P should persist pre-process audit intent",
   );
+
+  // GitHub #77 (same defect class, audit/provenance store): a caller that loses
+  // the open("wx") race must not delete the holder's append lock. Deterministic:
+  // plant a lock owned by another process, assert the append is refused AND that
+  // the planted lock survives.
+  const auditLockDir = join(
+    codexProcessAuditRoot,
+    ".aeos",
+    "state",
+    "audit",
+    ".locks",
+    codexProcessAuditDraft.value.taskId,
+  );
+  await mkdir(auditLockDir, { recursive: true });
+  const auditLockPath = join(auditLockDir, "append.lock");
+  await writeNodeFile(
+    auditLockPath,
+    `${JSON.stringify({ heldBy: "another-process" })}\n`,
+  );
+
+  const auditLockRefused = await appendTaskExecutionAuditEvent({
+    projectRoot: codexProcessAuditRoot,
+    taskId: codexProcessAuditDraft.value.taskId,
+    event: codexProcessAuditDraft.value,
+    forbiddenValues: ["owner-token", "sk-codex-smoke"],
+  });
+  assert.equal(
+    auditLockRefused.ok,
+    false,
+    "audit lock ownership #77: a held append lock must refuse the append",
+  );
+  assert.equal(
+    auditLockRefused.error.code,
+    "task_execution_audit_append_locked",
+    "audit lock ownership #77: must fail with the append-locked code",
+  );
+  assert.equal(
+    await pathExists(auditLockPath),
+    true,
+    "audit lock ownership #77: a losing caller must not delete the holder's lock",
+  );
+  await rm(auditLockPath, { force: true });
   const codexProcessGate = evaluateTaskExecutionWorkerProcessGate({
     configuration: smokeCodexConfiguration,
     request: codexProcessWorkerRequest,
@@ -22345,6 +22905,50 @@ try {
     hostileCodexProcess.safety.workCompleted,
     false,
     "task execution codex worker smoke Z should not convert worker evidence into work completion",
+  );
+
+  // TASK-0324 workerId binding coverage — proves structuredBindingsMatch enforces workerId equality
+  const plannerWorkerIdentity = createSmokeTestWorkerIdentity({
+    workerId: "system:codex-read-only-planner-canary",
+    workerFamily: "codex",
+  });
+  const plannerWorkerRequest = createSmokeTestWorkerRequest(
+    invokingPersisted.value.record,
+    plannerWorkerIdentity,
+    createSmokeWorkerPermissionFacts(workerPermissionGate),
+  );
+  const wrongWorkerIdProcess = normalizeTaskExecutionCodexProcessResult({
+    request: plannerWorkerRequest,
+    processResult: createCodexProcessResult(plannerWorkerRequest, {
+      stdout: createCodexStructuredStdout(plannerWorkerRequest, {
+        workerId: "codex",
+      }),
+    }),
+    stdoutLimitBytes: smokeCodexConfiguration.stdoutLimitBytes,
+    stderrLimitBytes: smokeCodexConfiguration.stderrLimitBytes,
+  });
+  assert.equal(
+    wrongWorkerIdProcess.ok,
+    false,
+    "TASK-0324 workerId binding smoke A should reject structured result whose workerId does not match request",
+  );
+  assert.ok(
+    wrongWorkerIdProcess.issues.some(
+      (item) =>
+        item.code === "task_execution_codex_worker_structured_result_invalid",
+    ),
+    "TASK-0324 workerId binding smoke A should report task_execution_codex_worker_structured_result_invalid for mismatched workerId",
+  );
+  const matchingWorkerIdProcess = normalizeTaskExecutionCodexProcessResult({
+    request: plannerWorkerRequest,
+    processResult: createCodexProcessResult(plannerWorkerRequest),
+    stdoutLimitBytes: smokeCodexConfiguration.stdoutLimitBytes,
+    stderrLimitBytes: smokeCodexConfiguration.stderrLimitBytes,
+  });
+  assert.equal(
+    matchingWorkerIdProcess.ok,
+    true,
+    "TASK-0324 workerId binding smoke B should accept structured result whose workerId exactly matches system:codex-read-only-planner-canary",
   );
 
   const localProcessRuntimeStateRoot = await mkdtemp(
@@ -25879,6 +26483,12 @@ try {
       preProcessAuditEvent: claudeCodeProcessAuditAppend.value.event,
       expectedInvocationRevision: invokingPersisted.value.record.revision,
     });
+  // The write-canary audit event has the same logical identity as the process
+  // audit event above (same invocation record, adapter, operation, policy).
+  // After the F1 fix, occurredAt is excluded from the auditEventId hash, so
+  // appending a second event with a different timestamp to the same audit log
+  // would be rejected as a duplicate.  Use a separate project root so the
+  // write-canary audit starts from a fresh log.
   const claudeCodeWriteCanaryAuditDraft =
     createTaskExecutionInvocationDispatchIntentAuditEvent({
       record: invokingPersisted.value.record,
@@ -25890,8 +26500,11 @@ try {
       occurredAt: "2026-08-08T01:04:17.000Z",
     });
   assert.equal(claudeCodeWriteCanaryAuditDraft.ok, true);
+  const claudeCodeWriteCanaryAuditRoot = await mkdtemp(
+    join(tmpdir(), "aeos-claude-code-write-canary-audit-"),
+  );
   const claudeCodeWriteCanaryAuditAppend = await appendTaskExecutionAuditEvent({
-    projectRoot: claudeCodeProcessAuditRoot,
+    projectRoot: claudeCodeWriteCanaryAuditRoot,
     taskId: claudeCodeWriteCanaryAuditDraft.value.taskId,
     event: claudeCodeWriteCanaryAuditDraft.value,
     forbiddenValues: ["owner-token", "sk-claude-code-smoke"],
@@ -32330,6 +32943,57 @@ try {
     "task execution invocation reconciliation apply smoke P should preserve path safety",
   );
 
+  // Smoke Z: blocked-path reconciliationRequired — validates the single-authoritative predicate
+  const applyBlockedInvokingFixture = await createReconciliationApplyFixture({
+    attemptNumber: 41,
+  });
+  const applyBlockedInvoking = await applyTaskExecutionInvocationReconciliation({
+    projectRoot: reconciliationApplyRoot,
+    taskId: applyBlockedInvokingFixture.record.taskId,
+    invocationId: applyBlockedInvokingFixture.record.invocationId,
+    expectedInvocationRevision: applyBlockedInvokingFixture.record.revision + 1,
+  });
+  assert.equal(
+    applyBlockedInvoking.ok,
+    false,
+    "task execution invocation reconciliation apply smoke Z should block on revision conflict for invoking",
+  );
+  assert.equal(
+    applyBlockedInvoking.reconciliationRequired,
+    true,
+    "task execution invocation reconciliation apply smoke Z should report reconciliation required for invoking on blocked path",
+  );
+
+  const applyBlockedUnknownFixture = await createReconciliationApplyFixture({
+    attemptNumber: 42,
+    lifecycle: "outcome_unknown",
+  });
+  const applyBlockedUnknown = await applyTaskExecutionInvocationReconciliation({
+    projectRoot: reconciliationApplyRoot,
+    taskId: applyBlockedUnknownFixture.record.taskId,
+    invocationId: applyBlockedUnknownFixture.record.invocationId,
+    expectedInvocationRevision: applyBlockedUnknownFixture.record.revision + 1,
+  });
+  assert.equal(
+    applyBlockedUnknown.ok,
+    false,
+    "task execution invocation reconciliation apply smoke Z should block on revision conflict for outcome_unknown",
+  );
+  assert.equal(
+    applyBlockedUnknown.reconciliationRequired,
+    true,
+    "task execution invocation reconciliation apply smoke Z should report reconciliation required for outcome_unknown on blocked path",
+  );
+
+  assert.equal(
+    evaluateTaskExecutionInvocationReconciliation({
+      record: directReservation.value.record,
+      currentTaskRevision: 2,
+    }).reconciliationRequired,
+    false,
+    "task execution invocation reconciliation smoke Z should not require reconciliation for pristine reserved record",
+  );
+
   const historicalApplyRoot = await mkdtemp(
     join(tmpdir(), "aeos-historical-apply-"),
   );
@@ -34262,16 +34926,20 @@ try {
             id: "batch-a",
             workItemIds: ["work-a"],
             expectedItemCount: 1,
-            completedCount: 0,
+            completedCount: 0,  // intentionally mismatched — no accounting event
             failedCount: 0,
             skippedCount: 0,
             retryableCount: 0,
           },
         ],
-        pendingWorkItemIds: ["work-a"],
+        pendingWorkItemIds: ["work-a"],  // completed item cannot be pending
         retryableWorkItemIds: [],
       },
-      "task_state_forbidden_work_item_state",
+      // Previously caught by validateWorkItems ("completed" was forbidden at that layer).
+      // Now "completed" is permitted in work items (TASK-0325 accounting), so the first
+      // violation encountered is that a completed item appears in pendingWorkItemIds
+      // (caught by validateRepresentedStateReferences).  The blocking invariant holds.
+      "task_state_pending_id_state_mismatch",
     ],
     [
       "task resume handoff smoke T should block verified item re-entry",
@@ -35214,4 +35882,4498 @@ try {
   console.log("filesystem generation writer smoke tests passed");
 } finally {
   await rm(tempRoot, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// TASK-0325 — Work accounting smoke tests
+// ---------------------------------------------------------------------------
+// Seven named scenarios covering the authority-boundary requirements from
+// GitHub Issue #5.  All I/O is isolated in a temporary directory; the real
+// .aeos state directory is never touched.
+// ---------------------------------------------------------------------------
+const workAccountingTempRoot = await mkdtemp(
+  join(tmpdir(), "aeos-work-accounting-smoke-"),
+);
+
+try {
+  const accountingProjectRoot = join(workAccountingTempRoot, "project");
+  await mkdir(accountingProjectRoot, { recursive: true });
+
+  const acctTaskId = "TASK-ACCOUNTING-SMOKE";
+
+  // Minimal valid worker identity (runtimeKind is the only allowed value).
+  const acctWorkerIdentity = {
+    workerId: "smoke-test-worker",
+    workerFamily: "generic",
+    runtimeKind: "test_worker",
+    implementationVersion: "0.0.0-smoke",
+    capabilityVersion: "0.0.0-smoke",
+    identityAuthority: "system",
+    selectionAuthority: "system",
+  };
+
+  // All-false safety block (matches TaskExecutionWorkerResultSafety literals).
+  const acctWorkerSafety = {
+    runtimeExecutionEnabled: false,
+    realCodexInvoked: false,
+    realClaudeCodeInvoked: false,
+    cloudCalled: false,
+    networkCalled: false,
+    filesystemTouched: false,
+    repositoryWritten: false,
+    subprocessExecuted: false,
+    shellExecuted: false,
+    modelInvoked: false,
+    taskStateModified: false,
+    attemptStateModified: false,
+    invocationStateModified: false,
+    workAccountingModified: false,
+    auditWritten: false,
+    verifierRun: false,
+    workCompleted: false,
+    taskCompleted: false,
+    verified: false,
+    approved: false,
+    safeToRetry: false,
+    rawWorkerOutputAuthoritative: false,
+  };
+
+  // Build a reserved invocation record using the system-derived identity.
+  function acctMakeReservedRecord(opts) {
+    return createReservedTaskExecutionInvocationRecord({
+      taskId: acctTaskId,
+      taskStateRevision: opts.taskStateRevision,
+      attemptId: opts.attemptId,
+      attemptNumber: opts.attemptNumber,
+      workItemId: opts.workItemId,
+      batchId: opts.batchId,
+      dependencyKind: "test_noop",
+      verifierRequired: false,
+      completionGatedByVerifier: true,
+    });
+  }
+
+  // Advance reserved → invoking → returned.
+  function acctMakeReturnedRecord(reservedRecord) {
+    const invokingResult = transitionTaskExecutionInvocationRecord({
+      record: reservedRecord,
+      intent: { kind: "enter_invocation", occurredAt: "2026-08-16T00:00:10.000Z" },
+    });
+    if (!invokingResult.ok) return invokingResult;
+    return transitionTaskExecutionInvocationRecord({
+      record: invokingResult.value,
+      intent: {
+        kind: "record_returned",
+        result: { invocationOk: true, returnedAt: "2026-08-16T00:01:00.000Z" },
+      },
+    });
+  }
+
+  // Write the invocation record to the AEOS-standard path inside the temp dir.
+  async function acctPersistInvocation(record) {
+    const invDir = join(
+      accountingProjectRoot,
+      ".aeos",
+      "state",
+      "invocations",
+      acctTaskId,
+    );
+    await mkdir(invDir, { recursive: true });
+    await writeNodeFile(
+      join(invDir, `${record.invocationId}.json`),
+      `${JSON.stringify(record, null, 2)}\n`,
+    );
+  }
+
+  // Build a TaskExecutionWorkerResult from a returned invocation record.
+  function acctMakeWorkerResult(record) {
+    return {
+      ok: true,
+      invocationReturned: true,
+      invocationOk: true,
+      outcomeStatus: "returned",
+      workerIdentity: acctWorkerIdentity,
+      taskId: record.taskId,
+      sourceTaskRevision: record.taskStateRevision,
+      attemptId: record.attemptId,
+      attemptNumber: record.attemptNumber,
+      invocationId: record.invocationId,
+      idempotencyKey: record.idempotencyKey,
+      workItemId: record.workItemId ?? null,
+      batchId: record.batchId ?? null,
+      issues: [],
+      safety: acctWorkerSafety,
+    };
+  }
+
+  // --- Set up initial task state (revision 1, lifecycle "new").
+  const acctInitialState = createInitialTaskState({
+    taskId: acctTaskId,
+    sourceTaskId: acctTaskId,
+    createdAt: "2026-08-16T00:00:00.000Z",
+  });
+  const acctInitialSave = await saveTaskState({
+    projectRoot: accountingProjectRoot,
+    state: acctInitialState,
+  });
+  assert.equal(
+    acctInitialSave.ok,
+    true,
+    "work accounting smoke: initial state should save",
+  );
+
+  // Advance to planned state with 5 work items in batch-a (revision 2).
+  const acctPlannedUpdate = await updateTaskState({
+    projectRoot: accountingProjectRoot,
+    taskId: acctTaskId,
+    expectedRevision: 1,
+    updatedAt: "2026-08-16T00:00:01.000Z",
+    update(state) {
+      return {
+        ...state,
+        lifecycleState: "planned",
+        workItems: [
+          { id: "witem-1", state: "pending", batchId: "batch-a" },
+          { id: "witem-2", state: "pending", batchId: "batch-a" },
+          { id: "witem-3", state: "pending", batchId: "batch-a" },
+          { id: "witem-4", state: "pending", batchId: "batch-a" },
+          { id: "witem-5", state: "pending", batchId: "batch-a" },
+        ],
+        batches: [
+          {
+            id: "batch-a",
+            workItemIds: ["witem-1", "witem-2", "witem-3", "witem-4", "witem-5"],
+            expectedItemCount: 5,
+            completedCount: 0,
+            failedCount: 0,
+            skippedCount: 0,
+            retryableCount: 0,
+          },
+        ],
+        pendingWorkItemIds: [
+          "witem-1",
+          "witem-2",
+          "witem-3",
+          "witem-4",
+          "witem-5",
+        ],
+        retryableWorkItemIds: [],
+        plan: { status: "planned" },
+      };
+    },
+  });
+  assert.equal(
+    acctPlannedUpdate.ok,
+    true,
+    "work accounting smoke: planned state should update",
+  );
+  assert.equal(
+    acctPlannedUpdate.value.state.revision,
+    2,
+    "work accounting smoke: planned state revision should be 2",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test A: work_accounting_applies_completed_count
+  // Demonstrates the 400/20 invariant principle: Expected=N, Accounted=K,
+  // Remaining=N-K.  Using N=5, K=1 for a deterministic fast smoke test.
+  // -----------------------------------------------------------------------
+  const acctReservedA = acctMakeReservedRecord({
+    taskStateRevision: 2,
+    attemptId: "attempt-acct-smoke-a",
+    attemptNumber: 1,
+    workItemId: "witem-1",
+    batchId: "batch-a",
+  });
+  assert.equal(
+    acctReservedA.ok,
+    true,
+    "work accounting smoke A: reserved record should be created",
+  );
+  const acctReturnedA = acctMakeReturnedRecord(acctReservedA.value);
+  assert.equal(
+    acctReturnedA.ok,
+    true,
+    "work accounting smoke A: returned record should be created",
+  );
+  await acctPersistInvocation(acctReturnedA.value);
+
+  const accountingA = await applyWorkAccountingEvent({
+    projectRoot: accountingProjectRoot,
+    workerResult: acctMakeWorkerResult(acctReturnedA.value),
+    expectedTaskRevision: 2,
+  });
+  assert.equal(
+    accountingA.ok,
+    true,
+    "work_accounting_applies_completed_count: applyWorkAccountingEvent should succeed",
+  );
+  assert.equal(
+    accountingA.value.kind,
+    "work_item_completed",
+    "work_accounting_applies_completed_count: event kind must be work_item_completed",
+  );
+  assert.equal(
+    accountingA.value.completedCount,
+    1,
+    "work_accounting_applies_completed_count: completedCount should be 1",
+  );
+  assert.equal(
+    accountingA.value.expectedItemCount,
+    5,
+    "work_accounting_applies_completed_count: expectedItemCount should be 5",
+  );
+  assert.equal(
+    accountingA.value.expectedItemCount - accountingA.value.completedCount,
+    4,
+    "work_accounting_applies_completed_count: Remaining = Expected - Accounted must hold",
+  );
+  const acctStateAfterA = await loadTaskState({
+    projectRoot: accountingProjectRoot,
+    taskId: acctTaskId,
+  });
+  assert.equal(
+    acctStateAfterA.ok,
+    true,
+    "work_accounting_applies_completed_count: state should load after accounting",
+  );
+  assert.equal(
+    acctStateAfterA.value.state.batches[0].completedCount,
+    1,
+    "work_accounting_applies_completed_count: persisted completedCount should be 1",
+  );
+  assert.equal(
+    acctStateAfterA.value.state.workItems.find((w) => w.id === "witem-1")?.state,
+    "completed",
+    "work_accounting_applies_completed_count: witem-1 should have completed state",
+  );
+  assert.equal(
+    acctStateAfterA.value.state.pendingWorkItemIds.includes("witem-1"),
+    false,
+    "work_accounting_applies_completed_count: witem-1 must be removed from pendingWorkItemIds",
+  );
+  assert.equal(
+    acctStateAfterA.value.state.revision,
+    3,
+    "work_accounting_applies_completed_count: revision should be 3 after accounting",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test B: work_accounting_duplicate_evidence_counted_once
+  //
+  // The dedup gate is exercised by calling applyWorkAccountingEvent TWICE for
+  // the same invocation evidence WITHOUT pinning accountedAt — the live
+  // timestamps will differ between calls.  With the F1 fix, occurredAt is
+  // excluded from the auditEventId hash, so both calls produce the same
+  // auditEventId regardless of when they run.
+  //
+  // With the F4 ordering fix (state mutation before audit append), the second
+  // call is rejected at the work-item eligibility gate (step 6) because
+  // witem-5 is already "completed", which is the correct fail-closed behaviour:
+  // the same work item cannot be counted twice regardless of timestamp.
+  // -----------------------------------------------------------------------
+  const acctReservedB = acctMakeReservedRecord({
+    taskStateRevision: 3,
+    attemptId: "attempt-acct-smoke-b",
+    attemptNumber: 1,
+    workItemId: "witem-5",
+    batchId: "batch-a",
+  });
+  assert.equal(
+    acctReservedB.ok,
+    true,
+    "work accounting smoke B: reserved record should be created",
+  );
+  const acctReturnedB = acctMakeReturnedRecord(acctReservedB.value);
+  assert.equal(
+    acctReturnedB.ok,
+    true,
+    "work accounting smoke B: returned record should be created",
+  );
+  await acctPersistInvocation(acctReturnedB.value);
+
+  // First accounting call — no accountedAt pin; uses live timestamp.
+  const accountingB1 = await applyWorkAccountingEvent({
+    projectRoot: accountingProjectRoot,
+    workerResult: acctMakeWorkerResult(acctReturnedB.value),
+    expectedTaskRevision: 3,
+    // accountedAt intentionally omitted → live timestamp
+  });
+  assert.equal(
+    accountingB1.ok,
+    true,
+    "work_accounting_duplicate_evidence_counted_once: first accounting call must succeed",
+  );
+  assert.equal(
+    accountingB1.value.completedCount,
+    2,
+    "work_accounting_duplicate_evidence_counted_once: completedCount should be 2 after first call",
+  );
+
+  // Second accounting call for the SAME invocation evidence — different live
+  // timestamp.  Must be rejected; completedCount must not increase.
+  const accountingB2 = await applyWorkAccountingEvent({
+    projectRoot: accountingProjectRoot,
+    workerResult: acctMakeWorkerResult(acctReturnedB.value),
+    expectedTaskRevision: accountingB1.value.taskStateRevision,
+    // accountedAt intentionally omitted → different live timestamp
+  });
+  assert.equal(
+    accountingB2.ok,
+    false,
+    "work_accounting_duplicate_evidence_counted_once: duplicate evidence must be rejected",
+  );
+  assert.equal(
+    accountingB2.error.code,
+    "work_accounting_work_item_not_accountable",
+    "work_accounting_duplicate_evidence_counted_once: rejection must report not-accountable (work item already completed)",
+  );
+  const acctStateAfterB = await loadTaskState({
+    projectRoot: accountingProjectRoot,
+    taskId: acctTaskId,
+  });
+  assert.equal(
+    acctStateAfterB.value.state.batches[0].completedCount,
+    2,
+    "work_accounting_duplicate_evidence_counted_once: completedCount must remain 2 after duplicate attempt",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test C: work_accounting_stale_revision_rejected
+  // -----------------------------------------------------------------------
+  const acctReservedC = acctMakeReservedRecord({
+    taskStateRevision: 4,
+    attemptId: "attempt-acct-smoke-c",
+    attemptNumber: 1,
+    workItemId: "witem-2",
+    batchId: "batch-a",
+  });
+  assert.equal(
+    acctReservedC.ok,
+    true,
+    "work accounting smoke C: reserved record should be created",
+  );
+  const acctReturnedC = acctMakeReturnedRecord(acctReservedC.value);
+  assert.equal(
+    acctReturnedC.ok,
+    true,
+    "work accounting smoke C: returned record should be created",
+  );
+  await acctPersistInvocation(acctReturnedC.value);
+
+  const accountingC = await applyWorkAccountingEvent({
+    projectRoot: accountingProjectRoot,
+    workerResult: acctMakeWorkerResult(acctReturnedC.value),
+    expectedTaskRevision: 99, // deliberately stale — actual revision is 4
+  });
+  assert.equal(
+    accountingC.ok,
+    false,
+    "work_accounting_stale_revision_rejected: stale expectedTaskRevision must be rejected",
+  );
+  assert.equal(
+    accountingC.error.code,
+    "task_state_revision_conflict",
+    "work_accounting_stale_revision_rejected: rejection must report task_state_revision_conflict",
+  );
+  const acctStateAfterC = await loadTaskState({
+    projectRoot: accountingProjectRoot,
+    taskId: acctTaskId,
+  });
+  assert.equal(
+    acctStateAfterC.value.state.batches[0].completedCount,
+    2,
+    "work_accounting_stale_revision_rejected: completedCount must not move on stale revision",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test D: work_accounting_wrong_work_item_rejected
+  // Worker result claims witem-4 but invocation was reserved for witem-3.
+  // -----------------------------------------------------------------------
+  const acctReservedD = acctMakeReservedRecord({
+    taskStateRevision: 4,
+    attemptId: "attempt-acct-smoke-d",
+    attemptNumber: 1,
+    workItemId: "witem-3",
+    batchId: "batch-a",
+  });
+  assert.equal(
+    acctReservedD.ok,
+    true,
+    "work accounting smoke D: reserved record should be created",
+  );
+  const acctReturnedD = acctMakeReturnedRecord(acctReservedD.value);
+  assert.equal(
+    acctReturnedD.ok,
+    true,
+    "work accounting smoke D: returned record should be created",
+  );
+  await acctPersistInvocation(acctReturnedD.value);
+
+  const accountingD = await applyWorkAccountingEvent({
+    projectRoot: accountingProjectRoot,
+    workerResult: {
+      ...acctMakeWorkerResult(acctReturnedD.value),
+      workItemId: "witem-4", // wrong — invocation is for witem-3
+    },
+    expectedTaskRevision: 4,
+  });
+  assert.equal(
+    accountingD.ok,
+    false,
+    "work_accounting_wrong_work_item_rejected: mismatched workItemId must be rejected",
+  );
+  assert.equal(
+    accountingD.error.code,
+    "work_accounting_work_item_binding_mismatch",
+    "work_accounting_wrong_work_item_rejected: rejection must report binding mismatch",
+  );
+  const acctStateAfterD = await loadTaskState({
+    projectRoot: accountingProjectRoot,
+    taskId: acctTaskId,
+  });
+  assert.equal(
+    acctStateAfterD.value.state.batches[0].completedCount,
+    2,
+    "work_accounting_wrong_work_item_rejected: completedCount must not move on binding mismatch",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test E: work_accounting_malformed_worker_claim_rejected
+  // Worker result has null workItemId — fails closed before touching anything.
+  // -----------------------------------------------------------------------
+  const accountingE = await applyWorkAccountingEvent({
+    projectRoot: accountingProjectRoot,
+    workerResult: {
+      ...acctMakeWorkerResult(acctReturnedD.value),
+      workItemId: null, // malformed — no work item binding
+    },
+    expectedTaskRevision: 4,
+  });
+  assert.equal(
+    accountingE.ok,
+    false,
+    "work_accounting_malformed_worker_claim_rejected: null workItemId must be rejected",
+  );
+  assert.equal(
+    accountingE.error.code,
+    "work_accounting_work_item_required",
+    "work_accounting_malformed_worker_claim_rejected: rejection must report work item required",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test F: work_accounting_zero_movement_on_rejected_evidence
+  // After tests C, D, E all rejected — count must still be 2 (from A and B).
+  // -----------------------------------------------------------------------
+  const acctStateAfterRejections = await loadTaskState({
+    projectRoot: accountingProjectRoot,
+    taskId: acctTaskId,
+  });
+  assert.equal(
+    acctStateAfterRejections.value.state.batches[0].completedCount,
+    2,
+    "work_accounting_zero_movement_on_rejected_evidence: completedCount must stay 2",
+  );
+  assert.equal(
+    acctStateAfterRejections.value.state.batches[0].expectedItemCount,
+    5,
+    "work_accounting_zero_movement_on_rejected_evidence: expectedItemCount must be unchanged",
+  );
+  assert.equal(
+    acctStateAfterRejections.value.state.batches[0].expectedItemCount
+      - acctStateAfterRejections.value.state.batches[0].completedCount,
+    3,
+    "work_accounting_zero_movement_on_rejected_evidence: Remaining must equal Expected minus Accounted",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test G: work_accounting_persistence_and_read_back
+  // Account a third item (witem-2); verify state is persisted correctly and
+  // the audit chain is intact.
+  // -----------------------------------------------------------------------
+  const acctReservedG = acctMakeReservedRecord({
+    taskStateRevision: 4,
+    attemptId: "attempt-acct-smoke-g",
+    attemptNumber: 1,
+    workItemId: "witem-2",
+    batchId: "batch-a",
+  });
+  assert.equal(
+    acctReservedG.ok,
+    true,
+    "work accounting smoke G: reserved record should be created",
+  );
+  const acctReturnedG = acctMakeReturnedRecord(acctReservedG.value);
+  assert.equal(
+    acctReturnedG.ok,
+    true,
+    "work accounting smoke G: returned record should be created",
+  );
+  await acctPersistInvocation(acctReturnedG.value);
+
+  const accountingG = await applyWorkAccountingEvent({
+    projectRoot: accountingProjectRoot,
+    workerResult: acctMakeWorkerResult(acctReturnedG.value),
+    expectedTaskRevision: 4,
+  });
+  assert.equal(
+    accountingG.ok,
+    true,
+    "work_accounting_persistence_and_read_back: third accounting should succeed",
+  );
+  assert.equal(
+    accountingG.value.completedCount,
+    3,
+    "work_accounting_persistence_and_read_back: completedCount should be 3",
+  );
+  assert.equal(
+    accountingG.value.expectedItemCount - accountingG.value.completedCount,
+    2,
+    "work_accounting_persistence_and_read_back: Remaining = Expected - Accounted must hold",
+  );
+
+  const acctFinalState = await loadTaskState({
+    projectRoot: accountingProjectRoot,
+    taskId: acctTaskId,
+  });
+  assert.equal(
+    acctFinalState.ok,
+    true,
+    "work_accounting_persistence_and_read_back: final state should load",
+  );
+  const acctFinalBatch = acctFinalState.value.state.batches.find(
+    (b) => b.id === "batch-a",
+  );
+  assert.equal(
+    acctFinalBatch.completedCount,
+    3,
+    "work_accounting_persistence_and_read_back: persisted completedCount should be 3",
+  );
+  assert.equal(
+    acctFinalBatch.expectedItemCount,
+    5,
+    "work_accounting_persistence_and_read_back: persisted expectedItemCount should be 5",
+  );
+  assert.equal(
+    acctFinalBatch.expectedItemCount - acctFinalBatch.completedCount,
+    2,
+    "work_accounting_persistence_and_read_back: persisted Remaining must equal Expected minus Accounted",
+  );
+  assert.equal(
+    acctFinalState.value.state.workItems.filter((w) => w.state === "completed")
+      .length,
+    3,
+    "work_accounting_persistence_and_read_back: 3 work items should have completed state",
+  );
+  assert.equal(
+    acctFinalState.value.state.pendingWorkItemIds.length,
+    2,
+    "work_accounting_persistence_and_read_back: 2 work items should remain pending",
+  );
+
+  // validatePersistedTaskState must accept a state with non-zero completedCount.
+  const acctValidationResult = validatePersistedTaskState(
+    acctFinalState.value.state,
+  );
+  assert.equal(
+    acctValidationResult.ok,
+    true,
+    "work_accounting_persistence_and_read_back: validatePersistedTaskState must accept completedCount > 0",
+  );
+
+  // Audit chain must be intact and chain-verified.
+  const acctAuditVerification = await verifyTaskExecutionAuditChain({
+    projectRoot: accountingProjectRoot,
+    taskId: acctTaskId,
+  });
+  assert.equal(
+    acctAuditVerification.ok,
+    true,
+    "work_accounting_persistence_and_read_back: audit chain should be valid",
+  );
+  assert.equal(
+    acctAuditVerification.verified,
+    true,
+    "work_accounting_persistence_and_read_back: audit chain should be verified",
+  );
+  // Test A: 1 event; Test B first call: 1 event; Test B second call: 0 (rejected); Test G: 1 event.
+  assert.equal(
+    acctAuditVerification.eventCount,
+    3,
+    "work_accounting_persistence_and_read_back: audit chain should have 3 events (A + B-first + G)",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test H: work_accounting_400_20_380_literal
+  // Issue #5 acceptance criterion: Expected=400 / Accounted=20 / Remaining=380.
+  // Uses a dedicated task state with expectedItemCount=400 and 20 actual work
+  // items, matching the canonical shape named in the issue brief.
+  // -----------------------------------------------------------------------
+  const acct400TaskId = "smoke-work-accounting-400-20-380";
+  // Create all 400 work items; expectedItemCount must equal workItemIds.length.
+  // Only the first 20 will be accounted for; the rest stay pending.
+  const acct400WorkItems = Array.from({ length: 400 }, (_, i) => ({
+    id: `witem-400-${i + 1}`,
+    state: "pending",
+    batchId: "batch-400",
+  }));
+  const acct400InitialState = createInitialTaskState({
+    taskId: acct400TaskId,
+    sourceTaskId: acct400TaskId,
+    createdAt: "2026-08-16T01:00:00.000Z",
+  });
+  const acct400Save1 = await saveTaskState({
+    projectRoot: accountingProjectRoot,
+    state: acct400InitialState,
+  });
+  assert.equal(
+    acct400Save1.ok,
+    true,
+    "work_accounting_400_20_380_literal: initial state should save",
+  );
+  const acct400PlannedUpdate = await updateTaskState({
+    projectRoot: accountingProjectRoot,
+    taskId: acct400TaskId,
+    expectedRevision: 1,
+    updatedAt: "2026-08-16T01:00:01.000Z",
+    update(state) {
+      return {
+        ...state,
+        lifecycleState: "planned",
+        workItems: acct400WorkItems,
+        batches: [
+          {
+            id: "batch-400",
+            workItemIds: acct400WorkItems.map((w) => w.id),
+            expectedItemCount: 400,
+            completedCount: 0,
+            failedCount: 0,
+            skippedCount: 0,
+            retryableCount: 0,
+          },
+        ],
+        pendingWorkItemIds: acct400WorkItems.map((w) => w.id),
+        retryableWorkItemIds: [],
+        plan: { status: "planned" },
+      };
+    },
+  });
+  assert.equal(
+    acct400PlannedUpdate.ok,
+    true,
+    "work_accounting_400_20_380_literal: planned state should update",
+  );
+  // Account all 20 work items sequentially.
+  // Use acct400TaskId (not acctTaskId) in every invocation record so that
+  // applyWorkAccountingEvent loads the correct task state.
+  const acct400InvDir = join(
+    accountingProjectRoot,
+    ".aeos",
+    "state",
+    "invocations",
+    acct400TaskId,
+  );
+  await mkdir(acct400InvDir, { recursive: true });
+
+  let acct400CurrentRevision = acct400PlannedUpdate.value.state.revision;
+  for (let i = 0; i < 20; i++) {
+    const workItemId = `witem-400-${i + 1}`;
+    const acct400Reserved = createReservedTaskExecutionInvocationRecord({
+      taskId: acct400TaskId,
+      taskStateRevision: acct400CurrentRevision,
+      attemptId: `attempt-400-smoke-${i + 1}`,
+      attemptNumber: 1,
+      workItemId,
+      batchId: "batch-400",
+      dependencyKind: "test_noop",
+      verifierRequired: false,
+      completionGatedByVerifier: true,
+    });
+    assert.equal(
+      acct400Reserved.ok,
+      true,
+      `work_accounting_400_20_380_literal: reserved record ${i + 1} should be created`,
+    );
+    const acct400Invoking = transitionTaskExecutionInvocationRecord({
+      record: acct400Reserved.value,
+      intent: { kind: "enter_invocation", occurredAt: "2026-08-16T01:01:00.000Z" },
+    });
+    assert.equal(acct400Invoking.ok, true, `work_accounting_400_20_380_literal: invoking record ${i + 1} should be created`);
+    const acct400Returned = transitionTaskExecutionInvocationRecord({
+      record: acct400Invoking.value,
+      intent: { kind: "record_returned", result: { invocationOk: true, returnedAt: "2026-08-16T01:02:00.000Z" } },
+    });
+    assert.equal(
+      acct400Returned.ok,
+      true,
+      `work_accounting_400_20_380_literal: returned record ${i + 1} should be created`,
+    );
+    await writeNodeFile(
+      join(acct400InvDir, `${acct400Returned.value.invocationId}.json`),
+      `${JSON.stringify(acct400Returned.value, null, 2)}\n`,
+    );
+    const acct400Event = await applyWorkAccountingEvent({
+      projectRoot: accountingProjectRoot,
+      workerResult: acctMakeWorkerResult(acct400Returned.value),
+      expectedTaskRevision: acct400CurrentRevision,
+    });
+    assert.equal(
+      acct400Event.ok,
+      true,
+      `work_accounting_400_20_380_literal: accounting event ${i + 1} should succeed`,
+    );
+    acct400CurrentRevision = acct400Event.value.taskStateRevision;
+  }
+  const acct400FinalState = await loadTaskState({
+    projectRoot: accountingProjectRoot,
+    taskId: acct400TaskId,
+  });
+  assert.equal(
+    acct400FinalState.ok,
+    true,
+    "work_accounting_400_20_380_literal: final state should load",
+  );
+  const acct400Batch = acct400FinalState.value.state.batches.find(
+    (b) => b.id === "batch-400",
+  );
+  assert.equal(
+    acct400Batch.expectedItemCount,
+    400,
+    "work_accounting_400_20_380_literal: Expected must be 400",
+  );
+  assert.equal(
+    acct400Batch.completedCount,
+    20,
+    "work_accounting_400_20_380_literal: Accounted must be 20",
+  );
+  assert.equal(
+    acct400Batch.expectedItemCount - acct400Batch.completedCount,
+    380,
+    "work_accounting_400_20_380_literal: Remaining = Expected - Accounted = 380",
+  );
+
+  console.log("work accounting smoke tests passed");
+} finally {
+  await rm(workAccountingTempRoot, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// TASK-0326 — Requirement/task progress ledger smoke tests
+// ---------------------------------------------------------------------------
+// Covers the acceptance criteria from GitHub Issue #6.  All I/O is isolated in
+// a temporary directory; the real .aeos state directory is never touched.
+//
+// The ledger is a derived projection, never a second stored counter, so the
+// duplicate and stale scenarios below are driven by real accounting calls
+// against real durable state rather than by hand-pinned identical fixtures.
+// ---------------------------------------------------------------------------
+const progressLedgerTempRoot = await mkdtemp(
+  join(tmpdir(), "aeos-progress-ledger-smoke-"),
+);
+
+try {
+  const ledgerProjectRoot = join(progressLedgerTempRoot, "project");
+  await mkdir(ledgerProjectRoot, { recursive: true });
+
+  const ledgerTaskId = "TASK-PROGRESS-LEDGER-SMOKE";
+
+  const ledgerWorkerIdentity = {
+    workerId: "smoke-test-worker",
+    workerFamily: "generic",
+    runtimeKind: "test_worker",
+    implementationVersion: "0.0.0-smoke",
+    capabilityVersion: "0.0.0-smoke",
+    identityAuthority: "system",
+    selectionAuthority: "system",
+  };
+
+  const ledgerWorkerSafety = {
+    runtimeExecutionEnabled: false,
+    realCodexInvoked: false,
+    realClaudeCodeInvoked: false,
+    cloudCalled: false,
+    networkCalled: false,
+    filesystemTouched: false,
+    repositoryWritten: false,
+    subprocessExecuted: false,
+    shellExecuted: false,
+    modelInvoked: false,
+    taskStateModified: false,
+    attemptStateModified: false,
+    invocationStateModified: false,
+    workAccountingModified: false,
+    auditWritten: false,
+    verifierRun: false,
+    workCompleted: false,
+    taskCompleted: false,
+    verified: false,
+    approved: false,
+    safeToRetry: false,
+    rawWorkerOutputAuthoritative: false,
+  };
+
+  async function ledgerPersistInvocation(record) {
+    const invDir = join(
+      ledgerProjectRoot,
+      ".aeos",
+      "state",
+      "invocations",
+      ledgerTaskId,
+    );
+    await mkdir(invDir, { recursive: true });
+    await writeNodeFile(
+      join(invDir, `${record.invocationId}.json`),
+      `${JSON.stringify(record, null, 2)}\n`,
+    );
+  }
+
+  // Reserve → invoking → returned, persist, and return the durable record.
+  async function ledgerReturnedRecord(opts) {
+    const reserved = createReservedTaskExecutionInvocationRecord({
+      taskId: ledgerTaskId,
+      taskStateRevision: opts.taskStateRevision,
+      attemptId: opts.attemptId,
+      attemptNumber: 1,
+      workItemId: opts.workItemId,
+      batchId: "batch-ledger",
+      dependencyKind: "test_noop",
+      verifierRequired: false,
+      completionGatedByVerifier: true,
+    });
+    assert.equal(reserved.ok, true, "progress ledger smoke: reserve invocation");
+
+    const invoking = transitionTaskExecutionInvocationRecord({
+      record: reserved.value,
+      intent: { kind: "enter_invocation", occurredAt: "2026-08-16T01:00:10.000Z" },
+    });
+    assert.equal(invoking.ok, true, "progress ledger smoke: enter invocation");
+
+    const returned = transitionTaskExecutionInvocationRecord({
+      record: invoking.value,
+      intent: {
+        kind: "record_returned",
+        result: { invocationOk: true, returnedAt: "2026-08-16T01:01:00.000Z" },
+      },
+    });
+    assert.equal(returned.ok, true, "progress ledger smoke: record returned");
+
+    await ledgerPersistInvocation(returned.value);
+    return returned.value;
+  }
+
+  function ledgerWorkerResult(record) {
+    return {
+      ok: true,
+      invocationReturned: true,
+      invocationOk: true,
+      outcomeStatus: "returned",
+      workerIdentity: ledgerWorkerIdentity,
+      taskId: record.taskId,
+      sourceTaskRevision: record.taskStateRevision,
+      attemptId: record.attemptId,
+      attemptNumber: record.attemptNumber,
+      invocationId: record.invocationId,
+      idempotencyKey: record.idempotencyKey,
+      workItemId: record.workItemId ?? null,
+      batchId: record.batchId ?? null,
+      issues: [],
+      safety: ledgerWorkerSafety,
+    };
+  }
+
+  // --- Durable state: 400 work items across two requirements, one batch.
+  const ledgerWorkItemIds = Array.from(
+    { length: 400 },
+    (_, index) => `pl-item-${String(index + 1).padStart(3, "0")}`,
+  );
+
+  const ledgerInitialSave = await saveTaskState({
+    projectRoot: ledgerProjectRoot,
+    state: createInitialTaskState({
+      taskId: ledgerTaskId,
+      sourceTaskId: ledgerTaskId,
+      createdAt: "2026-08-16T01:00:00.000Z",
+    }),
+  });
+  assert.equal(
+    ledgerInitialSave.ok,
+    true,
+    "progress ledger smoke: initial state should save",
+  );
+
+  const ledgerPlanned = await updateTaskState({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    expectedRevision: 1,
+    updatedAt: "2026-08-16T01:00:01.000Z",
+    update(state) {
+      return {
+        ...state,
+        lifecycleState: "planned",
+        workItems: ledgerWorkItemIds.map((id, index) => ({
+          id,
+          state: "pending",
+          batchId: "batch-ledger",
+          requirementId: index < 200 ? "req-alpha" : "req-beta",
+        })),
+        batches: [
+          {
+            id: "batch-ledger",
+            workItemIds: ledgerWorkItemIds,
+            expectedItemCount: 400,
+            completedCount: 0,
+            failedCount: 0,
+            skippedCount: 0,
+            retryableCount: 0,
+          },
+        ],
+        pendingWorkItemIds: [...ledgerWorkItemIds],
+        retryableWorkItemIds: [],
+        plan: { status: "planned" },
+      };
+    },
+  });
+  assert.equal(
+    ledgerPlanned.ok,
+    true,
+    "progress ledger smoke: planned state should update",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test A: progress_ledger_400_20_380_literal
+  // Expected=400, Accounted=20 => Remaining=380, at both task and requirement
+  // level, driven by 20 real AEOS accounting events.
+  // -----------------------------------------------------------------------
+  const ledgerEvents = [];
+  let ledgerRevision = ledgerPlanned.value.state.revision;
+  let ledgerSnapshotBeforeLastAccounting = null;
+
+  for (let i = 0; i < 20; i += 1) {
+    if (i === 19) {
+      // Capture a genuine pre-accounting snapshot for the stale test below.
+      const snapshot = await loadTaskState({
+        projectRoot: ledgerProjectRoot,
+        taskId: ledgerTaskId,
+      });
+      assert.equal(snapshot.ok, true, "progress ledger smoke: snapshot load");
+      ledgerSnapshotBeforeLastAccounting = snapshot.value.state;
+    }
+
+    const record = await ledgerReturnedRecord({
+      taskStateRevision: ledgerRevision,
+      attemptId: `attempt-ledger-${i + 1}`,
+      workItemId: ledgerWorkItemIds[i],
+    });
+
+    const event = await applyWorkAccountingEvent({
+      projectRoot: ledgerProjectRoot,
+      workerResult: ledgerWorkerResult(record),
+      expectedTaskRevision: ledgerRevision,
+    });
+    assert.equal(
+      event.ok,
+      true,
+      `progress_ledger_400_20_380_literal: accounting event ${i + 1} should succeed`,
+    );
+
+    ledgerEvents.push(event.value);
+    ledgerRevision = event.value.taskStateRevision;
+  }
+
+  const ledgerA = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    projectedAt: "2026-08-16T02:00:00.000Z",
+  });
+  assert.equal(
+    ledgerA.ok,
+    true,
+    "progress_ledger_400_20_380_literal: ledger should project",
+  );
+  assert.equal(
+    ledgerA.value.expectedItemCount,
+    400,
+    "progress_ledger_400_20_380_literal: Expected must be 400",
+  );
+  assert.equal(
+    ledgerA.value.accountedItemCount,
+    20,
+    "progress_ledger_400_20_380_literal: Accounted must be 20",
+  );
+  assert.equal(
+    ledgerA.value.remainingItemCount,
+    380,
+    "progress_ledger_400_20_380_literal: Remaining must be 380",
+  );
+
+  const ledgerAlpha = ledgerA.value.requirements.find(
+    (requirement) => requirement.requirementId === "req-alpha",
+  );
+  const ledgerBeta = ledgerA.value.requirements.find(
+    (requirement) => requirement.requirementId === "req-beta",
+  );
+  assert.equal(
+    ledgerAlpha.expectedItemCount,
+    200,
+    "progress_ledger_400_20_380_literal: req-alpha Expected must be 200",
+  );
+  assert.equal(
+    ledgerAlpha.accountedItemCount,
+    20,
+    "progress_ledger_400_20_380_literal: req-alpha Accounted must be 20",
+  );
+  assert.equal(
+    ledgerAlpha.remainingItemCount,
+    180,
+    "progress_ledger_400_20_380_literal: req-alpha Remaining must be 180",
+  );
+  assert.equal(
+    ledgerAlpha.status,
+    "in_progress",
+    "progress_ledger_400_20_380_literal: req-alpha must read in_progress",
+  );
+  assert.equal(
+    ledgerBeta.accountedItemCount,
+    0,
+    "progress_ledger_400_20_380_literal: req-beta Accounted must be 0",
+  );
+  assert.equal(
+    ledgerBeta.remainingItemCount,
+    200,
+    "progress_ledger_400_20_380_literal: req-beta Remaining must be 200",
+  );
+  assert.equal(
+    ledgerBeta.status,
+    "not_started",
+    "progress_ledger_400_20_380_literal: req-beta must read not_started",
+  );
+  assert.equal(
+    ledgerAlpha.expectedItemCount + ledgerBeta.expectedItemCount,
+    ledgerA.value.expectedItemCount,
+    "progress_ledger_400_20_380_literal: requirement expectations must sum to the task total",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test B: progress_ledger_duplicate_evidence_counted_once
+  //
+  // The duplicate is a naturally different object: a re-read of the same
+  // durable accounting event, carrying a different accountedAt timestamp but
+  // the same deterministic accountingEventId.  Dedup must key on identity, not
+  // on object equality, and the counters must not move at all — Accounted is
+  // the size of a set of accounted work items, never a sum over the stream.
+  // -----------------------------------------------------------------------
+  const ledgerReReadEvent = {
+    ...ledgerEvents[0],
+    accountedAt: "2026-08-16T03:30:00.000Z",
+  };
+  assert.notEqual(
+    ledgerReReadEvent.accountedAt,
+    ledgerEvents[0].accountedAt,
+    "progress_ledger_duplicate_evidence_counted_once: the replayed event must differ from the original",
+  );
+  assert.equal(
+    ledgerReReadEvent.accountingEventId,
+    ledgerEvents[0].accountingEventId,
+    "progress_ledger_duplicate_evidence_counted_once: the replay must share the accounting identity",
+  );
+
+  const ledgerWithDuplicate = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    accountingEvents: [...ledgerEvents, ledgerReReadEvent],
+    projectedAt: "2026-08-16T02:00:00.000Z",
+  });
+  assert.equal(
+    ledgerWithDuplicate.ok,
+    true,
+    "progress_ledger_duplicate_evidence_counted_once: ledger should project with duplicate evidence",
+  );
+  assert.equal(
+    ledgerWithDuplicate.value.evidence.suppliedEventCount,
+    21,
+    "progress_ledger_duplicate_evidence_counted_once: 21 events must be supplied",
+  );
+  assert.equal(
+    ledgerWithDuplicate.value.evidence.countedEventCount,
+    20,
+    "progress_ledger_duplicate_evidence_counted_once: only 20 distinct events may count",
+  );
+  assert.equal(
+    ledgerWithDuplicate.value.evidence.duplicateSuppressedCount,
+    1,
+    "progress_ledger_duplicate_evidence_counted_once: the replay must be suppressed",
+  );
+  assert.equal(
+    ledgerWithDuplicate.value.accountedItemCount,
+    20,
+    "progress_ledger_duplicate_evidence_counted_once: Accounted must stay 20",
+  );
+  assert.equal(
+    ledgerWithDuplicate.value.remainingItemCount,
+    380,
+    "progress_ledger_duplicate_evidence_counted_once: Remaining must stay 380",
+  );
+  const ledgerSuppressedEntries =
+    ledgerWithDuplicate.value.evidence.entries.filter(
+      (entry) => entry.disposition === "duplicate_suppressed",
+    );
+  assert.equal(
+    ledgerSuppressedEntries.length,
+    1,
+    "progress_ledger_duplicate_evidence_counted_once: exactly one entry must be marked suppressed",
+  );
+  assert.equal(
+    ledgerSuppressedEntries[0].accountingEventId,
+    ledgerEvents[0].accountingEventId,
+    "progress_ledger_duplicate_evidence_counted_once: the suppressed entry must be the replayed identity",
+  );
+
+  // Evidence order is the caller's, not the ledger's: the same events supplied
+  // in reverse must produce a byte-identical projection.  Real callers read
+  // evidence from a directory scan or cursor whose order is not guaranteed.
+  const ledgerReversedEvidence = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    accountingEvents: [...ledgerEvents].reverse(),
+    projectedAt: "2026-08-16T02:00:00.000Z",
+  });
+  const ledgerForwardEvidence = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    accountingEvents: ledgerEvents,
+    projectedAt: "2026-08-16T02:00:00.000Z",
+  });
+  assert.equal(
+    JSON.stringify(toTaskProgressLedgerJson(ledgerReversedEvidence.value)),
+    JSON.stringify(toTaskProgressLedgerJson(ledgerForwardEvidence.value)),
+    "progress_ledger_duplicate_evidence_counted_once: evidence order must not change the projection",
+  );
+
+  // The structural claim, asserted directly: 100 replays of one event move the
+  // accounted counter by exactly nothing.  This assertion stays live against any
+  // future regression that wires evidence counts into the ledger counters.
+  const ledgerHundredReplays = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    accountingEvents: [
+      ...ledgerEvents,
+      ...Array.from({ length: 100 }, () => ledgerEvents[0]),
+    ],
+    projectedAt: "2026-08-16T02:00:00.000Z",
+  });
+  assert.equal(
+    ledgerHundredReplays.ok,
+    true,
+    "progress_ledger_duplicate_evidence_counted_once: 100 replays should still project",
+  );
+  assert.equal(
+    ledgerHundredReplays.value.accountedItemCount,
+    20,
+    "progress_ledger_duplicate_evidence_counted_once: 100 replays must not move Accounted",
+  );
+  assert.equal(
+    ledgerHundredReplays.value.remainingItemCount,
+    380,
+    "progress_ledger_duplicate_evidence_counted_once: 100 replays must not move Remaining",
+  );
+  assert.equal(
+    ledgerHundredReplays.value.evidence.duplicateSuppressedCount,
+    100,
+    "progress_ledger_duplicate_evidence_counted_once: all 100 replays must be suppressed",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test C: progress_ledger_stale_state_snapshot_refused
+  //
+  // Naturally produced: the snapshot was read before the 20th accounting call,
+  // the event was produced by that call.  Projecting the newer evidence onto
+  // the older snapshot must fail closed rather than report a stale Remaining.
+  // -----------------------------------------------------------------------
+  const ledgerStaleEvent = ledgerEvents[19];
+  assert.equal(
+    ledgerStaleEvent.taskStateRevision >
+      ledgerSnapshotBeforeLastAccounting.revision,
+    true,
+    "progress_ledger_stale_state_snapshot_refused: the event must be ahead of the snapshot",
+  );
+
+  const ledgerStale = buildTaskProgressLedger({
+    state: ledgerSnapshotBeforeLastAccounting,
+    accountingEvents: [ledgerStaleEvent],
+    projectedAt: "2026-08-16T02:00:00.000Z",
+  });
+  assert.equal(
+    ledgerStale.ok,
+    false,
+    "progress_ledger_stale_state_snapshot_refused: a stale snapshot must not project",
+  );
+  assert.equal(
+    ledgerStale.error.code,
+    "progress_ledger_state_stale_for_evidence",
+    "progress_ledger_stale_state_snapshot_refused: must fail with the stale-state code",
+  );
+
+  // The same snapshot still projects on its own — staleness is refused only
+  // where evidence proves it, and a corrupted/stale ledger is never mutated.
+  const ledgerStaleAlone = buildTaskProgressLedger({
+    state: ledgerSnapshotBeforeLastAccounting,
+    projectedAt: "2026-08-16T02:00:00.000Z",
+  });
+  assert.equal(
+    ledgerStaleAlone.ok,
+    true,
+    "progress_ledger_stale_state_snapshot_refused: the snapshot alone must still project",
+  );
+  assert.equal(
+    ledgerStaleAlone.value.accountedItemCount,
+    19,
+    "progress_ledger_stale_state_snapshot_refused: the older snapshot must report its own Accounted",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test D: progress_ledger_restart_readback_identical
+  // Two independent durable reads must produce byte-identical projections.
+  // -----------------------------------------------------------------------
+  const ledgerReadBackOne = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    accountingEvents: ledgerEvents,
+    projectedAt: "2026-08-16T04:00:00.000Z",
+  });
+  const ledgerReadBackTwo = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    accountingEvents: ledgerEvents,
+    projectedAt: "2026-08-16T04:00:00.000Z",
+  });
+  assert.equal(
+    ledgerReadBackOne.ok && ledgerReadBackTwo.ok,
+    true,
+    "progress_ledger_restart_readback_identical: both reads should project",
+  );
+  assert.equal(
+    JSON.stringify(toTaskProgressLedgerJson(ledgerReadBackOne.value)),
+    JSON.stringify(toTaskProgressLedgerJson(ledgerReadBackTwo.value)),
+    "progress_ledger_restart_readback_identical: durable read-back must be identical",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test E: progress_ledger_projection_consistency
+  // The human and JSON projections must report the same numbers.
+  // -----------------------------------------------------------------------
+  const ledgerJson = toTaskProgressLedgerJson(ledgerA.value);
+  const ledgerText = renderTaskProgressLedgerText(ledgerA.value);
+  assert.equal(
+    ledgerJson.expected === 400 &&
+      ledgerJson.accounted === 20 &&
+      ledgerJson.remaining === 380,
+    true,
+    "progress_ledger_projection_consistency: JSON projection must carry 400/20/380",
+  );
+  assert.equal(
+    ledgerText.includes("Expected=400 Accounted=20 Remaining=380"),
+    true,
+    "progress_ledger_projection_consistency: human projection must carry 400/20/380",
+  );
+  assert.equal(
+    ledgerText.includes("req-alpha [in_progress] expected=200 accounted=20 remaining=180"),
+    true,
+    "progress_ledger_projection_consistency: human projection must carry requirement progress",
+  );
+  assert.equal(
+    ledgerJson.safety.grantsCompletionAuthority,
+    false,
+    "progress_ledger_projection_consistency: the ledger must never grant completion authority",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test F: progress_ledger_model_claim_cannot_move_ledger
+  // A worker claiming completion without durable returned evidence is refused
+  // by accounting, and the ledger reads exactly the same before and after.
+  // -----------------------------------------------------------------------
+  const ledgerBeforeClaim = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    projectedAt: "2026-08-16T05:00:00.000Z",
+  });
+  assert.equal(
+    ledgerBeforeClaim.ok,
+    true,
+    "progress_ledger_model_claim_cannot_move_ledger: pre-claim ledger should project",
+  );
+
+  const ledgerReservedOnly = createReservedTaskExecutionInvocationRecord({
+    taskId: ledgerTaskId,
+    taskStateRevision: ledgerRevision,
+    attemptId: "attempt-ledger-claim",
+    attemptNumber: 1,
+    workItemId: ledgerWorkItemIds[100],
+    batchId: "batch-ledger",
+    dependencyKind: "test_noop",
+    verifierRequired: false,
+    completionGatedByVerifier: true,
+  });
+  assert.equal(
+    ledgerReservedOnly.ok,
+    true,
+    "progress_ledger_model_claim_cannot_move_ledger: reserved record should be created",
+  );
+  await ledgerPersistInvocation(ledgerReservedOnly.value);
+
+  const ledgerClaim = await applyWorkAccountingEvent({
+    projectRoot: ledgerProjectRoot,
+    // The worker asserts success on an invocation that never returned.
+    workerResult: ledgerWorkerResult(ledgerReservedOnly.value),
+    expectedTaskRevision: ledgerRevision,
+  });
+  assert.equal(
+    ledgerClaim.ok,
+    false,
+    "progress_ledger_model_claim_cannot_move_ledger: an unreturned invocation must not account",
+  );
+
+  const ledgerAfterClaim = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: ledgerTaskId,
+    projectedAt: "2026-08-16T05:00:00.000Z",
+  });
+  assert.equal(
+    JSON.stringify(toTaskProgressLedgerJson(ledgerBeforeClaim.value)),
+    JSON.stringify(toTaskProgressLedgerJson(ledgerAfterClaim.value)),
+    "progress_ledger_model_claim_cannot_move_ledger: the ledger must be unchanged by a model claim",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test G: progress_ledger_unassigned_and_zero_expected
+  // Items with no requirementId land in the reserved bucket and still sum to
+  // the task totals; an empty task reports 0/0/0 with a null ratio rather than
+  // dividing by zero.
+  // -----------------------------------------------------------------------
+  const ledgerUnassigned = buildTaskProgressLedger({
+    state: {
+      ...ledgerPlanned.value.state,
+      workItems: [
+        { id: "solo-1", state: "pending" },
+        { id: "solo-2", state: "pending", requirementId: "req-gamma" },
+      ],
+      batches: [],
+      pendingWorkItemIds: ["solo-1", "solo-2"],
+    },
+    projectedAt: "2026-08-16T06:00:00.000Z",
+  });
+  assert.equal(
+    ledgerUnassigned.ok,
+    true,
+    "progress_ledger_unassigned_and_zero_expected: mixed assignment should project",
+  );
+  assert.equal(
+    ledgerUnassigned.value.requirements.find((requirement) => requirement.unassigned)
+      ?.requirementId,
+    AEOS_PROGRESS_LEDGER_UNASSIGNED_REQUIREMENT_ID,
+    "progress_ledger_unassigned_and_zero_expected: unassigned items use the reserved bucket",
+  );
+  assert.equal(
+    ledgerUnassigned.value.requirements.reduce(
+      (total, requirement) => total + requirement.expectedItemCount,
+      0,
+    ),
+    ledgerUnassigned.value.expectedItemCount,
+    "progress_ledger_unassigned_and_zero_expected: requirement expectations must sum to the task total",
+  );
+
+  const ledgerEmpty = buildTaskProgressLedger({
+    state: {
+      ...ledgerPlanned.value.state,
+      workItems: [],
+      batches: [],
+      pendingWorkItemIds: [],
+    },
+    projectedAt: "2026-08-16T06:00:00.000Z",
+  });
+  assert.equal(
+    ledgerEmpty.ok,
+    true,
+    "progress_ledger_unassigned_and_zero_expected: an empty task should project",
+  );
+  assert.equal(
+    ledgerEmpty.value.expectedItemCount === 0 &&
+      ledgerEmpty.value.accountedItemCount === 0 &&
+      ledgerEmpty.value.remainingItemCount === 0,
+    true,
+    "progress_ledger_unassigned_and_zero_expected: an empty task must read 0/0/0",
+  );
+  assert.equal(
+    ledgerEmpty.value.accountedRatio,
+    null,
+    "progress_ledger_unassigned_and_zero_expected: an empty task must not divide by zero",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test H: progress_ledger_corruption_defences
+  // Branches reachable only if durable state or evidence has been corrupted
+  // outside AEOS.  They cannot be produced by any authorised path, so they are
+  // driven by deliberately damaged inputs and must all fail closed.
+  // -----------------------------------------------------------------------
+  const ledgerNonIntegerRevision = buildTaskProgressLedger({
+    state: { ...ledgerPlanned.value.state, revision: 1.5 },
+    projectedAt: "2026-08-16T07:00:00.000Z",
+  });
+  assert.equal(
+    ledgerNonIntegerRevision.ok,
+    false,
+    "progress_ledger_corruption_defences: a non-integer revision must not project",
+  );
+  assert.equal(
+    ledgerNonIntegerRevision.error.code,
+    "progress_ledger_unsafe_count",
+    "progress_ledger_corruption_defences: must fail with the unsafe-count code",
+  );
+
+  // Negative and out-of-safe-range revisions travel the same fail-closed path.
+  // state.revision is the one counter the ledger does not re-derive, so it is
+  // the counter a corrupted snapshot can actually poison.
+  for (const [label, revision] of [
+    ["negative", -1],
+    ["overflow", Number.MAX_SAFE_INTEGER + 2],
+  ]) {
+    const ledgerBadRevision = buildTaskProgressLedger({
+      state: { ...ledgerPlanned.value.state, revision },
+      projectedAt: "2026-08-16T07:00:00.000Z",
+    });
+    assert.equal(
+      ledgerBadRevision.ok,
+      false,
+      `progress_ledger_corruption_defences: a ${label} revision must not project`,
+    );
+    assert.equal(
+      ledgerBadRevision.error.code,
+      "progress_ledger_unsafe_count",
+      `progress_ledger_corruption_defences: a ${label} revision must fail with the unsafe-count code`,
+    );
+  }
+
+  const ledgerForeignEvent = buildTaskProgressLedger({
+    state: ledgerPlanned.value.state,
+    accountingEvents: [{ ...ledgerEvents[0], taskId: "TASK-SOMEONE-ELSE" }],
+    projectedAt: "2026-08-16T07:00:00.000Z",
+  });
+  assert.equal(
+    ledgerForeignEvent.ok,
+    false,
+    "progress_ledger_corruption_defences: evidence from another task must not project",
+  );
+  assert.equal(
+    ledgerForeignEvent.error.code,
+    "progress_ledger_event_task_mismatch",
+    "progress_ledger_corruption_defences: must fail with the task-mismatch code",
+  );
+
+  const ledgerUnknownItemEvent = buildTaskProgressLedger({
+    state: ledgerPlanned.value.state,
+    accountingEvents: [{ ...ledgerEvents[0], workItemId: "pl-item-does-not-exist" }],
+    projectedAt: "2026-08-16T07:00:00.000Z",
+  });
+  assert.equal(
+    ledgerUnknownItemEvent.error.code,
+    "progress_ledger_event_work_item_unknown",
+    "progress_ledger_corruption_defences: unrepresented work items must fail closed",
+  );
+
+  // Evidence at or below the snapshot revision naming a work item the snapshot
+  // does not show as accounted: the snapshot has been rolled back or damaged.
+  const ledgerNotReflected = buildTaskProgressLedger({
+    state: { ...ledgerPlanned.value.state, revision: 9999 },
+    accountingEvents: [ledgerEvents[0]],
+    projectedAt: "2026-08-16T07:00:00.000Z",
+  });
+  assert.equal(
+    ledgerNotReflected.error.code,
+    "progress_ledger_evidence_not_reflected_in_state",
+    "progress_ledger_corruption_defences: unreflected evidence must fail closed",
+  );
+
+  // Two distinct accounting identities for a single accounted work item.
+  const ledgerForgedSecondEvent = buildTaskProgressLedger({
+    state: ledgerSnapshotBeforeLastAccounting,
+    accountingEvents: ledgerEvents.slice(0, 19).flatMap((event, index) =>
+      index === 0
+        ? [event, { ...event, accountingEventId: `${event.accountingEventId}-forged` }]
+        : [event],
+    ),
+    projectedAt: "2026-08-16T07:00:00.000Z",
+  });
+  assert.equal(
+    ledgerForgedSecondEvent.ok,
+    false,
+    "progress_ledger_corruption_defences: forged extra evidence must not project",
+  );
+  assert.equal(
+    ledgerForgedSecondEvent.error.code,
+    "progress_ledger_evidence_exceeds_accounted",
+    "progress_ledger_corruption_defences: must fail with the evidence-exceeds-accounted code",
+  );
+
+  // A malformed requirementId must be refused at the persistence boundary
+  // rather than silently rerouted into the unassigned bucket.
+  const ledgerBadRequirementId = validatePersistedTaskState({
+    ...ledgerPlanned.value.state,
+    workItems: [{ id: "bad-1", state: "pending", requirementId: "" }],
+    batches: [],
+    pendingWorkItemIds: ["bad-1"],
+  });
+  assert.equal(
+    ledgerBadRequirementId.ok,
+    false,
+    "progress_ledger_corruption_defences: an empty requirementId must not validate",
+  );
+  assert.equal(
+    ledgerBadRequirementId.error.code,
+    "task_state_invalid_work_item_requirement",
+    "progress_ledger_corruption_defences: must fail with the invalid-requirement code",
+  );
+
+  // The ledger closes the same hole for callers handing it synthetic state that
+  // never passed through persistence: a malformed requirementId is refused, not
+  // silently rerouted into the unassigned bucket where it would misreport two
+  // requirements' Remaining at once.
+  const ledgerBypassBadRequirementId = buildTaskProgressLedger({
+    state: {
+      ...ledgerPlanned.value.state,
+      workItems: [
+        { id: "bypass-1", state: "pending", requirementId: "" },
+        { id: "bypass-2", state: "pending", requirementId: "req-real" },
+      ],
+      batches: [],
+      pendingWorkItemIds: ["bypass-1", "bypass-2"],
+    },
+    projectedAt: "2026-08-16T07:00:00.000Z",
+  });
+  assert.equal(
+    ledgerBypassBadRequirementId.ok,
+    false,
+    "progress_ledger_corruption_defences: an empty requirementId must not project",
+  );
+  assert.equal(
+    ledgerBypassBadRequirementId.error.code,
+    "progress_ledger_invalid_requirement_id",
+    "progress_ledger_corruption_defences: must fail with the ledger invalid-requirement code",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test I: progress_ledger_terminal_requirement_statuses
+  //
+  // Drives the two terminal requirement statuses on a second task with real
+  // durable state and real accounting calls:
+  //   req-done   — all 3 items completed            -> accounted_complete
+  //   req-mixed  — 1 completed, 1 failed, 1 skipped -> accounted_with_exceptions
+  // Both requirements reach Remaining == 0, which is what separates the two
+  // statuses from in_progress.
+  // -----------------------------------------------------------------------
+  const terminalTaskId = "TASK-PROGRESS-LEDGER-TERMINAL-SMOKE";
+
+  async function terminalPersistInvocation(record) {
+    const invDir = join(
+      ledgerProjectRoot,
+      ".aeos",
+      "state",
+      "invocations",
+      terminalTaskId,
+    );
+    await mkdir(invDir, { recursive: true });
+    await writeNodeFile(
+      join(invDir, `${record.invocationId}.json`),
+      `${JSON.stringify(record, null, 2)}\n`,
+    );
+  }
+
+  const terminalInitialSave = await saveTaskState({
+    projectRoot: ledgerProjectRoot,
+    state: createInitialTaskState({
+      taskId: terminalTaskId,
+      sourceTaskId: terminalTaskId,
+      createdAt: "2026-08-16T08:00:00.000Z",
+    }),
+  });
+  assert.equal(
+    terminalInitialSave.ok,
+    true,
+    "progress_ledger_terminal_requirement_statuses: initial state should save",
+  );
+
+  const terminalPlanned = await updateTaskState({
+    projectRoot: ledgerProjectRoot,
+    taskId: terminalTaskId,
+    expectedRevision: 1,
+    updatedAt: "2026-08-16T08:00:01.000Z",
+    update(state) {
+      return {
+        ...state,
+        lifecycleState: "planned",
+        workItems: [
+          { id: "t-1", state: "pending", batchId: "batch-terminal", requirementId: "req-done" },
+          { id: "t-2", state: "pending", batchId: "batch-terminal", requirementId: "req-done" },
+          { id: "t-3", state: "pending", batchId: "batch-terminal", requirementId: "req-done" },
+          { id: "t-4", state: "pending", batchId: "batch-terminal", requirementId: "req-mixed" },
+          { id: "t-5", state: "failed", batchId: "batch-terminal", requirementId: "req-mixed" },
+          { id: "t-6", state: "skipped", batchId: "batch-terminal", requirementId: "req-mixed" },
+        ],
+        batches: [
+          {
+            id: "batch-terminal",
+            workItemIds: ["t-1", "t-2", "t-3", "t-4", "t-5", "t-6"],
+            expectedItemCount: 6,
+            completedCount: 0,
+            failedCount: 1,
+            skippedCount: 1,
+            retryableCount: 0,
+          },
+        ],
+        pendingWorkItemIds: ["t-1", "t-2", "t-3", "t-4"],
+        retryableWorkItemIds: [],
+        plan: { status: "planned" },
+      };
+    },
+  });
+  assert.equal(
+    terminalPlanned.ok,
+    true,
+    "progress_ledger_terminal_requirement_statuses: planned state should update",
+  );
+
+  let terminalRevision = terminalPlanned.value.state.revision;
+
+  for (const workItemId of ["t-1", "t-2", "t-3", "t-4"]) {
+    const reserved = createReservedTaskExecutionInvocationRecord({
+      taskId: terminalTaskId,
+      taskStateRevision: terminalRevision,
+      attemptId: `attempt-terminal-${workItemId}`,
+      attemptNumber: 1,
+      workItemId,
+      batchId: "batch-terminal",
+      dependencyKind: "test_noop",
+      verifierRequired: false,
+      completionGatedByVerifier: true,
+    });
+    assert.equal(
+      reserved.ok,
+      true,
+      "progress_ledger_terminal_requirement_statuses: reserve invocation",
+    );
+
+    const invoking = transitionTaskExecutionInvocationRecord({
+      record: reserved.value,
+      intent: { kind: "enter_invocation", occurredAt: "2026-08-16T08:00:10.000Z" },
+    });
+    const returned = transitionTaskExecutionInvocationRecord({
+      record: invoking.value,
+      intent: {
+        kind: "record_returned",
+        result: { invocationOk: true, returnedAt: "2026-08-16T08:01:00.000Z" },
+      },
+    });
+    assert.equal(
+      returned.ok,
+      true,
+      "progress_ledger_terminal_requirement_statuses: record returned",
+    );
+    await terminalPersistInvocation(returned.value);
+
+    const event = await applyWorkAccountingEvent({
+      projectRoot: ledgerProjectRoot,
+      workerResult: ledgerWorkerResult(returned.value),
+      expectedTaskRevision: terminalRevision,
+    });
+    assert.equal(
+      event.ok,
+      true,
+      `progress_ledger_terminal_requirement_statuses: accounting for ${workItemId} should succeed`,
+    );
+    terminalRevision = event.value.taskStateRevision;
+  }
+
+  const terminalLedger = await loadTaskProgressLedger({
+    projectRoot: ledgerProjectRoot,
+    taskId: terminalTaskId,
+    projectedAt: "2026-08-16T09:00:00.000Z",
+  });
+  assert.equal(
+    terminalLedger.ok,
+    true,
+    "progress_ledger_terminal_requirement_statuses: ledger should project",
+  );
+
+  const terminalDone = terminalLedger.value.requirements.find(
+    (requirement) => requirement.requirementId === "req-done",
+  );
+  const terminalMixed = terminalLedger.value.requirements.find(
+    (requirement) => requirement.requirementId === "req-mixed",
+  );
+  assert.equal(
+    terminalDone.remainingItemCount,
+    0,
+    "progress_ledger_terminal_requirement_statuses: req-done Remaining must be 0",
+  );
+  assert.equal(
+    terminalDone.status,
+    "accounted_complete",
+    "progress_ledger_terminal_requirement_statuses: req-done must read accounted_complete",
+  );
+  assert.equal(
+    terminalMixed.remainingItemCount,
+    0,
+    "progress_ledger_terminal_requirement_statuses: req-mixed Remaining must be 0",
+  );
+  assert.equal(
+    terminalMixed.completedItemCount === 1 &&
+      terminalMixed.failedItemCount === 1 &&
+      terminalMixed.skippedItemCount === 1,
+    true,
+    "progress_ledger_terminal_requirement_statuses: req-mixed must carry 1 completed, 1 failed, 1 skipped",
+  );
+  assert.equal(
+    terminalMixed.status,
+    "accounted_with_exceptions",
+    "progress_ledger_terminal_requirement_statuses: req-mixed must read accounted_with_exceptions",
+  );
+  assert.equal(
+    terminalLedger.value.accountedItemCount === 6 &&
+      terminalLedger.value.remainingItemCount === 0,
+    true,
+    "progress_ledger_terminal_requirement_statuses: the task must be fully accounted",
+  );
+
+  // Fully accounted is an accounting statement, never a completion decision.
+  const terminalState = await loadTaskState({
+    projectRoot: ledgerProjectRoot,
+    taskId: terminalTaskId,
+  });
+  assert.equal(
+    terminalState.value.state.completionGate.satisfied === false &&
+      terminalState.value.state.completionGate.completed === false &&
+      terminalState.value.state.safety.verified === false,
+    true,
+    "progress_ledger_terminal_requirement_statuses: full accounting must not satisfy the completion gate",
+  );
+
+  console.log("progress ledger smoke tests passed");
+} finally {
+  await rm(progressLedgerTempRoot, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// TASK-0327 — Bounded orchestration iteration contract smoke tests
+// ---------------------------------------------------------------------------
+// Covers GitHub Issue #7. Unbounded autonomy is explicitly forbidden: these
+// tests assert that limits come only from system/operator authority, that a
+// planner/worker proposal cannot raise them, that exhaustion blocks any new
+// launch, and that the stop reason is durable and deterministic.
+// ---------------------------------------------------------------------------
+const iterationBudgetTempRoot = await mkdtemp(
+  join(tmpdir(), "aeos-iteration-budget-smoke-"),
+);
+
+try {
+  const budgetProjectRoot = join(iterationBudgetTempRoot, "project");
+  await mkdir(budgetProjectRoot, { recursive: true });
+
+  const budgetStartedAt = "2026-08-17T00:00:00.000Z";
+
+  function budgetAt(offsetMs) {
+    return new Date(Date.parse(budgetStartedAt) + offsetMs).toISOString();
+  }
+
+  // Attach a budget to a fresh task state and return { taskId, revision }.
+  async function budgetSeedTask(taskId, budget) {
+    const initial = await saveTaskState({
+      projectRoot: budgetProjectRoot,
+      state: createInitialTaskState({
+        taskId,
+        sourceTaskId: taskId,
+        createdAt: budgetStartedAt,
+      }),
+    });
+    assert.equal(initial.ok, true, `iteration budget smoke: ${taskId} initial save`);
+
+    const attached = await updateTaskState({
+      projectRoot: budgetProjectRoot,
+      taskId,
+      expectedRevision: 1,
+      updatedAt: budgetStartedAt,
+      update(state) {
+        return { ...state, lifecycleState: "planned", iterationBudget: budget };
+      },
+    });
+    assert.equal(attached.ok, true, `iteration budget smoke: ${taskId} budget attach`);
+    return attached.value.state.revision;
+  }
+
+  // -----------------------------------------------------------------------
+  // Test A: iteration_budget_default_preserves_one_hop
+  // With no operator configuration the conservative default applies, and it
+  // reproduces existing one-hop behaviour exactly: one launch, then stop.
+  // -----------------------------------------------------------------------
+  const budgetDefault = createIterationBudget({
+    budgetId: "budget-default",
+    startedAt: budgetStartedAt,
+  });
+  assert.equal(
+    budgetDefault.ok,
+    true,
+    "iteration_budget_default_preserves_one_hop: default budget should create",
+  );
+  assert.equal(
+    budgetDefault.value.limitsAuthority,
+    "system_default",
+    "iteration_budget_default_preserves_one_hop: authority must be system_default",
+  );
+  assert.equal(
+    budgetDefault.value.limits.maxSteps,
+    2,
+    "iteration_budget_default_preserves_one_hop: default maxSteps must be 2 (planner call + worker call)",
+  );
+  assert.equal(
+    budgetDefault.value.limits.maxPlannerCalls === 1 &&
+      budgetDefault.value.limits.maxWorkerCalls === 1,
+    true,
+    "iteration_budget_default_preserves_one_hop: per-kind caps of 1 are what pin the shape to one hop",
+  );
+  assert.equal(
+    AEOS_ITERATION_BUDGET_SYSTEM_DEFAULT.maxRetries,
+    0,
+    "iteration_budget_default_preserves_one_hop: default must permit no retries",
+  );
+
+  const budgetDefaultTaskId = "TASK-BUDGET-DEFAULT";
+  let budgetDefaultRevision = await budgetSeedTask(
+    budgetDefaultTaskId,
+    budgetDefault.value,
+  );
+
+  // The existing one-hop shape: a planner call followed by a worker call. BOTH
+  // must be permitted under the untouched default, or the default would be a
+  // breaking config requirement rather than a conservative no-op.
+  const budgetPlannerLaunch = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+    expectedTaskRevision: budgetDefaultRevision,
+    nextLaunch: "planner_call",
+    occurredAt: budgetAt(1000),
+  });
+  assert.equal(
+    budgetPlannerLaunch.ok && budgetPlannerLaunch.value.decision.allowed,
+    true,
+    "iteration_budget_default_preserves_one_hop: the planner call must be allowed",
+  );
+  assert.equal(
+    budgetPlannerLaunch.value.decision.safety.authority,
+    "system",
+    "iteration_budget_default_preserves_one_hop: decisions must carry system authority",
+  );
+  assert.equal(
+    budgetPlannerLaunch.value.decision.safety.modelProposedLimitsAccepted,
+    false,
+    "iteration_budget_default_preserves_one_hop: model-proposed limits must never be accepted",
+  );
+  assert.equal(
+    budgetPlannerLaunch.value.decision.safety.unboundedAutonomyPermitted,
+    false,
+    "iteration_budget_default_preserves_one_hop: unbounded autonomy must never be permitted",
+  );
+  budgetDefaultRevision = budgetPlannerLaunch.value.taskStateRevision;
+
+  const budgetFirstLaunch = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+    expectedTaskRevision: budgetDefaultRevision,
+    nextLaunch: "worker_call",
+    occurredAt: budgetAt(1500),
+  });
+  assert.equal(
+    budgetFirstLaunch.ok && budgetFirstLaunch.value.decision.allowed,
+    true,
+    "iteration_budget_default_preserves_one_hop: the worker call of a one hop must be allowed",
+  );
+  assert.equal(
+    budgetFirstLaunch.value.budget.consumption.steps,
+    2,
+    "iteration_budget_default_preserves_one_hop: a one hop must consume exactly two steps",
+  );
+  budgetDefaultRevision = budgetFirstLaunch.value.taskStateRevision;
+
+  const budgetSecondLaunch = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+    expectedTaskRevision: budgetDefaultRevision,
+    nextLaunch: "worker_call",
+    occurredAt: budgetAt(2000),
+  });
+  assert.equal(
+    budgetSecondLaunch.ok,
+    true,
+    "iteration_budget_default_preserves_one_hop: the third evaluation should return a decision",
+  );
+  assert.equal(
+    budgetSecondLaunch.value.decision.allowed,
+    false,
+    "iteration_budget_default_preserves_one_hop: a second hop must be refused under the default",
+  );
+  assert.equal(
+    budgetSecondLaunch.value.decision.stopReason,
+    "max_steps_exhausted",
+    "iteration_budget_default_preserves_one_hop: stop reason must be max_steps_exhausted",
+  );
+  assert.equal(
+    budgetSecondLaunch.value.budget.consumption.steps,
+    2,
+    "iteration_budget_default_preserves_one_hop: a refused launch must consume nothing",
+  );
+  budgetDefaultRevision = budgetSecondLaunch.value.taskStateRevision;
+
+  // -----------------------------------------------------------------------
+  // Test B: iteration_budget_zero_limit_blocks_everything
+  // -----------------------------------------------------------------------
+  const budgetZero = createIterationBudget({
+    budgetId: "budget-zero",
+    startedAt: budgetStartedAt,
+    operatorLimits: { maxSteps: 0, maxWorkerCalls: 0, maxPlannerCalls: 0 },
+  });
+  assert.equal(
+    budgetZero.ok,
+    true,
+    "iteration_budget_zero_limit_blocks_everything: zero is a legal limit",
+  );
+  assert.equal(
+    budgetZero.value.limitsAuthority,
+    "operator",
+    "iteration_budget_zero_limit_blocks_everything: operator-supplied limits must be marked operator",
+  );
+
+  const budgetZeroDecision = evaluateIterationBudget({
+    budget: budgetZero.value,
+    nextLaunch: "worker_call",
+    evaluatedAt: budgetAt(1),
+  });
+  assert.equal(
+    budgetZeroDecision.value.allowed,
+    false,
+    "iteration_budget_zero_limit_blocks_everything: nothing may launch at zero",
+  );
+  assert.equal(
+    budgetZeroDecision.value.stopReason,
+    "max_steps_exhausted",
+    "iteration_budget_zero_limit_blocks_everything: stop reason must be max_steps_exhausted",
+  );
+
+  // A zero wall-time budget refuses even at exactly startedAt: elapsedMs is 0,
+  // and the comparison is `>=`. Driven through the durable path because a
+  // regression from `>=` to `>` would otherwise pass every other test.
+  const budgetZeroWallTime = createIterationBudget({
+    budgetId: "budget-zero-wall-time",
+    startedAt: budgetStartedAt,
+    operatorLimits: { maxSteps: 5, maxWorkerCalls: 5, maxWallTimeMs: 0 },
+  });
+  assert.equal(
+    budgetZeroWallTime.ok,
+    true,
+    "iteration_budget_zero_limit_blocks_everything: a zero wall-time budget should create",
+  );
+
+  const budgetZeroWallTimeTaskId = "TASK-BUDGET-ZERO-WALL-TIME";
+  const budgetZeroWallTimeRevision = await budgetSeedTask(
+    budgetZeroWallTimeTaskId,
+    budgetZeroWallTime.value,
+  );
+  const budgetZeroWallTimeLaunch = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetZeroWallTimeTaskId,
+    expectedTaskRevision: budgetZeroWallTimeRevision,
+    nextLaunch: "worker_call",
+    // Exactly startedAt: elapsedMs === 0, which must already be exhausted.
+    occurredAt: budgetStartedAt,
+  });
+  assert.equal(
+    budgetZeroWallTimeLaunch.value.decision.allowed,
+    false,
+    "iteration_budget_zero_limit_blocks_everything: a zero wall-time budget must refuse at elapsed 0",
+  );
+  assert.equal(
+    budgetZeroWallTimeLaunch.value.decision.stopReason,
+    "max_wall_time_exhausted",
+    "iteration_budget_zero_limit_blocks_everything: stop reason must be max_wall_time_exhausted",
+  );
+
+  // A forged limits authority is a shape fault: the set of legal authorities
+  // does not change when a ceiling moves, so it is caught at the persistence
+  // boundary rather than deferred to the first evaluation attempt.
+  const budgetZeroWallTimeState = await loadTaskState({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetZeroWallTimeTaskId,
+  });
+  const budgetForgedAuthority = validatePersistedTaskState({
+    ...budgetZeroWallTimeState.value.state,
+    iterationBudget: {
+      ...budgetZeroWallTime.value,
+      limitsAuthority: "model",
+    },
+  });
+  assert.equal(
+    budgetForgedAuthority.ok,
+    false,
+    "iteration_budget_zero_limit_blocks_everything: a model-claimed limits authority must not validate",
+  );
+  assert.equal(
+    budgetForgedAuthority.error.code,
+    "task_state_invalid_iteration_budget",
+    "iteration_budget_zero_limit_blocks_everything: must fail at the persistence boundary",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test C: iteration_budget_ceiling_is_the_hard_boundary
+  // Limits exactly at the ceiling are accepted; one above is refused, not
+  // silently clamped — a clamped request would look like a success.
+  // -----------------------------------------------------------------------
+  const budgetAtCeiling = createIterationBudget({
+    budgetId: "budget-ceiling",
+    startedAt: budgetStartedAt,
+    operatorLimits: { ...AEOS_ITERATION_BUDGET_POLICY_CEILING },
+  });
+  assert.equal(
+    budgetAtCeiling.ok,
+    true,
+    "iteration_budget_ceiling_is_the_hard_boundary: limits at the ceiling must be accepted",
+  );
+  assert.equal(
+    budgetAtCeiling.value.limits.maxSteps,
+    AEOS_ITERATION_BUDGET_POLICY_CEILING.maxSteps,
+    "iteration_budget_ceiling_is_the_hard_boundary: ceiling values must be preserved exactly",
+  );
+
+  for (const field of [
+    "maxSteps",
+    "maxWallTimeMs",
+    "maxPlannerCalls",
+    "maxWorkerCalls",
+    "maxRetries",
+  ]) {
+    const overCeiling = createIterationBudget({
+      budgetId: "budget-over-ceiling",
+      startedAt: budgetStartedAt,
+      operatorLimits: {
+        [field]: AEOS_ITERATION_BUDGET_POLICY_CEILING[field] + 1,
+      },
+    });
+    assert.equal(
+      overCeiling.ok,
+      false,
+      `iteration_budget_ceiling_is_the_hard_boundary: ${field} above the ceiling must be refused`,
+    );
+    assert.equal(
+      overCeiling.error.code,
+      "iteration_budget_limit_exceeds_policy_ceiling",
+      `iteration_budget_ceiling_is_the_hard_boundary: ${field} must fail with the ceiling code`,
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Test D: iteration_budget_invalid_config_fails_closed
+  // Zero/negative/overflow protection on operator configuration.
+  // -----------------------------------------------------------------------
+  for (const [label, value] of [
+    ["negative", -1],
+    ["fractional", 2.5],
+    ["overflow", Number.MAX_SAFE_INTEGER + 2],
+    ["not-a-number", Number.NaN],
+    ["infinite", Number.POSITIVE_INFINITY],
+    ["string", "10"],
+  ]) {
+    const invalid = resolveIterationBudgetLimits({ maxSteps: value });
+    assert.equal(
+      invalid.ok,
+      false,
+      `iteration_budget_invalid_config_fails_closed: a ${label} limit must be refused`,
+    );
+    assert.equal(
+      ["iteration_budget_invalid_limit", "iteration_budget_limit_exceeds_policy_ceiling"].includes(
+        invalid.error.code,
+      ),
+      true,
+      `iteration_budget_invalid_config_fails_closed: a ${label} limit must fail closed`,
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Test E: iteration_budget_hostile_proposal_cannot_raise_limits
+  // A planner/worker/model proposal is always refused, and — the part that
+  // matters — the durable budget is byte-identical afterwards.
+  // -----------------------------------------------------------------------
+  const budgetBeforeProposal = await loadTaskState({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+  });
+  const budgetSnapshotBefore = JSON.stringify(
+    toIterationBudgetJson(budgetBeforeProposal.value.state.iterationBudget),
+  );
+
+  for (const proposedBy of ["planner", "worker", "model"]) {
+    const hostile = refuseIterationBudgetProposal({
+      budget: budgetBeforeProposal.value.state.iterationBudget,
+      proposedLimits: {
+        maxSteps: 9999,
+        maxWallTimeMs: 999999999,
+        maxRetries: 999,
+      },
+      proposedBy,
+    });
+    assert.equal(
+      hostile.ok,
+      false,
+      `iteration_budget_hostile_proposal_cannot_raise_limits: a ${proposedBy} proposal must be refused`,
+    );
+    assert.equal(
+      hostile.error.code,
+      "iteration_budget_model_proposal_refused",
+      `iteration_budget_hostile_proposal_cannot_raise_limits: ${proposedBy} must fail with the refusal code`,
+    );
+  }
+
+  // Cosmetic on its own: refuseIterationBudgetProposal is pure and has no write
+  // path, so this could not change anyway. The load-bearing version of this
+  // check — that the original limits still BIND after a refusal — is Test N.
+  const budgetAfterProposal = await loadTaskState({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+  });
+  assert.equal(
+    JSON.stringify(
+      toIterationBudgetJson(budgetAfterProposal.value.state.iterationBudget),
+    ),
+    budgetSnapshotBefore,
+    "iteration_budget_hostile_proposal_cannot_raise_limits: the durable budget must be unchanged",
+  );
+
+  // A budget stored above the current ceiling (ceiling lowered, or the file was
+  // hand-edited) cannot authorise anything, while the TASK STATE around it
+  // still loads through the shape validator.  The split is deliberate: refusing
+  // to load would strand the task and hide its stop reason from the operator.
+  const budgetOverCeilingPersisted = {
+    ...budgetDefault.value,
+    budgetId: "budget-persisted-over-ceiling",
+    limits: {
+      ...budgetDefault.value.limits,
+      maxSteps: AEOS_ITERATION_BUDGET_POLICY_CEILING.maxSteps + 1,
+    },
+  };
+  const budgetOverCeilingValidation = validatePersistedIterationBudget(
+    budgetOverCeilingPersisted,
+  );
+  assert.equal(
+    budgetOverCeilingValidation.ok,
+    false,
+    "iteration_budget_hostile_proposal_cannot_raise_limits: a stored over-ceiling budget must not validate",
+  );
+
+  // The other half of the documented split: the persistence layer validates
+  // SHAPE only, so the over-ceiling state still LOADS. Refusing to load would
+  // strand the task and hide its durable stop reason from the operator.
+  const budgetOverCeilingStateShape = validatePersistedTaskState({
+    ...budgetAfterProposal.value.state,
+    iterationBudget: budgetOverCeilingPersisted,
+  });
+  assert.equal(
+    budgetOverCeilingStateShape.ok,
+    true,
+    "iteration_budget_hostile_proposal_cannot_raise_limits: an over-ceiling budget must still be shape-valid state",
+  );
+  const budgetOverCeilingDecision = evaluateIterationBudget({
+    budget: budgetOverCeilingPersisted,
+    nextLaunch: "worker_call",
+    evaluatedAt: budgetAt(1),
+  });
+  assert.equal(
+    budgetOverCeilingDecision.ok,
+    false,
+    "iteration_budget_hostile_proposal_cannot_raise_limits: an over-ceiling budget must authorise nothing",
+  );
+  assert.equal(
+    budgetOverCeilingDecision.error.code,
+    "iteration_budget_limit_exceeds_policy_ceiling",
+    "iteration_budget_hostile_proposal_cannot_raise_limits: must fail with the ceiling code",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test F: iteration_budget_stop_reason_is_deterministic
+  // Wall time, steps and planner calls are all exhausted at once.  The stop
+  // reason must be the same on every evaluation, and must follow the exported
+  // precedence rather than evaluation order.
+  // -----------------------------------------------------------------------
+  const budgetAllExhausted = {
+    ...budgetDefault.value,
+    budgetId: "budget-all-exhausted",
+    limits: {
+      maxSteps: 2,
+      maxWallTimeMs: 1000,
+      maxPlannerCalls: 2,
+      maxWorkerCalls: 2,
+      maxRetries: 1,
+    },
+    consumption: { steps: 2, plannerCalls: 2, workerCalls: 2, retries: 1 },
+  };
+
+  const budgetTieDecisions = [
+    evaluateIterationBudget({
+      budget: budgetAllExhausted,
+      nextLaunch: "planner_call",
+      evaluatedAt: budgetAt(5000),
+    }),
+    evaluateIterationBudget({
+      budget: budgetAllExhausted,
+      nextLaunch: "planner_call",
+      evaluatedAt: budgetAt(5000),
+    }),
+  ];
+  assert.equal(
+    budgetTieDecisions[0].value.stopReason,
+    "max_wall_time_exhausted",
+    "iteration_budget_stop_reason_is_deterministic: wall time must win the tie",
+  );
+  assert.equal(
+    budgetTieDecisions[0].value.stopReason,
+    budgetTieDecisions[1].value.stopReason,
+    "iteration_budget_stop_reason_is_deterministic: repeated evaluation must agree",
+  );
+
+  // Each limit in isolation yields its own reason.
+  const budgetIsolatedCases = [
+    ["max_steps_exhausted", "worker_call", { steps: 2, plannerCalls: 0, workerCalls: 0, retries: 0 }],
+    ["max_planner_calls_exhausted", "planner_call", { steps: 0, plannerCalls: 2, workerCalls: 0, retries: 0 }],
+    ["max_worker_calls_exhausted", "worker_call", { steps: 0, plannerCalls: 0, workerCalls: 2, retries: 0 }],
+    ["max_retries_exhausted", "retry", { steps: 0, plannerCalls: 0, workerCalls: 0, retries: 1 }],
+  ];
+  for (const [expectedReason, launch, consumption] of budgetIsolatedCases) {
+    const isolated = evaluateIterationBudget({
+      budget: { ...budgetAllExhausted, consumption },
+      nextLaunch: launch,
+      evaluatedAt: budgetAt(1),
+    });
+    assert.equal(
+      isolated.value.stopReason,
+      expectedReason,
+      `iteration_budget_stop_reason_is_deterministic: ${launch} must report ${expectedReason}`,
+    );
+  }
+
+  // Simultaneous max_steps + max_worker_calls exhaustion: steps wins by the
+  // exported precedence.  Named here rather than left to Test A's incidental
+  // coverage, so a precedence inversion is caught by a test that says so.
+  const budgetStepsBeatsWorker = evaluateIterationBudget({
+    budget: {
+      ...budgetAllExhausted,
+      consumption: { steps: 2, plannerCalls: 0, workerCalls: 2, retries: 0 },
+    },
+    nextLaunch: "worker_call",
+    evaluatedAt: budgetAt(1),
+  });
+  assert.equal(
+    budgetStepsBeatsWorker.value.stopReason,
+    "max_steps_exhausted",
+    "iteration_budget_stop_reason_is_deterministic: steps must outrank worker calls in the precedence",
+  );
+
+  // A planner-call limit must not block a worker call, and vice versa.
+  const budgetCrossLimit = evaluateIterationBudget({
+    budget: {
+      ...budgetAllExhausted,
+      consumption: { steps: 0, plannerCalls: 2, workerCalls: 0, retries: 0 },
+    },
+    nextLaunch: "worker_call",
+    evaluatedAt: budgetAt(1),
+  });
+  assert.equal(
+    budgetCrossLimit.value.allowed,
+    true,
+    "iteration_budget_stop_reason_is_deterministic: an exhausted planner limit must not block a worker call",
+  );
+
+  // A clock before the budget start cannot prove a wall-time limit is met.
+  const budgetBackwardsClock = evaluateIterationBudget({
+    budget: budgetDefault.value,
+    nextLaunch: "worker_call",
+    evaluatedAt: budgetAt(-1),
+  });
+  assert.equal(
+    budgetBackwardsClock.ok,
+    false,
+    "iteration_budget_stop_reason_is_deterministic: a backwards clock must fail closed",
+  );
+  assert.equal(
+    budgetBackwardsClock.error.code,
+    "iteration_budget_evaluation_before_start",
+    "iteration_budget_stop_reason_is_deterministic: must fail with the before-start code",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test G: iteration_budget_stop_is_durable_and_recorded_once
+  // The stop reason survives a durable read-back, and a second refusal leaves
+  // the budget byte-identical — a consumed stop is never re-stamped.
+  // -----------------------------------------------------------------------
+  const budgetReloaded = await loadTaskState({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+  });
+  assert.equal(
+    budgetReloaded.value.state.iterationBudget.stopReason,
+    "max_steps_exhausted",
+    "iteration_budget_stop_is_durable_and_recorded_once: the stop reason must survive read-back",
+  );
+  assert.equal(
+    budgetReloaded.value.state.iterationBudget.stoppedAt,
+    budgetAt(2000),
+    "iteration_budget_stop_is_durable_and_recorded_once: the stop timestamp must be durable",
+  );
+
+  const budgetStoppedSnapshot = JSON.stringify(
+    toIterationBudgetJson(budgetReloaded.value.state.iterationBudget),
+  );
+
+  const budgetThirdLaunch = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+    expectedTaskRevision: budgetDefaultRevision,
+    nextLaunch: "planner_call",
+    occurredAt: budgetAt(60000),
+  });
+  assert.equal(
+    budgetThirdLaunch.value.decision.allowed,
+    false,
+    "iteration_budget_stop_is_durable_and_recorded_once: an already-stopped budget stays stopped",
+  );
+  assert.equal(
+    JSON.stringify(toIterationBudgetJson(budgetThirdLaunch.value.budget)),
+    budgetStoppedSnapshot,
+    "iteration_budget_stop_is_durable_and_recorded_once: a stopped budget must not be re-stamped",
+  );
+  assert.equal(
+    budgetThirdLaunch.value.decision.stopReason,
+    "max_steps_exhausted",
+    "iteration_budget_stop_is_durable_and_recorded_once: the original stop reason must be reported",
+  );
+
+  // Two independent durable reads project identically.
+  const budgetReadA = await loadTaskState({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+  });
+  const budgetReadB = await loadTaskState({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+  });
+  assert.equal(
+    JSON.stringify(toIterationBudgetJson(budgetReadA.value.state.iterationBudget)),
+    JSON.stringify(toIterationBudgetJson(budgetReadB.value.state.iterationBudget)),
+    "iteration_budget_stop_is_durable_and_recorded_once: durable read-back must be identical",
+  );
+  assert.equal(
+    renderIterationBudgetText(budgetReadA.value.state.iterationBudget).includes(
+      "status: stopped (max_steps_exhausted)",
+    ),
+    true,
+    "iteration_budget_stop_is_durable_and_recorded_once: the stop reason must be operator-visible",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test H: iteration_budget_stale_revision_refused
+  // -----------------------------------------------------------------------
+  const budgetStale = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetDefaultTaskId,
+    expectedTaskRevision: 1,
+    nextLaunch: "worker_call",
+    occurredAt: budgetAt(70000),
+  });
+  assert.equal(
+    budgetStale.ok,
+    false,
+    "iteration_budget_stale_revision_refused: a stale revision must not record",
+  );
+  assert.equal(
+    budgetStale.error.code,
+    "task_state_revision_conflict",
+    "iteration_budget_stale_revision_refused: must fail with the revision-conflict code",
+  );
+
+  // A task carrying no budget cannot have a launch recorded against it.
+  const budgetMissingTaskId = "TASK-BUDGET-MISSING";
+  const budgetMissingInitial = await saveTaskState({
+    projectRoot: budgetProjectRoot,
+    state: createInitialTaskState({
+      taskId: budgetMissingTaskId,
+      sourceTaskId: budgetMissingTaskId,
+      createdAt: budgetStartedAt,
+    }),
+  });
+  assert.equal(
+    budgetMissingInitial.ok,
+    true,
+    "iteration_budget_stale_revision_refused: budget-less task should save",
+  );
+  const budgetMissing = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetMissingTaskId,
+    expectedTaskRevision: 1,
+    nextLaunch: "worker_call",
+    occurredAt: budgetAt(1),
+  });
+  assert.equal(
+    budgetMissing.error.code,
+    "iteration_budget_not_present",
+    "iteration_budget_stale_revision_refused: a missing budget must fail closed",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test I: iteration_budget_corrupt_state_refused
+  // Overconsumed and inconsistent stop states are corruption, not exhaustion.
+  // -----------------------------------------------------------------------
+  const budgetOverconsumed = validatePersistedTaskState({
+    ...budgetReadA.value.state,
+    iterationBudget: {
+      ...budgetDefault.value,
+      consumption: { steps: 5, plannerCalls: 0, workerCalls: 0, retries: 0 },
+    },
+  });
+  assert.equal(
+    budgetOverconsumed.ok,
+    false,
+    "iteration_budget_corrupt_state_refused: overconsumption must not validate",
+  );
+  assert.equal(
+    budgetOverconsumed.error.code,
+    "task_state_iteration_budget_overconsumed",
+    "iteration_budget_corrupt_state_refused: must fail with the overconsumed code",
+  );
+
+  const budgetStopWithoutReason = validatePersistedIterationBudget({
+    ...budgetDefault.value,
+    stopReason: null,
+    stoppedAt: budgetAt(1),
+  });
+  assert.equal(
+    budgetStopWithoutReason.error.code,
+    "iteration_budget_inconsistent_stop_state",
+    "iteration_budget_corrupt_state_refused: a stop timestamp without a reason must fail closed",
+  );
+
+  const budgetUnknownReason = validatePersistedIterationBudget({
+    ...budgetDefault.value,
+    stopReason: "operator_felt_like_it",
+    stoppedAt: budgetAt(1),
+  });
+  assert.equal(
+    budgetUnknownReason.error.code,
+    "iteration_budget_invalid_stop_reason",
+    "iteration_budget_corrupt_state_refused: an unrecognised stop reason must fail closed",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test J: iteration_budget_multi_step_within_bounds
+  // A widened but policy-bounded budget permits several launches and then
+  // stops deterministically. No loop is implemented here — each launch is a
+  // separate explicit call, which is the whole point of the contract.
+  // -----------------------------------------------------------------------
+  const budgetWide = createIterationBudget({
+    budgetId: "budget-wide",
+    startedAt: budgetStartedAt,
+    operatorLimits: {
+      maxSteps: 4,
+      maxPlannerCalls: 2,
+      maxWorkerCalls: 2,
+      maxRetries: 1,
+      maxWallTimeMs: 600000,
+    },
+  });
+  assert.equal(
+    budgetWide.ok,
+    true,
+    "iteration_budget_multi_step_within_bounds: a policy-bounded wide budget should create",
+  );
+
+  const budgetWideTaskId = "TASK-BUDGET-WIDE";
+  let budgetWideRevision = await budgetSeedTask(budgetWideTaskId, budgetWide.value);
+
+  const budgetWideSequence = ["planner_call", "worker_call", "planner_call", "worker_call"];
+  for (const [index, launch] of budgetWideSequence.entries()) {
+    const step = await recordIterationBudgetLaunch({
+      projectRoot: budgetProjectRoot,
+      taskId: budgetWideTaskId,
+      expectedTaskRevision: budgetWideRevision,
+      nextLaunch: launch,
+      occurredAt: budgetAt(1000 * (index + 1)),
+    });
+    assert.equal(
+      step.value.decision.allowed,
+      true,
+      `iteration_budget_multi_step_within_bounds: launch ${index + 1} must be allowed`,
+    );
+    budgetWideRevision = step.value.taskStateRevision;
+  }
+
+  const budgetWideFinal = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetWideTaskId,
+    expectedTaskRevision: budgetWideRevision,
+    nextLaunch: "worker_call",
+    occurredAt: budgetAt(9000),
+  });
+  assert.equal(
+    budgetWideFinal.value.decision.allowed,
+    false,
+    "iteration_budget_multi_step_within_bounds: the fifth launch must be refused",
+  );
+  assert.equal(
+    budgetWideFinal.value.decision.stopReason,
+    "max_steps_exhausted",
+    "iteration_budget_multi_step_within_bounds: stop reason must be max_steps_exhausted",
+  );
+  assert.equal(
+    budgetWideFinal.value.budget.consumption.steps,
+    4,
+    "iteration_budget_multi_step_within_bounds: consumption must equal the step limit exactly",
+  );
+  assert.equal(
+    budgetWideFinal.value.budget.consumption.plannerCalls === 2 &&
+      budgetWideFinal.value.budget.consumption.workerCalls === 2,
+    true,
+    "iteration_budget_multi_step_within_bounds: per-kind counters must be tracked separately",
+  );
+
+  // Completion authority is untouched by any of this.
+  const budgetWideState = await loadTaskState({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetWideTaskId,
+  });
+  assert.equal(
+    budgetWideState.value.state.completionGate.satisfied === false &&
+      budgetWideState.value.state.safety.verified === false,
+    true,
+    "iteration_budget_multi_step_within_bounds: budget consumption must not satisfy the completion gate",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test K: iteration_budget_retry_counter_recorded_durably
+  //
+  // The retry launch kind must be exercised through the DURABLE path, not only
+  // through direct evaluate calls with hand-built consumption. A copy-paste bug
+  // in the retry branch of recordIterationBudgetLaunch (incrementing the wrong
+  // counter) would leave every other test green while max_retries_exhausted
+  // could never fire in production.
+  // -----------------------------------------------------------------------
+  const budgetRetry = createIterationBudget({
+    budgetId: "budget-retry",
+    startedAt: budgetStartedAt,
+    operatorLimits: {
+      maxSteps: 4,
+      maxRetries: 1,
+      // Headroom above maxRetries so the retries sub-cap is the binding limit
+      // here; the worker-call interaction is asserted separately below.
+      maxWorkerCalls: 3,
+      maxPlannerCalls: 0,
+      maxWallTimeMs: 600000,
+    },
+  });
+  assert.equal(
+    budgetRetry.ok,
+    true,
+    "iteration_budget_retry_counter_recorded_durably: retry budget should create",
+  );
+
+  const budgetRetryTaskId = "TASK-BUDGET-RETRY";
+  let budgetRetryRevision = await budgetSeedTask(
+    budgetRetryTaskId,
+    budgetRetry.value,
+  );
+
+  const budgetRetryFirst = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetRetryTaskId,
+    expectedTaskRevision: budgetRetryRevision,
+    nextLaunch: "retry",
+    occurredAt: budgetAt(1000),
+  });
+  assert.equal(
+    budgetRetryFirst.value.decision.allowed,
+    true,
+    "iteration_budget_retry_counter_recorded_durably: the first retry must be allowed",
+  );
+  assert.equal(
+    budgetRetryFirst.value.budget.consumption.retries,
+    1,
+    "iteration_budget_retry_counter_recorded_durably: a retry must increment the retries counter",
+  );
+  assert.equal(
+    budgetRetryFirst.value.budget.consumption.steps,
+    1,
+    "iteration_budget_retry_counter_recorded_durably: a retry must also cost a step",
+  );
+  // A retry re-invokes a worker, so it MUST charge maxWorkerCalls as well.
+  // Otherwise maxWorkerCalls would not cap worker invocations: an operator
+  // setting maxWorkerCalls=1 and maxRetries=5 would get six real invocations.
+  assert.equal(
+    budgetRetryFirst.value.budget.consumption.workerCalls,
+    1,
+    "iteration_budget_retry_counter_recorded_durably: a retry must also charge a worker call",
+  );
+  assert.equal(
+    budgetRetryFirst.value.budget.consumption.plannerCalls,
+    0,
+    "iteration_budget_retry_counter_recorded_durably: a retry must not charge a planner call",
+  );
+  budgetRetryRevision = budgetRetryFirst.value.taskStateRevision;
+
+  // Read back from disk before the second attempt: the counter must be durable,
+  // not just correct in the returned object.
+  const budgetRetryReloaded = await loadTaskState({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetRetryTaskId,
+  });
+  assert.equal(
+    budgetRetryReloaded.value.state.iterationBudget.consumption.retries,
+    1,
+    "iteration_budget_retry_counter_recorded_durably: the retries counter must survive read-back",
+  );
+
+  const budgetRetrySecond = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetRetryTaskId,
+    expectedTaskRevision: budgetRetryRevision,
+    nextLaunch: "retry",
+    occurredAt: budgetAt(2000),
+  });
+  assert.equal(
+    budgetRetrySecond.value.decision.allowed,
+    false,
+    "iteration_budget_retry_counter_recorded_durably: the second retry must be refused",
+  );
+  assert.equal(
+    budgetRetrySecond.value.decision.stopReason,
+    "max_retries_exhausted",
+    "iteration_budget_retry_counter_recorded_durably: stop reason must be max_retries_exhausted through the durable path",
+  );
+  assert.equal(
+    budgetRetrySecond.value.budget.consumption.retries,
+    1,
+    "iteration_budget_retry_counter_recorded_durably: a refused retry must consume nothing",
+  );
+  assert.equal(
+    budgetRetrySecond.value.budget.stoppedAt,
+    budgetAt(2000),
+    "iteration_budget_retry_counter_recorded_durably: the retry stop must be durably stamped",
+  );
+
+  // An unparseable stop timestamp is not durable evidence of anything.
+  const budgetBadStoppedAt = validatePersistedIterationBudget({
+    ...budgetRetry.value,
+    stopReason: "max_retries_exhausted",
+    stoppedAt: "not-a-date",
+  });
+  assert.equal(
+    budgetBadStoppedAt.ok,
+    false,
+    "iteration_budget_retry_counter_recorded_durably: an unparseable stoppedAt must fail closed",
+  );
+  assert.equal(
+    budgetBadStoppedAt.error.code,
+    "iteration_budget_invalid_timestamp",
+    "iteration_budget_retry_counter_recorded_durably: must fail with the invalid-timestamp code",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test L: iteration_budget_retry_cannot_bypass_worker_cap
+  //
+  // The hole this closes: if a retry did not charge maxWorkerCalls, an operator
+  // setting maxWorkerCalls=1 and maxRetries=5 would receive six real worker
+  // invocations against a stated cap of one. maxRetries is a sub-cap on top of
+  // maxWorkerCalls, never an escape from it.
+  // -----------------------------------------------------------------------
+  const budgetBypass = createIterationBudget({
+    budgetId: "budget-bypass-attempt",
+    startedAt: budgetStartedAt,
+    operatorLimits: {
+      maxSteps: 10,
+      maxWorkerCalls: 1,
+      maxRetries: 5,
+      maxPlannerCalls: 0,
+      maxWallTimeMs: 600000,
+    },
+  });
+  assert.equal(
+    budgetBypass.ok,
+    true,
+    "iteration_budget_retry_cannot_bypass_worker_cap: budget should create",
+  );
+
+  const budgetBypassTaskId = "TASK-BUDGET-BYPASS";
+  let budgetBypassRevision = await budgetSeedTask(
+    budgetBypassTaskId,
+    budgetBypass.value,
+  );
+
+  const budgetBypassWorker = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetBypassTaskId,
+    expectedTaskRevision: budgetBypassRevision,
+    nextLaunch: "worker_call",
+    occurredAt: budgetAt(1000),
+  });
+  assert.equal(
+    budgetBypassWorker.value.decision.allowed,
+    true,
+    "iteration_budget_retry_cannot_bypass_worker_cap: the single permitted worker call must be allowed",
+  );
+  budgetBypassRevision = budgetBypassWorker.value.taskStateRevision;
+
+  // maxWorkerCalls is now spent. Five retries remain on paper, but every one of
+  // them would be a worker invocation, so the very first must be refused.
+  const budgetBypassRetry = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetBypassTaskId,
+    expectedTaskRevision: budgetBypassRevision,
+    nextLaunch: "retry",
+    occurredAt: budgetAt(2000),
+  });
+  assert.equal(
+    budgetBypassRetry.value.decision.allowed,
+    false,
+    "iteration_budget_retry_cannot_bypass_worker_cap: a retry must not slip past a spent worker cap",
+  );
+  assert.equal(
+    budgetBypassRetry.value.decision.stopReason,
+    "max_worker_calls_exhausted",
+    "iteration_budget_retry_cannot_bypass_worker_cap: stop reason must be max_worker_calls_exhausted",
+  );
+  assert.equal(
+    budgetBypassRetry.value.budget.consumption.workerCalls,
+    1,
+    "iteration_budget_retry_cannot_bypass_worker_cap: total worker invocations must not exceed the cap",
+  );
+
+  // max_worker_calls_exhausted must be reachable ahead of max_steps_exhausted,
+  // which is only true because no per-kind ceiling sits above the step ceiling.
+  assert.equal(
+    AEOS_ITERATION_BUDGET_POLICY_CEILING.maxWorkerCalls <=
+      AEOS_ITERATION_BUDGET_POLICY_CEILING.maxSteps,
+    true,
+    "iteration_budget_retry_cannot_bypass_worker_cap: no per-kind ceiling may exceed the step ceiling",
+  );
+  assert.equal(
+    AEOS_ITERATION_BUDGET_POLICY_CEILING.maxPlannerCalls <=
+      AEOS_ITERATION_BUDGET_POLICY_CEILING.maxSteps,
+    true,
+    "iteration_budget_retry_cannot_bypass_worker_cap: the planner ceiling may not exceed the step ceiling either",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test M: iteration_budget_overconsumption_is_corruption_on_the_pure_path
+  //
+  // evaluateIterationBudget is reachable without going through durable state,
+  // so the corruption check has to live in the budget validator too — not only
+  // in the persistence shape validator.
+  // -----------------------------------------------------------------------
+  const budgetPureOverconsumed = {
+    ...budgetDefault.value,
+    consumption: { steps: 99, plannerCalls: 0, workerCalls: 0, retries: 0 },
+  };
+  const budgetPureOverconsumedValidation = validatePersistedIterationBudget(
+    budgetPureOverconsumed,
+  );
+  assert.equal(
+    budgetPureOverconsumedValidation.ok,
+    false,
+    "iteration_budget_overconsumption_is_corruption_on_the_pure_path: overconsumption must not validate",
+  );
+  assert.equal(
+    budgetPureOverconsumedValidation.error.code,
+    "iteration_budget_overconsumed",
+    "iteration_budget_overconsumption_is_corruption_on_the_pure_path: must fail with the overconsumed code",
+  );
+
+  const budgetPureOverconsumedDecision = evaluateIterationBudget({
+    budget: budgetPureOverconsumed,
+    nextLaunch: "worker_call",
+    evaluatedAt: budgetAt(1),
+  });
+  assert.equal(
+    budgetPureOverconsumedDecision.ok,
+    false,
+    "iteration_budget_overconsumption_is_corruption_on_the_pure_path: a corrupt budget must authorise nothing",
+  );
+  assert.equal(
+    budgetPureOverconsumedDecision.error.code,
+    "iteration_budget_overconsumed",
+    "iteration_budget_overconsumption_is_corruption_on_the_pure_path: corruption must not be reported as mere exhaustion",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test N: iteration_budget_refused_proposal_leaves_enforcement_intact
+  //
+  // The load-bearing version of the hostile-proposal test. refuseIteration-
+  // BudgetProposal is a pure function with no write path, so asserting it had
+  // no side effect proves little on its own. What matters is that after the
+  // refusal the ORIGINAL limits still bind on the durable enforcement path.
+  // -----------------------------------------------------------------------
+  const budgetEnforce = createIterationBudget({
+    budgetId: "budget-enforce-after-refusal",
+    startedAt: budgetStartedAt,
+    operatorLimits: {
+      maxSteps: 1,
+      maxWorkerCalls: 1,
+      maxPlannerCalls: 0,
+      maxRetries: 0,
+      maxWallTimeMs: 600000,
+    },
+  });
+  const budgetEnforceTaskId = "TASK-BUDGET-ENFORCE";
+  let budgetEnforceRevision = await budgetSeedTask(
+    budgetEnforceTaskId,
+    budgetEnforce.value,
+  );
+
+  const budgetEnforceRefusal = refuseIterationBudgetProposal({
+    budget: budgetEnforce.value,
+    proposedLimits: { maxSteps: 25, maxWorkerCalls: 25 },
+    proposedBy: "planner",
+  });
+  assert.equal(
+    budgetEnforceRefusal.ok,
+    false,
+    "iteration_budget_refused_proposal_leaves_enforcement_intact: the widening must be refused",
+  );
+
+  const budgetEnforceFirst = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetEnforceTaskId,
+    expectedTaskRevision: budgetEnforceRevision,
+    nextLaunch: "worker_call",
+    occurredAt: budgetAt(1000),
+  });
+  assert.equal(
+    budgetEnforceFirst.value.decision.allowed,
+    true,
+    "iteration_budget_refused_proposal_leaves_enforcement_intact: the one permitted launch must proceed",
+  );
+  budgetEnforceRevision = budgetEnforceFirst.value.taskStateRevision;
+
+  const budgetEnforceSecond = await recordIterationBudgetLaunch({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetEnforceTaskId,
+    expectedTaskRevision: budgetEnforceRevision,
+    nextLaunch: "worker_call",
+    occurredAt: budgetAt(2000),
+  });
+  assert.equal(
+    budgetEnforceSecond.value.decision.allowed,
+    false,
+    "iteration_budget_refused_proposal_leaves_enforcement_intact: the proposed widening must not have taken effect",
+  );
+  const budgetEnforceState = await loadTaskState({
+    projectRoot: budgetProjectRoot,
+    taskId: budgetEnforceTaskId,
+  });
+  assert.equal(
+    budgetEnforceState.value.state.iterationBudget.limits.maxSteps,
+    1,
+    "iteration_budget_refused_proposal_leaves_enforcement_intact: durable limits must still be the operator's",
+  );
+
+  console.log("iteration budget smoke tests passed");
+} finally {
+  await rm(iterationBudgetTempRoot, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// TASK-0328 — Durable iteration state and step identity smoke tests
+// ---------------------------------------------------------------------------
+// Covers GitHub Issue #8. The property under test is exactly-once step launch
+// across crash and duplicate/concurrent claim, with the launch boundary never
+// reset and ambiguous outcomes never replayed.
+// ---------------------------------------------------------------------------
+const iterationStepTempRoot = await mkdtemp(
+  join(tmpdir(), "aeos-iteration-step-smoke-"),
+);
+
+try {
+  const stepProjectRoot = join(iterationStepTempRoot, "project");
+  await mkdir(stepProjectRoot, { recursive: true });
+
+  const stepStartedAt = "2026-08-17T10:00:00.000Z";
+
+  // Seed a task carrying an iteration budget: a step must bind to a real parent.
+  async function stepSeedTask(taskId, budgetId) {
+    const initial = await saveTaskState({
+      projectRoot: stepProjectRoot,
+      state: createInitialTaskState({
+        taskId,
+        sourceTaskId: taskId,
+        createdAt: stepStartedAt,
+      }),
+    });
+    assert.equal(initial.ok, true, `iteration step smoke: ${taskId} initial save`);
+
+    const budget = createIterationBudget({
+      budgetId,
+      startedAt: stepStartedAt,
+      operatorLimits: { maxSteps: 6, maxPlannerCalls: 3, maxWorkerCalls: 3 },
+    });
+    assert.equal(budget.ok, true, `iteration step smoke: ${taskId} budget create`);
+
+    const attached = await updateTaskState({
+      projectRoot: stepProjectRoot,
+      taskId,
+      expectedRevision: 1,
+      updatedAt: stepStartedAt,
+      update(state) {
+        return {
+          ...state,
+          lifecycleState: "planned",
+          iterationBudget: budget.value,
+        };
+      },
+    });
+    assert.equal(attached.ok, true, `iteration step smoke: ${taskId} budget attach`);
+    return attached.value.state.revision;
+  }
+
+  const stepTaskId = "TASK-ITERATION-STEP-SMOKE";
+  const stepBudgetId = "budget-iteration-step-smoke";
+  const stepTaskRevision = await stepSeedTask(stepTaskId, stepBudgetId);
+
+  function stepParent(stepNumber, overrides = {}) {
+    return {
+      taskId: stepTaskId,
+      taskStateRevision: stepTaskRevision,
+      budgetId: stepBudgetId,
+      stepNumber,
+      ...overrides,
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // Test A: iteration_step_identity_is_deterministic
+  // Determinism IS the idempotency mechanism: the same orchestration intent
+  // must land on the same stepId, so a replay collides instead of creating a
+  // second step for the same intent.
+  // -----------------------------------------------------------------------
+  const stepIdentityOne = deriveIterationStepIdentity({
+    parent: stepParent(1),
+    launchKind: "planner_call",
+  });
+  const stepIdentityTwo = deriveIterationStepIdentity({
+    parent: stepParent(1),
+    launchKind: "planner_call",
+  });
+  assert.equal(
+    stepIdentityOne.ok && stepIdentityTwo.ok,
+    true,
+    "iteration_step_identity_is_deterministic: identity should derive",
+  );
+  assert.equal(
+    stepIdentityOne.value.stepId,
+    stepIdentityTwo.value.stepId,
+    "iteration_step_identity_is_deterministic: the same intent must yield the same stepId",
+  );
+
+  // Every identity-bearing field must change the id, or two different intents
+  // would share a claim slot.
+  const stepIdentityVariants = [
+    ["stepNumber", { parent: stepParent(2), launchKind: "planner_call" }],
+    ["launchKind", { parent: stepParent(1), launchKind: "worker_call" }],
+    [
+      "budgetId",
+      { parent: stepParent(1, { budgetId: "other-budget" }), launchKind: "planner_call" },
+    ],
+    [
+      "taskStateRevision",
+      { parent: stepParent(1, { taskStateRevision: 99 }), launchKind: "planner_call" },
+    ],
+    [
+      "taskId",
+      { parent: stepParent(1, { taskId: "OTHER-TASK" }), launchKind: "planner_call" },
+    ],
+  ];
+  for (const [field, variant] of stepIdentityVariants) {
+    const derived = deriveIterationStepIdentity(variant);
+    assert.equal(
+      derived.value.stepId === stepIdentityOne.value.stepId,
+      false,
+      `iteration_step_identity_is_deterministic: ${field} must change the derived stepId`,
+    );
+  }
+
+  // A record whose stored id does not match its own binding is tampered with.
+  const stepPrepared = createPreparedIterationStepRecord({
+    parent: stepParent(1),
+    launchKind: "planner_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepPrepared.ok,
+    true,
+    "iteration_step_identity_is_deterministic: prepared record should create",
+  );
+  // The cross-field invariants: a launch timestamp must be present exactly when
+  // the launch boundary has been crossed.
+  const stepSpuriousLaunchedAt = validateIterationStepRecord({
+    ...stepPrepared.value,
+    launchedAt: "2026-08-17T10:30:00.000Z",
+  });
+  assert.equal(
+    stepSpuriousLaunchedAt.ok,
+    false,
+    "iteration_step_identity_is_deterministic: an unlaunched step must not carry a launch timestamp",
+  );
+  assert.equal(
+    stepSpuriousLaunchedAt.error.code,
+    "iteration_step_launch_timestamp_inconsistent",
+    "iteration_step_identity_is_deterministic: must fail with the launch-timestamp code",
+  );
+
+  const stepMissingLaunchedAt = validateIterationStepRecord({
+    ...stepPrepared.value,
+    lifecycle: "running",
+    launchBoundaryCrossed: true,
+    outcomeCertainty: "launched_pending",
+  });
+  assert.equal(
+    stepMissingLaunchedAt.error.code,
+    "iteration_step_launch_timestamp_inconsistent",
+    "iteration_step_identity_is_deterministic: a launched step must carry a launch timestamp",
+  );
+
+  // An unsafe taskId must not derive an identity at all: the digest joins its
+  // inputs with a space, so a delimiter in either id would make it ambiguous.
+  const stepUnsafeTaskId = deriveIterationStepIdentity({
+    parent: stepParent(1, { taskId: "task with spaces" }),
+    launchKind: "planner_call",
+  });
+  assert.equal(
+    stepUnsafeTaskId.ok,
+    false,
+    "iteration_step_identity_is_deterministic: an unsafe taskId must not derive an identity",
+  );
+  assert.equal(
+    stepUnsafeTaskId.error.code,
+    "iteration_step_invalid_parent_binding",
+    "iteration_step_identity_is_deterministic: must fail with the invalid-parent-binding code",
+  );
+
+  const stepForgedId = validateIterationStepRecord({
+    ...stepPrepared.value,
+    stepId: "step-forged",
+  });
+  assert.equal(
+    stepForgedId.ok,
+    false,
+    "iteration_step_identity_is_deterministic: a forged stepId must not validate",
+  );
+  assert.equal(
+    stepForgedId.error.code,
+    "iteration_step_identity_mismatch",
+    "iteration_step_identity_is_deterministic: must fail with the identity-mismatch code",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test B: iteration_step_duplicate_claim_is_refused
+  // -----------------------------------------------------------------------
+  const stepClaimFirst = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: stepParent(1),
+    launchKind: "planner_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepClaimFirst.ok,
+    true,
+    "iteration_step_duplicate_claim_is_refused: the first claim should succeed",
+  );
+  assert.equal(
+    stepClaimFirst.value.status,
+    "claimed",
+    "iteration_step_duplicate_claim_is_refused: the first claim must report claimed",
+  );
+  assert.equal(
+    stepClaimFirst.value.record.lifecycle,
+    "prepared",
+    "iteration_step_duplicate_claim_is_refused: a fresh claim must be prepared",
+  );
+  assert.equal(
+    stepClaimFirst.value.record.launchBoundaryCrossed,
+    false,
+    "iteration_step_duplicate_claim_is_refused: a fresh claim must not have crossed the launch boundary",
+  );
+
+  // A replay of the same intent with a DIFFERENT claim timestamp and owner: the
+  // identity is what matters, and the second claimer must lose.
+  const stepClaimReplay = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: stepParent(1),
+    launchKind: "planner_call",
+    claimedAt: "2026-08-17T10:05:00.000Z",
+    ownerId: "a-different-owner",
+  });
+  assert.equal(
+    stepClaimReplay.value.status,
+    "already_claimed",
+    "iteration_step_duplicate_claim_is_refused: a replay must report already_claimed",
+  );
+  assert.equal(
+    stepClaimReplay.value.record.ownership.ownerId,
+    stepClaimFirst.value.record.ownership.ownerId,
+    "iteration_step_duplicate_claim_is_refused: the original owner must keep the claim",
+  );
+  assert.equal(
+    stepClaimReplay.value.record.ownership.claimedAt,
+    stepStartedAt,
+    "iteration_step_duplicate_claim_is_refused: the original claim timestamp must survive",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test C: iteration_step_concurrent_claim_has_one_winner
+  // The winner is decided by the filesystem (open "wx"), not by a read-then-
+  // write in application code, so there is no window where both claimers think
+  // they own the step.
+  // -----------------------------------------------------------------------
+  const stepConcurrent = await Promise.all(
+    Array.from({ length: 8 }, (_, index) =>
+      claimIterationStep({
+        projectRoot: stepProjectRoot,
+        parent: stepParent(2),
+        launchKind: "worker_call",
+        claimedAt: stepStartedAt,
+        ownerId: `racer-${index}`,
+      }),
+    ),
+  );
+  assert.equal(
+    stepConcurrent.every((result) => result.ok),
+    true,
+    "iteration_step_concurrent_claim_has_one_winner: every concurrent claim should resolve",
+  );
+  assert.equal(
+    stepConcurrent.filter((result) => result.value.status === "claimed").length,
+    1,
+    "iteration_step_concurrent_claim_has_one_winner: exactly one claimer may win",
+  );
+  assert.equal(
+    stepConcurrent.filter((result) => result.value.status === "already_claimed")
+      .length,
+    7,
+    "iteration_step_concurrent_claim_has_one_winner: every other claimer must lose",
+  );
+  const stepConcurrentIds = new Set(
+    stepConcurrent.map((result) => result.value.record.stepId),
+  );
+  assert.equal(
+    stepConcurrentIds.size,
+    1,
+    "iteration_step_concurrent_claim_has_one_winner: all claimers must agree on one stepId",
+  );
+  const stepConcurrentOwners = new Set(
+    stepConcurrent.map((result) => result.value.record.ownership.ownershipToken),
+  );
+  assert.equal(
+    stepConcurrentOwners.size,
+    1,
+    "iteration_step_concurrent_claim_has_one_winner: only the winner's ownership token may be durable",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test D: iteration_step_stale_parent_is_refused
+  // -----------------------------------------------------------------------
+  const stepStaleRevision = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: stepParent(3, { taskStateRevision: stepTaskRevision + 5 }),
+    launchKind: "planner_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepStaleRevision.ok,
+    false,
+    "iteration_step_stale_parent_is_refused: a stale parent revision must not claim",
+  );
+  assert.equal(
+    stepStaleRevision.error.code,
+    "iteration_step_parent_revision_stale",
+    "iteration_step_stale_parent_is_refused: must fail with the stale-revision code",
+  );
+
+  const stepForeignBudget = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: stepParent(3, { budgetId: "not-the-durable-budget" }),
+    launchKind: "planner_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepForeignBudget.error.code,
+    "iteration_step_parent_budget_mismatch",
+    "iteration_step_stale_parent_is_refused: a foreign budget id must fail closed",
+  );
+
+  // A task with no iteration budget has no orchestration run to bind to.
+  const stepNoBudgetTaskId = "TASK-ITERATION-STEP-NO-BUDGET";
+  const stepNoBudgetSave = await saveTaskState({
+    projectRoot: stepProjectRoot,
+    state: createInitialTaskState({
+      taskId: stepNoBudgetTaskId,
+      sourceTaskId: stepNoBudgetTaskId,
+      createdAt: stepStartedAt,
+    }),
+  });
+  assert.equal(
+    stepNoBudgetSave.ok,
+    true,
+    "iteration_step_stale_parent_is_refused: budget-less task should save",
+  );
+  const stepNoBudgetClaim = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: {
+      taskId: stepNoBudgetTaskId,
+      taskStateRevision: 1,
+      budgetId: stepBudgetId,
+      stepNumber: 1,
+    },
+    launchKind: "planner_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepNoBudgetClaim.error.code,
+    "iteration_step_parent_budget_missing",
+    "iteration_step_stale_parent_is_refused: a missing parent budget must fail closed",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test E: iteration_step_crash_before_launch_is_resumable
+  // The step is durable in "prepared" and nothing ran, so a launch is safe.
+  // This is the ONLY case where resume permits a launch.
+  // -----------------------------------------------------------------------
+  const stepBeforeLaunchResume = await loadIterationStepResumeState({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+  });
+  assert.equal(
+    stepBeforeLaunchResume.ok,
+    true,
+    "iteration_step_crash_before_launch_is_resumable: resume state should derive",
+  );
+  assert.equal(
+    stepBeforeLaunchResume.value.action,
+    "resume_prepared_step",
+    "iteration_step_crash_before_launch_is_resumable: a prepared step must be resumable",
+  );
+  assert.equal(
+    stepBeforeLaunchResume.value.launchPermitted,
+    true,
+    "iteration_step_crash_before_launch_is_resumable: launch must be permitted before the boundary",
+  );
+  assert.equal(
+    stepBeforeLaunchResume.value.stepNumber,
+    1,
+    "iteration_step_crash_before_launch_is_resumable: the lowest unsettled step number must be chosen",
+  );
+
+  const stepLaunch = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepClaimFirst.value.record.stepId,
+    expectedRevision: 1,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T10:10:00.000Z" },
+  });
+  assert.equal(
+    stepLaunch.ok,
+    true,
+    "iteration_step_crash_before_launch_is_resumable: the launch should be recorded",
+  );
+  assert.equal(
+    stepLaunch.value.record.lifecycle,
+    "running",
+    "iteration_step_crash_before_launch_is_resumable: the step must be running after launch",
+  );
+  assert.equal(
+    stepLaunch.value.record.launchBoundaryCrossed,
+    true,
+    "iteration_step_crash_before_launch_is_resumable: the launch boundary must be marked crossed",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test F: iteration_step_crash_after_launch_is_never_relaunched
+  // The load-bearing property of the whole task.
+  // -----------------------------------------------------------------------
+  const stepAfterLaunchResume = await loadIterationStepResumeState({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+  });
+  assert.equal(
+    stepAfterLaunchResume.value.action,
+    "reconcile_launched_step",
+    "iteration_step_crash_after_launch_is_never_relaunched: a launched step must be reconciled, not resumed",
+  );
+  assert.equal(
+    stepAfterLaunchResume.value.launchPermitted,
+    false,
+    "iteration_step_crash_after_launch_is_never_relaunched: launch must NOT be permitted after the boundary",
+  );
+  assert.equal(
+    typeof stepAfterLaunchResume.value.blockedReason,
+    "string",
+    "iteration_step_crash_after_launch_is_never_relaunched: the block must carry an operator-visible reason",
+  );
+
+  const stepRelaunchAttempt = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepClaimFirst.value.record.stepId,
+    expectedRevision: 2,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T10:11:00.000Z" },
+  });
+  assert.equal(
+    stepRelaunchAttempt.ok,
+    false,
+    "iteration_step_crash_after_launch_is_never_relaunched: a relaunch must be refused",
+  );
+  assert.equal(
+    stepRelaunchAttempt.error.code,
+    "iteration_step_launch_boundary_already_crossed",
+    "iteration_step_crash_after_launch_is_never_relaunched: must fail with the boundary-crossed code",
+  );
+
+  // The durable record is untouched by the refused relaunch.
+  const stepAfterRefusedRelaunch = await loadIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepClaimFirst.value.record.stepId,
+  });
+  assert.equal(
+    stepAfterRefusedRelaunch.value.record.revision,
+    2,
+    "iteration_step_crash_after_launch_is_never_relaunched: a refused relaunch must not advance the revision",
+  );
+  assert.equal(
+    stepAfterRefusedRelaunch.value.record.launchedAt,
+    "2026-08-17T10:10:00.000Z",
+    "iteration_step_crash_after_launch_is_never_relaunched: the original launch timestamp must survive",
+  );
+
+  // No transition can walk a launched step back to prepared.
+  const stepResetAttempt = transitionIterationStepRecord({
+    record: { ...stepLaunch.value.record, lifecycle: "prepared" },
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T10:12:00.000Z" },
+  });
+  assert.equal(
+    stepResetAttempt.ok,
+    false,
+    "iteration_step_crash_after_launch_is_never_relaunched: a hand-reset lifecycle must not validate",
+  );
+  assert.equal(
+    stepResetAttempt.error.code,
+    "iteration_step_launch_boundary_inconsistent",
+    "iteration_step_crash_after_launch_is_never_relaunched: the boundary flag must contradict the reset",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test G: iteration_step_outcome_unknown_blocks_replay
+  // -----------------------------------------------------------------------
+  const stepUnknown = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepClaimFirst.value.record.stepId,
+    expectedRevision: 2,
+    intent: {
+      kind: "mark_outcome_unknown",
+      occurredAt: "2026-08-17T10:15:00.000Z",
+    },
+  });
+  assert.equal(
+    stepUnknown.ok,
+    true,
+    "iteration_step_outcome_unknown_blocks_replay: the step should be markable unknown",
+  );
+  assert.equal(
+    stepUnknown.value.record.lifecycle,
+    "outcome_unknown",
+    "iteration_step_outcome_unknown_blocks_replay: lifecycle must be outcome_unknown",
+  );
+  assert.equal(
+    stepUnknown.value.record.outcomeCertainty,
+    "unknown",
+    "iteration_step_outcome_unknown_blocks_replay: certainty must be unknown",
+  );
+
+  const stepUnknownRelaunch = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepClaimFirst.value.record.stepId,
+    expectedRevision: 3,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T10:16:00.000Z" },
+  });
+  assert.equal(
+    stepUnknownRelaunch.error.code,
+    "iteration_step_launch_boundary_already_crossed",
+    "iteration_step_outcome_unknown_blocks_replay: an ambiguous step must never be replayed",
+  );
+
+  const stepUnknownResume = await loadIterationStepResumeState({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+  });
+  assert.equal(
+    stepUnknownResume.value.action,
+    "reconcile_outcome_unknown",
+    "iteration_step_outcome_unknown_blocks_replay: ambiguity must outrank other resume work",
+  );
+  assert.equal(
+    stepUnknownResume.value.launchPermitted,
+    false,
+    "iteration_step_outcome_unknown_blocks_replay: no launch may be permitted while ambiguous",
+  );
+
+  // Reconciliation — not a blind retry — is the only way forward.
+  const stepReconciled = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepClaimFirst.value.record.stepId,
+    expectedRevision: 3,
+    intent: {
+      kind: "record_returned",
+      result: { stepOk: true, returnedAt: "2026-08-17T10:17:00.000Z" },
+    },
+  });
+  assert.equal(
+    stepReconciled.ok,
+    true,
+    "iteration_step_outcome_unknown_blocks_replay: an ambiguous step must be reconcilable",
+  );
+  assert.equal(
+    stepReconciled.value.record.lifecycle,
+    "returned",
+    "iteration_step_outcome_unknown_blocks_replay: reconciliation must settle the step",
+  );
+  assert.equal(
+    stepReconciled.value.record.outcomeUnknownAt,
+    undefined,
+    "iteration_step_outcome_unknown_blocks_replay: settling must clear the ambiguity marker",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test H: iteration_step_stale_revision_guard
+  // -----------------------------------------------------------------------
+  const stepStaleUpdate = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepClaimFirst.value.record.stepId,
+    expectedRevision: 1,
+    intent: {
+      kind: "record_failed",
+      failure: { code: "whatever", retryable: false, failedAt: stepStartedAt },
+    },
+  });
+  assert.equal(
+    stepStaleUpdate.ok,
+    false,
+    "iteration_step_stale_revision_guard: a stale step revision must not update",
+  );
+  assert.equal(
+    stepStaleUpdate.error.code,
+    "iteration_step_revision_conflict",
+    "iteration_step_stale_revision_guard: must fail with the revision-conflict code",
+  );
+
+  // Isolate the revision guard: a running step with a legal intent, but a stale
+  // revision. The lifecycle guard cannot be what refuses this one.
+  const stepRevisionOnlyTaskId = "TASK-ITERATION-STEP-REVISION";
+  const stepRevisionBudgetId = "budget-iteration-step-revision";
+  const stepRevisionRevision = await stepSeedTask(
+    stepRevisionOnlyTaskId,
+    stepRevisionBudgetId,
+  );
+  const stepRevisionClaim = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: {
+      taskId: stepRevisionOnlyTaskId,
+      taskStateRevision: stepRevisionRevision,
+      budgetId: stepRevisionBudgetId,
+      stepNumber: 1,
+    },
+    launchKind: "worker_call",
+    claimedAt: stepStartedAt,
+  });
+  const stepRevisionLaunched = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepRevisionOnlyTaskId,
+    stepId: stepRevisionClaim.value.record.stepId,
+    expectedRevision: 1,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T14:00:00.000Z" },
+  });
+  assert.equal(
+    stepRevisionLaunched.ok && stepRevisionLaunched.value.record.lifecycle === "running",
+    true,
+    "iteration_step_stale_revision_guard: the probe step should be running",
+  );
+
+  const stepRevisionOnly = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepRevisionOnlyTaskId,
+    stepId: stepRevisionClaim.value.record.stepId,
+    // record_failed IS legal from running, so only the revision can refuse it.
+    expectedRevision: 1,
+    intent: {
+      kind: "record_failed",
+      failure: {
+        code: "worker_failed",
+        retryable: false,
+        failedAt: "2026-08-17T14:01:00.000Z",
+      },
+    },
+  });
+  assert.equal(
+    stepRevisionOnly.ok,
+    false,
+    "iteration_step_stale_revision_guard: a stale revision must refuse an otherwise-legal transition",
+  );
+  assert.equal(
+    stepRevisionOnly.error.code,
+    "iteration_step_revision_conflict",
+    "iteration_step_stale_revision_guard: the refusal must come from the revision guard alone",
+  );
+
+  // A settled step's outcome cannot be overwritten.
+  const stepOverwriteSettled = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepClaimFirst.value.record.stepId,
+    expectedRevision: 4,
+    intent: {
+      kind: "record_failed",
+      failure: { code: "late-failure", retryable: true, failedAt: stepStartedAt },
+    },
+  });
+  assert.equal(
+    stepOverwriteSettled.ok,
+    false,
+    "iteration_step_stale_revision_guard: a settled outcome must not be overwritten",
+  );
+  assert.equal(
+    stepOverwriteSettled.error.code,
+    "iteration_step_transition_not_allowed",
+    "iteration_step_stale_revision_guard: must fail with the transition-not-allowed code",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test I: iteration_step_restart_readback_is_deterministic
+  // -----------------------------------------------------------------------
+  const stepListOne = await listIterationSteps({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+  });
+  const stepListTwo = await listIterationSteps({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+  });
+  assert.equal(
+    stepListOne.ok && stepListTwo.ok,
+    true,
+    "iteration_step_restart_readback_is_deterministic: listing should succeed",
+  );
+  assert.equal(
+    JSON.stringify(stepListOne.value),
+    JSON.stringify(stepListTwo.value),
+    "iteration_step_restart_readback_is_deterministic: two durable reads must be identical",
+  );
+  assert.equal(
+    stepListOne.value.map((step) => step.parent.stepNumber).join(","),
+    "1,2",
+    "iteration_step_restart_readback_is_deterministic: steps must be ordered by step number",
+  );
+
+  const stepResumeOne = deriveIterationStepResumeState(stepListOne.value);
+  const stepResumeTwo = deriveIterationStepResumeState(
+    [...stepListOne.value].reverse(),
+  );
+  assert.equal(
+    JSON.stringify(stepResumeOne),
+    JSON.stringify(stepResumeTwo),
+    "iteration_step_restart_readback_is_deterministic: resume must not depend on enumeration order",
+  );
+  assert.equal(
+    stepResumeOne.action,
+    "resume_prepared_step",
+    "iteration_step_restart_readback_is_deterministic: step 2 remains prepared and resumable",
+  );
+  assert.equal(
+    stepResumeOne.stepNumber,
+    2,
+    "iteration_step_restart_readback_is_deterministic: the remaining prepared step must be chosen",
+  );
+  assert.equal(
+    stepResumeOne.settledStepCount,
+    1,
+    "iteration_step_restart_readback_is_deterministic: exactly one step is settled",
+  );
+
+  // A task with a real orchestration run but no claimed steps reads as no_steps.
+  const stepEmptyTaskId = "TASK-ITERATION-STEP-EMPTY";
+  await stepSeedTask(stepEmptyTaskId, "budget-iteration-step-empty");
+  const stepEmptyResume = await loadIterationStepResumeState({
+    projectRoot: stepProjectRoot,
+    taskId: stepEmptyTaskId,
+  });
+  assert.equal(
+    stepEmptyResume.ok && stepEmptyResume.value.action === "no_steps",
+    true,
+    "iteration_step_restart_readback_is_deterministic: a run with no claimed steps must read no_steps",
+  );
+  assert.equal(
+    stepEmptyResume.value.launchPermitted,
+    false,
+    "iteration_step_restart_readback_is_deterministic: no_steps must not permit a launch",
+  );
+
+  // A task with no orchestration run at all has no scope to resume against, so
+  // the resume state fails closed instead of inventing an unscoped answer.
+  const stepNoRunResume = await loadIterationStepResumeState({
+    projectRoot: stepProjectRoot,
+    taskId: stepNoBudgetTaskId,
+  });
+  assert.equal(
+    stepNoRunResume.ok,
+    false,
+    "iteration_step_restart_readback_is_deterministic: a task with no run must not produce a resume state",
+  );
+  assert.equal(
+    stepNoRunResume.error.code,
+    "iteration_step_parent_budget_missing",
+    "iteration_step_restart_readback_is_deterministic: must fail with the missing-budget code",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test J: iteration_step_all_settled_and_authority
+  // -----------------------------------------------------------------------
+  const stepSecondId = stepConcurrent[0].value.record.stepId;
+  const stepSecondLaunch = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepSecondId,
+    expectedRevision: 1,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T10:20:00.000Z" },
+  });
+  assert.equal(
+    stepSecondLaunch.ok,
+    true,
+    "iteration_step_all_settled_and_authority: the second step should launch",
+  );
+  const stepSecondFailed = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepSecondId,
+    expectedRevision: 2,
+    intent: {
+      kind: "record_failed",
+      failure: {
+        code: "worker_failed",
+        retryable: true,
+        failedAt: "2026-08-17T10:21:00.000Z",
+      },
+    },
+  });
+  assert.equal(
+    stepSecondFailed.value.record.lifecycle,
+    "failed",
+    "iteration_step_all_settled_and_authority: a failed outcome must settle the step",
+  );
+
+  const stepSettledResume = await loadIterationStepResumeState({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+  });
+  assert.equal(
+    stepSettledResume.value.action,
+    "all_steps_settled",
+    "iteration_step_all_settled_and_authority: every settled step must read all_steps_settled",
+  );
+  assert.equal(
+    stepSettledResume.value.launchPermitted,
+    false,
+    "iteration_step_all_settled_and_authority: all_steps_settled must not permit a launch",
+  );
+  assert.equal(
+    stepSettledResume.value.settledStepCount,
+    2,
+    "iteration_step_all_settled_and_authority: both steps must be counted as settled",
+  );
+
+  // A retryable failure records the fact; it does not authorise a retry here.
+  // Retry eligibility is TASK-0334, and no step may be relaunched regardless.
+  const stepRetryAttempt = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepSecondId,
+    expectedRevision: 3,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T10:22:00.000Z" },
+  });
+  assert.equal(
+    stepRetryAttempt.error.code,
+    "iteration_step_launch_boundary_already_crossed",
+    "iteration_step_all_settled_and_authority: a retryable failure must not authorise a relaunch",
+  );
+
+  // Step lifecycle grants no completion authority.
+  const stepFinalRecord = await loadIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+    stepId: stepSecondId,
+  });
+  assert.equal(
+    stepFinalRecord.value.record.safety.lifecycleAuthority,
+    "system",
+    "iteration_step_all_settled_and_authority: lifecycle authority must be system",
+  );
+  assert.equal(
+    stepFinalRecord.value.record.safety.taskCompleted === false &&
+      stepFinalRecord.value.record.safety.verified === false &&
+      stepFinalRecord.value.record.safety.modelSelfReportTrusted === false,
+    true,
+    "iteration_step_all_settled_and_authority: step safety markers must all remain false",
+  );
+  const stepForgedSafety = validateIterationStepRecord({
+    ...stepFinalRecord.value.record,
+    safety: { ...stepFinalRecord.value.record.safety, taskCompleted: true },
+  });
+  assert.equal(
+    stepForgedSafety.error.code,
+    "iteration_step_invalid_safety",
+    "iteration_step_all_settled_and_authority: a forged completion marker must fail closed",
+  );
+
+  const stepFinalTaskState = await loadTaskState({
+    projectRoot: stepProjectRoot,
+    taskId: stepTaskId,
+  });
+  assert.equal(
+    stepFinalTaskState.value.state.completionGate.satisfied === false &&
+      stepFinalTaskState.value.state.safety.verified === false,
+    true,
+    "iteration_step_all_settled_and_authority: step progress must not satisfy the completion gate",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test K: iteration_step_concurrent_update_has_one_winner
+  //
+  // The signal for the revision-guard-alone hole: two concurrent launch_step
+  // callers can BOTH read revision N, both pass the revision check and both
+  // return ok, each believing it owns the launch. An exclusive lock is what
+  // makes exactly one of them win.
+  // -----------------------------------------------------------------------
+  const stepRaceTaskId = "TASK-ITERATION-STEP-RACE";
+  const stepRaceBudgetId = "budget-iteration-step-race";
+  const stepRaceRevision = await stepSeedTask(stepRaceTaskId, stepRaceBudgetId);
+  const stepRaceClaim = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: {
+      taskId: stepRaceTaskId,
+      taskStateRevision: stepRaceRevision,
+      budgetId: stepRaceBudgetId,
+      stepNumber: 1,
+    },
+    launchKind: "worker_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepRaceClaim.ok && stepRaceClaim.value.status === "claimed",
+    true,
+    "iteration_step_concurrent_update_has_one_winner: the race step should claim",
+  );
+
+  // This asserts the invariant that matters — never two ok results for one
+  // launch — but it does NOT isolate the lock: whichever caller finishes first
+  // advances the revision, so the losers may fail on the revision guard instead.
+  // Lock behaviour is isolated by the planted-lock sub-test below.
+  const stepRaceUpdates = await Promise.all(
+    Array.from({ length: 6 }, (_, index) =>
+      updateIterationStep({
+        projectRoot: stepProjectRoot,
+        taskId: stepRaceTaskId,
+        stepId: stepRaceClaim.value.record.stepId,
+        expectedRevision: 1,
+        intent: {
+          kind: "launch_step",
+          occurredAt: `2026-08-17T11:0${index}:00.000Z`,
+        },
+      }),
+    ),
+  );
+  assert.equal(
+    stepRaceUpdates.filter((result) => result.ok).length,
+    1,
+    "iteration_step_concurrent_update_has_one_winner: exactly one concurrent launch may succeed",
+  );
+  assert.equal(
+    stepRaceUpdates
+      .filter((result) => !result.ok)
+      .every((result) =>
+        ["iteration_step_update_locked", "iteration_step_revision_conflict"].includes(
+          result.error.code,
+        ),
+      ),
+    true,
+    "iteration_step_concurrent_update_has_one_winner: every loser must fail closed on the lock or the revision",
+  );
+
+  const stepRaceFinal = await loadIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepRaceTaskId,
+    stepId: stepRaceClaim.value.record.stepId,
+  });
+  assert.equal(
+    stepRaceFinal.value.record.revision,
+    2,
+    "iteration_step_concurrent_update_has_one_winner: the step must advance exactly one revision",
+  );
+  assert.equal(
+    stepRaceFinal.value.record.lifecycle,
+    "running",
+    "iteration_step_concurrent_update_has_one_winner: the step must be launched exactly once",
+  );
+
+  // The lock must not leak: a later sequential update still succeeds.
+  const stepRaceSettle = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepRaceTaskId,
+    stepId: stepRaceClaim.value.record.stepId,
+    expectedRevision: 2,
+    intent: {
+      kind: "record_returned",
+      result: { stepOk: true, returnedAt: "2026-08-17T11:30:00.000Z" },
+    },
+  });
+  assert.equal(
+    stepRaceSettle.ok,
+    true,
+    "iteration_step_concurrent_update_has_one_winner: the update lock must be released after use",
+  );
+
+  // A held lock must survive a losing caller. This isolates the exact race the
+  // Promise.all above cannot reach: the loser's cleanup must NOT delete a lock it
+  // does not own. With an unconditional unlink, the loser would remove the
+  // holder's lock and a third caller could then run the update concurrently with
+  // the holder.
+  //
+  // Deliberately performed on a PREPARED step: if the lock were removed
+  // entirely, this launch would SUCCEED. Using a settled step instead would let
+  // the launch-boundary guard refuse it, and the test would pass without the lock
+  // doing any work.
+  const stepLockProbe = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: {
+      taskId: stepRaceTaskId,
+      taskStateRevision: stepRaceRevision,
+      budgetId: stepRaceBudgetId,
+      stepNumber: 2,
+    },
+    launchKind: "planner_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepLockProbe.ok && stepLockProbe.value.record.lifecycle === "prepared",
+    true,
+    "iteration_step_concurrent_update_has_one_winner: the lock probe step should claim as prepared",
+  );
+
+  const stepLockDir = join(
+    stepProjectRoot,
+    ".aeos",
+    "state",
+    "iteration-step-locks",
+    stepRaceTaskId,
+  );
+  await mkdir(stepLockDir, { recursive: true });
+  const stepHeldLockPath = join(
+    stepLockDir,
+    `${stepLockProbe.value.record.stepId}.lock`,
+  );
+  await writeNodeFile(
+    stepHeldLockPath,
+    `${JSON.stringify({ heldBy: "another-process" })}\n`,
+  );
+
+  const stepLockedUpdate = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepRaceTaskId,
+    stepId: stepLockProbe.value.record.stepId,
+    expectedRevision: 1,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T11:40:00.000Z" },
+  });
+  assert.equal(
+    stepLockedUpdate.ok,
+    false,
+    "iteration_step_concurrent_update_has_one_winner: a held lock must refuse an otherwise-valid launch",
+  );
+  assert.equal(
+    stepLockedUpdate.error.code,
+    "iteration_step_update_locked",
+    "iteration_step_concurrent_update_has_one_winner: the refusal must come from the lock, not another guard",
+  );
+  assert.equal(
+    await pathExists(stepHeldLockPath),
+    true,
+    "iteration_step_concurrent_update_has_one_winner: a losing caller must not delete the holder's lock",
+  );
+
+  const stepStillPrepared = await loadIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepRaceTaskId,
+    stepId: stepLockProbe.value.record.stepId,
+  });
+  assert.equal(
+    stepStillPrepared.value.record.lifecycle,
+    "prepared",
+    "iteration_step_concurrent_update_has_one_winner: a lock-refused launch must not advance the step",
+  );
+
+  // Once the holder releases it, the same launch proceeds — the lock is a gate,
+  // not a permanent wedge, for any gracefully released lock.
+  await rm(stepHeldLockPath, { force: true });
+  const stepAfterLockReleased = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepRaceTaskId,
+    stepId: stepLockProbe.value.record.stepId,
+    expectedRevision: 1,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T11:41:00.000Z" },
+  });
+  assert.equal(
+    stepAfterLockReleased.ok,
+    true,
+    "iteration_step_concurrent_update_has_one_winner: the launch must succeed once the lock clears",
+  );
+  assert.equal(
+    await pathExists(stepHeldLockPath),
+    false,
+    "iteration_step_concurrent_update_has_one_winner: a caller that created the lock must release it",
+  );
+
+  // Settle it so the run is not left unsettled for later tests.
+  const stepLockProbeSettled = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepRaceTaskId,
+    stepId: stepLockProbe.value.record.stepId,
+    expectedRevision: 2,
+    intent: {
+      kind: "record_returned",
+      result: { stepOk: true, returnedAt: "2026-08-17T11:42:00.000Z" },
+    },
+  });
+  assert.equal(
+    stepLockProbeSettled.ok,
+    true,
+    "iteration_step_concurrent_update_has_one_winner: the probe step should settle",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test L: iteration_step_unsettled_run_refuses_new_claims
+  //
+  // Closes the blind-retry route: a "retry" launch kind hashes to a different
+  // stepId, so without this gate a caller could claim a fresh retry step while
+  // the step being retried sits unreconciled in outcome_unknown — never
+  // touching the original's launch boundary.
+  // -----------------------------------------------------------------------
+  const stepGateTaskId = "TASK-ITERATION-STEP-GATE";
+  const stepGateBudgetId = "budget-iteration-step-gate";
+  const stepGateRevision = await stepSeedTask(stepGateTaskId, stepGateBudgetId);
+
+  function stepGateParent(stepNumber) {
+    return {
+      taskId: stepGateTaskId,
+      taskStateRevision: stepGateRevision,
+      budgetId: stepGateBudgetId,
+      stepNumber,
+    };
+  }
+
+  const stepGateFirst = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: stepGateParent(1),
+    launchKind: "worker_call",
+    claimedAt: stepStartedAt,
+  });
+  const stepGateLaunched = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepGateTaskId,
+    stepId: stepGateFirst.value.record.stepId,
+    expectedRevision: 1,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T12:00:00.000Z" },
+  });
+  assert.equal(
+    stepGateLaunched.ok,
+    true,
+    "iteration_step_unsettled_run_refuses_new_claims: the first step should launch",
+  );
+
+  // While step 1 is running, a fresh step of ANY kind must be refused.
+  const stepGateWhileRunning = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: stepGateParent(2),
+    launchKind: "planner_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepGateWhileRunning.ok,
+    false,
+    "iteration_step_unsettled_run_refuses_new_claims: a new claim must be refused while a step is running",
+  );
+  assert.equal(
+    stepGateWhileRunning.error.code,
+    "iteration_step_run_blocked_by_unsettled_step",
+    "iteration_step_unsettled_run_refuses_new_claims: must fail with the run-blocked code",
+  );
+
+  // A replay of the RUNNING step itself still resolves to already_claimed: the
+  // gate excludes the step being claimed, so the exactly-once path still answers.
+  const stepGateReplay = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: stepGateParent(1),
+    launchKind: "worker_call",
+    claimedAt: "2026-08-17T12:05:00.000Z",
+  });
+  assert.equal(
+    stepGateReplay.ok && stepGateReplay.value.status === "already_claimed",
+    true,
+    "iteration_step_unsettled_run_refuses_new_claims: a replay of the unsettled step must still report already_claimed",
+  );
+
+  // Now make it ambiguous and attempt the blind retry.
+  const stepGateUnknown = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepGateTaskId,
+    stepId: stepGateFirst.value.record.stepId,
+    expectedRevision: 2,
+    intent: {
+      kind: "mark_outcome_unknown",
+      occurredAt: "2026-08-17T12:10:00.000Z",
+    },
+  });
+  assert.equal(
+    stepGateUnknown.ok,
+    true,
+    "iteration_step_unsettled_run_refuses_new_claims: the step should become ambiguous",
+  );
+
+  const stepGateBlindRetry = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: stepGateParent(1),
+    launchKind: "retry",
+    claimedAt: "2026-08-17T12:11:00.000Z",
+  });
+  assert.equal(
+    stepGateBlindRetry.ok,
+    false,
+    "iteration_step_unsettled_run_refuses_new_claims: a blind retry of an ambiguous step must be refused",
+  );
+  assert.equal(
+    stepGateBlindRetry.error.code,
+    "iteration_step_run_blocked_by_unsettled_step",
+    "iteration_step_unsettled_run_refuses_new_claims: must fail with the run-blocked code",
+  );
+
+  // After reconciliation, a retry step is claimable — and it is a NEW step with
+  // its own identity, not a relaunch of the reconciled one.
+  const stepGateReconciled = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepGateTaskId,
+    stepId: stepGateFirst.value.record.stepId,
+    expectedRevision: 3,
+    intent: {
+      kind: "record_failed",
+      failure: {
+        code: "worker_failed",
+        retryable: true,
+        failedAt: "2026-08-17T12:12:00.000Z",
+      },
+    },
+  });
+  assert.equal(
+    stepGateReconciled.ok,
+    true,
+    "iteration_step_unsettled_run_refuses_new_claims: reconciliation should settle the step",
+  );
+
+  const stepGateRetry = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: stepGateParent(1),
+    launchKind: "retry",
+    claimedAt: "2026-08-17T12:13:00.000Z",
+  });
+  assert.equal(
+    stepGateRetry.ok && stepGateRetry.value.status === "claimed",
+    true,
+    "iteration_step_unsettled_run_refuses_new_claims: a retry is claimable once the run is reconciled",
+  );
+  assert.equal(
+    stepGateRetry.value.record.stepId === stepGateFirst.value.record.stepId,
+    false,
+    "iteration_step_unsettled_run_refuses_new_claims: a retry must be a distinct step identity",
+  );
+  assert.equal(
+    stepGateRetry.value.record.launchKind,
+    "retry",
+    "iteration_step_unsettled_run_refuses_new_claims: the retry launch kind must be durable",
+  );
+  assert.equal(
+    stepGateRetry.value.record.launchBoundaryCrossed,
+    false,
+    "iteration_step_unsettled_run_refuses_new_claims: a fresh retry step starts before the launch boundary",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test M: iteration_step_orphaned_run_is_never_launchable
+  //
+  // A step claimed against a superseded revision/budget stays on disk. It must
+  // never be selected for launch by the current run — otherwise resume would
+  // launch work bound to a parent context that no longer exists.
+  // -----------------------------------------------------------------------
+  const stepOrphanTaskId = "TASK-ITERATION-STEP-ORPHAN";
+  const stepOrphanBudgetId = "budget-iteration-step-orphan-1";
+  const stepOrphanRevision = await stepSeedTask(
+    stepOrphanTaskId,
+    stepOrphanBudgetId,
+  );
+  const stepOrphanClaim = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: {
+      taskId: stepOrphanTaskId,
+      taskStateRevision: stepOrphanRevision,
+      budgetId: stepOrphanBudgetId,
+      stepNumber: 1,
+    },
+    launchKind: "planner_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepOrphanClaim.ok && stepOrphanClaim.value.record.lifecycle === "prepared",
+    true,
+    "iteration_step_orphaned_run_is_never_launchable: the soon-to-be orphan should claim",
+  );
+
+  // Leave the orphan UNSETTLED. This is what makes the claim gate's scope filter
+  // load-bearing: without it, a superseded run holding a running step would block
+  // every future run's claims for good — a livelock, not merely stale data.
+  const stepOrphanLaunched = await updateIterationStep({
+    projectRoot: stepProjectRoot,
+    taskId: stepOrphanTaskId,
+    stepId: stepOrphanClaim.value.record.stepId,
+    expectedRevision: 1,
+    intent: { kind: "launch_step", occurredAt: "2026-08-17T12:50:00.000Z" },
+  });
+  assert.equal(
+    stepOrphanLaunched.ok && stepOrphanLaunched.value.record.lifecycle === "running",
+    true,
+    "iteration_step_orphaned_run_is_never_launchable: the orphan should be left running",
+  );
+
+  // Supersede the run: new revision, new budget.
+  const stepOrphanSuperseded = await updateTaskState({
+    projectRoot: stepProjectRoot,
+    taskId: stepOrphanTaskId,
+    expectedRevision: stepOrphanRevision,
+    updatedAt: "2026-08-17T13:00:00.000Z",
+    update(state) {
+      const nextBudget = createIterationBudget({
+        budgetId: "budget-iteration-step-orphan-2",
+        startedAt: "2026-08-17T13:00:00.000Z",
+        operatorLimits: { maxSteps: 6, maxPlannerCalls: 3, maxWorkerCalls: 3 },
+      });
+      return { ...state, iterationBudget: nextBudget.value };
+    },
+  });
+  assert.equal(
+    stepOrphanSuperseded.ok,
+    true,
+    "iteration_step_orphaned_run_is_never_launchable: the run should be supersedable",
+  );
+
+  const stepOrphanResume = await loadIterationStepResumeState({
+    projectRoot: stepProjectRoot,
+    taskId: stepOrphanTaskId,
+  });
+  assert.equal(
+    stepOrphanResume.ok,
+    true,
+    "iteration_step_orphaned_run_is_never_launchable: resume state should derive",
+  );
+  assert.equal(
+    stepOrphanResume.value.action,
+    "no_steps",
+    "iteration_step_orphaned_run_is_never_launchable: the new run must see no steps of its own",
+  );
+  assert.equal(
+    stepOrphanResume.value.launchPermitted,
+    false,
+    "iteration_step_orphaned_run_is_never_launchable: an orphan must never be launchable",
+  );
+  assert.equal(
+    stepOrphanResume.value.orphanedStepCount,
+    1,
+    "iteration_step_orphaned_run_is_never_launchable: the orphan must be reported, not silently dropped",
+  );
+  assert.equal(
+    stepOrphanResume.value.stepCount,
+    0,
+    "iteration_step_orphaned_run_is_never_launchable: the orphan must not be counted in scope",
+  );
+
+  // Unscoped derivation still sees it — the filter is the scope, not a deletion.
+  const stepOrphanAll = await listIterationSteps({
+    projectRoot: stepProjectRoot,
+    taskId: stepOrphanTaskId,
+  });
+  assert.equal(
+    stepOrphanAll.value.length,
+    1,
+    "iteration_step_orphaned_run_is_never_launchable: the orphan record must still be durable",
+  );
+  assert.equal(
+    deriveIterationStepResumeState(stepOrphanAll.value).action,
+    "reconcile_launched_step",
+    "iteration_step_orphaned_run_is_never_launchable: an unscoped derivation would still be blocked by the orphan",
+  );
+
+  // The claim gate must be scoped too: the new run can claim its own work even
+  // though a superseded run left a running step behind. Without the scope filter
+  // in refuseClaimWhileRunIsBlocked, this claim would be refused forever.
+  const stepOrphanNewRunClaim = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: {
+      taskId: stepOrphanTaskId,
+      taskStateRevision: stepOrphanSuperseded.value.state.revision,
+      budgetId: "budget-iteration-step-orphan-2",
+      stepNumber: 1,
+    },
+    launchKind: "planner_call",
+    claimedAt: "2026-08-17T13:05:00.000Z",
+  });
+  assert.equal(
+    stepOrphanNewRunClaim.ok,
+    true,
+    "iteration_step_orphaned_run_is_never_launchable: a superseded run's running step must not block the new run",
+  );
+  assert.equal(
+    stepOrphanNewRunClaim.value.status,
+    "claimed",
+    "iteration_step_orphaned_run_is_never_launchable: the new run must get its own fresh claim",
+  );
+  assert.equal(
+    stepOrphanNewRunClaim.value.record.stepId ===
+      stepOrphanClaim.value.record.stepId,
+    false,
+    "iteration_step_orphaned_run_is_never_launchable: the new run's step must be a distinct identity",
+  );
+
+  // And the new run's resume state sees only its own step.
+  const stepOrphanNewRunResume = await loadIterationStepResumeState({
+    projectRoot: stepProjectRoot,
+    taskId: stepOrphanTaskId,
+  });
+  assert.equal(
+    stepOrphanNewRunResume.value.action,
+    "resume_prepared_step",
+    "iteration_step_orphaned_run_is_never_launchable: the new run must resume its own prepared step",
+  );
+  assert.equal(
+    stepOrphanNewRunResume.value.stepId,
+    stepOrphanNewRunClaim.value.record.stepId,
+    "iteration_step_orphaned_run_is_never_launchable: resume must point at the in-scope step",
+  );
+  assert.equal(
+    stepOrphanNewRunResume.value.orphanedStepCount,
+    1,
+    "iteration_step_orphaned_run_is_never_launchable: the running orphan must remain visible as an orphan",
+  );
+
+  // -----------------------------------------------------------------------
+  // Test N: iteration_step_store_directory_is_hardened
+  //
+  // listIterationSteps feeds refuseClaimWhileRunIsBlocked, so anything that can
+  // wedge or poison the directory read also wedges or poisons every claim for
+  // the task. Three hostile entries, each of which must fail closed rather than
+  // throw or be adopted.
+  // -----------------------------------------------------------------------
+  const stepHardenTaskId = "TASK-ITERATION-STEP-HARDEN";
+  const stepHardenBudgetId = "budget-iteration-step-harden";
+  const stepHardenRevision = await stepSeedTask(
+    stepHardenTaskId,
+    stepHardenBudgetId,
+  );
+  const stepHardenClaim = await claimIterationStep({
+    projectRoot: stepProjectRoot,
+    parent: {
+      taskId: stepHardenTaskId,
+      taskStateRevision: stepHardenRevision,
+      budgetId: stepHardenBudgetId,
+      stepNumber: 1,
+    },
+    launchKind: "worker_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepHardenClaim.ok,
+    true,
+    "iteration_step_store_directory_is_hardened: the baseline step should claim",
+  );
+
+  const stepHardenDir = join(
+    stepProjectRoot,
+    ".aeos",
+    "state",
+    "iteration-steps",
+    stepHardenTaskId,
+  );
+
+  // (1) A DIRECTORY named like a record. readFile would throw EISDIR, and an
+  // uncaught throw here would wedge every later claim for this task.
+  const stepHardenFakeDir = join(stepHardenDir, "step-not-a-file.json");
+  await mkdir(stepHardenFakeDir, { recursive: true });
+  const stepHardenDirRead = await listIterationSteps({
+    projectRoot: stepProjectRoot,
+    taskId: stepHardenTaskId,
+  });
+  assert.equal(
+    stepHardenDirRead.ok,
+    false,
+    "iteration_step_store_directory_is_hardened: a directory named like a record must fail closed, not throw",
+  );
+  assert.equal(
+    stepHardenDirRead.error.code,
+    "iteration_step_unsafe_target",
+    "iteration_step_store_directory_is_hardened: must fail with the unsafe-target code",
+  );
+  await rm(stepHardenFakeDir, { recursive: true, force: true });
+
+  // (2) A SYMLINK to a record outside this directory.
+  const stepHardenRealRecord = join(
+    stepHardenDir,
+    `${stepHardenClaim.value.record.stepId}.json`,
+  );
+  const stepHardenSymlink = join(stepHardenDir, "step-symlinked.json");
+  await symlink(stepHardenRealRecord, stepHardenSymlink);
+  const stepHardenSymlinkRead = await listIterationSteps({
+    projectRoot: stepProjectRoot,
+    taskId: stepHardenTaskId,
+  });
+  assert.equal(
+    stepHardenSymlinkRead.ok,
+    false,
+    "iteration_step_store_directory_is_hardened: a symlinked record must not be followed",
+  );
+  assert.equal(
+    stepHardenSymlinkRead.error.code,
+    "iteration_step_unsafe_target",
+    "iteration_step_store_directory_is_hardened: must fail with the unsafe-target code",
+  );
+  await rm(stepHardenSymlink, { force: true });
+
+  // (3) A structurally VALID record belonging to a different task, planted here.
+  // Self-consistency is not proof of belonging: if it were adopted and it were
+  // running, the claim gate would block this task's run on a foreign step.
+  const stepHardenForeign = createPreparedIterationStepRecord({
+    parent: {
+      taskId: "TASK-SOMEONE-ELSE",
+      taskStateRevision: 2,
+      budgetId: "budget-someone-else",
+      stepNumber: 1,
+    },
+    launchKind: "worker_call",
+    claimedAt: stepStartedAt,
+  });
+  assert.equal(
+    stepHardenForeign.ok,
+    true,
+    "iteration_step_store_directory_is_hardened: the foreign record should be structurally valid",
+  );
+  const stepHardenForeignPath = join(
+    stepHardenDir,
+    `${stepHardenForeign.value.stepId}.json`,
+  );
+  await writeNodeFile(
+    stepHardenForeignPath,
+    `${JSON.stringify(stepHardenForeign.value, null, 2)}\n`,
+  );
+  const stepHardenForeignRead = await listIterationSteps({
+    projectRoot: stepProjectRoot,
+    taskId: stepHardenTaskId,
+  });
+  assert.equal(
+    stepHardenForeignRead.ok,
+    false,
+    "iteration_step_store_directory_is_hardened: a foreign task's record must not be adopted",
+  );
+  assert.equal(
+    stepHardenForeignRead.error.code,
+    "iteration_step_foreign_record",
+    "iteration_step_store_directory_is_hardened: must fail with the foreign-record code",
+  );
+  await rm(stepHardenForeignPath, { force: true });
+
+  // (4) A HARD LINK to this task's own record under a different name. lstat sees
+  // a regular file, and the content is a valid record for this very task, so the
+  // only thing that can refuse it is the filename-identity invariant: a record
+  // must live at the path its own derived stepId dictates. Without it, the same
+  // identity would appear twice in the listing.
+  const stepHardenHardLink = join(stepHardenDir, "step-hardlinked.json");
+  await link(stepHardenRealRecord, stepHardenHardLink);
+  const stepHardenHardLinkRead = await listIterationSteps({
+    projectRoot: stepProjectRoot,
+    taskId: stepHardenTaskId,
+  });
+  assert.equal(
+    stepHardenHardLinkRead.ok,
+    false,
+    "iteration_step_store_directory_is_hardened: a hard-linked duplicate must not be adopted",
+  );
+  assert.equal(
+    stepHardenHardLinkRead.error.code,
+    "iteration_step_path_identity_mismatch",
+    "iteration_step_store_directory_is_hardened: must fail with the path-identity-mismatch code",
+  );
+  await rm(stepHardenHardLink, { force: true });
+
+  // With the hostile entries gone, the store reads normally again.
+  const stepHardenClean = await listIterationSteps({
+    projectRoot: stepProjectRoot,
+    taskId: stepHardenTaskId,
+  });
+  assert.equal(
+    stepHardenClean.ok && stepHardenClean.value.length === 1,
+    true,
+    "iteration_step_store_directory_is_hardened: the store must read normally once cleaned",
+  );
+
+  // A budgetId carrying the identity-digest delimiter is refused, so the digest
+  // cannot be made ambiguous across different bindings.
+  const stepHardenBadBudgetId = deriveIterationStepIdentity({
+    parent: {
+      taskId: stepHardenTaskId,
+      taskStateRevision: stepHardenRevision,
+      budgetId: "budget with spaces",
+      stepNumber: 1,
+    },
+    launchKind: "worker_call",
+  });
+  assert.equal(
+    stepHardenBadBudgetId.ok,
+    false,
+    "iteration_step_store_directory_is_hardened: an unsafe budgetId must not derive an identity",
+  );
+  assert.equal(
+    stepHardenBadBudgetId.error.code,
+    "iteration_step_invalid_parent_binding",
+    "iteration_step_store_directory_is_hardened: must fail with the invalid-parent-binding code",
+  );
+
+  console.log("iteration step smoke tests passed");
+} finally {
+  await rm(iterationStepTempRoot, { recursive: true, force: true });
 }

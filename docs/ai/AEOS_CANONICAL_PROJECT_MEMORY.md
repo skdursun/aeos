@@ -102,6 +102,61 @@ This principle has been intentionally preserved through worker, routing, invocat
 - Historical failed canaries are evidence, not reusable execution slots.
 - Strict validators are not weakened merely to make a canary pass; fix the producer.
 
+### Critical defect precedence
+
+A real P0 or release-blocking P1 defect on an AEOS critical authority boundary — concurrency,
+locking, idempotency, invocation identity, durable state, persistence, revision guards, state
+machines, completion authority, accounting authority, retry/recovery, policy/permission, security,
+audit/provenance — outranks dependent roadmap work.
+
+Such a defect is never silently deferred as out-of-scope. It gets its own GitHub Issue, a durable
+blocker/dependency link to the source task, and matching state in both ledgers. Dependent tasks do
+not close until it is implemented, tested, independently reviewed and integrated. Severity is
+lowered only on evidence, never to keep moving. Non-blocking P2/P3 findings are filed and do not
+stop the roadmap.
+
+This became policy after TASK-0328 review surfaced a duplicate-dispatch hole in
+`updateTaskExecutionInvocation`: the caller that lost the lock race deleted the winner's lock file,
+admitting a third caller into the same critical section. The existing tests could not see it,
+because the atomic rename left the file structurally consistent.
+
+### IMPLEMENTED is not INTEGRATED
+
+Two distinct durable states:
+
+- `IMPLEMENTED_AWAITING_INTEGRATION` — acceptance criteria met, tests pass, independent review
+  passed, commit pushed, but the commit is not reachable from the canonical default branch.
+- COMPLETE/Tamamlandı — the final reviewed commit **is** reachable from the canonical default
+  branch, proven by `git merge-base --is-ancestor <SHA> origin/<default>` exiting 0.
+
+Passing tests on a task branch does not complete a task. Neither does a review pass, a push, or a
+closed issue. An issue closed without canonical integration evidence is a wrong durable state.
+
+### Canonical integration checkpoint
+
+The canonical/default branch is verified from the remote each session, never assumed from a
+document. After a critical/P0 authority task receives final REVIEW PASS, the integration checkpoint
+runs before the next critical task is dispatched.
+
+Critical completed work must not accumulate indefinitely off the canonical branch. Long-lived task
+branches must not become permanent shadow-mains, and if commits for tasks already declared complete
+sit ahead of the canonical branch, next-task dispatch is blocked until they are integrated
+(`INTEGRATION_REQUIRED`).
+
+The rule exists because TASK-0324 through TASK-0327 were each individually closed out correctly —
+issues closed, Notion rows set to Tamamlandı — while all seven of their commits lived only on
+`task/0324-fresh-canary`, ahead of `origin/master` and reachable from nothing canonical. Each
+closeout looked right; the aggregate was a shadow-main that no rule then forbade.
+
+**Current recovery chain (snapshot of state, not a permanent queue):**
+
+```text
+GitHub #77  →  TASK-0328 / Issue #8  →  canonical integration checkpoint  →  TASK-0329
+```
+
+The two rules above are permanent. That chain is the recovery state at the time this section was
+written; current GitHub + Notion state always wins over it.
+
 ### Provider / cloud boundary
 
 AEOS mainline remains model-agnostic and cloud-provider-independent.
